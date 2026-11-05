@@ -1450,17 +1450,24 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
 
       {view, html} = mount_view(id)
 
-      # Named workflow row shows its workflow name; unnamed setup runs fall back to "workflow".
+      # The workflow name and the unnamed setup runs' "workflow" fallback are the muted label
+      # of each row; the primary label is the task title (a task-less run reads its run id).
       assert has_element?(
                view,
-               ~s(#workspace-nav section[aria-labelledby="nav-workflows-title"] strong),
-               "implement-trd"
+               ~s(#workspace-nav section[aria-labelledby="nav-workflows-title"] .ws-nav-workflow),
+               "implement-trd · awaiting_worker"
              )
 
       assert has_element?(
                view,
+               ~s(#workspace-nav section[aria-labelledby="nav-workflows-title"] .ws-nav-workflow),
+               "workflow · "
+             )
+
+      refute has_element?(
+               view,
                ~s(#workspace-nav section[aria-labelledby="nav-workflows-title"] strong),
-               "workflow"
+               "implement-trd"
              )
 
       # Count badge reflects THIS project's runs only: its four setup runs plus this one. The
@@ -1495,6 +1502,13 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
 
       assert has_element?(
                view,
+               ~s(#workspace-nav section[aria-labelledby="nav-workflows-title"] .ws-nav-workflow),
+               "prd"
+             )
+
+      # The workflow is the muted label, never the row's primary one.
+      refute has_element?(
+               view,
                ~s(#workspace-nav section[aria-labelledby="nav-workflows-title"] strong),
                "prd"
              )
@@ -1523,7 +1537,13 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
          %{id: id, other: other} do
       seed_jobsite("js-mine", "bead-mine", id, 1_000)
       seed_jobsite("js-theirs", "bead-theirs", other, 2_000)
-      :ok = ProjectionStore.apply_events([workflow_run("r-mine", id, "mine-workflow")])
+      :ok = ProjectionStore.apply_events([task("t-mine", id, "Mine task")])
+
+      :ok =
+        ProjectionStore.apply_events([
+          put_in(workflow_run("r-mine", id, "mine-workflow"), [:payload, :task_id], "t-mine")
+        ])
+
       :ok = ProjectionStore.apply_events([workflow_run("r-theirs", other, "their-workflow")])
 
       {view, _html} = mount_view(id)
@@ -1538,8 +1558,10 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
       assert has_element?(view, "#{jobsite_panel} .ws-count", ~r/\A\s*1\s*\z/)
 
       # Same for the Workflows panel: this project's named run, not the other project's.
-      assert has_element?(view, "#{workflows_panel} strong", "mine-workflow")
-      refute has_element?(view, "#{workflows_panel} strong", "their-workflow")
+      assert has_element?(view, "#{workflows_panel} .ws-nav-workflow", "mine-workflow")
+      refute has_element?(view, "#{workflows_panel} .ws-nav-workflow", "their-workflow")
+      assert has_element?(view, "#{workflows_panel} strong", "Mine task")
+      refute has_element?(view, "#{workflows_panel} strong", "mine-workflow")
     end
 
     test "a run or jobsite event for THIS project refreshes the nav panels", %{id: id} do
@@ -1588,6 +1610,1032 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
 
       miss = render_change(view, "ws_search", %{"q" => "zzz-no-such-thing"})
       assert miss =~ "No matches."
+    end
+  end
+
+  @workflows_panel ~s(#workspace-nav section[aria-labelledby="nav-workflows-title"])
+  @jobsite_panel ~s(#workspace-nav section[aria-labelledby="nav-jobsite-title"])
+
+  defp worktree_created(op, project_id, run_id, path, branch, cleanup),
+    do: %{
+      event_type: "WorktreeCreated",
+      payload: %{
+        operation_id: op,
+        project_id: project_id,
+        run_id: run_id,
+        phase_id: "ph-#{op}",
+        worktree_path: path,
+        branch: branch,
+        base_ref: "main",
+        cleanup: cleanup
+      }
+    }
+
+  defp worktree_cleaned(op, project_id, run_id, path),
+    do: %{
+      event_type: "WorktreeCleaned",
+      payload: %{
+        operation_id: op,
+        project_id: project_id,
+        run_id: run_id,
+        phase_id: "ph-#{op}",
+        worktree_path: path
+      }
+    }
+
+  defp titled_task(task_id, project_id, title, extra),
+    do: update_in(task(task_id, project_id, title), [:payload], &Map.merge(&1, extra))
+
+  defp task_run(run_id, task_id, project_id, workflow),
+    do: put_in(workflow_run(run_id, project_id, workflow), [:payload, :task_id], task_id)
+
+  # The run ids the Workflows panel lists, in row order.
+  defp listed_run_ids(html),
+    do: ~r/id="nav-run-([^"]+)"/ |> Regex.scan(html) |> Enum.map(&List.last/1)
+
+  defp nav_assigns(view), do: :sys.get_state(view.pid).socket.assigns
+
+  defp open_details_count(view) do
+    view
+    |> render()
+    |> LazyHTML.from_fragment()
+    |> LazyHTML.query("#workspace-nav details[open]")
+    |> Enum.count()
+  end
+
+  defp new_project(prefix) do
+    project = "#{prefix}-#{System.unique_integer([:positive])}"
+    assert {:ok, _} = ProjectStore.save(%{project_id: project, path: "/tmp/#{project}"})
+    project
+  end
+
+  describe "workspace nav rows" do
+    setup %{id: id} do
+      :ok =
+        ProjectionStore.apply_events([
+          worktree_created("op-pr2", id, "r-pr2", "/wt/pr2", "feat/pr2", "never"),
+          worktree_created("op-ready", id, "r-ready", "/wt/ready", "feat/ready", "on_success"),
+          worktree_cleaned("op-ready", id, "r-ready", "/wt/ready"),
+          worktree_created(
+            "op-failed",
+            id,
+            "r-failed-#{id}",
+            "/wt/failed",
+            "feat/failed",
+            "on_success"
+          ),
+          titled_task("t-fix-a", id, "Fix A", %{trd_path: "docs/TRD/fix-a.md"}),
+          task("t-fix-b", id, "Fix B"),
+          task_run("r-fix-a", "t-fix-a", id, "fix"),
+          task_run("r-fix-b", "t-fix-b", id, "fix")
+        ])
+
+      :ok
+    end
+
+    test "two runs of one workflow for different tasks get different primary labels",
+         %{id: id} do
+      {view, _html} = mount_view(id)
+
+      assert has_element?(view, "#nav-run-r-fix-a > a strong", "Fix A")
+      assert has_element?(view, "#nav-run-r-fix-b > a strong", "Fix B")
+      refute has_element?(view, "#nav-run-r-fix-a > a strong", "fix")
+
+      # The workflow, status and age are the muted line beneath, not the label.
+      for run_id <- ["r-fix-a", "r-fix-b"] do
+        assert has_element?(
+                 view,
+                 "#nav-run-#{run_id} .ws-muted.ws-nav-workflow",
+                 ~r/\Afix · awaiting_worker · (now|\d+m)\z/
+               )
+      end
+    end
+
+    test "the title links to the run dashboard, with the token only when the page has one",
+         %{id: id} do
+      {view, _html} = mount_view(id)
+
+      assert has_element?(
+               view,
+               ~s(#nav-run-r-fix-a > a[href="/dashboard/runs?run_id=r-fix-a&token=#{@token}"] strong),
+               "Fix A"
+             )
+
+      conn = put_req_header(build_conn(), "authorization", "Bearer #{@token}")
+      {:ok, bare, _html} = live(conn, "/dashboard/projects/#{id}")
+
+      assert has_element?(
+               bare,
+               ~s(#nav-run-r-fix-a > a[href="/dashboard/runs?run_id=r-fix-a"] strong),
+               "Fix A"
+             )
+
+      refute has_element?(bare, ~s(#workspace-nav a[href*="token"]))
+    end
+
+    test "a run's age reads now, minutes, hours and days from its start", %{id: id} do
+      now = System.os_time(:millisecond)
+
+      for {run_id, age_ms} <- [
+            {"r-age-5m", 5 * 60_000 + 5_000},
+            {"r-age-3h", 3 * 3_600_000 + 5_000},
+            {"r-age-2d", 2 * 86_400_000 + 5_000}
+          ] do
+        Process.put(:projection_store_now_ms, fn -> now - age_ms end)
+        :ok = ProjectionStore.apply_events([workflow_run(run_id, id, "aged")])
+      end
+
+      Process.delete(:projection_store_now_ms)
+      :ok = ProjectionStore.apply_events([workflow_run("r-age-new", id, "aged")])
+
+      {view, _html} = mount_view(id)
+
+      for {run_id, age} <- [
+            {"r-age-5m", "5m"},
+            {"r-age-3h", "3h"},
+            {"r-age-2d", "2d"},
+            {"r-age-new", "now"}
+          ] do
+        assert has_element?(
+                 view,
+                 "#nav-run-#{run_id} .ws-nav-workflow",
+                 "aged · awaiting_worker · #{age}"
+               )
+      end
+    end
+
+    test "details carry the branch, base, worktree state, PR and TRD path as text", %{id: id} do
+      {view, _html} = mount_view(id)
+
+      assert has_element?(view, "#nav-run-r-pr2 details .ws-nav-branch code", "feat/pr2")
+      assert has_element?(view, "#nav-run-r-pr2 details .ws-nav-branch code", "main")
+      assert has_element?(view, "#nav-run-r-pr2 details .ws-nav-worktree code", "/wt/pr2")
+
+      assert has_element?(
+               view,
+               ~s(#nav-run-r-pr2 details .ws-nav-pr a[href="https://github.com/a/b/pull/9"][target="_blank"][rel="noopener noreferrer"]),
+               "Pull request"
+             )
+
+      assert has_element?(view, "#nav-run-r-fix-a details .ws-nav-trd code", "docs/TRD/fix-a.md")
+      assert has_element?(view, "#nav-run-r-fix-a details .ws-nav-trd", "from the task")
+      refute has_element?(view, "#nav-run-r-fix-b .ws-nav-trd")
+      refute has_element?(view, "#workspace-nav .ws-nav-trd a")
+    end
+
+    test "the worktree line says whether the projection kept it, still has it, removed it or has none",
+         %{id: id} do
+      {view, _html} = mount_view(id)
+
+      assert has_element?(view, "#nav-run-r-pr2 .ws-nav-worktree", "kept, as recorded")
+      assert has_element?(view, "#nav-run-r-ready .ws-nav-worktree", "removed, as recorded")
+
+      assert has_element?(
+               view,
+               "#nav-run-r-failed-#{id} .ws-nav-worktree",
+               "active, as recorded"
+             )
+
+      assert has_element?(
+               view,
+               "#nav-run-r-work .ws-nav-worktree",
+               "no worktree recorded for this run"
+             )
+
+      assert has_element?(view, "#nav-run-r-work .ws-nav-branch", "no branch recorded")
+      refute has_element?(view, "#nav-run-r-work .ws-nav-worktree code")
+    end
+
+    test "a hostile title is escaped and a javascript: PR URL emits no link", %{id: id} do
+      {view, html} = mount_view(id)
+
+      assert has_element?(view, "#nav-run-r-ready > a strong", @xss)
+      refute html =~ "<script>alert"
+      refute has_element?(view, "#nav-run-r-ready .ws-nav-pr")
+      refute has_element?(view, ~s(#workspace-nav a[href^="javascript"]))
+    end
+
+    test "no path is linked, the token never rides an external link, and rows carry no actions",
+         %{id: id} do
+      {view, _html} = mount_view(id)
+
+      assert has_element?(view, ~s(#workspace-nav a[href^="https://github.com"]))
+      assert has_element?(view, "#workspace-nav code", "/wt/pr2")
+      refute has_element?(view, "#workspace-nav a code")
+      refute has_element?(view, "#workspace-nav a", "/wt/")
+      refute has_element?(view, ~s(#workspace-nav a[href^="http"][href*="token"]))
+      refute has_element?(view, "#workspace-nav .ws-nav-run button")
+      refute has_element?(view, "#workspace-nav .ws-nav-run form")
+      refute has_element?(view, "#workspace-nav .ws-nav-run", ~r/merge|approve/i)
+    end
+
+    test "every details starts closed", %{id: id} do
+      {view, _html} = mount_view(id)
+
+      assert has_element?(view, "#workspace-nav details")
+      assert open_details_count(view) == 0
+    end
+
+    test "jobsite rows show the task title, bead and status, with branch and path in details",
+         %{id: id} do
+      :ok =
+        ProjectionStore.apply_events([
+          titled_task("t-js", id, "Jobsite task", %{external_id: "bead-t"})
+        ])
+
+      seed_jobsite("js-titled", "bead-t", id, 5_000)
+
+      :ok =
+        ProjectionStore.apply_events([
+          %{
+            event_type: "JobsiteWorktreeProvisioned",
+            payload: %{jobsite_id: "js-titled", path: "/wt/js", branch: "feat/js"}
+          }
+        ])
+
+      seed_jobsite("js-bare", "bead-bare", id, 4_000)
+
+      {view, _html} = mount_view(id)
+
+      assert has_element?(view, "#nav-jobsite-js-titled > strong", "Jobsite task")
+      refute has_element?(view, "#nav-jobsite-js-titled > strong", "bead-t")
+      assert has_element?(view, "#nav-jobsite-js-titled .ws-nav-workflow", "bead-t · running")
+      assert has_element?(view, "#nav-jobsite-js-titled details .ws-nav-branch code", "feat/js")
+      assert has_element?(view, "#nav-jobsite-js-titled details .ws-nav-worktree code", "/wt/js")
+
+      # A task-less jobsite still reads as its bead, and says what it has not recorded.
+      assert has_element?(view, "#nav-jobsite-js-bare > strong", "bead-bare")
+      assert has_element?(view, "#nav-jobsite-js-bare .ws-nav-workflow", "bead-bare · starting")
+      assert has_element?(view, "#nav-jobsite-js-bare .ws-nav-branch", "no branch recorded")
+      assert has_element?(view, "#nav-jobsite-js-bare .ws-nav-worktree", "no worktree recorded")
+      assert open_details_count(view) == 0
+      assert has_element?(view, "#{@jobsite_panel} .ws-count", ~r/\A\s*2\s*\z/)
+    end
+
+    test "clicking Details opens that row only, a refresh keeps it open, an unlisted id changes nothing",
+         %{id: id} do
+      {view, _html} = mount_view(id)
+
+      view |> element("#nav-run-r-fix-a summary") |> render_click()
+      assert has_element?(view, "#nav-run-r-fix-a details[open]")
+      refute has_element?(view, "#nav-run-r-fix-b details[open]")
+      assert open_details_count(view) == 1
+      assert nav_assigns(view).nav_open == MapSet.new(["r-fix-a"])
+
+      :ok = ProjectionStore.apply_events([workflow_run("r-after", id, "after")])
+      await_element(view, "#nav-run-r-after")
+      assert has_element?(view, "#nav-run-r-fix-a details[open]")
+      assert open_details_count(view) == 1
+
+      render_click(view, "nav_run_toggle", %{"run-id" => "no-such-run"})
+      assert nav_assigns(view).nav_open == MapSet.new(["r-fix-a"])
+      assert open_details_count(view) == 1
+
+      view |> element("#nav-run-r-fix-a summary") |> render_click()
+      assert open_details_count(view) == 0
+      assert nav_assigns(view).nav_open == MapSet.new()
+    end
+  end
+
+  describe "workspace nav refresh cost" do
+    defp seed_bulk_runs(project, count),
+      do:
+        ProjectionStore.apply_events(
+          for n <- 1..count,
+              do: %{
+                event_type: "RunStarted",
+                payload: %{run_id: "bulk-#{n}", project_id: project}
+              }
+        )
+
+    # Every GenServer call the ProjectionStore process receives while `fun` runs, tallied by
+    # request tag (`:list_runs`, `:worktrees_for_runs`, ...).
+    defp tally_store_calls(fun) do
+      store = Process.whereis(ProjectionStore)
+      :erlang.trace(store, true, [:receive])
+
+      try do
+        fun.()
+        ref = :erlang.trace_delivered(store)
+        assert_receive {:trace_delivered, ^store, ^ref}
+      after
+        :erlang.trace(store, false, [:receive])
+      end
+
+      drain_store_calls(store, [])
+    end
+
+    defp drain_store_calls(store, acc) do
+      receive do
+        {:trace, ^store, :receive, {:"$gen_call", _from, request}} ->
+          tag = if is_tuple(request), do: elem(request, 0), else: request
+          drain_store_calls(store, [tag | acc])
+
+        {:trace, ^store, :receive, _other} ->
+          drain_store_calls(store, acc)
+      after
+        0 -> Enum.frequencies(acc)
+      end
+    end
+
+    @tag :tmp_dir
+    test "100 runs refresh with a constant number of store reads and no git", %{tmp_dir: tmp} do
+      # A `git` that only records that it ran: `ChangeEvidence` shells out to the real one with
+      # no injectable runner, so a PATH shim is the spy.
+      bin = Path.join(tmp, "bin")
+      log = Path.join(tmp, "git.log")
+      File.mkdir_p!(bin)
+      File.write!(log, "")
+      File.write!(Path.join(bin, "git"), ~s(#!/bin/sh\necho "$@" >> "#{log}"\n))
+      File.chmod!(Path.join(bin, "git"), 0o755)
+      path = System.get_env("PATH")
+      System.put_env("PATH", bin <> ":" <> path)
+      on_exit(fn -> System.put_env("PATH", path) end)
+
+      project = new_project("cost")
+      :ok = seed_bulk_runs(project, 100)
+
+      {view, html} = mount_view(project)
+      assert length(listed_run_ids(html)) == 100
+      assert has_element?(view, "#{@workflows_panel} .ws-count", ~r/\A\s*100\+\s*\z/)
+      assert has_element?(view, "#workspace-nav details")
+      assert open_details_count(view) == 0
+
+      tally =
+        tally_store_calls(fn ->
+          seed_jobsite("js-cost", "bead-cost", project, 9_000)
+          await_until(view, &(&1 =~ "bead-cost"))
+        end)
+
+      # One read of each list the nav owns for the whole panel, however many runs: no per-run
+      # lookup. (`pr_states_for_project` is also read by the Overview, so it is counted in
+      # `NavRunsTest`, where only the nav's own call is traced.)
+      assert %{list_runs: 1, list_jobsites: 1, list_tasks: 1, worktrees_for_runs: 1} = tally
+
+      for per_run <- [:phases_for_run, :run_repositories, :worktrees_for_run, :task_projection] do
+        refute Map.has_key?(tally, per_run), "refresh issued #{per_run}"
+      end
+
+      assert File.read!(log) == ""
+
+      # The spy works: a git started from this VM is recorded.
+      {_out, 0} = System.cmd("git", ["spy-control"])
+      assert File.read!(log) == "spy-control\n"
+    end
+
+    test "a run that leaves the list drops its open and document state", %{} do
+      project = new_project("prune")
+      :ok = seed_bulk_runs(project, 100)
+
+      {view, html} = mount_view(project)
+      [first | _] = ids = listed_run_ids(html)
+      last = List.last(ids)
+
+      view |> element("#nav-run-#{last} summary") |> render_click()
+      view |> element("#nav-run-#{first} summary") |> render_click()
+      assert nav_assigns(view).nav_open == MapSet.new([first, last])
+
+      :sys.replace_state(view.pid, fn state ->
+        docs = %{first => :docs, last => :docs, "never-listed" => :docs}
+
+        %{
+          state
+          | socket: %{state.socket | assigns: Map.put(state.socket.assigns, :nav_docs, docs)}
+        }
+      end)
+
+      :ok = ProjectionStore.apply_events([workflow_run("bulk-new", project, "newest")])
+      html = await_until(view, &(&1 =~ ~s(id="nav-run-bulk-new")))
+
+      refute last in listed_run_ids(html)
+      assert first in listed_run_ids(html)
+      assert nav_assigns(view).nav_open == MapSet.new([first])
+      assert nav_assigns(view).nav_docs == %{first => :docs}
+    end
+  end
+
+  describe "workspace nav conversation links" do
+    test "every one of 30 resolved runs' Conversation link opens its thread pane", %{} do
+      project = new_project("conv")
+
+      events =
+        for n <- 1..30 do
+          [
+            task("t-c#{n}", project, "Resolved task #{n}"),
+            task_run("r-c#{n}", "t-c#{n}", project, "fix"),
+            %{event_type: "RunCompleted", payload: %{run_id: "r-c#{n}", project_id: project}}
+          ]
+        end
+
+      :ok = ProjectionStore.apply_events(List.flatten(events))
+
+      for n <- 1..30,
+          do: assert({:ok, _} = Actions.set_resolved(project, "run:r-c#{n}", :resolve, "i-#{n}"))
+
+      {view, html} = mount_view(project)
+      ids = listed_run_ids(html)
+      assert length(ids) == 30
+
+      # The sidebar's Overview window holds at most 20 resolved cards, so some of these
+      # threads exist only for the Conversation link.
+      assert Enum.any?(ids, &(not has_element?(view, "#thread-list #thread-run\\:#{&1}")))
+
+      for run_id <- ids do
+        href = Components.thread_path(project, "run:#{run_id}", @token)
+
+        assert has_element?(
+                 view,
+                 ~s(#nav-run-#{run_id} .ws-nav-conversation a[href="#{href}"]),
+                 "Conversation"
+               )
+
+        view |> element("#nav-run-#{run_id} .ws-nav-conversation a") |> render_click()
+        assert_patch(view, href)
+        assert has_element?(view, "#thread-pane")
+        refute has_element?(view, "#thread-not-found-title")
+      end
+    end
+
+    test "a jobsite row links to its jobsite thread, carrying the token", %{id: id} do
+      seed_jobsite("js-conv", "bead-conv", id, 7_000)
+      {view, _html} = mount_view(id)
+
+      href = Components.thread_path(id, "jobsite:js-conv", @token)
+      assert href =~ "token=#{@token}"
+
+      assert has_element?(
+               view,
+               ~s(#nav-jobsite-js-conv .ws-nav-conversation a[href="#{href}"]),
+               "Conversation"
+             )
+
+      view |> element("#nav-jobsite-js-conv .ws-nav-conversation a") |> render_click()
+      assert_patch(view, href)
+      assert has_element?(view, "#thread-pane")
+      refute has_element?(view, "#thread-not-found-title")
+    end
+
+    test "an older run of a task links to its task's thread pane, not a dead end", %{} do
+      project = new_project("conv-old")
+
+      :ok =
+        ProjectionStore.apply_events([
+          task("t-two", project, "Two runs"),
+          task_run("r-a-old", "t-two", project, "fix")
+        ])
+
+      :ok = ProjectionStore.apply_events([task_run("r-b-new", "t-two", project, "fix")])
+
+      {view, _html} = mount_view(project)
+
+      for run_id <- ["r-b-new", "r-a-old"] do
+        href = Components.thread_path(project, "run:#{run_id}", @token)
+
+        assert has_element?(
+                 view,
+                 ~s(#nav-run-#{run_id} .ws-nav-conversation a[href="#{href}"]),
+                 "Conversation"
+               )
+
+        view |> element("#nav-run-#{run_id} .ws-nav-conversation a") |> render_click()
+        assert_patch(view, href)
+        assert has_element?(view, "#thread-pane")
+        refute has_element?(view, "#thread-not-found-title")
+      end
+    end
+
+    test "a jobsite whose bead's task has a run links to that run's thread pane", %{} do
+      project = new_project("conv-owned")
+
+      :ok =
+        ProjectionStore.apply_events([
+          titled_task("t-owned", project, "Owned bead", %{external_id: "bead-owned"}),
+          task_run("r-owned", "t-owned", project, "fix")
+        ])
+
+      seed_jobsite("js-owned", "bead-owned", project, 7_000)
+      {view, _html} = mount_view(project)
+
+      href = Components.thread_path(project, "jobsite:js-owned", @token)
+
+      assert has_element?(
+               view,
+               ~s(#nav-jobsite-js-owned .ws-nav-conversation a[href="#{href}"]),
+               "Conversation"
+             )
+
+      view |> element("#nav-jobsite-js-owned .ws-nav-conversation a") |> render_click()
+      assert_patch(view, href)
+      assert has_element?(view, "#thread-pane")
+      refute has_element?(view, "#thread-not-found-title")
+    end
+  end
+
+  describe "workspace nav documents" do
+    # A git repo at `dir` with a README base commit and one commit adding `files`; returns the
+    # base commit sha (the run's `base_ref`).
+    defp git_repo(dir, files) do
+      File.mkdir_p!(dir)
+      git = fn args -> {_, 0} = System.cmd("git", args, cd: dir, stderr_to_stdout: true) end
+      ident = ["-c", "user.name=Test", "-c", "user.email=test@example.com"]
+
+      put = fn name, content ->
+        File.mkdir_p!(Path.dirname(Path.join(dir, name)))
+        File.write!(Path.join(dir, name), content)
+      end
+
+      git.(["init"])
+      put.("README.md", "base\n")
+      git.(["add", "."])
+      git.(ident ++ ["commit", "-m", "base"])
+      {base, 0} = System.cmd("git", ["rev-parse", "HEAD"], cd: dir)
+
+      for {name, content} <- files, do: put.(name, content)
+      git.(["add", "-A"])
+      git.(ident ++ ["commit", "-m", "change"])
+      String.trim(base)
+    end
+
+    defp doc_worktree(project, run_id, dir, base),
+      do: %{
+        event_type: "WorktreeCreated",
+        payload: %{
+          operation_id: "wt-#{run_id}",
+          project_id: project,
+          run_id: run_id,
+          phase_id: "ph-#{run_id}",
+          worktree_path: dir,
+          base_ref: base,
+          branch: "foreman/#{run_id}"
+        }
+      }
+
+    # A `git` first on PATH that logs the directory it runs in (one line per call), optionally
+    # runs `pre` (a shell snippet, e.g. a sleep) and then hands over to the real git. The log is
+    # the spy: every discovery for a run's worktree leaves its directory name in it.
+    defp install_git_shim(tmp, pre \\ "") do
+      real = System.find_executable("git")
+      bin = Path.join(tmp, "shim")
+      log = Path.join(tmp, "git.log")
+      File.mkdir_p!(bin)
+      File.write!(log, "")
+
+      File.write!(Path.join(bin, "git"), """
+      #!/bin/sh
+      echo "${PWD##*/}" >> '#{log}'
+      #{pre}
+      exec '#{real}' "$@"
+      """)
+
+      File.chmod!(Path.join(bin, "git"), 0o755)
+      previous = System.get_env("PATH")
+      System.put_env("PATH", bin <> ":" <> previous)
+      on_exit(fn -> System.put_env("PATH", previous) end)
+      log
+    end
+
+    defp git_dirs(log), do: log |> File.read!() |> String.split("\n", trim: true)
+
+    defp open_row(view, run_id),
+      do: view |> element("#nav-run-#{run_id} summary") |> render_click()
+
+    # Polls the held state until the row's discovery has left `:loading` (bounded, no refresh
+    # needed: the result arrives as an async message).
+    defp await_docs(view, run_id, tries \\ 250) do
+      case nav_assigns(view).nav_docs[run_id] do
+        :loading when tries > 0 ->
+          Process.sleep(20)
+          await_docs(view, run_id, tries - 1)
+
+        other ->
+          other
+      end
+    end
+
+    @tag :tmp_dir
+    test "a prd run lists its PRD then TRD with diff links, and the link shows the diff",
+         %{tmp_dir: tmp} do
+      repo = Path.join(tmp, "repo")
+
+      base =
+        git_repo(repo, %{
+          "docs/PRD/PRD-a.md" => "prd words\n",
+          "docs/TRD/TRD-a.md" => "trd words unique-marker\n",
+          "README.md" => "changed\n"
+        })
+
+      project = new_project("docs-prd")
+
+      :ok =
+        ProjectionStore.apply_events([
+          workflow_run("r-prd", project, "prd"),
+          %{
+            event_type: "PhaseStarted",
+            payload: %{
+              phase_id: "r-prd-phase-1",
+              run_id: "r-prd",
+              index: 1,
+              name: "review",
+              attempt: 1,
+              artifact_template: "REVIEW_REPORT.md"
+            }
+          },
+          doc_worktree(project, "r-prd", repo, base)
+        ])
+
+      {view, _html} = mount_view(project)
+      refute has_element?(view, "#nav-run-r-prd .ws-nav-docs")
+
+      loading = open_row(view, "r-prd")
+      assert loading =~ "Looking for documents"
+      assert has_element?(view, ~s(#nav-run-r-prd .ws-nav-docs[aria-live="polite"]))
+
+      html = render_async(view)
+      prd = Components.run_detail_path("r-prd", @token, tab: "changes", file: "docs/PRD/PRD-a.md")
+      trd = Components.run_detail_path("r-prd", @token, tab: "changes", file: "docs/TRD/TRD-a.md")
+
+      assert prd ==
+               "/dashboard/runs?run_id=r-prd&tab=changes&file=docs%2FPRD%2FPRD-a.md&token=#{@token}"
+
+      assert has_element?(
+               view,
+               ~s(#nav-run-r-prd .ws-nav-docs a[href="#{prd}"]),
+               "docs/PRD/PRD-a.md"
+             )
+
+      assert has_element?(
+               view,
+               ~s(#nav-run-r-prd .ws-nav-docs a[href="#{trd}"]),
+               "docs/TRD/TRD-a.md"
+             )
+
+      refute html =~ "Looking for documents"
+      refute has_element?(view, "#nav-run-r-prd .ws-nav-docs", "unavailable")
+
+      {prd_at, trd_at} =
+        {row_order(html, "docs/PRD/PRD-a.md"), row_order(html, "docs/TRD/TRD-a.md")}
+
+      assert prd_at < trd_at
+
+      # A phase's artifact is never presented as a document.
+      refute html =~ "REVIEW_REPORT"
+
+      # The link lands on the run dashboard showing that file's diff (nav -> run -> diff).
+      {:ok, dash, _html} = live(build_conn(), trd)
+      assert render_async(dash) =~ "trd words unique-marker"
+    end
+
+    @tag :tmp_dir
+    test "no git on mount or refresh; one click discovers one run once, a refresh reuses it, reopening redoes it",
+         %{tmp_dir: tmp} do
+      log = install_git_shim(tmp)
+      project = new_project("docs-cost")
+
+      events =
+        for n <- 1..100 do
+          dir = Path.join(tmp, "wt-bulk-#{n}")
+          File.mkdir_p!(dir)
+
+          [
+            %{event_type: "RunStarted", payload: %{run_id: "bulk-#{n}", project_id: project}},
+            doc_worktree(project, "bulk-#{n}", dir, "main")
+          ]
+        end
+
+      :ok = ProjectionStore.apply_events(List.flatten(events))
+
+      {view, html} = mount_view(project)
+      assert length(listed_run_ids(html)) == 100
+
+      :ok = ProjectionStore.apply_events([workflow_run("bulk-extra", project, "x")])
+      await_element(view, "#nav-run-bulk-extra")
+      assert git_dirs(log) == []
+
+      first = view |> render() |> listed_run_ids() |> Enum.find(&(&1 =~ ~r/\Abulk-\d+\z/))
+      open_row(view, first)
+      render_async(view)
+      dirs = git_dirs(log)
+      assert dirs != []
+      assert Enum.uniq(dirs) == ["wt-" <> first]
+      per_discovery = length(dirs)
+      found = nav_assigns(view).nav_docs[first]
+      assert found not in [nil, :loading]
+      assert map_size(nav_assigns(view).nav_docs) == 1
+
+      # Cache hit: a refresh after the result reads nothing again.
+      :ok = ProjectionStore.apply_events([workflow_run("bulk-extra-2", project, "x")])
+      await_element(view, "#nav-run-bulk-extra-2")
+      render_async(view)
+      assert length(git_dirs(log)) == per_discovery
+      assert nav_assigns(view).nav_open == MapSet.new([first])
+      assert nav_assigns(view).nav_docs == %{first => found}
+
+      # Closing drops the row's documents; reopening discovers once more.
+      open_row(view, first)
+      assert nav_assigns(view).nav_docs == %{}
+      open_row(view, first)
+      render_async(view)
+      assert length(git_dirs(log)) == 2 * per_discovery
+    end
+
+    test "a toggle for an unlisted id changes nothing and starts no discovery", %{} do
+      project = new_project("docs-unlisted")
+      :ok = ProjectionStore.apply_events([workflow_run("r-only", project, "x")])
+      {view, _html} = mount_view(project)
+
+      render_click(view, "nav_run_toggle", %{"run-id" => "not-listed"})
+      render_async(view)
+
+      assert nav_assigns(view).nav_open == MapSet.new()
+      assert nav_assigns(view).nav_docs == %{}
+    end
+
+    @tag :tmp_dir
+    @tag timeout: 15_000
+    test "a hung git shows the row as timed out while the page still answers other events",
+         %{tmp_dir: tmp} do
+      install_git_shim(tmp, "sleep 6")
+      project = new_project("docs-hang")
+      dir = Path.join(tmp, "wt-hang")
+      File.mkdir_p!(dir)
+
+      :ok =
+        ProjectionStore.apply_events([
+          workflow_run("r-hang", project, "prd"),
+          doc_worktree(project, "r-hang", dir, "main")
+        ])
+
+      {view, _html} = mount_view(project)
+      assert open_row(view, "r-hang") =~ "Looking for documents"
+
+      # The discovery is running (3 s budget); the LiveView is free to handle another event.
+      assert render_change(view, "ws_search", %{"q" => "still-answering"}) =~ "still-answering"
+      assert nav_assigns(view).nav_docs["r-hang"] == :loading
+
+      render_async(view, 8_000)
+      assert nav_assigns(view).nav_docs["r-hang"] == {:unavailable, :evidence_timeout}
+
+      assert has_element?(
+               view,
+               "#nav-run-r-hang .ws-nav-docs",
+               "Documents unavailable: timed out"
+             )
+
+      assert has_element?(view, "#nav-run-r-hang .ws-nav-branch")
+    end
+
+    @tag :tmp_dir
+    @tag timeout: 15_000
+    test "two open rows are independent: one finishing leaves the other state and content",
+         %{tmp_dir: tmp} do
+      install_git_shim(tmp, "case \"$PWD\" in *wt-slow*) sleep 6;; esac")
+      project = new_project("docs-two")
+      slow = Path.join(tmp, "wt-slow")
+      File.mkdir_p!(slow)
+      fast = Path.join(tmp, "wt-fast")
+      base = git_repo(fast, %{"docs/TRD/TRD-fast.md" => "fast\n"})
+
+      :ok =
+        ProjectionStore.apply_events([
+          workflow_run("r-slow", project, "prd"),
+          doc_worktree(project, "r-slow", slow, "main"),
+          workflow_run("r-fast", project, "prd"),
+          doc_worktree(project, "r-fast", fast, base)
+        ])
+
+      {view, _html} = mount_view(project)
+      open_row(view, "r-slow")
+      open_row(view, "r-fast")
+
+      assert {:ok, [%{kind: :trd, path: "docs/TRD/TRD-fast.md"}]} = await_docs(view, "r-fast")
+      assert nav_assigns(view).nav_docs["r-slow"] == :loading
+      assert open_details_count(view) == 2
+      assert has_element?(view, "#nav-run-r-slow .ws-nav-docs", "Looking for documents")
+      assert has_element?(view, "#nav-run-r-fast .ws-nav-docs a", "docs/TRD/TRD-fast.md")
+
+      fast_before = view |> element("#nav-run-r-fast") |> render()
+      render_async(view, 8_000)
+
+      assert nav_assigns(view).nav_docs["r-slow"] == {:unavailable, :evidence_timeout}
+      assert open_details_count(view) == 2
+      assert view |> element("#nav-run-r-fast") |> render() == fast_before
+    end
+
+    # The `:exit` outcome cannot be produced from outside: the LiveView links its async task, so
+    # killing the task takes the LiveView with it; only a catch inside the task reports `:exit`.
+    # The callback is therefore driven directly with a real socket.
+    defp nav_socket(open, docs),
+      do: %Phoenix.LiveView.Socket{
+        assigns: %{__changed__: %{}, nav_open: MapSet.new(open), nav_docs: docs}
+      }
+
+    test "an exited discovery is stored as a failed lookup and logged; a closed row ignores any result" do
+      alias ForemanServerWeb.ProjectWorkspaceLive
+      socket = nav_socket(["r-open"], %{"r-open" => :loading, "r-other" => {:ok, []}})
+
+      log =
+        capture_log(fn ->
+          assert {:noreply, crashed} =
+                   ProjectWorkspaceLive.handle_async(
+                     {:nav_docs, "r-open"},
+                     {:exit, :boom},
+                     socket
+                   )
+
+          assert crashed.assigns.nav_docs ==
+                   %{"r-open" => {:unavailable, :crashed}, "r-other" => {:ok, []}}
+        end)
+
+      assert log =~ "document discovery for r-open crashed"
+
+      docs = [%{kind: :trd, path: "docs/TRD/TRD-a.md"}]
+
+      assert {:noreply, stored} =
+               ProjectWorkspaceLive.handle_async(
+                 {:nav_docs, "r-open"},
+                 {:ok, {:ok, docs}},
+                 socket
+               )
+
+      assert stored.assigns.nav_docs["r-open"] == {:ok, docs}
+      assert stored.assigns.nav_docs["r-other"] == {:ok, []}
+
+      # A result for a row that was closed meanwhile is dropped, whatever it says.
+      closed = nav_socket([], %{})
+
+      for outcome <- [
+            {:ok, {:ok, docs}},
+            {:ok, {:unavailable, :evidence_timeout}},
+            {:exit, :boom}
+          ] do
+        capture_log(fn ->
+          assert {:noreply, ^closed} =
+                   ProjectWorkspaceLive.handle_async({:nav_docs, "r-open"}, outcome, closed)
+        end)
+      end
+    end
+
+    @tag :tmp_dir
+    test "each unavailable reason reads differently and the other rows still render",
+         %{tmp_dir: tmp} do
+      repo = Path.join(tmp, "repo")
+      base = git_repo(repo, %{"README.md" => "changed\n"})
+      project = new_project("docs-reasons")
+      nogit = Path.join(tmp, "nogit")
+      File.mkdir_p!(nogit)
+
+      :ok =
+        ProjectionStore.apply_events([
+          workflow_run("r-nowt", project, "prd"),
+          workflow_run("r-nobase", project, "prd"),
+          doc_worktree(project, "r-nobase", repo, "no-such-ref"),
+          workflow_run("r-nogit", project, "prd"),
+          doc_worktree(project, "r-nogit", repo, base)
+        ])
+
+      {view, _html} = mount_view(project)
+
+      open_row(view, "r-nowt")
+      open_row(view, "r-nobase")
+      render_async(view)
+
+      assert has_element?(
+               view,
+               "#nav-run-r-nowt .ws-nav-docs",
+               "Documents unavailable: worktree directory missing"
+             )
+
+      assert has_element?(
+               view,
+               "#nav-run-r-nobase .ws-nav-docs",
+               "Documents unavailable: base ref unavailable"
+             )
+
+      previous = System.get_env("PATH")
+      System.put_env("PATH", nogit)
+      on_exit(fn -> System.put_env("PATH", previous) end)
+      open_row(view, "r-nogit")
+      render_async(view)
+      System.put_env("PATH", previous)
+
+      assert has_element?(
+               view,
+               "#nav-run-r-nogit .ws-nav-docs",
+               "Documents unavailable: git unavailable"
+             )
+
+      for id <- ["r-nowt", "r-nobase", "r-nogit"] do
+        assert has_element?(view, "#nav-run-#{id} .ws-nav-branch")
+        assert has_element?(view, "#nav-run-#{id} .ws-nav-worktree")
+        assert has_element?(view, "#nav-run-#{id} .ws-nav-conversation a")
+      end
+
+      # The remaining reasons are not reachable from a listed row with a healthy store; the
+      # render still has to give each its own words.
+      :sys.replace_state(view.pid, fn state ->
+        docs = %{
+          "r-nowt" => {:unavailable, :evidence_timeout},
+          "r-nobase" => {:unavailable, :run_not_found},
+          "r-nogit" => {:unavailable, :crashed}
+        }
+
+        assigns =
+          state.socket.assigns
+          |> Map.put(:nav_docs, docs)
+          |> Map.update!(:__changed__, &Map.put(&1, :nav_docs, true))
+
+        %{state | socket: %{state.socket | assigns: assigns}}
+      end)
+
+      # Any event renders the swapped assign.
+      render_change(view, "ws_search", %{"q" => "x"})
+
+      assert has_element?(
+               view,
+               "#nav-run-r-nowt .ws-nav-docs",
+               "Documents unavailable: timed out"
+             )
+
+      assert has_element?(
+               view,
+               "#nav-run-r-nobase .ws-nav-docs",
+               "Documents unavailable: run not found"
+             )
+
+      assert has_element?(
+               view,
+               "#nav-run-r-nogit .ws-nav-docs",
+               "Documents unavailable: lookup failed"
+             )
+    end
+
+    @tag :tmp_dir
+    test "a fix run that changed no planning document shows no Documents section",
+         %{tmp_dir: tmp} do
+      repo = Path.join(tmp, "repo")
+      base = git_repo(repo, %{"lib/thing.ex" => "x\n"})
+      project = new_project("docs-fix")
+
+      :ok =
+        ProjectionStore.apply_events([
+          workflow_run("r-fix", project, "fix"),
+          doc_worktree(project, "r-fix", repo, base)
+        ])
+
+      {view, _html} = mount_view(project)
+      open_row(view, "r-fix")
+      render_async(view)
+
+      assert nav_assigns(view).nav_docs["r-fix"] == {:ok, []}
+      refute has_element?(view, "#nav-run-r-fix .ws-nav-docs")
+      assert has_element?(view, "#nav-run-r-fix .ws-nav-branch", "foreman/r-fix")
+    end
+
+    @tag :tmp_dir
+    test "a task TRD path shows at once without git and links only when the branch changed it",
+         %{tmp_dir: tmp} do
+      log = install_git_shim(tmp)
+      changed = Path.join(tmp, "wt-changed")
+      untouched = Path.join(tmp, "wt-untouched")
+      base_a = git_repo(changed, %{"specs/custom-trd.md" => "custom\n"})
+      base_b = git_repo(untouched, %{"lib/x.ex" => "x\n"})
+      File.write!(log, "")
+      project = new_project("docs-task-trd")
+
+      :ok =
+        ProjectionStore.apply_events([
+          titled_task("t-a", project, "Impl A", %{trd_path: "specs/custom-trd.md"}),
+          task_run("r-a", "t-a", project, "implement-trd"),
+          doc_worktree(project, "r-a", changed, base_a),
+          titled_task("t-b", project, "Impl B", %{trd_path: "specs/custom-trd.md"}),
+          task_run("r-b", "t-b", project, "implement-trd"),
+          doc_worktree(project, "r-b", untouched, base_b)
+        ])
+
+      {view, _html} = mount_view(project)
+
+      for id <- ["r-a", "r-b"] do
+        assert has_element?(view, "#nav-run-#{id} .ws-nav-trd code", "specs/custom-trd.md")
+        refute has_element?(view, "#nav-run-#{id} .ws-nav-trd a")
+      end
+
+      assert git_dirs(log) == []
+
+      open_row(view, "r-a")
+      open_row(view, "r-b")
+      render_async(view)
+
+      href =
+        Components.run_detail_path("r-a", @token, tab: "changes", file: "specs/custom-trd.md")
+
+      assert has_element?(
+               view,
+               ~s(#nav-run-r-a .ws-nav-trd a[href="#{href}"]),
+               "specs/custom-trd.md"
+             )
+
+      assert has_element?(view, "#nav-run-r-b .ws-nav-trd code", "specs/custom-trd.md")
+      refute has_element?(view, "#nav-run-r-b .ws-nav-trd a")
     end
   end
 end

@@ -101,6 +101,36 @@ defmodule ForemanServer.Overview do
      }}
   end
 
+  @doc """
+  The card of one thread of `project_id`, whether or not `build/2` would show it: resolved
+  threads beyond `:resolved_limit` and threads outside the newest `Threads.max_limit/0`
+  window still resolve. The thread goes through the same `classify_threads/3` and
+  `ThreadCard.build/4` as `build/2`, so the card equals the one `build/2` puts in its groups.
+
+  Returns `{:error, :thread_not_found}` for an unknown or malformed id and for a thread of
+  another project. Option: `:now_fun` (see `build/2`).
+
+  Cost: `Threads.get/1` rebuilds every thread of every project, like `build/2`.
+  """
+  @spec card(String.t(), term(), keyword()) :: {:ok, ThreadCard.t()} | {:error, :thread_not_found}
+  def card(project_id, thread_id, opts \\ [])
+
+  def card(project_id, thread_id, opts)
+      when is_binary(project_id) and is_binary(thread_id) and is_list(opts) do
+    case Threads.resolve(thread_id) do
+      {:ok, %Thread{project_id: ^project_id} = thread} ->
+        %{classified: [{{thread, pr, watch}, classification}]} =
+          classify_threads(project_id, [thread], now(opts))
+
+        {:ok, ThreadCard.build(thread, pr, classification, watch)}
+
+      _other ->
+        {:error, :thread_not_found}
+    end
+  end
+
+  def card(_project_id, _thread_id, _opts), do: {:error, :thread_not_found}
+
   @type summary :: %{
           counts: %{Group.group() => non_neg_integer()},
           attention: attention(),

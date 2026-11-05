@@ -153,7 +153,14 @@ defmodule ForemanServer.Threads.Thread do
     |> Map.take(@dto_keys)
   end
 
-  defp title(task, fallback_id) do
+  @doc """
+  The display title of a task, shared by every surface that labels a run or
+  jobsite. Falls back, in order: task `title`, first non-blank line of
+  `prompt`, of `description`, the task's `task_id`, then `fallback_id`.
+  A nil task yields `fallback_id`.
+  """
+  @spec title(map() | nil, String.t()) :: String.t()
+  def title(task, fallback_id) do
     case task do
       nil ->
         fallback_id

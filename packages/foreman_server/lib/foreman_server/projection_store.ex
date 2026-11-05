@@ -1138,6 +1138,17 @@ defmodule ForemanServer.ProjectionStore do
     GenServer.call(__MODULE__, {:worktrees_for_run, run_id})
   end
 
+  @doc """
+  Return the projected worktrees of many runs in one store pass, as a map of
+  `run_id => worktrees` in the same order as `worktrees_for_run/1`. Every
+  requested id is present (`[]` when the run has no worktrees); an empty
+  list returns `%{}` without scanning the store.
+  """
+  @spec worktrees_for_runs([String.t()]) :: %{String.t() => [map()]}
+  def worktrees_for_runs(run_ids) when is_list(run_ids) do
+    GenServer.call(__MODULE__, {:worktrees_for_runs, run_ids})
+  end
+
   @type run_repository :: %{
           repo_id: String.t(),
           primary?: boolean(),
@@ -2016,9 +2027,29 @@ defmodule ForemanServer.ProjectionStore do
       state.worktrees
       |> Map.values()
       |> Enum.filter(fn wt -> get(wt, :run_id) == run_id end)
-      |> Enum.sort_by(fn wt -> get(wt, :operation_id, "") end)
+      |> sort_worktrees()
 
     {:reply, worktrees, state}
+  end
+
+  @impl true
+  def handle_call({:worktrees_for_runs, []}, _from, state), do: {:reply, %{}, state}
+
+  def handle_call({:worktrees_for_runs, run_ids}, _from, state) do
+    requested = MapSet.new(run_ids)
+
+    grouped =
+      state.worktrees
+      |> Map.values()
+      |> Enum.filter(fn wt -> MapSet.member?(requested, get(wt, :run_id)) end)
+      |> Enum.group_by(fn wt -> get(wt, :run_id) end)
+
+    result =
+      Map.new(requested, fn run_id ->
+        {run_id, grouped |> Map.get(run_id, []) |> sort_worktrees()}
+      end)
+
+    {:reply, result, state}
   end
 
   @impl true
@@ -5764,6 +5795,9 @@ defmodule ForemanServer.ProjectionStore do
       })
     end
   end
+
+  defp sort_worktrees(worktrees),
+    do: Enum.sort_by(worktrees, fn wt -> get(wt, :operation_id, "") end)
 
   defp get(%{} = m, k), do: get(m, k, nil)
 

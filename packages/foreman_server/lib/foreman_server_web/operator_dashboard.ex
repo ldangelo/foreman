@@ -56,19 +56,24 @@ defmodule ForemanServerWeb.OperatorDashboard do
     ]
   end
 
-  @doc "List run rows with bounded filters."
+  @doc """
+  List run rows with bounded filters.
+
+  `detail: :full` (default) derives the current phase and `completed_with_errors` per run
+  (`ProjectionStore.phases_for_run/1`, `run_repositories/1`). `detail: :summary` skips both:
+  the five derived fields (`current_phase_id/name/status`, `completed_with_errors`) are
+  `:absent` and `latest_stall` is the run-level value only. Any other `detail` is
+  `{:error, {:malformed_detail, value}}`.
+  """
   def list_runs(params \\ %{}) do
-    case query_opts(params) do
-      {:ok, opts} ->
-        rows =
-          opts
-          |> ProjectionStore.list_runs()
-          |> Enum.map(&run_dto/1)
+    with {:ok, detail} <- detail_from(params),
+         {:ok, opts} <- query_opts(params) do
+      rows =
+        opts
+        |> ProjectionStore.list_runs()
+        |> Enum.map(&run_dto(&1, detail))
 
-        {:ok, rows}
-
-      {:error, _} = error ->
-        error
+      {:ok, rows}
     end
   end
 
@@ -105,6 +110,48 @@ defmodule ForemanServerWeb.OperatorDashboard do
 
   def change_evidence(run_id) when is_binary(run_id) and run_id != "" do
     ChangeEvidence.for_run(run_id)
+  end
+
+  @doc """
+  `change_evidence/1` in a bounded task: a slow or hung `git` cannot block the calling
+  LiveView for longer than `timeout_ms` (`{:error, :evidence_timeout}`).
+  """
+  def change_evidence_bounded(run_id, timeout_ms \\ 3_000),
+    do: bounded(fn -> change_evidence(run_id) end, timeout_ms)
+
+  @doc """
+  One changed file's patch, bounded like `change_evidence_bounded/2`:
+  `{:ok, %{diff, truncated?, bytes}}` or `{:error, :malformed_path | :git_unavailable |
+  :unavailable | :evidence_timeout}`.
+  """
+  def preview_bounded(run_id, rel_path, timeout_ms \\ 3_000)
+      when is_binary(run_id) and is_binary(rel_path),
+      do: bounded(fn -> ChangeEvidence.preview(run_id, rel_path) end, timeout_ms)
+
+  @doc """
+  Planning documents (`docs/PRD/PRD-*.md`, `docs/TRD/TRD-*.md`, plus `extra_path` when changed)
+  of one run, bounded like `change_evidence_bounded/2`: `{:ok, [%{kind, path}]}` or
+  `{:unavailable, :worktree_missing | :base_unavailable | :git_unavailable | :run_not_found |
+  :evidence_timeout}`.
+  """
+  def planning_documents_bounded(run_id, extra_path, timeout_ms \\ 3_000) do
+    case bounded(fn -> ChangeEvidence.planning_documents(run_id, extra_path) end, timeout_ms) do
+      {:error, :evidence_timeout} -> {:unavailable, :evidence_timeout}
+      result -> result
+    end
+  end
+
+  defp bounded(fun, timeout_ms) do
+    task = Task.async(fun)
+
+    case Task.yield(task, timeout_ms) do
+      {:ok, result} ->
+        result
+
+      nil ->
+        Task.shutdown(task, :brutal_kill)
+        {:error, :evidence_timeout}
+    end
   end
 
   @doc "Action eligibility matrix used by UI and tests."
@@ -230,11 +277,22 @@ defmodule ForemanServerWeb.OperatorDashboard do
     %{
       status: value(params, :status),
       project_id: value(params, :project_id),
-      limit: value(params, :limit)
+      limit: value(params, :limit),
+      detail: value(params, :detail)
     }
   end
 
   defp normalize_params(_), do: %{}
+
+  # `detail` absent defaults to `:full`; any value other than `:full | :summary` is a
+  # malformed-input error, like `:malformed_limit`.
+  defp detail_from(params) do
+    case params |> normalize_params() |> Map.get(:detail) do
+      nil -> {:ok, :full}
+      detail when detail in [:full, :summary] -> {:ok, detail}
+      other -> {:error, {:malformed_detail, other}}
+    end
+  end
 
   # Absent limit defaults; a PRESENT but invalid limit ("abc", "10x", 0,
   # negative) is a malformed-input error, never silently coerced to the
@@ -262,9 +320,12 @@ defmodule ForemanServerWeb.OperatorDashboard do
 
   defp parse_limit(value), do: {:error, {:malformed_limit, value}}
 
-  defp run_dto(run, phases \\ nil) do
-    phases = phases || phases_for_run(run)
-    current_phase = current_phase(phases)
+  defp run_dto(run, :summary), do: build_run_dto(run, [], :summary)
+  defp run_dto(run, :full), do: build_run_dto(run, phases_for_run(run), :full)
+  defp run_dto(run, phases) when is_list(phases), do: build_run_dto(run, phases, :full)
+
+  defp build_run_dto(run, phases, detail) do
+    current_phase = if detail == :summary, do: %{}, else: current_phase(phases)
     task_id = value(run, :task_id)
 
     # Required invariant fields — fail loudly if absent rather than masking.
@@ -291,7 +352,8 @@ defmodule ForemanServerWeb.OperatorDashboard do
       terminal?: value(run, :terminal?) || false,
       failure_reason: value(run, :failure_reason) || :absent,
       actions: actions_for_status(status),
-      completed_with_errors: completed_with_errors?(run_id, status)
+      completed_with_errors:
+        if(detail == :summary, do: :absent, else: completed_with_errors?(run_id, status))
     }
   end
 
@@ -442,18 +504,87 @@ defmodule ForemanServerWeb.OperatorDashboard.ChangeEvidence do
 
   def for_run(_), do: {:error, :run_not_found}
 
-  def preview(run_id, rel_path) when is_binary(rel_path) do
-    with {:ok, %{state: :available, files: files}} <- for_run(run_id),
-         true <- safe_relative?(rel_path),
-         true <- Enum.any?(files, &(&1.path == rel_path)),
-         {:ok, source} <- evidence_source(run_id, ProjectionStore.run(run_id)),
-         {:ok, text} <- git(source.cwd, ["diff", source.base <> "..HEAD", "--", rel_path]) do
-      {:ok, String.slice(text, 0, @max_bytes)}
-    else
-      false -> {:error, :malformed_path}
-      {:error, :git_unavailable} -> {:error, :git_unavailable}
-      _ -> {:error, :unavailable}
+  @doc """
+  The PRD/TRD documents the run's branch added, modified or renamed. `extra_path` (a task's
+  `trd_path`, or nil) counts as a `:trd` only when it is itself among the changed files.
+  """
+  def planning_documents(run_id, extra_path) do
+    case for_run(run_id) do
+      {:ok, %{state: :available, files: files}} ->
+        {:ok, select_planning_documents(files, extra_path)}
+
+      {:ok, %{state: state}} ->
+        {:unavailable, state}
+
+      {:error, reason} ->
+        {:unavailable, reason}
     end
+  end
+
+  @doc false
+  def select_planning_documents(files, extra_path) do
+    files
+    |> Enum.filter(&(live_status?(&1.status) and safe_relative?(&1.path)))
+    |> Enum.flat_map(fn %{path: path} ->
+      cond do
+        path =~ ~r{\Adocs/PRD/PRD-[^/]+\.md\z} -> [%{kind: :prd, path: path}]
+        path =~ ~r{\Adocs/TRD/TRD-[^/]+\.md\z} -> [%{kind: :trd, path: path}]
+        path == extra_path -> [%{kind: :trd, path: path}]
+        true -> []
+      end
+    end)
+  end
+
+  defp live_status?(status), do: String.starts_with?(status, ["A", "M", "R"])
+
+  @doc """
+  The `git diff base..HEAD` patch for one changed file, cut to at most `@max_bytes` bytes on a
+  UTF-8 boundary. `bytes` is the full patch size after invalid bytes are replaced by U+FFFD (an
+  invalid byte counts as the 3 bytes of its replacement). A path that is not relative-and-contained is
+  `:malformed_path` and never reaches git; a path not among the run's changed files, or any
+  other evidence failure, is `:unavailable`.
+  """
+  def preview(run_id, rel_path) when is_binary(rel_path) do
+    if safe_relative?(rel_path) do
+      with {:ok, %{state: :available, files: files}} <- for_run(run_id),
+           true <- Enum.any?(files, &(&1.path == rel_path)),
+           {:ok, source} <- evidence_source(run_id, ProjectionStore.run(run_id)),
+           {:ok, text} <- git(source.cwd, ["diff", source.base <> "..HEAD", "--", rel_path]) do
+        {:ok, cut_patch(text)}
+      else
+        {:error, :git_unavailable} -> {:error, :git_unavailable}
+        _ -> {:error, :unavailable}
+      end
+    else
+      {:error, :malformed_path}
+    end
+  end
+
+  # `git diff` emits file bytes verbatim, so a Latin-1 file yields a patch that is not UTF-8;
+  # the LiveView JSON-encodes the diff, which raises on invalid bytes. The patch is scrubbed
+  # (invalid bytes become U+FFFD) once, before the size limit is applied, so both the
+  # under-limit and the truncated preview are valid UTF-8 and `bytes` counts what is shown.
+  defp cut_patch(text), do: text |> String.replace_invalid() |> cut_valid_patch()
+
+  defp cut_valid_patch(text) when byte_size(text) <= @max_bytes,
+    do: %{diff: text, truncated?: false, bytes: byte_size(text)}
+
+  defp cut_valid_patch(text) do
+    %{
+      diff: text |> binary_part(0, @max_bytes) |> trim_partial_codepoint(3),
+      truncated?: true,
+      bytes: byte_size(text)
+    }
+  end
+
+  # A byte cut can end inside a multibyte character; a codepoint is at most 4 bytes, so at most 3
+  # trailing bytes belong to the partial one.
+  defp trim_partial_codepoint(binary, 0), do: binary
+
+  defp trim_partial_codepoint(binary, budget) do
+    if String.valid?(binary),
+      do: binary,
+      else: binary |> binary_part(0, byte_size(binary) - 1) |> trim_partial_codepoint(budget - 1)
   end
 
   defp evidence_source(run_id, run) do
