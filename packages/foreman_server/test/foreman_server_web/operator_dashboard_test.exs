@@ -349,6 +349,34 @@ defmodule ForemanServerWeb.OperatorDashboardTest do
       assert Enum.any?(previews, fn {_, diff, _} -> byte_size(diff) < 24_000 end)
     end
 
+    test "a patch that is not UTF-8 previews as valid UTF-8, under and over the byte cap", %{
+      tmp: tmp
+    } do
+      # Latin-1 bytes: a lone 0xE9 is not a UTF-8 sequence, and `git diff` passes it through.
+      seed_evidence_run(tmp, %{
+        "small.txt" => "caf" <> <<0xE9>> <> "\n",
+        "big.txt" => String.duplicate(<<0xE9>>, 30_000) <> "\n"
+      })
+
+      {raw, 0} = System.cmd("git", ["diff", "HEAD~1..HEAD", "--", "small.txt"], cd: tmp)
+      refute String.valid?(raw)
+
+      assert {:ok, %{diff: small, truncated?: false, bytes: small_bytes}} =
+               OperatorDashboard.preview_bounded("run-evidence", "small.txt")
+
+      assert String.valid?(small)
+      assert small =~ "caf"
+      assert small_bytes == byte_size(small)
+      assert {:ok, _json} = Jason.encode(small)
+
+      assert {:ok, %{diff: big, truncated?: true}} =
+               OperatorDashboard.preview_bounded("run-evidence", "big.txt")
+
+      assert String.valid?(big)
+      assert byte_size(big) <= 24_000
+      assert {:ok, _json} = Jason.encode(big)
+    end
+
     test "a traversal path is :malformed_path and starts no git process", %{tmp: tmp} do
       seed_evidence_run(tmp, %{"README.md" => "changed\n"})
       log = install_fake_git(tmp, "")

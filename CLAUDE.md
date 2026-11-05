@@ -629,7 +629,7 @@ only when the row is opened (the PRD/TRD files the run's branch changed, found b
 `OperatorDashboard.planning_documents_bounded/3` per open, never on refresh, each a link to that
 file's diff on the run dashboard, `?tab=changes&file=…`; the task's TRD path is linked when it is
 among them; an unreadable branch says why instead), and a `Conversation`
-link (`patch`, token carried) to the run's thread; a Jobsite row is titled by the task that owns
+link (`patch`, token carried) to the run's thread (a run that is not its task's newest, and a jobsite whose bead's task has a run, open that task's thread: `Threads.resolve/1`); a Jobsite row is titled by the task of its own project that owns
 its bead (the bead or jobsite id when none does) with the same Details (branch, worktree path,
 Conversation link)); an Artifacts list of the project's
 library files, the closest the server exposes; and a Schedules list (`Schedule.DTO.list/1`) with

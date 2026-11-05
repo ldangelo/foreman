@@ -728,10 +728,16 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
 
       # Resolved threads beyond the Overview's window and threads outside its newest-thread
       # window are not among its cards; `Overview.card/2` still resolves this project's own.
+      # A nav row of an older run (or a jobsite whose task has a run) links by its own id; the
+      # card is its owning thread's, and the open thread becomes that thread so the log
+      # follows the events of the thread actually shown.
       nil ->
         case Overview.card(project_id, thread_id) do
-          {:ok, %ThreadCard{} = card} -> socket |> assign(:thread_card, card) |> ensure_log()
-          {:error, :thread_not_found} -> assign(socket, thread_card: nil, thread_log: nil)
+          {:ok, %ThreadCard{thread_id: owner_id} = card} ->
+            socket |> assign(thread_id: owner_id, thread_card: card) |> ensure_log()
+
+          {:error, :thread_not_found} ->
+            assign(socket, thread_card: nil, thread_log: nil)
         end
     end
   end

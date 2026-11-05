@@ -97,8 +97,12 @@ defmodule ForemanServerWeb.Workspace.NavRuns do
     tasks = Enum.filter(ProjectionStore.list_tasks(), &is_map_key(&1, :task_id))
     tasks_by_id = Map.new(tasks, &{&1.task_id, &1})
 
+    # A bead id is only unique within its project: the same one in another project's task must
+    # not title this project's jobsite.
     tasks_by_external_id =
-      for %{external_id: external_id} = task <- tasks, is_binary(external_id), into: %{} do
+      for %{external_id: external_id, project_id: ^project_id} = task <- tasks,
+          is_binary(external_id),
+          into: %{} do
         {external_id, task}
       end
 

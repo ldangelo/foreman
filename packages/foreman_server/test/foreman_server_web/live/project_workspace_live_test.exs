@@ -2074,6 +2074,61 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
       assert has_element?(view, "#thread-pane")
       refute has_element?(view, "#thread-not-found-title")
     end
+
+    test "an older run of a task links to its task's thread pane, not a dead end", %{} do
+      project = new_project("conv-old")
+
+      :ok =
+        ProjectionStore.apply_events([
+          task("t-two", project, "Two runs"),
+          task_run("r-a-old", "t-two", project, "fix")
+        ])
+
+      :ok = ProjectionStore.apply_events([task_run("r-b-new", "t-two", project, "fix")])
+
+      {view, _html} = mount_view(project)
+
+      for run_id <- ["r-b-new", "r-a-old"] do
+        href = Components.thread_path(project, "run:#{run_id}", @token)
+
+        assert has_element?(
+                 view,
+                 ~s(#nav-run-#{run_id} .ws-nav-conversation a[href="#{href}"]),
+                 "Conversation"
+               )
+
+        view |> element("#nav-run-#{run_id} .ws-nav-conversation a") |> render_click()
+        assert_patch(view, href)
+        assert has_element?(view, "#thread-pane")
+        refute has_element?(view, "#thread-not-found-title")
+      end
+    end
+
+    test "a jobsite whose bead's task has a run links to that run's thread pane", %{} do
+      project = new_project("conv-owned")
+
+      :ok =
+        ProjectionStore.apply_events([
+          titled_task("t-owned", project, "Owned bead", %{external_id: "bead-owned"}),
+          task_run("r-owned", "t-owned", project, "fix")
+        ])
+
+      seed_jobsite("js-owned", "bead-owned", project, 7_000)
+      {view, _html} = mount_view(project)
+
+      href = Components.thread_path(project, "jobsite:js-owned", @token)
+
+      assert has_element?(
+               view,
+               ~s(#nav-jobsite-js-owned .ws-nav-conversation a[href="#{href}"]),
+               "Conversation"
+             )
+
+      view |> element("#nav-jobsite-js-owned .ws-nav-conversation a") |> render_click()
+      assert_patch(view, href)
+      assert has_element?(view, "#thread-pane")
+      refute has_element?(view, "#thread-not-found-title")
+    end
   end
 
   describe "workspace nav documents" do

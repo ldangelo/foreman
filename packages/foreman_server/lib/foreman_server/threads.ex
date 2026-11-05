@@ -59,6 +59,44 @@ defmodule ForemanServer.Threads do
   end
 
   @doc """
+  The thread a `run:<id>` / `jobsite:<id>` id belongs to: `get/1`, and when no thread has that
+  exact id, the thread that owns it. A run that is not its task's newest run is owned by the
+  task's thread (`Thread.run_ids`), and a bead-linked jobsite whose task has a run is owned by
+  that run's thread (see `build_all/1`); a nav row of either kind links by its own id, so this
+  is how that link still opens a pane. One bulk read and one build, like `get/1`.
+  """
+  @spec resolve(String.t()) :: {:ok, Thread.t()} | {:error, :thread_not_found}
+  def resolve(thread_id) when is_binary(thread_id) do
+    inputs = ProjectionStore.thread_inputs()
+    threads = build_all(inputs)
+
+    with nil <- Enum.find(threads, &(&1.id == thread_id)),
+         %Thread{} = owner <- owner_of(thread_id, inputs, threads) do
+      {:ok, owner}
+    else
+      %Thread{} = thread -> {:ok, thread}
+      nil -> {:error, :thread_not_found}
+    end
+  end
+
+  defp owner_of("run:" <> run_id, _inputs, threads),
+    do: Enum.find(threads, &(run_id in &1.run_ids))
+
+  defp owner_of("jobsite:" <> jobsite_id, inputs, threads) do
+    with %{bead_id: bead_id} when is_binary(bead_id) <-
+           Enum.find(inputs.jobsites, &(&1.jobsite_id == jobsite_id)),
+         task_ids =
+           for(%{task_id: task_id, external_id: ^bead_id} <- inputs.tasks, do: task_id),
+         %{run_id: run_id} <- Enum.find(inputs.runs, &(&1.task_id in task_ids)) do
+      Enum.find(threads, &(run_id in &1.run_ids))
+    else
+      _ -> nil
+    end
+  end
+
+  defp owner_of(_id, _inputs, _threads), do: nil
+
+  @doc """
   Every thread, grouped by project id, each list most recently updated first.
 
   One bulk projection read and one thread build for all projects, so a caller

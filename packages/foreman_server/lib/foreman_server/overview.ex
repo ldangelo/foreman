@@ -117,7 +117,7 @@ defmodule ForemanServer.Overview do
 
   def card(project_id, thread_id, opts)
       when is_binary(project_id) and is_binary(thread_id) and is_list(opts) do
-    case Threads.get(thread_id) do
+    case Threads.resolve(thread_id) do
       {:ok, %Thread{project_id: ^project_id} = thread} ->
         %{classified: [{{thread, pr, watch}, classification}]} =
           classify_threads(project_id, [thread], now(opts))

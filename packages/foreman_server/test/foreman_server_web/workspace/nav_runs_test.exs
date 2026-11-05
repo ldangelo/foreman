@@ -364,6 +364,52 @@ defmodule ForemanServerWeb.Workspace.NavRunsTest do
       assert js.bead_id == "bd-9"
       assert js.branch == "feat/js1"
     end
+
+    test "read/1 titles a jobsite by its own project's task, never another project's" do
+      # The same bead id in two projects. Task ids sort both ways round, so the answer does not
+      # depend on which one the projection lists last.
+      pairs = [{"shared-a", "a-p1", "b-p2"}, {"shared-b", "d-p1", "c-p2"}]
+
+      events =
+        for {bead, own, foreign} <- pairs,
+            {task_id, project, title} <- [
+              {own, "p1", "Own #{bead}"},
+              {foreign, "p2", "Foreign #{bead}"}
+            ] do
+          %{
+            event_type: "TaskCreated",
+            payload: %{
+              task_id: task_id,
+              project_id: project,
+              title: title,
+              status: "open",
+              task_type: "implement",
+              external_id: bead
+            }
+          }
+        end ++
+          for {bead, _, _} <- pairs do
+            %{
+              event_type: "JobsiteStarted",
+              payload: %{
+                jobsite_id: "js-#{bead}",
+                project_id: "p1",
+                repo_path: "/repo",
+                strategy: "local",
+                bead_id: bead
+              }
+            }
+          end
+
+      assert :ok = ProjectionStore.apply_events(events)
+
+      %{jobsites: jobsites} = NavRuns.read("p1")
+
+      for {bead, _, _} <- pairs do
+        assert %Jobsite{title: title} = Enum.find(jobsites, &(&1.jobsite_id == "js-#{bead}"))
+        assert title == "Own #{bead}"
+      end
+    end
   end
 
   # The sorted request tags of the GenServer calls `from_pid` made to the traced store.

@@ -559,10 +559,16 @@ defmodule ForemanServerWeb.OperatorDashboard.ChangeEvidence do
     end
   end
 
-  defp cut_patch(text) when byte_size(text) <= @max_bytes,
+  # `git diff` emits file bytes verbatim, so a Latin-1 file yields a patch that is not UTF-8;
+  # the LiveView JSON-encodes the diff, which raises on invalid bytes. The patch is scrubbed
+  # (invalid bytes become U+FFFD) once, before the size limit is applied, so both the
+  # under-limit and the truncated preview are valid UTF-8 and `bytes` counts what is shown.
+  defp cut_patch(text), do: text |> String.replace_invalid() |> cut_valid_patch()
+
+  defp cut_valid_patch(text) when byte_size(text) <= @max_bytes,
     do: %{diff: text, truncated?: false, bytes: byte_size(text)}
 
-  defp cut_patch(text) do
+  defp cut_valid_patch(text) do
     %{
       diff: text |> binary_part(0, @max_bytes) |> trim_partial_codepoint(3),
       truncated?: true,
