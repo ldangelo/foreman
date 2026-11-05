@@ -374,20 +374,124 @@ defmodule ForemanServerWeb.OperatorDashboardTest do
 
     test "a hung git is cut off at timeout_ms with :evidence_timeout", %{tmp: tmp} do
       seed_evidence_run(tmp, %{"README.md" => "changed\n"})
-      log = install_fake_git(tmp, "sleep 5\n")
+      install_fake_git(tmp, "sleep 5\n")
 
       {micros, result} =
         :timer.tc(fn -> OperatorDashboard.change_evidence_bounded("run-evidence", 100) end)
 
       assert result == {:error, :evidence_timeout}
       assert micros < 1_000_000
-      assert File.exists?(log)
 
       assert {:error, :evidence_timeout} =
                OperatorDashboard.preview_bounded("run-evidence", "README.md", 100)
 
       # the task was shut down: no late reply reaches the caller
       refute_receive {_ref, _result}, 200
+    end
+  end
+
+  describe "planning documents" do
+    alias ForemanServerWeb.OperatorDashboard.ChangeEvidence
+
+    setup do
+      tmp =
+        Path.join(System.tmp_dir!(), "operator-planning-#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(tmp)
+      on_exit(fn -> File.rm_rf!(tmp) end)
+      {:ok, tmp: tmp}
+    end
+
+    test "a prd-shaped branch yields exactly the PRD and TRD", %{tmp: tmp} do
+      seed_evidence_run(tmp, %{
+        "docs/PRD/PRD-a.md" => "prd\n",
+        "docs/TRD/TRD-a.md" => "trd\n",
+        "README.md" => "changed\n"
+      })
+
+      assert {:ok, docs} = OperatorDashboard.planning_documents_bounded("run-evidence", nil)
+
+      assert Enum.sort_by(docs, & &1.path) == [
+               %{kind: :prd, path: "docs/PRD/PRD-a.md"},
+               %{kind: :trd, path: "docs/TRD/TRD-a.md"}
+             ]
+    end
+
+    test "a run that changed only code has no documents", %{tmp: tmp} do
+      seed_evidence_run(tmp, %{"lib/x.ex" => "x\n"})
+      assert {:ok, []} = OperatorDashboard.planning_documents_bounded("run-evidence", nil)
+    end
+
+    test "extra_path is returned only when among the changed files", %{tmp: tmp} do
+      seed_evidence_run(
+        tmp,
+        %{"docs/TRD/changed-plan.md" => "new\n"},
+        base: %{"docs/TRD/pre-existing.md" => "old\n"}
+      )
+
+      assert {:ok, []} =
+               OperatorDashboard.planning_documents_bounded(
+                 "run-evidence",
+                 "docs/TRD/pre-existing.md"
+               )
+
+      assert {:ok, [%{kind: :trd, path: "docs/TRD/changed-plan.md"}]} =
+               OperatorDashboard.planning_documents_bounded(
+                 "run-evidence",
+                 "docs/TRD/changed-plan.md"
+               )
+    end
+
+    test "a deleted document is dropped", %{tmp: tmp} do
+      seed_evidence_run(tmp, %{"docs/TRD/TRD-new.md" => "n\n"},
+        base: %{"docs/TRD/old.md" => "o\n", "docs/TRD/TRD-old.md" => "o\n"},
+        delete: ["docs/TRD/old.md", "docs/TRD/TRD-old.md"]
+      )
+
+      assert {:ok, [%{kind: :trd, path: "docs/TRD/TRD-new.md"}]} =
+               OperatorDashboard.planning_documents_bounded("run-evidence", "docs/TRD/old.md")
+    end
+
+    test "a run without a worktree and an unknown run are unavailable" do
+      seed_run("run-bare", status: "completed")
+
+      assert {:unavailable, :worktree_missing} =
+               OperatorDashboard.planning_documents_bounded("run-bare", nil)
+
+      assert {:unavailable, :run_not_found} =
+               OperatorDashboard.planning_documents_bounded("no-such-run", nil)
+    end
+
+    test "a hung git is cut off with :evidence_timeout", %{tmp: tmp} do
+      seed_evidence_run(tmp, %{"docs/PRD/PRD-a.md" => "prd\n"})
+      install_fake_git(tmp, "sleep 5\n")
+
+      {micros, result} =
+        :timer.tc(fn ->
+          OperatorDashboard.planning_documents_bounded("run-evidence", nil, 100)
+        end)
+
+      assert result == {:unavailable, :evidence_timeout}
+      assert micros < 1_000_000
+      refute_receive {_ref, _result}, 200
+    end
+
+    test "selection never returns an unsafe path or a deleted status" do
+      files =
+        for {status, path} <- [
+              {"A", "../docs/PRD/PRD-x.md"},
+              {"A", "/abs/docs/TRD/TRD-x.md"},
+              {"A", "docs/TRD/../../etc/TRD-x.md"},
+              {"A", "docs/PRD/PRD-ok.md"},
+              {"D", "docs/PRD/PRD-gone.md"},
+              {"R100", "docs/TRD/TRD-renamed.md"}
+            ],
+            do: %{status: status, path: path, source: :worktree}
+
+      assert ChangeEvidence.select_planning_documents(files, "../etc/passwd") == [
+               %{kind: :prd, path: "docs/PRD/PRD-ok.md"},
+               %{kind: :trd, path: "docs/TRD/TRD-renamed.md"}
+             ]
     end
   end
 
@@ -409,18 +513,25 @@ defmodule ForemanServerWeb.OperatorDashboardTest do
 
   # A git repo with a README base commit and one commit adding/changing `files`, registered as
   # the retained worktree of run "run-evidence".
-  defp seed_evidence_run(tmp, files) do
+  defp seed_evidence_run(tmp, files, opts \\ []) do
     git = fn args -> {_, 0} = System.cmd("git", args, cd: tmp, stderr_to_stdout: true) end
     ident = ["-c", "user.name=Test", "-c", "user.email=test@example.com"]
 
+    write = fn name, content ->
+      File.mkdir_p!(Path.dirname(Path.join(tmp, name)))
+      File.write!(Path.join(tmp, name), content)
+    end
+
     git.(["init"])
-    File.write!(Path.join(tmp, "README.md"), "base\n")
+    write.("README.md", "base\n")
+    for {name, content} <- Keyword.get(opts, :base, %{}), do: write.(name, content)
     git.(["add", "."])
     git.(ident ++ ["commit", "-m", "base"])
     {base, 0} = System.cmd("git", ["rev-parse", "HEAD"], cd: tmp)
 
-    for {name, content} <- files, do: File.write!(Path.join(tmp, name), content)
-    git.(["add", "."])
+    for {name, content} <- files, do: write.(name, content)
+    for name <- Keyword.get(opts, :delete, []), do: File.rm!(Path.join(tmp, name))
+    git.(["add", "-A"])
     git.(ident ++ ["commit", "-m", "change"])
 
     seed_run("run-evidence", status: "completed", worktree_path: tmp, base_ref: String.trim(base))

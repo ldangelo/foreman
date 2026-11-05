@@ -128,6 +128,19 @@ defmodule ForemanServerWeb.OperatorDashboard do
       when is_binary(run_id) and is_binary(rel_path),
       do: bounded(fn -> ChangeEvidence.preview(run_id, rel_path) end, timeout_ms)
 
+  @doc """
+  Planning documents (`docs/PRD/PRD-*.md`, `docs/TRD/TRD-*.md`, plus `extra_path` when changed)
+  of one run, bounded like `change_evidence_bounded/2`: `{:ok, [%{kind, path}]}` or
+  `{:unavailable, :worktree_missing | :base_unavailable | :git_unavailable | :run_not_found |
+  :evidence_timeout}`.
+  """
+  def planning_documents_bounded(run_id, extra_path, timeout_ms \\ 3_000) do
+    case bounded(fn -> ChangeEvidence.planning_documents(run_id, extra_path) end, timeout_ms) do
+      {:error, :evidence_timeout} -> {:unavailable, :evidence_timeout}
+      result -> result
+    end
+  end
+
   defp bounded(fun, timeout_ms) do
     task = Task.async(fun)
 
@@ -490,6 +503,39 @@ defmodule ForemanServerWeb.OperatorDashboard.ChangeEvidence do
   end
 
   def for_run(_), do: {:error, :run_not_found}
+
+  @doc """
+  The PRD/TRD documents the run's branch added, modified or renamed. `extra_path` (a task's
+  `trd_path`, or nil) counts as a `:trd` only when it is itself among the changed files.
+  """
+  def planning_documents(run_id, extra_path) do
+    case for_run(run_id) do
+      {:ok, %{state: :available, files: files}} ->
+        {:ok, select_planning_documents(files, extra_path)}
+
+      {:ok, %{state: state}} ->
+        {:unavailable, state}
+
+      {:error, reason} ->
+        {:unavailable, reason}
+    end
+  end
+
+  @doc false
+  def select_planning_documents(files, extra_path) do
+    files
+    |> Enum.filter(&(live_status?(&1.status) and safe_relative?(&1.path)))
+    |> Enum.flat_map(fn %{path: path} ->
+      cond do
+        path =~ ~r{\Adocs/PRD/PRD-[^/]+\.md\z} -> [%{kind: :prd, path: path}]
+        path =~ ~r{\Adocs/TRD/TRD-[^/]+\.md\z} -> [%{kind: :trd, path: path}]
+        path == extra_path -> [%{kind: :trd, path: path}]
+        true -> []
+      end
+    end)
+  end
+
+  defp live_status?(status), do: String.starts_with?(status, ["A", "M", "R"])
 
   @doc """
   The `git diff base..HEAD` patch for one changed file, cut to at most `@max_bytes` bytes on a
