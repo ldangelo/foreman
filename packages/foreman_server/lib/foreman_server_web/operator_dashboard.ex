@@ -539,7 +539,8 @@ defmodule ForemanServerWeb.OperatorDashboard.ChangeEvidence do
 
   @doc """
   The `git diff base..HEAD` patch for one changed file, cut to at most `@max_bytes` bytes on a
-  UTF-8 boundary. `bytes` is the full patch size. A path that is not relative-and-contained is
+  UTF-8 boundary. `bytes` is the full patch size after invalid bytes are replaced by U+FFFD (an
+  invalid byte counts as the 3 bytes of its replacement). A path that is not relative-and-contained is
   `:malformed_path` and never reaches git; a path not among the run's changed files, or any
   other evidence failure, is `:unavailable`.
   """
