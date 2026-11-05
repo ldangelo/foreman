@@ -4,10 +4,12 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
   `GET /dashboard/projects/:id/threads/:thread_id` (authenticated).
 
   Leftmost, the workspace nav (`Components.workspace_nav/1`): six read-only panels over data the
-  page already holds — a client-side Search filter over thread titles, memory topics and library
+  server already exposes (the Jobsite and Workflows panels are read from existing projections on
+  mount and refresh) — a client-side Search filter over thread titles, memory topics and library
   files; the Projects list (`ProjectStore.list/0`); the open project's Jobsite list (its rows of
   `ProjectionStore.list_jobsites/0`) and Workflows list (`OperatorDashboard.list_runs/1`
-  filtered by `project_id`), both newest-first and capped at 100 rows; the Artifacts list (the
+  filtered by `project_id`), each capped at 100 rows (Jobsite newest-started-first, Workflows
+  most-recently-active first); the Artifacts list (the
   project's library files, the closest the server exposes); and the Schedules list
   (`Schedule.DTO.list/1`). Then the
   thread sidebar (`Components.thread_sidebar/1`): "Project chat" and the project's

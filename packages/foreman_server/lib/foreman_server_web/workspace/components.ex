@@ -196,7 +196,8 @@ defmodule ForemanServerWeb.Workspace.Components do
 
   @doc """
   The left workspace-navigation sidebar (`<nav id="workspace-nav">`), six read-only panels over
-  data the page already holds, no new server command or event:
+  data the server already exposes, no new server command or event (the Jobsite and Workflows
+  panels are read from existing projections on mount and refresh):
 
     * Search — a client-side filter (`phx-change="ws_search"`, held in `@query`) over content
       already loaded in the page: thread titles (`@overview` cards), memory topics
