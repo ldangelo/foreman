@@ -55,7 +55,7 @@ defmodule ForemanServerWeb.OperatorRunDashboardLive do
     socket =
       if tab == "changes" and socket.assigns.detail do
         detail = socket.assigns.detail
-        changes = load_changes_bounded(detail.run.run_id)
+        changes = OperatorDashboard.change_evidence_bounded(detail.run.run_id)
         assign(socket, :detail, %{detail | changes: changes})
       else
         socket
@@ -207,7 +207,7 @@ defmodule ForemanServerWeb.OperatorRunDashboardLive do
   # changes evidence is already assigned instead of re-running the
   # git-backed evidence read on every poll; an explicit operator action
   # (select-run, tab switch, filter, manual refresh, run-action) always
-  # reloads it. Either way the read itself is bounded (`load_changes_bounded/1`).
+  # reloads it. Either way the read itself is bounded (`OperatorDashboard.change_evidence_bounded/1`).
   defp refresh(socket, opts \\ []) do
     reload_changes? = Keyword.get(opts, :reload_changes?, true)
 
@@ -271,34 +271,20 @@ defmodule ForemanServerWeb.OperatorRunDashboardLive do
       {:ok, detail} ->
         changes =
           cond do
-            active_tab != "changes" -> :absent
-            reload_changes? or is_nil(previous_changes) -> load_changes_bounded(run_id)
-            true -> previous_changes
+            active_tab != "changes" ->
+              :absent
+
+            reload_changes? or is_nil(previous_changes) ->
+              OperatorDashboard.change_evidence_bounded(run_id)
+
+            true ->
+              previous_changes
           end
 
         {:ok, %{detail | changes: changes}}
 
       {:error, _reason} = error ->
         error
-    end
-  end
-
-  @evidence_timeout_ms 3_000
-
-  # Change evidence shells out to git (`ChangeEvidence.for_run/1`). Run it in
-  # a bounded task so a slow/hung git command cannot block this LiveView
-  # process -- including its filters and run controls -- for longer than
-  # @evidence_timeout_ms.
-  defp load_changes_bounded(run_id) do
-    task = Task.async(fn -> OperatorDashboard.change_evidence(run_id) end)
-
-    case Task.yield(task, @evidence_timeout_ms) do
-      {:ok, result} ->
-        result
-
-      nil ->
-        Task.shutdown(task, :brutal_kill)
-        {:error, :evidence_timeout}
     end
   end
 
