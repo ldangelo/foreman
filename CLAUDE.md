@@ -609,10 +609,11 @@ workspace-nav sidebar (`Components.workspace_nav/1`, six read-only panels over d
 already exposes, no new command or event; the Jobsite and Workflows panels are read from existing
 projections on mount and refresh: a client-side Search filter over thread titles, memory
 topics and library files; a Projects list of every project (`ProjectStore.list/0`) linking to
-each workspace; a Jobsite list of the OPEN project's jobsite runs (`Workspace.NavRuns.read_jobsites/1`
-over `ProjectionStore.list_jobsites/0`) and a Workflows list of the open project's workflow runs
-(`Workspace.NavRuns.read_runs/1` over `OperatorDashboard.list_runs/1` filtered by `project_id`
-with `detail: :summary`), each capped at 100 rows (Jobsite
+each workspace; a Jobsite list of the OPEN project's jobsite runs and a Workflows list of the
+open project's workflow runs, both built by `Workspace.NavRuns.read/1` in five bulk projection
+reads per refresh (`ProjectionStore.list_jobsites/0`, `list_tasks/0`, `worktrees_for_runs/1`,
+`pr_states_for_project/1`, and `OperatorDashboard.list_runs/1` filtered by `project_id` with
+`detail: :summary`, which skips the per-run phase reads), each capped at 100 rows (Jobsite
 newest-started-first, Workflows most-recently-active first; the Jobsite badge counts the
 project's real total, the Workflows badge reads `100+` when
 that read came back at its limit; a Workflows row is titled by its task (`Thread.title/2`: the
