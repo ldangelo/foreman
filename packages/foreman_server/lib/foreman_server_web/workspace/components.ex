@@ -512,7 +512,7 @@ defmodule ForemanServerWeb.Workspace.Components do
     <li id={"nav-jobsite-#{@jobsite.jobsite_id}"} class="ws-nav-run">
       <strong class="ws-ellipsis" title={@jobsite.title}>{@jobsite.title}</strong>
       <span class="ws-muted ws-nav-workflow ws-ellipsis">{nav_jobsite_ref(@jobsite)} · {@jobsite.status}</span>
-      <details>
+      <details phx-mounted={JS.ignore_attributes("open")}>
         <summary>Details</summary>
         <p class="ws-nav-branch">
           <%= if @jobsite.branch == :none do %>
