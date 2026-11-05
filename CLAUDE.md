@@ -623,7 +623,11 @@ projection's `workflow_name` or, when that is nil as it is on every dispatched r
 load, one row at a time via `nav_run_toggle`, server-held in `nav_open` so a refresh never
 collapses it) shows the branch and base, the worktree path as text with the state the projection
 recorded for it (`kept`/`active`/`removed`; the nav never touches the disk or git), the PR link
-(`http(s)` only, new tab, never the token), the task's TRD path as text, and a `Conversation`
+(`http(s)` only, new tab, never the token), the task's TRD path as text, a `Documents` area filled
+only when the row is opened (the PRD/TRD files the run's branch changed, found by one bounded
+`OperatorDashboard.planning_documents_bounded/3` per open, never on refresh, each a link to that
+file's diff on the run dashboard, `?tab=changes&file=…`; the task's TRD path is linked when it is
+among them; an unreadable branch says why instead), and a `Conversation`
 link (`patch`, token carried) to the run's thread; a Jobsite row is titled by the task that owns
 its bead (the bead or jobsite id when none does) with the same Details (branch, worktree path,
 Conversation link)); an Artifacts list of the project's

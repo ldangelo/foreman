@@ -65,6 +65,8 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
   alias ForemanServer.Threads.Transcript
   alias ForemanServer.Threads.Transcript.Full
 
+  alias ForemanServerWeb.OperatorDashboard
+
   alias ForemanServerWeb.Workspace.{
     Actions,
     Components,
@@ -217,6 +219,28 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
   end
 
   @impl true
+  def handle_async({:nav_docs, id}, outcome, socket) do
+    %{nav_open: open, nav_docs: docs} = socket.assigns
+
+    result =
+      case outcome do
+        {:ok, result} ->
+          result
+
+        {:exit, reason} ->
+          Logger.warning(
+            "workspace nav document discovery for #{id} crashed: #{inspect(reason, limit: 5)}"
+          )
+
+          {:unavailable, :crashed}
+      end
+
+    if MapSet.member?(open, id),
+      do: {:noreply, assign(socket, :nav_docs, Map.put(docs, id, result))},
+      else: {:noreply, socket}
+  end
+
+  @impl true
   def handle_event("tab", %{"tab" => tab}, socket) when is_map_key(@tabs, tab) do
     {:noreply, socket |> assign(:tab, Map.fetch!(@tabs, tab)) |> load_state()}
   end
@@ -227,19 +251,32 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
     do: {:noreply, assign(socket, :search_query, q)}
 
   # A Details disclosure in the Workflows panel. Only a run that is listed can open: an id the
-  # nav does not list (stale click, forged value) mints no state. `open` is server-derived, so
-  # a refresh re-renders the row as the operator left it.
+  # nav does not list (stale click, forged value) mints no state and starts no read. `open` is
+  # server-derived, so a refresh re-renders the row as the operator left it. Opening starts
+  # exactly one bounded document discovery for that run, off the LiveView process; closing drops
+  # the row's open flag and its documents, so reopening discovers again.
   def handle_event("nav_run_toggle", %{"run-id" => id}, socket) when is_binary(id) do
-    %{nav_workflow_runs: runs, nav_open: open} = socket.assigns
+    %{nav_workflow_runs: runs, nav_open: open, nav_docs: docs} = socket.assigns
 
-    open =
-      cond do
-        not Enum.any?(runs, &(&1.run_id == id)) -> open
-        MapSet.member?(open, id) -> MapSet.delete(open, id)
-        true -> MapSet.put(open, id)
-      end
+    case Enum.find(runs, &(&1.run_id == id)) do
+      nil ->
+        {:noreply, socket}
 
-    {:noreply, assign(socket, :nav_open, open)}
+      row ->
+        if MapSet.member?(open, id) do
+          {:noreply,
+           assign(socket, nav_open: MapSet.delete(open, id), nav_docs: Map.delete(docs, id))}
+        else
+          trd_path = if row.trd_path == :none, do: nil, else: row.trd_path
+
+          {:noreply,
+           socket
+           |> assign(nav_open: MapSet.put(open, id), nav_docs: Map.put(docs, id, :loading))
+           |> start_async({:nav_docs, id}, fn ->
+             OperatorDashboard.planning_documents_bounded(id, trd_path)
+           end)}
+        end
+    end
   end
 
   def handle_event("confirm_stop", %{"thread-id" => id}, socket),
@@ -928,6 +965,7 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
           workflow_count={@nav_workflow_count}
           open_runs={@nav_open}
           now_ms={@nav_now_ms}
+          nav_docs={@nav_docs}
         />
         <Components.thread_sidebar
           project_id={@project_id}

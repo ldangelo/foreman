@@ -229,6 +229,7 @@ defmodule ForemanServerWeb.Workspace.Components do
   attr(:workflow_runs, :list, required: true)
   attr(:workflow_count, :string, required: true)
   attr(:open_runs, :any, required: true)
+  attr(:nav_docs, :map, default: %{})
   attr(:now_ms, :integer, required: true)
 
   @doc """
@@ -252,7 +253,9 @@ defmodule ForemanServerWeb.Workspace.Components do
       from `NavRuns.read/1`, capped at 100); each row shows the task title as a link to
       the run's dashboard, the muted workflow, status and age (from `@now_ms`), and a
       `<details>` (open only for ids in `@open_runs`) with the branch, worktree (path text and
-      the projection's state), pull request, TRD path and a Conversation link. The badge
+      the projection's state), pull request, TRD path, a Documents area (`@nav_docs[run_id]`: the
+      PRD/TRD files the branch changed, found once when the row is opened, each linking to its
+      diff on the run dashboard) and a Conversation link. The badge
       (`@workflow_count`) reads "100+" when that read came back full, since the total beyond
       the cap is unknown.
     * Artifacts — the project's library files (`@library_entries`, `ForemanServer.Library`).
@@ -371,6 +374,7 @@ defmodule ForemanServerWeb.Workspace.Components do
             :for={r <- @workflow_runs}
             run={r}
             open={MapSet.member?(@open_runs, r.run_id)}
+            docs={Map.get(@nav_docs, r.run_id)}
             now_ms={@now_ms}
             project_id={@project_id}
             token={@token}
@@ -416,6 +420,7 @@ defmodule ForemanServerWeb.Workspace.Components do
   attr(:now_ms, :integer, required: true)
   attr(:project_id, :string, required: true)
   attr(:token, :string, default: nil)
+  attr(:docs, :any, default: nil)
 
   # One Workflows-panel row: the task title as the link to the run's dashboard, the workflow,
   # status and age muted beneath it, and the run's provenance inside a server-controlled
@@ -451,7 +456,27 @@ defmodule ForemanServerWeb.Workspace.Components do
           <a href={@run.pr.url} target="_blank" rel="noopener noreferrer">Pull request</a>
           <span :if={@run.pr.state != :none} class="ws-muted">{@run.pr.state}</span>
         </p>
-        <p :if={@run.trd_path != :none} class="ws-nav-trd">TRD <code>{@run.trd_path}</code> <span class="ws-muted">from the task</span></p>
+        <p :if={@run.trd_path != :none} class="ws-nav-trd">
+          TRD
+          <.link :if={nav_doc_listed?(@docs, @run.trd_path)} href={nav_doc_href(@run.run_id, @token, @run.trd_path)}><code>{@run.trd_path}</code></.link>
+          <code :if={not nav_doc_listed?(@docs, @run.trd_path)}>{@run.trd_path}</code>
+          <span class="ws-muted">from the task</span>
+        </p>
+        <div :if={@docs == :loading} class="ws-nav-docs" aria-live="polite">
+          <p class="ws-muted">Looking for documents…</p>
+        </div>
+        <div :if={match?({:ok, [_ | _]}, @docs)} class="ws-nav-docs">
+          <p class="ws-muted">Documents</p>
+          <ul>
+            <li :for={doc <- elem(@docs, 1)}>
+              {nav_doc_kind(doc.kind)}
+              <.link href={nav_doc_href(@run.run_id, @token, doc.path)}><code>{doc.path}</code></.link>
+            </li>
+          </ul>
+        </div>
+        <div :if={match?({:unavailable, _}, @docs)} class="ws-nav-docs" aria-live="polite">
+          <p class="ws-muted">Documents unavailable: {nav_docs_reason(elem(@docs, 1))}</p>
+        </div>
         <p class="ws-nav-conversation">
           <.link patch={thread_path(@project_id, @run.thread_id, @token)}>Conversation</.link>
         </p>
@@ -459,6 +484,22 @@ defmodule ForemanServerWeb.Workspace.Components do
     </li>
     """
   end
+
+  defp nav_doc_kind(:prd), do: "PRD"
+  defp nav_doc_kind(:trd), do: "TRD"
+
+  defp nav_doc_href(run_id, token, path),
+    do: run_detail_path(run_id, token, tab: "changes", file: path)
+
+  defp nav_doc_listed?({:ok, docs}, path), do: Enum.any?(docs, &(&1.path == path))
+  defp nav_doc_listed?(_docs, _path), do: false
+
+  defp nav_docs_reason(:worktree_missing), do: "worktree directory missing"
+  defp nav_docs_reason(:base_unavailable), do: "base ref unavailable"
+  defp nav_docs_reason(:git_unavailable), do: "git unavailable"
+  defp nav_docs_reason(:evidence_timeout), do: "timed out"
+  defp nav_docs_reason(:run_not_found), do: "run not found"
+  defp nav_docs_reason(:crashed), do: "lookup failed"
 
   attr(:jobsite, NavRuns.Jobsite, required: true)
   attr(:project_id, :string, required: true)
