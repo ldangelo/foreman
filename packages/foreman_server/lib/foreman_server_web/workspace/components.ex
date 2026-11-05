@@ -17,7 +17,7 @@ defmodule ForemanServerWeb.Workspace.Components do
   alias ForemanServer.Aggregates.OperatorQuestion
   alias ForemanServer.Library
   alias ForemanServer.Overview.{Group, ThreadCard}
-  alias ForemanServerWeb.Workspace.{LibraryUpload, ThreadView}
+  alias ForemanServerWeb.Workspace.{LibraryUpload, NavRuns, ThreadView}
   alias ForemanServerWeb.Workspace.ThreadView.Log
   alias Phoenix.LiveView.JS
   alias Phoenix.LiveView.UploadConfig
@@ -228,6 +228,8 @@ defmodule ForemanServerWeb.Workspace.Components do
   attr(:jobsite_count, :string, required: true)
   attr(:workflow_runs, :list, required: true)
   attr(:workflow_count, :string, required: true)
+  attr(:open_runs, :any, required: true)
+  attr(:now_ms, :integer, required: true)
 
   @doc """
   The left workspace-navigation sidebar (`<nav id="workspace-nav">`), six read-only panels over
@@ -241,14 +243,18 @@ defmodule ForemanServerWeb.Workspace.Components do
       beyond the open thread are not loaded, so only their titles are searched.
     * Projects — every project (`@projects`, from `ForemanServer.ProjectStore.list/0`), each a
       link to its own workspace; the open one is marked.
-    * Jobsite — the open project's jobsite runs (`@jobsites`, selected from
-      `ForemanServer.ProjectionStore.list_jobsites/0`), newest-started-first, at most 100 rows;
-      each row shows its `bead_id` (or `jobsite_id` when unbeaded) and muted `status`. The
+    * Jobsite — the open project's jobsite runs (`@jobsites`, `NavRuns.Jobsite` structs from
+      `NavRuns.read/1`), newest-started-first, at most 100 rows; each row shows its
+      task title, muted `bead_id` (or `jobsite_id` when unbeaded) and `status`, and a closed
+      details area with the branch, the worktree path (text) and a Conversation link. The
       badge (`@jobsite_count`) is the project's real total, not the capped row count.
-    * Workflows — the open project's workflow runs (`@workflow_runs`, from
-      `ForemanServerWeb.OperatorDashboard.list_runs/1`, capped at its default limit of 100);
-      each row shows its `workflow` name and muted `status`. The badge (`@workflow_count`)
-      reads "100+" when that read came back full, since the total beyond the cap is unknown.
+    * Workflows — the open project's workflow runs (`@workflow_runs`, `NavRuns.Run` structs
+      from `NavRuns.read/1`, capped at 100); each row shows the task title as a link to
+      the run's dashboard, the muted workflow, status and age (from `@now_ms`), and a
+      `<details>` (open only for ids in `@open_runs`) with the branch, worktree (path text and
+      the projection's state), pull request, TRD path and a Conversation link. The badge
+      (`@workflow_count`) reads "100+" when that read came back full, since the total beyond
+      the cap is unknown.
     * Artifacts — the project's library files (`@library_entries`, `ForemanServer.Library`).
       Foreman has no distinct artifact read model, so this shows the closest equivalent the
       server already exposes.
@@ -351,10 +357,7 @@ defmodule ForemanServerWeb.Workspace.Components do
         </div>
         <p :if={@jobsites == []} class="ws-muted">No jobsite runs.</p>
         <ul :if={@jobsites != []} class="ws-panel-list">
-          <li :for={j <- @jobsites} class="ws-ellipsis">
-            <strong>{j.bead_id || j.jobsite_id}</strong>
-            <span class="ws-muted"> · {j.status}</span>
-          </li>
+          <.nav_jobsite_row :for={j <- @jobsites} jobsite={j} project_id={@project_id} token={@token} />
         </ul>
       </section>
       <section class="ws-panel" aria-labelledby="nav-workflows-title">
@@ -364,10 +367,14 @@ defmodule ForemanServerWeb.Workspace.Components do
         </div>
         <p :if={@workflow_runs == []} class="ws-muted">No workflow runs.</p>
         <ul :if={@workflow_runs != []} class="ws-panel-list">
-          <li :for={r <- @workflow_runs} class="ws-ellipsis">
-            <strong>{nav_workflow_label(r.workflow)}</strong>
-            <span class="ws-muted"> · {r.status}</span>
-          </li>
+          <.nav_run_row
+            :for={r <- @workflow_runs}
+            run={r}
+            open={MapSet.member?(@open_runs, r.run_id)}
+            now_ms={@now_ms}
+            project_id={@project_id}
+            token={@token}
+          />
         </ul>
       </section>
       <section class="ws-panel" aria-labelledby="nav-artifacts-title">
@@ -404,8 +411,110 @@ defmodule ForemanServerWeb.Workspace.Components do
   defp nav_match?(text, q) when is_binary(text), do: String.contains?(String.downcase(text), q)
   defp nav_match?(_text, _q), do: false
 
+  attr(:run, NavRuns.Run, required: true)
+  attr(:open, :boolean, required: true)
+  attr(:now_ms, :integer, required: true)
+  attr(:project_id, :string, required: true)
+  attr(:token, :string, default: nil)
+
+  # One Workflows-panel row: the task title as the link to the run's dashboard, the workflow,
+  # status and age muted beneath it, and the run's provenance inside a server-controlled
+  # `<details>` (`open` follows `nav_open`, so a refresh never collapses an open row). The
+  # worktree path is text, never a link: the server cannot serve a file path.
+  defp nav_run_row(assigns) do
+    ~H"""
+    <li id={"nav-run-#{@run.run_id}"} class="ws-nav-run">
+      <.link href={run_detail_path(@run.run_id, @token)}>
+        <strong class="ws-ellipsis" title={@run.title}>{@run.title}</strong>
+      </.link>
+      <span class="ws-muted ws-nav-workflow ws-ellipsis">{nav_workflow_label(@run.workflow)} · {@run.status} · {nav_age(@now_ms, @run.started_at_ms)}</span>
+      <details open={@open}>
+        <summary phx-click="nav_run_toggle" phx-value-run-id={@run.run_id}>Details</summary>
+        <p class="ws-nav-branch">
+          <%= case @run.branch do %>
+            <% :none -> %>
+              no branch recorded
+            <% %{name: name, base: base} -> %>
+              Branch <code>{name}</code><span :if={base != :none}> from <code>{base}</code></span>
+          <% end %>
+        </p>
+        <p class="ws-nav-worktree">
+          <%= case @run.worktree do %>
+            <% :none -> %>
+              no worktree recorded for this run
+            <% %{path: path, state: state} -> %>
+              Worktree <code :if={path != :none}>{path}</code><span :if={path == :none}>(path not recorded)</span>
+              <span class="ws-muted">— {state}, as recorded</span>
+          <% end %>
+        </p>
+        <p :if={@run.pr != :none} class="ws-nav-pr">
+          <a href={@run.pr.url} target="_blank" rel="noopener noreferrer">Pull request</a>
+          <span :if={@run.pr.state != :none} class="ws-muted">{@run.pr.state}</span>
+        </p>
+        <p :if={@run.trd_path != :none} class="ws-nav-trd">TRD <code>{@run.trd_path}</code> <span class="ws-muted">from the task</span></p>
+        <p class="ws-nav-conversation">
+          <.link patch={thread_path(@project_id, @run.thread_id, @token)}>Conversation</.link>
+        </p>
+      </details>
+    </li>
+    """
+  end
+
+  attr(:jobsite, NavRuns.Jobsite, required: true)
+  attr(:project_id, :string, required: true)
+  attr(:token, :string, default: nil)
+
+  # One Jobsite-panel row: its title, the bead (or the jobsite id when unbeaded) and status
+  # muted, and the branch and worktree path as text. Jobsites carry no worktree state.
+  defp nav_jobsite_row(assigns) do
+    ~H"""
+    <li id={"nav-jobsite-#{@jobsite.jobsite_id}"} class="ws-nav-run">
+      <strong class="ws-ellipsis" title={@jobsite.title}>{@jobsite.title}</strong>
+      <span class="ws-muted ws-nav-workflow ws-ellipsis">{nav_jobsite_ref(@jobsite)} · {@jobsite.status}</span>
+      <details>
+        <summary>Details</summary>
+        <p class="ws-nav-branch">
+          <%= if @jobsite.branch == :none do %>
+            no branch recorded
+          <% else %>
+            Branch <code>{@jobsite.branch}</code>
+          <% end %>
+        </p>
+        <p class="ws-nav-worktree">
+          <%= if @jobsite.worktree_path == :none do %>
+            no worktree recorded
+          <% else %>
+            Worktree <code>{@jobsite.worktree_path}</code>
+          <% end %>
+        </p>
+        <p class="ws-nav-conversation">
+          <.link patch={thread_path(@project_id, @jobsite.thread_id, @token)}>Conversation</.link>
+        </p>
+      </details>
+    </li>
+    """
+  end
+
+  defp nav_jobsite_ref(%{bead_id: :none, jobsite_id: id}), do: id
+  defp nav_jobsite_ref(%{bead_id: bead_id}), do: bead_id
+
+  # A run's age at the refresh instant: `<1m`, then whole minutes, hours and days; an unknown
+  # start reads `—`.
+  defp nav_age(_now_ms, :absent), do: "—"
+
+  defp nav_age(now_ms, started_at_ms) do
+    minutes = div(max(now_ms - started_at_ms, 0), 60_000)
+
+    cond do
+      minutes < 1 -> "<1m"
+      minutes < 60 -> "#{minutes}m"
+      minutes < 1440 -> "#{div(minutes, 60)}h"
+      true -> "#{div(minutes, 1440)}d"
+    end
+  end
+
   # A workflow run's display label: its workflow name, or a neutral fallback when the run
-  # projection carries no workflow (`RunDTO.workflow == :absent`). Never renders a raw atom.
+  # projection carries no workflow (`NavRuns.Run.workflow == :absent`). Never renders a raw atom.
   defp nav_workflow_label(workflow) when is_binary(workflow) and workflow != "", do: workflow
   defp nav_workflow_label(_), do: "workflow"
 

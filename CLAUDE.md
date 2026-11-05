@@ -609,14 +609,24 @@ workspace-nav sidebar (`Components.workspace_nav/1`, six read-only panels over d
 already exposes, no new command or event; the Jobsite and Workflows panels are read from existing
 projections on mount and refresh: a client-side Search filter over thread titles, memory
 topics and library files; a Projects list of every project (`ProjectStore.list/0`) linking to
-each workspace; a Jobsite list of the OPEN project's jobsite runs (its rows of
-`ProjectionStore.list_jobsites/0`) and a Workflows list of the open project's workflow runs
-(`OperatorDashboard.list_runs/1` filtered by `project_id`), each capped at 100 rows (Jobsite
+each workspace; a Jobsite list of the OPEN project's jobsite runs (`Workspace.NavRuns.read_jobsites/1`
+over `ProjectionStore.list_jobsites/0`) and a Workflows list of the open project's workflow runs
+(`Workspace.NavRuns.read_runs/1` over `OperatorDashboard.list_runs/1` filtered by `project_id`
+with `detail: :summary`), each capped at 100 rows (Jobsite
 newest-started-first, Workflows most-recently-active first; the Jobsite badge counts the
 project's real total, the Workflows badge reads `100+` when
-that read came back at its limit; a workflow row's name is `RunDTO.workflow`, the run
+that read came back at its limit; a Workflows row is titled by its task (`Thread.title/2`: the
+run id when it has no task) and links to that run's dashboard (`/dashboard/runs?run_id=…`, the
+page's token carried); muted beneath it are the workflow (`RunDTO.workflow`: the run
 projection's `workflow_name` or, when that is nil as it is on every dispatched run, its frozen
-`workflow_snapshot.workflow_name`); an Artifacts list of the project's
+`workflow_snapshot.workflow_name`), the status and the age. Its `Details` disclosure (closed on
+load, one row at a time via `nav_run_toggle`, server-held in `nav_open` so a refresh never
+collapses it) shows the branch and base, the worktree path as text with the state the projection
+recorded for it (`kept`/`active`/`removed`; the nav never touches the disk or git), the PR link
+(`http(s)` only, new tab, never the token), the task's TRD path as text, and a `Conversation`
+link (`patch`, token carried) to the run's thread; a Jobsite row is titled by the task that owns
+its bead (the bead or jobsite id when none does) with the same Details (branch, worktree path,
+Conversation link)); an Artifacts list of the project's
 library files, the closest the server exposes; and a Schedules list (`Schedule.DTO.list/1`) with
 cadence and next run); then a
 sidebar of threads ("Project chat", then Waiting on you / Working / Landing / Ready for review,

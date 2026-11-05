@@ -4,8 +4,8 @@ defmodule ForemanServerWeb.Workspace.NavRuns do
 
   `build_runs/4` and `build_jobsites/2` are pure: they take already-read projection values and
   return `Run` / `Jobsite` structs whose absent values are explicit sentinels (`:none`,
-  `:absent`), never `nil`. `read_runs/1` and `read_jobsites/1` do the bulk reads (a fixed number
-  of `ProjectionStore` calls, none per run) and delegate.
+  `:absent`), never `nil`. `read/1` does the bulk reads (five `ProjectionStore` calls, once each,
+  none per run) and delegates.
 
   Worktree state is the projection's claim: `"cleaned"` is `:removed`, `"created"` with
   `cleanup == "never"` is `:kept`, any other `"created"` is `:active`. A status the projection
@@ -79,41 +79,36 @@ defmodule ForemanServerWeb.Workspace.NavRuns do
   end
 
   @doc """
-  The project's runs for the nav, newest-first as `OperatorDashboard.list_runs/1` orders them.
-  Reads: `list_runs(detail: :summary)`, `list_tasks/0`, `worktrees_for_runs/1` and
-  `pr_states_for_project/1`, once each.
+  The project's runs (newest-first as `OperatorDashboard.list_runs/1` orders them) and jobsites
+  for the nav. Five `ProjectionStore` reads, once each, however many runs: `list_runs`
+  (`detail: :summary`), `list_jobsites/0`, `list_tasks/0`, `worktrees_for_runs/1` and
+  `pr_states_for_project/1`. The one task list titles runs (by `task_id`) and jobsites (by the
+  task whose `external_id` is their bead).
   """
-  @spec read_runs(String.t()) :: [Run.t()]
-  def read_runs(project_id) when is_binary(project_id) and project_id != "" do
+  @spec read(String.t()) :: %{runs: [Run.t()], jobsites: [Jobsite.t()]}
+  def read(project_id) when is_binary(project_id) and project_id != "" do
     # Only the documented success shape is matched: the filter is built here, so an error is
     # a defect, and an empty panel would hide it.
     {:ok, dtos} = OperatorDashboard.list_runs(%{project_id: project_id, detail: :summary})
 
-    tasks_by_id =
-      for %{task_id: task_id} = task <- ProjectionStore.list_tasks(), into: %{} do
-        {task_id, task}
+    jobsites =
+      Enum.filter(ProjectionStore.list_jobsites(), &(Map.get(&1, :project_id) == project_id))
+
+    tasks = Enum.filter(ProjectionStore.list_tasks(), &is_map_key(&1, :task_id))
+    tasks_by_id = Map.new(tasks, &{&1.task_id, &1})
+
+    tasks_by_external_id =
+      for %{external_id: external_id} = task <- tasks, is_binary(external_id), into: %{} do
+        {external_id, task}
       end
 
     worktrees_by_run = dtos |> Enum.map(& &1.run_id) |> ProjectionStore.worktrees_for_runs()
     pr_states = ProjectionStore.pr_states_for_project(project_id)
 
-    build_runs(dtos, tasks_by_id, worktrees_by_run, pr_states)
-  end
-
-  @doc "The project's jobsites for the nav, titled by the task that owns their bead."
-  @spec read_jobsites(String.t()) :: [Jobsite.t()]
-  def read_jobsites(project_id) when is_binary(project_id) and project_id != "" do
-    jobsites =
-      Enum.filter(ProjectionStore.list_jobsites(), &(Map.get(&1, :project_id) == project_id))
-
-    tasks_by_external_id =
-      for %{external_id: external_id} = task <- ProjectionStore.list_tasks(),
-          is_binary(external_id),
-          into: %{} do
-        {external_id, task}
-      end
-
-    build_jobsites(jobsites, tasks_by_external_id)
+    %{
+      runs: build_runs(dtos, tasks_by_id, worktrees_by_run, pr_states),
+      jobsites: build_jobsites(jobsites, tasks_by_external_id)
+    }
   end
 
   @spec build_runs([RunDTO.t()], map(), map(), map()) :: [Run.t()]

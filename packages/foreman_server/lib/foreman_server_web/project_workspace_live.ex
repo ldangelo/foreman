@@ -7,8 +7,8 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
   server already exposes (the Jobsite and Workflows panels are read from existing projections on
   mount and refresh) — a client-side Search filter over thread titles, memory topics and library
   files; the Projects list (`ProjectStore.list/0`); the open project's Jobsite list (its rows of
-  `ProjectionStore.list_jobsites/0`) and Workflows list (`OperatorDashboard.list_runs/1`
-  filtered by `project_id`), each capped at 100 rows (Jobsite newest-started-first, Workflows
+  `ProjectionStore.list_jobsites/0`) and Workflows list (`Workspace.NavRuns.read/1`,
+  from `OperatorDashboard.list_runs/1` filtered by `project_id`), each capped at 100 rows (Jobsite newest-started-first, Workflows
   most-recently-active first); the Artifacts list (the
   project's library files, the closest the server exposes); and the Schedules list
   (`Schedule.DTO.list/1`). Then the
@@ -64,12 +64,12 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
   alias ForemanServer.Schedule.DTO, as: ScheduleDTO
   alias ForemanServer.Threads.Transcript
   alias ForemanServer.Threads.Transcript.Full
-  alias ForemanServerWeb.OperatorDashboard
 
   alias ForemanServerWeb.Workspace.{
     Actions,
     Components,
     LibraryUpload,
+    NavRuns,
     ProjectNotFound,
     ProjectView,
     Refresh,
@@ -136,6 +136,8 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
             proposals: [],
             schedules: [],
             nav_schedules: [],
+            nav_open: MapSet.new(),
+            nav_docs: %{},
             projects: [],
             search_query: "",
             confirm_remove: nil,
@@ -223,6 +225,22 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
   # memory topics, library files). No read is issued; the component filters the held assigns.
   def handle_event("ws_search", %{"q" => q}, socket) when is_binary(q),
     do: {:noreply, assign(socket, :search_query, q)}
+
+  # A Details disclosure in the Workflows panel. Only a run that is listed can open: an id the
+  # nav does not list (stale click, forged value) mints no state. `open` is server-derived, so
+  # a refresh re-renders the row as the operator left it.
+  def handle_event("nav_run_toggle", %{"run-id" => id}, socket) when is_binary(id) do
+    %{nav_workflow_runs: runs, nav_open: open} = socket.assigns
+
+    open =
+      cond do
+        not Enum.any?(runs, &(&1.run_id == id)) -> open
+        MapSet.member?(open, id) -> MapSet.delete(open, id)
+        true -> MapSet.put(open, id)
+      end
+
+    {:noreply, assign(socket, :nav_open, open)}
+  end
 
   def handle_event("confirm_stop", %{"thread-id" => id}, socket),
     do: {:noreply, assign(socket, :confirm_stop, id)}
@@ -630,8 +648,8 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
     project_id = socket.assigns.project_id
     {:ok, overview} = Overview.build(project_id, include_resolved: true)
     status = status(project_id)
-    jobsites = nav_jobsites(project_id)
-    workflow_runs = nav_workflow_runs(project_id)
+    %{runs: workflow_runs, jobsites: jobsites} = NavRuns.read(project_id)
+    listed_run_ids = MapSet.new(workflow_runs, & &1.run_id)
 
     socket
     |> assign(
@@ -647,7 +665,10 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
       nav_jobsites: Enum.take(jobsites, @nav_jobsite_limit),
       nav_jobsite_count: Integer.to_string(length(jobsites)),
       nav_workflow_runs: workflow_runs,
-      nav_workflow_count: nav_count(length(workflow_runs), @nav_workflow_limit)
+      nav_workflow_count: nav_count(length(workflow_runs), @nav_workflow_limit),
+      nav_now_ms: System.os_time(:millisecond),
+      nav_open: MapSet.intersection(socket.assigns.nav_open, listed_run_ids),
+      nav_docs: Map.take(socket.assigns.nav_docs, MapSet.to_list(listed_run_ids))
     )
     |> assign(:schedules, schedules(socket))
     |> sync_library_panels()
@@ -779,24 +800,6 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
     |> Enum.sort_by(&String.downcase(&1.name))
   end
 
-  # The OPEN project's jobsite runs for the nav Jobsite panel, newest-started-first as
-  # `list_jobsites/0` returns them. That read is global, so this project's rows are selected
-  # here under the one key the projection writes them with (`:project_id`); a jobsite whose
-  # projection was built by an out-of-order event carries no project id at all and so is none
-  # of this project's.
-  defp nav_jobsites(project_id) do
-    Enum.filter(ProjectionStore.list_jobsites(), &(Map.get(&1, :project_id) == project_id))
-  end
-
-  # The OPEN project's workflow runs for the nav Workflows panel, read-only via the
-  # OperatorDashboard facade's `project_id` filter; its default limit of 100 caps the list.
-  # Only the documented success shape is matched: this call builds its own filter, so an error
-  # is a defect here, and a panel that quietly showed "No workflow runs." would hide it.
-  defp nav_workflow_runs(project_id) do
-    {:ok, rows} = OperatorDashboard.list_runs(%{project_id: project_id})
-    rows
-  end
-
   # A nav panel's count badge. A list cut off at `limit` cannot say how many rows exist past
   # it, so a full one reads "100+" rather than a number that is the cap, not the total.
   defp nav_count(count, limit) when count >= limit, do: "#{limit}+"
@@ -923,6 +926,8 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
           jobsite_count={@nav_jobsite_count}
           workflow_runs={@nav_workflow_runs}
           workflow_count={@nav_workflow_count}
+          open_runs={@nav_open}
+          now_ms={@nav_now_ms}
         />
         <Components.thread_sidebar
           project_id={@project_id}

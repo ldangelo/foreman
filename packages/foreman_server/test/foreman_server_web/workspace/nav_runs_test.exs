@@ -194,7 +194,7 @@ defmodule ForemanServerWeb.Workspace.NavRunsTest do
     end
   end
 
-  describe "read_runs/1 and read_jobsites/1 over a real projection" do
+  describe "read/1 over a real projection" do
     setup do
       ProjectionStoreReset.reset!()
       on_exit(&ProjectionStoreReset.reset!/0)
@@ -287,8 +287,8 @@ defmodule ForemanServerWeb.Workspace.NavRunsTest do
       :ok
     end
 
-    test "read_runs/1 returns the rows build_runs/4 builds from the same projection" do
-      runs = NavRuns.read_runs("p1")
+    test "read/1 returns the rows build_runs/4 builds from the same projection" do
+      %{runs: runs} = NavRuns.read("p1")
 
       assert runs |> Enum.map(& &1.run_id) |> Enum.sort() == ["r1", "r2"]
       r1 = Enum.find(runs, &(&1.run_id == "r1"))
@@ -316,7 +316,7 @@ defmodule ForemanServerWeb.Workspace.NavRunsTest do
                )
     end
 
-    test "read_runs/1 reads no per-run phases" do
+    test "read/1 reads no per-run phases" do
       parent = self()
       tracer = spawn_link(fn -> count_phase_reads(0) end)
 
@@ -324,7 +324,7 @@ defmodule ForemanServerWeb.Workspace.NavRunsTest do
       :erlang.trace(parent, true, [:call, {:tracer, tracer}])
 
       try do
-        assert length(NavRuns.read_runs("p1")) == 2
+        assert length(NavRuns.read("p1").runs) == 2
         ref = :erlang.trace_delivered(parent)
         assert_receive {:trace_delivered, ^parent, ^ref}
         send(tracer, {:report, parent})
@@ -335,12 +335,48 @@ defmodule ForemanServerWeb.Workspace.NavRunsTest do
       end
     end
 
-    test "read_jobsites/1 keeps this project's jobsites and titles them by bead task" do
-      assert [%Jobsite{} = js] = NavRuns.read_jobsites("p1")
+    test "read/1 issues exactly five store reads, one of each" do
+      me = self()
+      store = Process.whereis(ProjectionStore)
+      :erlang.trace(store, true, [:receive])
+
+      try do
+        assert %{runs: [_, _]} = NavRuns.read("p1")
+        ref = :erlang.trace_delivered(store)
+        assert_receive {:trace_delivered, ^store, ^ref}
+      after
+        :erlang.trace(store, false, [:receive])
+      end
+
+      assert read_tags(store, me, []) == [
+               :list_jobsites,
+               :list_runs,
+               :list_tasks,
+               :pr_states_for_project,
+               :worktrees_for_runs
+             ]
+    end
+
+    test "read/1 keeps this project's jobsites and titles them by bead task" do
+      assert %{jobsites: [%Jobsite{} = js]} = NavRuns.read("p1")
       assert js.jobsite_id == "js1"
       assert js.title == "Fix login"
       assert js.bead_id == "bd-9"
       assert js.branch == "feat/js1"
+    end
+  end
+
+  # The sorted request tags of the GenServer calls `from_pid` made to the traced store.
+  defp read_tags(store, from_pid, acc) do
+    receive do
+      {:trace, ^store, :receive, {:"$gen_call", {^from_pid, _ref}, request}} ->
+        tag = if is_tuple(request), do: elem(request, 0), else: request
+        read_tags(store, from_pid, [tag | acc])
+
+      {:trace, ^store, :receive, _other} ->
+        read_tags(store, from_pid, acc)
+    after
+      0 -> Enum.sort(acc)
     end
   end
 
