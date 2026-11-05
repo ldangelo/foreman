@@ -64,8 +64,8 @@ defmodule ForemanServerWeb.Workspace.Components do
   Path of the project workspace (the coordinator conversation). `token` is the dashboard token
   the page was opened with, or nil: the dashboard takes it only as a header or as `?token=` (no
   cookie), so an in-page link has to carry it for a reload of the page it leads to to be
-  answered. Every link of the page is built by `project_path/2`, `thread_path/3` and
-  `settings_path/2`.
+  answered. Every link of the page is built by `project_path/2`, `thread_path/3`,
+  `settings_path/2` and `run_detail_path/3`.
   """
   @spec project_path(String.t(), String.t() | nil) :: String.t()
   def project_path(project_id, token \\ nil), do: base_path(project_id) <> query(token)
@@ -84,6 +84,41 @@ defmodule ForemanServerWeb.Workspace.Components do
   @spec settings_path(String.t(), String.t() | nil) :: String.t()
   def settings_path(project_id, token \\ nil),
     do: base_path(project_id) <> "/settings" <> query(token)
+
+  @run_tabs ~w(summary logs changes actions)
+
+  @doc """
+  Path of a run's details on the operator run dashboard (`/dashboard/runs`). Parameters come in
+  the order `run_id`, `tab`, `file`, `token`; `tab` (one of `summary|logs|changes|actions`) and
+  `file` are given in `opts` and omitted when absent, `token` when nil (see `project_path/2`).
+  Every value is form-encoded, so an `&` or `=` in a file name cannot add or alter a parameter.
+  Raises `ArgumentError` on a non-binary or empty `run_id` and on an unknown `tab`, so no link
+  is ever built with an empty or ambiguous target.
+  """
+  @spec run_detail_path(String.t(), String.t() | nil, tab: String.t(), file: String.t()) ::
+          String.t()
+  def run_detail_path(run_id, token, opts \\ [])
+
+  def run_detail_path(run_id, token, opts) when is_binary(run_id) and run_id != "" do
+    tab = Keyword.get(opts, :tab)
+
+    if tab != nil and tab not in @run_tabs do
+      raise ArgumentError,
+            "run_detail_path/3: tab must be one of #{inspect(@run_tabs)}, got: #{inspect(tab)}"
+    end
+
+    params =
+      [run_id: run_id, tab: tab, file: Keyword.get(opts, :file), token: token]
+      |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+
+    "/dashboard/runs?" <>
+      Enum.map_join(params, "&", fn {key, value} -> "#{key}=" <> URI.encode_www_form(value) end)
+  end
+
+  def run_detail_path(run_id, _token, _opts) do
+    raise ArgumentError,
+          "run_detail_path/3: run_id must be a non-empty string, got: #{inspect(run_id)}"
+  end
 
   defp base_path(project_id), do: "/dashboard/projects/#{project_id}"
 
