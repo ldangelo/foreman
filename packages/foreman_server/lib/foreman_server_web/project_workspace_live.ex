@@ -3,10 +3,13 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
   The project workspace: `GET /dashboard/projects/:id` and
   `GET /dashboard/projects/:id/threads/:thread_id` (authenticated).
 
-  Leftmost, the workspace nav (`Components.workspace_nav/1`): four read-only panels over data the
+  Leftmost, the workspace nav (`Components.workspace_nav/1`): six read-only panels over data the
   page already holds — a client-side Search filter over thread titles, memory topics and library
-  files; the Projects list (`ProjectStore.list/0`); the Artifacts list (the project's library
-  files, the closest the server exposes); and the Schedules list (`Schedule.DTO.list/1`). Then the
+  files; the Projects list (`ProjectStore.list/0`); the open project's Jobsite list (its rows of
+  `ProjectionStore.list_jobsites/0`) and Workflows list (`OperatorDashboard.list_runs/1`
+  filtered by `project_id`), both newest-first and capped at 100 rows; the Artifacts list (the
+  project's library files, the closest the server exposes); and the Schedules list
+  (`Schedule.DTO.list/1`). Then the
   thread sidebar (`Components.thread_sidebar/1`): "Project chat" and the project's
   threads grouped by Overview state (E7), each row a patch link. In the main column,
   `/projects/:id` is the coordinator conversation (E15 via `ForemanServer.CoordinatorAPI`) with
@@ -59,6 +62,7 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
   alias ForemanServer.Schedule.DTO, as: ScheduleDTO
   alias ForemanServer.Threads.Transcript
   alias ForemanServer.Threads.Transcript.Full
+  alias ForemanServerWeb.OperatorDashboard
 
   alias ForemanServerWeb.Workspace.{
     Actions,
@@ -73,6 +77,12 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
   @tail 50
   @page 200
   @max_kept 400
+  # The nav Jobsite panel bounds its rows like the Workflows panel does: `list_jobsites/0` is
+  # unbounded, so take the 100 newest of THIS project's to keep the sidebar from fanning out as
+  # history accumulates. The Workflows panel inherits `OperatorDashboard`'s default limit, which
+  # is mirrored here so its badge can say "100+" instead of a count that is really the cap.
+  @nav_jobsite_limit 100
+  @nav_workflow_limit 100
   @tabs %{"library" => :library, "pull_requests" => :pull_requests, "scheduled" => :scheduled}
   # The values the thread controls send: derived from the pane's own table, never a second list.
   @thread_actions Components.thread_actions()
@@ -618,6 +628,8 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
     project_id = socket.assigns.project_id
     {:ok, overview} = Overview.build(project_id, include_resolved: true)
     status = status(project_id)
+    jobsites = nav_jobsites(project_id)
+    workflow_runs = nav_workflow_runs(project_id)
 
     socket
     |> assign(
@@ -629,7 +641,11 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
       memory_topics: memory_topics(project_id),
       library_entries: library_entries(project_id),
       projects: nav_projects(project_id),
-      nav_schedules: ScheduleDTO.list(project_id)
+      nav_schedules: ScheduleDTO.list(project_id),
+      nav_jobsites: Enum.take(jobsites, @nav_jobsite_limit),
+      nav_jobsite_count: Integer.to_string(length(jobsites)),
+      nav_workflow_runs: workflow_runs,
+      nav_workflow_count: nav_count(length(workflow_runs), @nav_workflow_limit)
     )
     |> assign(:schedules, schedules(socket))
     |> sync_library_panels()
@@ -751,6 +767,29 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
     |> Enum.sort_by(&String.downcase(&1.name))
   end
 
+  # The OPEN project's jobsite runs for the nav Jobsite panel, newest-started-first as
+  # `list_jobsites/0` returns them. That read is global, so this project's rows are selected
+  # here under the one key the projection writes them with (`:project_id`); a jobsite whose
+  # projection was built by an out-of-order event carries no project id at all and so is none
+  # of this project's.
+  defp nav_jobsites(project_id) do
+    Enum.filter(ProjectionStore.list_jobsites(), &(Map.get(&1, :project_id) == project_id))
+  end
+
+  # The OPEN project's workflow runs for the nav Workflows panel, read-only via the
+  # OperatorDashboard facade's `project_id` filter; its default limit of 100 caps the list.
+  # Only the documented success shape is matched: this call builds its own filter, so an error
+  # is a defect here, and a panel that quietly showed "No workflow runs." would hide it.
+  defp nav_workflow_runs(project_id) do
+    {:ok, rows} = OperatorDashboard.list_runs(%{project_id: project_id})
+    rows
+  end
+
+  # A nav panel's count badge. A list cut off at `limit` cannot say how many rows exist past
+  # it, so a full one reads "100+" rather than a number that is the cap, not the total.
+  defp nav_count(count, limit) when count >= limit, do: "#{limit}+"
+  defp nav_count(count, _limit), do: Integer.to_string(count)
+
   defp proposals(project_id) do
     case ProjectionStore.coordinator_state(project_id) do
       {:ok, conv} ->
@@ -868,6 +907,10 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
           overview={@overview}
           memory_topics={@memory_topics}
           library_entries={@library_entries}
+          jobsites={@nav_jobsites}
+          jobsite_count={@nav_jobsite_count}
+          workflow_runs={@nav_workflow_runs}
+          workflow_count={@nav_workflow_count}
         />
         <Components.thread_sidebar
           project_id={@project_id}

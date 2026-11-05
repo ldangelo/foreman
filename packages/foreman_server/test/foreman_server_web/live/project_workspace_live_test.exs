@@ -1331,15 +1331,229 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
     end
   end
 
+  # A JobsiteStarted seed. The projection stamps `started_at_ms` from the applying caller's
+  # clock (`apply_event/3` OVERWRITES any `_projection_event_at_ms` the payload carries), so
+  # `seed_jobsite/4` injects that clock instead of seeding the timestamp: it is the only way to
+  # give two jobsites distinct, controlled start times and make newest-first ordering
+  # deterministic rather than insertion order.
+  defp jobsite(jobsite_id, bead_id, project_id),
+    do: %{
+      event_type: "JobsiteStarted",
+      payload: %{
+        jobsite_id: jobsite_id,
+        repo_path: "/tmp/#{jobsite_id}",
+        strategy: "worktree",
+        bead_id: bead_id,
+        project_id: project_id
+      }
+    }
+
+  defp seed_jobsite(jobsite_id, bead_id, project_id, at_ms) do
+    Process.put(:projection_store_now_ms, fn -> at_ms end)
+    :ok = ProjectionStore.apply_events([jobsite(jobsite_id, bead_id, project_id)])
+  after
+    Process.delete(:projection_store_now_ms)
+  end
+
+  # A RunStarted seed carrying a TOP-LEVEL workflow name, the shape an operator/MCP start
+  # produces (the nav Workflows panel's primary label).
+  defp workflow_run(run_id, project_id, workflow_name),
+    do: %{
+      event_type: "RunStarted",
+      payload: %{run_id: run_id, project_id: project_id, workflow_name: workflow_name}
+    }
+
+  # A RunStarted seed in the PRODUCTION dispatch shape: no top-level `workflow_name` (the
+  # dispatcher's `run.start` payload has none), the name only on the frozen snapshot.
+  defp dispatched_run(run_id, project_id, workflow_name),
+    do: %{
+      event_type: "RunStarted",
+      payload: %{
+        run_id: run_id,
+        project_id: project_id,
+        workflow_snapshot: %{run_id: run_id, workflow_name: workflow_name, phases: []}
+      }
+    }
+
+  # Byte offset of a substring in the rendered HTML, for deterministic order assertions.
+  defp panel_order(html, id), do: substring_index(html, id)
+  defp row_order(html, text), do: substring_index(html, text)
+
+  defp substring_index(html, needle) do
+    case :binary.match(html, needle) do
+      {start, _len} -> start
+      :nomatch -> flunk("expected #{inspect(needle)} in rendered nav, but it was absent")
+    end
+  end
+
   describe "workspace nav sidebar" do
-    test "renders the four nav panels inside the nav landmark", %{id: id} do
+    test "renders the six nav panels inside the nav landmark", %{id: id} do
       {view, _html} = mount_view(id)
 
       assert has_element?(view, ~s(nav#workspace-nav[aria-label="Workspace navigation"]))
 
-      for heading <- ["Search", "Projects", "Artifacts", "Schedules"] do
+      for heading <- ["Search", "Projects", "Jobsite", "Workflows", "Artifacts", "Schedules"] do
         assert has_element?(view, "#workspace-nav section.ws-panel h2", heading)
       end
+    end
+
+    test "the Jobsite panel lists jobsite runs newest-first after Projects, before Workflows",
+         %{id: id} do
+      seed_jobsite("js-old", "bead-old", id, 1_000)
+      seed_jobsite("js-new", "bead-new", id, 2_000)
+
+      {view, html} = mount_view(id)
+
+      # Count badge reflects the two seeded jobsites (exact text: '2' must not match a '12').
+      assert has_element?(
+               view,
+               ~s(#workspace-nav section[aria-labelledby="nav-jobsite-title"] .ws-count),
+               ~r/\A\s*2\s*\z/
+             )
+
+      # bead_id primary label + status secondary are shown.
+      assert has_element?(
+               view,
+               ~s(#workspace-nav section[aria-labelledby="nav-jobsite-title"] strong),
+               "bead-new"
+             )
+
+      assert has_element?(
+               view,
+               ~s(#workspace-nav section[aria-labelledby="nav-jobsite-title"] .ws-muted),
+               "starting"
+             )
+
+      # Newest started_at_ms first, and the panel sits between Projects and Workflows.
+      assert panel_order(html, "nav-projects-title") <
+               panel_order(html, "nav-jobsite-title")
+
+      assert panel_order(html, "nav-jobsite-title") <
+               panel_order(html, "nav-workflows-title")
+
+      assert row_order(html, "bead-new") < row_order(html, "bead-old")
+    end
+
+    test "the Jobsite panel shows its empty state when there are no jobsite runs", %{id: id} do
+      {view, _html} = mount_view(id)
+
+      assert has_element?(
+               view,
+               ~s(#workspace-nav section[aria-labelledby="nav-jobsite-title"] .ws-muted),
+               "No jobsite runs."
+             )
+    end
+
+    test "the Workflows panel lists runs after Jobsite with workflow name and status",
+         %{id: id} do
+      :ok = ProjectionStore.apply_events([workflow_run("r-wf", id, "implement-trd")])
+
+      {view, html} = mount_view(id)
+
+      # Named workflow row shows its workflow name; unnamed setup runs fall back to "workflow".
+      assert has_element?(
+               view,
+               ~s(#workspace-nav section[aria-labelledby="nav-workflows-title"] strong),
+               "implement-trd"
+             )
+
+      assert has_element?(
+               view,
+               ~s(#workspace-nav section[aria-labelledby="nav-workflows-title"] strong),
+               "workflow"
+             )
+
+      # Count badge reflects THIS project's runs only: its four setup runs plus this one. The
+      # other project's run is not among them, and the exact text keeps '5' from matching '15'.
+      assert has_element?(
+               view,
+               ~s(#workspace-nav section[aria-labelledby="nav-workflows-title"] .ws-count),
+               ~r/\A\s*5\s*\z/
+             )
+
+      # The run's status shows as the muted secondary label, scoped to the Workflows panel.
+      assert has_element?(
+               view,
+               ~s(#workspace-nav section[aria-labelledby="nav-workflows-title"] .ws-muted),
+               "awaiting_worker"
+             )
+
+      # Panel order: Workflows after Jobsite, before Artifacts (unchanged siblings follow).
+      assert panel_order(html, "nav-jobsite-title") <
+               panel_order(html, "nav-workflows-title")
+
+      assert panel_order(html, "nav-workflows-title") <
+               panel_order(html, "nav-artifacts-title")
+    end
+
+    # Every dispatched run reaches the projection with `workflow_name: nil` and its name on the
+    # frozen snapshot, so reading the top-level field alone labelled every real run "workflow".
+    test "a dispatched run's row shows the name from its frozen workflow snapshot", %{id: id} do
+      :ok = ProjectionStore.apply_events([dispatched_run("r-dispatched", id, "prd")])
+
+      {view, _html} = mount_view(id)
+
+      assert has_element?(
+               view,
+               ~s(#workspace-nav section[aria-labelledby="nav-workflows-title"] strong),
+               "prd"
+             )
+    end
+
+    test "the Workflows panel shows its empty state when there are no workflow runs", %{id: id} do
+      # Clear the setup-seeded runs, then re-seed just the project projection the mount reads:
+      # every seeded run belongs to this project, so a clean slate is the way to an empty panel.
+      ProjectionStoreReset.reset!()
+
+      :ok =
+        ProjectionStore.apply_events([
+          %{event_type: "ProjectRegistered", payload: %{project_id: id, path: "/tmp/#{id}"}}
+        ])
+
+      {view, _html} = mount_view(id)
+
+      assert has_element?(
+               view,
+               ~s(#workspace-nav section[aria-labelledby="nav-workflows-title"] .ws-muted),
+               "No workflow runs."
+             )
+    end
+
+    test "another project's run and jobsite stay out of this project's nav panels",
+         %{id: id, other: other} do
+      seed_jobsite("js-mine", "bead-mine", id, 1_000)
+      seed_jobsite("js-theirs", "bead-theirs", other, 2_000)
+      :ok = ProjectionStore.apply_events([workflow_run("r-mine", id, "mine-workflow")])
+      :ok = ProjectionStore.apply_events([workflow_run("r-theirs", other, "their-workflow")])
+
+      {view, _html} = mount_view(id)
+
+      jobsite_panel = ~s(#workspace-nav section[aria-labelledby="nav-jobsite-title"])
+      workflows_panel = ~s(#workspace-nav section[aria-labelledby="nav-workflows-title"])
+
+      # This project's jobsite is listed; the other project's (newer, so it would sort first
+      # and survive any row cap) is not, and the badge counts only this project's.
+      assert has_element?(view, "#{jobsite_panel} strong", "bead-mine")
+      refute has_element?(view, "#{jobsite_panel} strong", "bead-theirs")
+      assert has_element?(view, "#{jobsite_panel} .ws-count", ~r/\A\s*1\s*\z/)
+
+      # Same for the Workflows panel: this project's named run, not the other project's.
+      assert has_element?(view, "#{workflows_panel} strong", "mine-workflow")
+      refute has_element?(view, "#{workflows_panel} strong", "their-workflow")
+    end
+
+    test "a run or jobsite event for THIS project refreshes the nav panels", %{id: id} do
+      {view, html} = mount_view(id)
+      refute html =~ "bead-live"
+
+      seed_jobsite("js-live", "bead-live", id, 3_000)
+
+      html = await_until(view, &(&1 =~ "bead-live"))
+      refute html =~ "live-workflow"
+
+      :ok = ProjectionStore.apply_events([workflow_run("r-live", id, "live-workflow")])
+
+      await_until(view, &(&1 =~ "live-workflow"))
     end
 
     test "the Projects panel lists every project, linking to each and marking the open one",

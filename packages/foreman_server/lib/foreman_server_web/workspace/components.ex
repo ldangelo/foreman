@@ -189,9 +189,13 @@ defmodule ForemanServerWeb.Workspace.Components do
   attr(:overview, :map, required: true)
   attr(:memory_topics, :any, required: true)
   attr(:library_entries, :any, required: true)
+  attr(:jobsites, :list, required: true)
+  attr(:jobsite_count, :string, required: true)
+  attr(:workflow_runs, :list, required: true)
+  attr(:workflow_count, :string, required: true)
 
   @doc """
-  The left workspace-navigation sidebar (`<nav id="workspace-nav">`), four read-only panels over
+  The left workspace-navigation sidebar (`<nav id="workspace-nav">`), six read-only panels over
   data the page already holds, no new server command or event:
 
     * Search — a client-side filter (`phx-change="ws_search"`, held in `@query`) over content
@@ -201,6 +205,14 @@ defmodule ForemanServerWeb.Workspace.Components do
       beyond the open thread are not loaded, so only their titles are searched.
     * Projects — every project (`@projects`, from `ForemanServer.ProjectStore.list/0`), each a
       link to its own workspace; the open one is marked.
+    * Jobsite — the open project's jobsite runs (`@jobsites`, selected from
+      `ForemanServer.ProjectionStore.list_jobsites/0`), newest-started-first, at most 100 rows;
+      each row shows its `bead_id` (or `jobsite_id` when unbeaded) and muted `status`. The
+      badge (`@jobsite_count`) is the project's real total, not the capped row count.
+    * Workflows — the open project's workflow runs (`@workflow_runs`, from
+      `ForemanServerWeb.OperatorDashboard.list_runs/1`, capped at its default limit of 100);
+      each row shows its `workflow` name and muted `status`. The badge (`@workflow_count`)
+      reads "100+" when that read came back full, since the total beyond the cap is unknown.
     * Artifacts — the project's library files (`@library_entries`, `ForemanServer.Library`).
       Foreman has no distinct artifact read model, so this shows the closest equivalent the
       server already exposes.
@@ -296,6 +308,32 @@ defmodule ForemanServerWeb.Workspace.Components do
           </li>
         </ul>
       </section>
+      <section class="ws-panel" aria-labelledby="nav-jobsite-title">
+        <div class="ws-panel-head">
+          <h2 id="nav-jobsite-title">Jobsite</h2>
+          <span class="ws-count">{@jobsite_count}</span>
+        </div>
+        <p :if={@jobsites == []} class="ws-muted">No jobsite runs.</p>
+        <ul :if={@jobsites != []} class="ws-panel-list">
+          <li :for={j <- @jobsites} class="ws-ellipsis">
+            <strong>{j.bead_id || j.jobsite_id}</strong>
+            <span class="ws-muted"> · {j.status}</span>
+          </li>
+        </ul>
+      </section>
+      <section class="ws-panel" aria-labelledby="nav-workflows-title">
+        <div class="ws-panel-head">
+          <h2 id="nav-workflows-title">Workflows</h2>
+          <span class="ws-count">{@workflow_count}</span>
+        </div>
+        <p :if={@workflow_runs == []} class="ws-muted">No workflow runs.</p>
+        <ul :if={@workflow_runs != []} class="ws-panel-list">
+          <li :for={r <- @workflow_runs} class="ws-ellipsis">
+            <strong>{nav_workflow_label(r.workflow)}</strong>
+            <span class="ws-muted"> · {r.status}</span>
+          </li>
+        </ul>
+      </section>
       <section class="ws-panel" aria-labelledby="nav-artifacts-title">
         <div class="ws-panel-head">
           <h2 id="nav-artifacts-title">Artifacts</h2>
@@ -329,6 +367,11 @@ defmodule ForemanServerWeb.Workspace.Components do
 
   defp nav_match?(text, q) when is_binary(text), do: String.contains?(String.downcase(text), q)
   defp nav_match?(_text, _q), do: false
+
+  # A workflow run's display label: its workflow name, or a neutral fallback when the run
+  # projection carries no workflow (`RunDTO.workflow == :absent`). Never renders a raw atom.
+  defp nav_workflow_label(workflow) when is_binary(workflow) and workflow != "", do: workflow
+  defp nav_workflow_label(_), do: "workflow"
 
   # A schedule's human cadence: its interval (`every`) or `cron` spec, the only two spec kinds.
   defp nav_cadence(%{spec: spec}) when is_map(spec) do

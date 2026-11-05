@@ -98,6 +98,42 @@ defmodule ForemanServerWeb.OperatorDashboardTest do
     assert {:error, :run_not_found} = OperatorDashboard.run_logs("missing")
   end
 
+  # Production dispatch puts the name on the frozen snapshot only: the `run.start` payload
+  # `Workflow.Dispatcher` sends has no top-level `workflow_name`, so the run projection keeps
+  # nil and a DTO that read only that field reported `:absent` for every real run.
+  test "a dispatched run's DTO takes its workflow name from the frozen snapshot" do
+    :ok =
+      ProjectionStore.apply_events([
+        %{
+          event_type: "RunStarted",
+          payload: %{
+            run_id: "run-dispatched",
+            project_id: "project-1",
+            workflow_snapshot: %{run_id: "run-dispatched", workflow_name: "prd", phases: []}
+          }
+        }
+      ])
+
+    assert %{workflow_name: nil, workflow_snapshot: %{workflow_name: "prd"}} =
+             ProjectionStore.run("run-dispatched")
+
+    assert {:ok, rows} = OperatorDashboard.list_runs(%{"limit" => "9999"})
+    assert %{workflow: "prd"} = Enum.find(rows, &(&1.run_id == "run-dispatched"))
+  end
+
+  test "a run with neither a workflow name nor a snapshot name reports :absent" do
+    :ok =
+      ProjectionStore.apply_events([
+        %{
+          event_type: "RunStarted",
+          payload: %{run_id: "run-nameless", project_id: "project-1", workflow_snapshot: %{}}
+        }
+      ])
+
+    assert {:ok, rows} = OperatorDashboard.list_runs(%{"limit" => "9999"})
+    assert %{workflow: :absent} = Enum.find(rows, &(&1.run_id == "run-nameless"))
+  end
+
   test "run actions dispatch exact command gateway envelopes and stop defaults to operator_pause" do
     Application.put_env(
       :foreman_server,
