@@ -606,7 +606,7 @@ The project workspace is `GET /dashboard/projects/:id` (+ `/threads/:thread_id`,
 `foreman project open <id>` opens it in a browser (the token rides in the URL and every link and
 patch of the page keeps it, the settings page's way back too). Layout: a leftmost
 workspace-nav sidebar (`Components.workspace_nav/1`, six read-only panels over data the server
-already exposes, no new command or event; the Jobsite and Workflows panels are read from existing
+already exposes, no new server command or event; the Jobsite and Workflows panels are read from existing
 projections on mount and refresh: a client-side Search filter over thread titles, memory
 topics and library files; a Projects list of every project (`ProjectStore.list/0`) linking to
 each workspace; a Jobsite list of the OPEN project's jobsite runs and a Workflows list of the
@@ -621,7 +621,7 @@ run id when it has no task) and links to that run's dashboard (`/dashboard/runs?
 page's token carried); muted beneath it are the workflow (`RunDTO.workflow`: the run
 projection's `workflow_name` or, when that is nil as it is on every dispatched run, its frozen
 `workflow_snapshot.workflow_name`), the status and the age. Its `Details` disclosure (closed on
-load, one row at a time via `nav_run_toggle`, server-held in `nav_open` so a refresh never
+load, each row opening and closing on its own via `nav_run_toggle`, server-held in `nav_open` so a refresh never
 collapses it) shows the branch and base, the worktree path as text with the state the projection
 recorded for it (`kept`/`active`/`removed`; the nav never touches the disk or git), the PR link
 (`http(s)` only, new tab, never the token), the task's TRD path as text, a `Documents` area filled

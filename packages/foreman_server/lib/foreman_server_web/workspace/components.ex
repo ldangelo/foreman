@@ -539,20 +539,10 @@ defmodule ForemanServerWeb.Workspace.Components do
   defp nav_jobsite_ref(%{bead_id: :none, jobsite_id: id}), do: id
   defp nav_jobsite_ref(%{bead_id: bead_id}), do: bead_id
 
-  # A run's age at the refresh instant: `<1m`, then whole minutes, hours and days; an unknown
-  # start reads `—`.
+  # A run's age at the refresh instant, in the thread list's own vocabulary
+  # (`ThreadView.age/2`: `now`, `5m`, `3h`, `2d`); an unknown start reads `—`.
   defp nav_age(_now_ms, :absent), do: "—"
-
-  defp nav_age(now_ms, started_at_ms) do
-    minutes = div(max(now_ms - started_at_ms, 0), 60_000)
-
-    cond do
-      minutes < 1 -> "<1m"
-      minutes < 60 -> "#{minutes}m"
-      minutes < 1440 -> "#{div(minutes, 60)}h"
-      true -> "#{div(minutes, 1440)}d"
-    end
-  end
+  defp nav_age(now_ms, started_at_ms), do: ThreadView.age(started_at_ms, now_ms)
 
   # A workflow run's display label: its workflow name, or a neutral fallback when the run
   # projection carries no workflow (`NavRuns.Run.workflow == :absent`). Never renders a raw atom.

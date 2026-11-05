@@ -1706,7 +1706,7 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
         assert has_element?(
                  view,
                  "#nav-run-#{run_id} .ws-muted.ws-nav-workflow",
-                 ~r/\Afix · awaiting_worker · (<1m|\d+m)\z/
+                 ~r/\Afix · awaiting_worker · (now|\d+m)\z/
                )
       end
     end
@@ -1733,7 +1733,7 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
       refute has_element?(bare, ~s(#workspace-nav a[href*="token"]))
     end
 
-    test "a run's age reads <1m, minutes, hours and days from its start", %{id: id} do
+    test "a run's age reads now, minutes, hours and days from its start", %{id: id} do
       now = System.os_time(:millisecond)
 
       for {run_id, age_ms} <- [
@@ -1754,7 +1754,7 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
             {"r-age-5m", "5m"},
             {"r-age-3h", "3h"},
             {"r-age-2d", "2d"},
-            {"r-age-new", "<1m"}
+            {"r-age-new", "now"}
           ] do
         assert has_element?(
                  view,
