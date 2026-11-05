@@ -1,11 +1,23 @@
 defmodule ForemanServerWeb.OperatorRunDashboardLive do
   @moduledoc """
   Authenticated operator run-management dashboard.
+
+  Deep links: `/dashboard/runs?run_id=R[&tab=summary|logs|changes|actions][&file=PATH][&token=T]`.
+  `run_id` alone opens run R's detail; an unknown or missing `tab` is `summary`. With
+  `tab=changes&file=PATH` the Changes tab shows the `git diff` patch of that changed file (a diff,
+  not the file; cut at a byte limit with a visible notice). `tab`/`file` are applied in `mount/3`
+  before the first refresh and again by `handle_params/3` on `patch` navigation (a no-op when
+  already applied). Git evidence and the preview are only read once the socket is connected: the
+  dead (HTTP) render runs no git, and the periodic refresh tick never re-reads the preview.
+  Links keep `token` only when the page was opened with one.
   """
 
   use ForemanServerWeb, :live_view
 
   alias ForemanServerWeb.OperatorDashboard
+  alias ForemanServerWeb.Workspace.Components
+
+  @tabs ~w(summary logs changes actions)
 
   @refresh_ms 2_000
 
@@ -16,6 +28,7 @@ defmodule ForemanServerWeb.OperatorRunDashboardLive do
     {:ok,
      socket
      |> assign(:page_title, "Operator Run Dashboard")
+     |> assign(:token, param_string(params["token"]))
      |> assign(:selected_run_id, params["run_id"])
      |> assign(:status_filter, params["status"] || "")
      |> assign(:project_filter, params["project_id"] || "")
@@ -23,14 +36,20 @@ defmodule ForemanServerWeb.OperatorRunDashboardLive do
      |> assign(:runs, [])
      |> assign(:detail, nil)
      |> assign(:detail_error, nil)
-     |> assign(:active_tab, "summary")
+     |> assign(:active_tab, normalize_tab(params["tab"]))
+     |> assign(:selected_file, param_string(params["file"]))
+     |> assign(:file_preview, :absent)
      |> assign(:last_refresh_at, nil)
      |> assign(:stale?, false)
      |> assign(:error, nil)
      |> assign(:action_result, nil)
      |> assign(:action_intent_key, new_action_intent_key())
-     |> refresh()}
+     |> refresh()
+     |> load_preview()}
   end
+
+  @impl true
+  def handle_params(params, _uri, socket), do: {:noreply, apply_nav(socket, params)}
 
   @impl true
   def handle_event("refresh", _params, socket), do: {:noreply, refresh(socket)}
@@ -45,12 +64,16 @@ defmodule ForemanServerWeb.OperatorRunDashboardLive do
   end
 
   def handle_event("select-run", %{"run-id" => run_id}, socket) do
-    {:noreply, socket |> assign(:selected_run_id, run_id) |> refresh()}
+    {:noreply,
+     socket
+     |> assign(:selected_run_id, run_id)
+     |> clear_file()
+     |> refresh()}
   end
 
   def handle_event("tab", %{"tab" => tab}, socket)
       when tab in ["summary", "logs", "changes", "actions"] do
-    socket = assign(socket, :active_tab, tab)
+    socket = socket |> assign(:active_tab, tab) |> clear_file()
 
     socket =
       if tab == "changes" and socket.assigns.detail do
@@ -170,7 +193,12 @@ defmodule ForemanServerWeb.OperatorRunDashboardLive do
 
             <section :if={@active_tab == "changes"}>
               <h3>Code changes and PR evidence</h3>
-              {render_changes(@detail.changes)}
+              {render_changes(@detail.changes, %{
+                run_id: @detail.run.run_id,
+                token: @token,
+                selected_file: @selected_file,
+                preview: @file_preview
+              })}
             </section>
 
             <section :if={@active_tab == "actions"}>
@@ -233,6 +261,7 @@ defmodule ForemanServerWeb.OperatorRunDashboardLive do
             case detail_result(
                    run_id,
                    socket.assigns.active_tab,
+                   connected?(socket),
                    reload_changes?,
                    previous_changes
                  ) do
@@ -266,12 +295,12 @@ defmodule ForemanServerWeb.OperatorRunDashboardLive do
     end
   end
 
-  defp detail_result(run_id, active_tab, reload_changes?, previous_changes) do
+  defp detail_result(run_id, active_tab, connected?, reload_changes?, previous_changes) do
     case OperatorDashboard.run_detail(run_id) do
       {:ok, detail} ->
         changes =
           cond do
-            active_tab != "changes" ->
+            active_tab != "changes" or not connected? ->
               :absent
 
             reload_changes? or is_nil(previous_changes) ->
@@ -285,6 +314,62 @@ defmodule ForemanServerWeb.OperatorRunDashboardLive do
 
       {:error, _reason} = error ->
         error
+    end
+  end
+
+  defp param_string(value) when is_binary(value) and value != "", do: value
+  defp param_string(_), do: nil
+
+  defp normalize_tab(tab) when tab in @tabs, do: tab
+  defp normalize_tab(_), do: "summary"
+
+  defp clear_file(socket),
+    do: socket |> assign(:selected_file, nil) |> assign(:file_preview, :absent)
+
+  # Applies `run_id`/`tab`/`file` from the URL. Idempotent: state that already matches (as right
+  # after `mount/3`) loads nothing. A file-only change reuses the loaded changes evidence.
+  defp apply_nav(socket, params) do
+    run_id = param_string(params["run_id"])
+    tab = normalize_tab(params["tab"])
+    file = param_string(params["file"])
+    assigns = socket.assigns
+
+    run_changed? = run_id != nil and run_id != assigns.selected_run_id
+    tab_changed? = tab != assigns.active_tab
+
+    cond do
+      run_changed? or tab_changed? ->
+        socket
+        |> assign(:selected_run_id, run_id || assigns.selected_run_id)
+        |> assign(:active_tab, tab)
+        |> assign(:selected_file, file)
+        |> assign(:file_preview, :absent)
+        |> refresh()
+        |> load_preview()
+
+      file != assigns.selected_file ->
+        socket
+        |> assign(:selected_file, file)
+        |> assign(:file_preview, :absent)
+        |> load_preview()
+
+      true ->
+        socket
+    end
+  end
+
+  # The diff of the selected file, read only on a connected socket, on the Changes tab and for a
+  # loaded run. Never called from the periodic tick.
+  defp load_preview(socket) do
+    case socket.assigns do
+      %{active_tab: "changes", selected_file: file, detail: %{run: %{run_id: run_id}}}
+      when is_binary(file) ->
+        if connected?(socket),
+          do: assign(socket, :file_preview, OperatorDashboard.preview_bounded(run_id, file)),
+          else: socket
+
+      _ ->
+        socket
     end
   end
 
@@ -346,18 +431,38 @@ defmodule ForemanServerWeb.OperatorRunDashboardLive do
     """
   end
 
-  defp render_changes({:ok, %{state: :available} = changes}) do
-    assigns = %{changes: changes}
+  # The selected file's diff is shown beside any list state: the diff read is independent of the
+  # list (and may fail the same way, e.g. git unavailable), so its typed message still appears.
+  defp render_changes(changes, ctx) do
+    assigns = %{changes: changes, ctx: ctx}
+
+    ~H"""
+    {render_change_list(@changes, @ctx)}
+    <section :if={@ctx.selected_file} id="change-preview" aria-live="polite">
+      <h4>Diff of {@ctx.selected_file}</h4>
+      <p>This is the <code>git diff</code> patch of the file against the run's base, not the file itself.</p>
+      {render_preview(@ctx.preview)}
+    </section>
+    """
+  end
+
+  defp render_change_list({:ok, %{state: :available} = changes}, ctx) do
+    assigns = %{changes: changes, ctx: ctx}
 
     ~H"""
     <p>source={@changes.source} truncated={inspect(@changes.truncated?)}</p>
     <ul>
-      <li :for={file <- @changes.files}>{file.status} {file.path}</li>
+      <li :for={file <- @changes.files}>
+        {file.status}
+        <.link patch={Components.run_detail_path(@ctx.run_id, @ctx.token, tab: "changes", file: file.path)}>
+          {file.path}
+        </.link>
+      </li>
     </ul>
     """
   end
 
-  defp render_changes({:ok, %{state: state} = changes}) do
+  defp render_change_list({:ok, %{state: state} = changes}, _ctx) do
     assigns = %{state: state, changes: changes}
 
     ~H"""
@@ -365,7 +470,7 @@ defmodule ForemanServerWeb.OperatorRunDashboardLive do
     """
   end
 
-  defp render_changes({:error, reason}) do
+  defp render_change_list({:error, reason}, _ctx) do
     assigns = %{reason: reason}
 
     ~H"""
@@ -373,11 +478,48 @@ defmodule ForemanServerWeb.OperatorRunDashboardLive do
     """
   end
 
-  defp render_changes(:absent) do
+  defp render_change_list(:absent, _ctx) do
     assigns = %{}
 
     ~H"""
     <p>Open the Changes tab to load evidence.</p>
     """
   end
+
+  defp render_preview({:ok, %{diff: diff, truncated?: truncated?, bytes: bytes}}) do
+    assigns = %{diff: diff, truncated?: truncated?, bytes: bytes}
+
+    ~H"""
+    <pre>{@diff}</pre>
+    <p :if={@truncated?}>Diff truncated: showing {byte_size(@diff)} of {@bytes} bytes</p>
+    """
+  end
+
+  defp render_preview({:error, reason}) do
+    assigns = %{message: preview_error(reason)}
+
+    ~H"""
+    <p class="dashboard-detail-error">{@message}</p>
+    """
+  end
+
+  defp render_preview(:absent) do
+    assigns = %{}
+
+    ~H"""
+    <p>Loading diff…</p>
+    """
+  end
+
+  defp preview_error(:malformed_path),
+    do: "Diff unavailable: the file path is not a safe path inside the repository."
+
+  defp preview_error(:unavailable),
+    do:
+      "Diff unavailable: this file is not among the run's changed files, or its diff could not be read."
+
+  defp preview_error(:git_unavailable),
+    do: "Diff unavailable: git is not available on the server."
+
+  defp preview_error(:evidence_timeout), do: "Diff unavailable: reading the diff timed out."
 end

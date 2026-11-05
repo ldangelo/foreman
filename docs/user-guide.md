@@ -1351,6 +1351,13 @@ Open `/dashboard/runs` with the same bearer token accepted by the browser dashbo
 
 The run dashboard lists projection-backed runs, task/ad-hoc context, phase status, PR markers, durable worker logs, and read-only change evidence. Logs are read from `ProjectionStore.run_logs/1`; server `Logger` output is not copied into run logs. Missing worktrees, branches, bases, or PR evidence show explicit unavailable states rather than shelling into private paths.
 
+Deep links: `/dashboard/runs?run_id=<run-id>[&tab=summary|logs|changes|actions][&file=<path>]`.
+
+- `run_id` alone opens that run's detail; an unknown or missing `tab` shows **Summary**.
+- `tab=changes` opens the Changes tab. Each changed file is a link; `file=<path>` (the changed file's path relative to the repository) shows the **diff** of that file against the run's base — the `git diff` patch, not the file's contents — under "Diff of <path>". A patch over 24 000 bytes is cut with the notice "Diff truncated: showing N of M bytes". A path that is unsafe (absolute or containing `..`), not among the run's changed files, or whose diff cannot be read shows a typed message (not a safe path, not among the changed files, git unavailable, or timed out) instead.
+- Git is only read once the page is connected; the plain HTTP render and the 2-second refresh never run `git` or re-read the diff.
+- The token must be in the URL (`?token=<token>`) for a link opened in a browser; the file links keep `token=` only when the page was opened with one, so a page opened with an `Authorization` header produces links without it.
+
 Run controls use the public command boundary:
 
 - **Stop** pauses the run with `run.pause` and default reason `operator_pause`.
