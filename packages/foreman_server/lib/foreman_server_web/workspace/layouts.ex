@@ -89,8 +89,7 @@ defmodule ForemanServerWeb.Workspace.Layouts do
              1100px (nav and thread sidebar compact and scrolling, then the main column, then the
              panels); the app shell below takes over from 1100px. */
           .ws-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; align-items: start; }
-          .ws-main-col { min-width: 0; }
-          .ws-threads { min-width: 0; max-height: 320px; overflow-y: auto; }
+          .ws-main-col { min-width: 0; }          .ws-threads { min-width: 0; max-height: 320px; overflow-y: auto; }
           .ws-nav { min-width: 0; max-height: 320px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
           .ws-nav-results { margin-top: 8px; }
           .ws-side { min-width: 0; display: flex; flex-direction: column; gap: 12px; }
@@ -160,6 +159,7 @@ defmodule ForemanServerWeb.Workspace.Layouts do
           .thread-dot--info { background: var(--info); }
           .thread-dot--warn { background: var(--warn); }
           .thread-dot--err { background: var(--err); }
+          .thread-dot--muted { background: var(--muted); }
 
           /* thread pane */
           .thread-pane { display: flex; flex-direction: column; gap: 12px; }
@@ -209,6 +209,11 @@ defmodule ForemanServerWeb.Workspace.Layouts do
             .ws-header { flex: none; margin-bottom: 16px; }
             .ws-layout { flex: 1; min-height: 0; grid-template-columns: 220px 240px minmax(0, 1fr) 320px;
               grid-template-rows: minmax(0, 1fr); align-items: stretch; }
+            /* The run dashboard reuses this shell with two children (run list, detail) instead of
+               the workspace's four. Left on the shared tracks its detail column would land in the
+               240px second one, so it overrides them with the workspace's own widths: sidebar,
+               then fluid. */
+            .ws-layout--runs { grid-template-columns: 300px minmax(0, 1fr); }
             .ws-nav, .ws-threads, .ws-side { max-height: none; min-height: 0; overflow-y: auto; }
             .ws-main-col { display: flex; flex-direction: column; min-height: 0; }
             .conv-card, .thread-pane { flex: 1; min-height: 0; }
