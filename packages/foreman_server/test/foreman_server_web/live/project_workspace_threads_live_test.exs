@@ -882,6 +882,63 @@ defmodule ForemanServerWeb.ProjectWorkspaceThreadsLiveTest do
     end
   end
 
+  describe "a resolved thread older than the Overview's resolved window" do
+    # 30 resolved runs, one more resolved a minute after the one before: the Overview shows the
+    # newest `Overview.default_resolved_limit/0` of them, so the oldest are not among its cards.
+    defp seed_resolved_runs!(project_id, count) do
+      base = ~U[2026-10-01 00:00:00Z]
+
+      for n <- 1..count do
+        run_id = "r-res-#{n}"
+        at = base |> DateTime.add(n * 60, :second) |> DateTime.to_iso8601()
+
+        :ok =
+          ProjectionStore.apply_events([
+            task("t-" <> run_id, project_id, "Resolved #{n}"),
+            run(run_id, "t-" <> run_id, project_id),
+            event("RunCompleted", %{run_id: run_id, project_id: project_id}),
+            event("ThreadResolved", %{
+              thread_id: "run:" <> run_id,
+              project_id: project_id,
+              reason: "x",
+              resolved_by: "op",
+              source: "operator",
+              at: at
+            })
+          ])
+
+        "run:" <> run_id
+      end
+    end
+
+    test "opens its conversation pane; an unknown id and another project's id stay not found",
+         %{id: id, other: other} do
+      [oldest | _] = thread_ids = seed_resolved_runs!(id, 30)
+      foreign = seed_run!("r-foreign-res", other, "Foreign")
+
+      {:ok, overview} = Overview.build(id, include_resolved: true)
+      shown = overview.groups[:resolved]
+      assert length(shown) < 30
+      refute Enum.any?(shown, &(&1.thread_id == oldest))
+
+      {view, _html, _ref} = mount!(thread_url(id, oldest))
+      assert has_element?(view, "#thread-pane")
+      refute has_element?(view, "#thread-not-found")
+
+      for missing <- ["run:no-such-run", foreign] do
+        {view, _html, _ref} = mount!(thread_url(id, missing))
+        assert has_element?(view, "section#thread-not-found", "Thread not found"), missing
+        refute has_element?(view, "#thread-pane"), missing
+      end
+
+      for thread_id <- thread_ids do
+        {view, html, _ref} = mount!(thread_url(id, thread_id))
+        refute html <> render(view) =~ "no thread with that id", thread_id
+        assert has_element?(view, "#thread-pane"), thread_id
+      end
+    end
+  end
+
   # -- switching, live output, steering ---------------------------------------
 
   describe "switching between the chat and threads" do

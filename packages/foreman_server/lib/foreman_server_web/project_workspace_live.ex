@@ -661,10 +661,20 @@ defmodule ForemanServerWeb.ProjectWorkspaceLive do
   defp select_card(%{assigns: %{thread_id: nil}} = socket),
     do: assign(socket, thread_card: nil, thread_log: nil)
 
-  defp select_card(%{assigns: %{thread_id: thread_id, overview: overview}} = socket) do
+  defp select_card(
+         %{assigns: %{thread_id: thread_id, overview: overview, project_id: project_id}} = socket
+       ) do
     case ThreadView.find_card(overview, thread_id) do
-      nil -> assign(socket, thread_card: nil, thread_log: nil)
-      %ThreadCard{} = card -> socket |> assign(:thread_card, card) |> ensure_log()
+      %ThreadCard{} = card ->
+        socket |> assign(:thread_card, card) |> ensure_log()
+
+      # Resolved threads beyond the Overview's window and threads outside its newest-thread
+      # window are not among its cards; `Overview.card/2` still resolves this project's own.
+      nil ->
+        case Overview.card(project_id, thread_id) do
+          {:ok, %ThreadCard{} = card} -> socket |> assign(:thread_card, card) |> ensure_log()
+          {:error, :thread_not_found} -> assign(socket, thread_card: nil, thread_log: nil)
+        end
     end
   end
 
