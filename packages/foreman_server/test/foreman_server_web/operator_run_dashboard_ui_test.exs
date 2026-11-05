@@ -68,7 +68,8 @@ defmodule ForemanServerWeb.OperatorRunDashboardUITest do
       assert html =~ ~s(<nav id="run-list" class="ws-threads")
       assert html =~ ~s(<div class="ws-layout ws-layout--runs")
 
-      for name <- ~w(operator-run-dashboard dashboard-layout dashboard-detail-error dashboard-stale) do
+      for name <-
+            ~w(operator-run-dashboard dashboard-layout dashboard-detail-error dashboard-stale) do
         refute html =~ name, "#{inspect(name)} is a class the shared stylesheet never defined"
       end
     end
@@ -151,7 +152,9 @@ defmodule ForemanServerWeb.OperatorRunDashboardUITest do
           do: name
 
     dynamic =
-      for prefix <- ~w(chip-- thread-dot--), suffix <- ~w(ok info warn err muted), do: prefix <> suffix
+      for prefix <- ~w(chip-- thread-dot--),
+          suffix <- ~w(ok info warn err muted),
+          do: prefix <> suffix
 
     Enum.uniq(static ++ dynamic)
   end

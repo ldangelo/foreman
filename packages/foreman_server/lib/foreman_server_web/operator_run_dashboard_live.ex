@@ -527,7 +527,7 @@ defmodule ForemanServerWeb.OperatorRunDashboardLive do
   end
 
   defp render_change_list({:ok, %{state: state} = changes}, _ctx) do
-    assigns = %{state: state, meta: Map.get(changes, :meta, %{})}
+    assigns = %{state: state, meta: Map.get(changes, :meta)}
 
     ~H"""
     <p class="ws-error">Change evidence unavailable: {describe(@state)}</p>
@@ -559,8 +559,10 @@ defmodule ForemanServerWeb.OperatorRunDashboardLive do
   defp change_kind("?"), do: "chip--warn"
   defp change_kind(_), do: "chip--muted"
 
-  # Evidence metadata is an open map; it reads as a list, and never as an inspected struct.
-  defp render_meta(meta) when map_size(meta) == 0, do: nil
+  # Evidence metadata is an open map, and never as an inspected struct. The `:meta` key is absent
+  # for some unavailable states, so `nil` must render nothing: a bare `nil` in a HEEx interpolation
+  # drops the whole rendered result, silently hiding the message beside it.
+  defp render_meta(meta) when meta in [nil, %{}], do: nil
 
   defp render_meta(meta) when is_map(meta) do
     assigns = %{meta: meta}

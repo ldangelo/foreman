@@ -89,7 +89,8 @@ defmodule ForemanServerWeb.Workspace.Layouts do
              1100px (nav and thread sidebar compact and scrolling, then the main column, then the
              panels); the app shell below takes over from 1100px. */
           .ws-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; align-items: start; }
-          .ws-main-col { min-width: 0; }          .ws-threads { min-width: 0; max-height: 320px; overflow-y: auto; }
+          .ws-main-col { min-width: 0; }
+          .ws-threads { min-width: 0; max-height: 320px; overflow-y: auto; }
           .ws-nav { min-width: 0; max-height: 320px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
           .ws-nav-results { margin-top: 8px; }
           .ws-side { min-width: 0; display: flex; flex-direction: column; gap: 12px; }
