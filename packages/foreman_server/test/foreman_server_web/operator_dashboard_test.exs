@@ -372,19 +372,29 @@ defmodule ForemanServerWeb.OperatorDashboardTest do
                OperatorDashboard.preview_bounded("no-such-run", "README.md")
     end
 
-    test "a hung git is cut off at timeout_ms with :evidence_timeout", %{tmp: tmp} do
+    test "a hung git is cut off at timeout_ms with :evidence_timeout and its task is gone", %{
+      tmp: tmp
+    } do
       seed_evidence_run(tmp, %{"README.md" => "changed\n"})
-      install_fake_git(tmp, "sleep 5\n")
+      log = install_fake_git(tmp, "sleep 5\n")
+      before = MapSet.new(Process.list())
 
+      # A 1 s budget leaves the shim ample time to start under load, so "git ran" is not a race.
       {micros, result} =
-        :timer.tc(fn -> OperatorDashboard.change_evidence_bounded("run-evidence", 100) end)
+        :timer.tc(fn -> OperatorDashboard.change_evidence_bounded("run-evidence", 1_000) end)
 
       assert result == {:error, :evidence_timeout}
-      assert micros < 1_000_000
+      assert micros < 3_000_000
+      # git really started: the result is the timeout, not an early failure
+      assert File.exists?(log)
+      assert spawned_by_test_and_alive(before) == []
+
+      before = MapSet.new(Process.list())
 
       assert {:error, :evidence_timeout} =
-               OperatorDashboard.preview_bounded("run-evidence", "README.md", 100)
+               OperatorDashboard.preview_bounded("run-evidence", "README.md", 1_000)
 
+      assert spawned_by_test_and_alive(before) == []
       # the task was shut down: no late reply reaches the caller
       refute_receive {_ref, _result}, 200
     end
@@ -509,6 +519,20 @@ defmodule ForemanServerWeb.OperatorDashboardTest do
     System.put_env("PATH", bin <> ":" <> previous)
     on_exit(fn -> System.put_env("PATH", previous) end)
     log
+  end
+
+  # Processes started since `before` that are still alive and descend from the calling test:
+  # `Task.async` records its caller in `$ancestors`, so a bounded read that leaked its task
+  # would show up here. (The OS `git` child of a killed port is not an Erlang process and
+  # survives the kill: a known limitation, TRD finding F13.)
+  defp spawned_by_test_and_alive(before) do
+    me = self()
+
+    for pid <- Process.list(),
+        not MapSet.member?(before, pid),
+        {:dictionary, dict} <- [Process.info(pid, :dictionary)],
+        me in Keyword.get(dict, :"$ancestors", []),
+        do: pid
   end
 
   # A git repo with a README base commit and one commit adding/changing `files`, registered as
