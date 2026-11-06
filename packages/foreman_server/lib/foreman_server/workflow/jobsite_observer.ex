@@ -82,7 +82,13 @@ defmodule ForemanServer.Workflow.JobsiteObserver do
 
   @impl true
   def step_completed(%Step{kind: :agent}, ctx, {:agent, iterations}, state) do
-    trace_message("gen_ai.output.messages", "assistant", List.last(iterations).text)
+    trace_message(
+      "gen_ai.output.messages",
+      "assistant",
+      List.last(iterations).text,
+      state.executor
+    )
+
     %{phase: phase, executor: executor} = state
 
     case ArtifactTemplate.write(executor, phase.spec, phase.number, List.last(iterations).text) do
@@ -253,7 +259,7 @@ defmodule ForemanServer.Workflow.JobsiteObserver do
       {:ok, launch} ->
         # The engine's own step prompt is only the template reference (e.g.
         # `assess.md`); this is the rendered prompt the agent actually gets.
-        trace_message("gen_ai.input.messages", "user", launch.launch_opts[:prompt])
+        trace_message("gen_ai.input.messages", "user", launch.launch_opts[:prompt], executor)
         {:ok, state, %{launch: launch}}
 
       {:error, reason} ->
@@ -261,17 +267,26 @@ defmodule ForemanServer.Workflow.JobsiteObserver do
     end
   end
 
-  # Put a bounded message on the phase's span (the one `Jobsite.Engine` opened
-  # in this process), so a trace viewer shows what the agent was asked and
-  # said. Anything that is not text is left off rather than guessed at.
-  defp trace_message(key, role, text) when is_binary(text) do
+  # Put a bounded, redacted message on the phase's span (the one
+  # `Jobsite.Engine` opened in this process), so a trace viewer shows what the
+  # agent was asked and said. Text is redacted with the run's project secrets
+  # first. Anything that is not text is left off rather than guessed at.
+  defp trace_message(key, role, text, executor) when is_binary(text) do
+    redacted = ForemanServer.Coordinator.Redact.text(project_id(executor), text)
+
     OpenTelemetry.Tracer.set_attribute(
       key,
-      ForemanServer.Agents.OtelSpanEmitter.message_json(role, text)
+      ForemanServer.Agents.OtelSpanEmitter.message_json(role, redacted)
     )
   end
 
-  defp trace_message(_key, _role, _other), do: :ok
+  defp trace_message(_key, _role, _other, _executor), do: :ok
+
+  # The run's project, read off the executor's task projection the way
+  # `RunExecutor` itself reads it; nil (an unscoped run) leaves the name
+  # patterns as the only redaction.
+  defp project_id(%{task: task}),
+    do: Map.get(task, :project_id) || Map.get(task, "project_id")
 
   # ---------------------------------------------------------------------
   # Failure

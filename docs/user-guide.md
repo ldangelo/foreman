@@ -1927,9 +1927,12 @@ Defaults and env vars:
   `http://lens:4318` (same Docker network; the exporter appends `/v1/traces`).
   Auth is a dedicated Lens tracing key in `LITELLM_TRACING_KEY` (from Lens Home,
   saved in the git-ignored `.env`, never a Lens admin or gateway secret);
-  without it Lens answers `401` and only Lens delivery is affected. The
-  collector's `debug` exporter stays at `normal` verbosity, sampled (first 5
-  spans, then 1 in 200), so it is not a way to read every span's ids.
+  without it Lens answers `401` and only Lens delivery is affected (the
+  `otlphttp/lens` exporter is always in the traces pipeline). The collector's
+  `debug` exporter is at `basic` verbosity: it prints counts only, no span ids
+  or attributes. To read a span's ids or attributes use the Lens UI (Attributes
+  tab), or temporarily set `detailed`, knowing that this writes message text to
+  the container log.
 - App-side spans carry `gen_ai.agent.name = "foreman"`. The leaf spans
   (`jido.cmd`, `jido.llm`, `jido.signal`) are rarely on the normal path; each
   coordinator turn and each workflow agent phase is wrapped in a root span
@@ -1939,7 +1942,7 @@ Defaults and env vars:
   (`gen_ai.output.messages`), the model (`gen_ai.request.model`) and token usage
   (`gen_ai.usage.*`); a phase span carries the rendered prompt the agent got
   (input) and its final reply text (output). Message text is capped at 8,000
-  characters and goes to every trace backend behind the collector (Langfuse and
+  characters, is redacted with the project's secrets before export, and goes to every trace backend behind the collector (Langfuse and
   Lens). Pi/claude model calls themselves run outside the BEAM, so they are not
   child spans and a phase span has no model or token counts.
   Status: verified end to end in Lens (receipt `received:true`, agent `foreman`):
@@ -1950,8 +1953,8 @@ Defaults and env vars:
   this change fixes).
 - The test suite exports no spans: `config/test.exs` sets
   `traces_exporter: :none` (opt-in tracer tests used to ship spans to the live
-  collector). Running `mix test` outside `MIX_ENV=test` uses the live dev
-  exporter and does ship them.
+  collector). An explicit `MIX_ENV` other than `test` (plain `mix test` already
+  runs in `test`) uses the live dev exporter and does ship them.
 - LiteLLM defaults to `LITELLM_ENDPOINT=http://localhost:4000`;
   `agent_model: "auto"` maps through `:jido_ai` model aliases to
   LiteLLM.

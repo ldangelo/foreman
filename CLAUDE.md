@@ -216,12 +216,19 @@ Metadata (a stable whitelist — this is the **only** shape emitted):
 }
 ```
 
-Privacy-safe by construction: every metadata key is constructed by a
+For the `agent_runtime` completion event, privacy-safe by construction: every metadata key is constructed by a
 narrow clause that pattern-matches the result shape and **projects**
 the whitelist — adapters cannot accidentally leak prompt text,
 secrets, or full output bodies through metadata. Adapter `metadata`
 from a successful adapter is forwarded as `:adapter_metadata`; this
 is the only adapter contribution to the completion event.
+
+Span policy (separate from that event): coordinator-turn and workflow-phase
+spans (`foreman.coordinator.turn`, `foreman.workflow.phase`) carry redacted,
+8000-char-capped message text as `gen_ai.input.messages` /
+`gen_ai.output.messages` and go to every trace backend behind the collector
+(Langfuse and Lens). The collector `debug` exporter is kept at `basic`, so none
+of that text is written to the container log.
 
 ## 8. Configuration keys (operator-visible)
 

@@ -140,7 +140,7 @@ defmodule ForemanServer.Coordinator.TurnRunner do
         "foreman.coordinator.turn",
         turn_span_attributes(project_id, turn_id, context, opts),
         fn -> call_agent(rt, context, opts) end,
-        &turn_result_attributes/1
+        &turn_result_attributes(project_id, &1)
       )
 
     :ok = record_usage(project_id, rt, turn_id, opts, result)
@@ -148,9 +148,17 @@ defmodule ForemanServer.Coordinator.TurnRunner do
   end
 
   # What a trace viewer shows for the turn: the operator message(s) that
-  # triggered it and the model asked. Bounded by `OtelSpanEmitter.message_json/2`.
-  defp turn_span_attributes(project_id, turn_id, %{trigger_messages: messages}, opts) do
-    input = messages |> Enum.map(& &1.text) |> Enum.join("\n\n")
+  # triggered it and the model asked. Every text is redacted with the project's
+  # secrets before it becomes an attribute (the collector prints attributes),
+  # and bounded by `OtelSpanEmitter.message_json/2`.
+  @doc false
+  @spec turn_span_attributes(String.t(), term(), map(), keyword()) :: map()
+  def turn_span_attributes(project_id, turn_id, %{trigger_messages: messages}, opts) do
+    input =
+      messages
+      |> Enum.map(& &1.text)
+      |> Enum.join("\n\n")
+      |> then(&ForemanServer.Coordinator.Redact.text(project_id, &1))
 
     base = %{
       "foreman.project_id" => to_string(project_id),
@@ -164,18 +172,22 @@ defmodule ForemanServer.Coordinator.TurnRunner do
     end
   end
 
-  defp turn_result_attributes({:ok, %Turn{reply: reply, usage: usage}}) do
+  @doc false
+  @spec turn_result_attributes(String.t(), {:ok, Turn.t()} | {:error, Error.t()}) :: map()
+  def turn_result_attributes(project_id, {:ok, %Turn{reply: reply, usage: usage}}) do
+    redacted = ForemanServer.Coordinator.Redact.text(project_id, reply)
+
     Map.merge(
       %{
         "gen_ai.output.messages" =>
-          ForemanServer.Agents.OtelSpanEmitter.message_json("assistant", reply)
+          ForemanServer.Agents.OtelSpanEmitter.message_json("assistant", redacted)
       },
       ForemanServer.Agents.OtelSpanEmitter.usage_attributes(usage)
     )
   end
 
-  defp turn_result_attributes({:error, %Error{} = error}) do
-    %{"error.message" => error.message}
+  def turn_result_attributes(project_id, {:error, %Error{} = error}) do
+    %{"error.message" => ForemanServer.Coordinator.Redact.text(project_id, error.message)}
   end
 
   defp call_agent(rt, context, opts) do

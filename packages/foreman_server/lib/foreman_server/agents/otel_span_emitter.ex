@@ -5,7 +5,8 @@ defmodule ForemanServer.Agents.OtelSpanEmitter do
   TRD-2026-4212be7e / JOT-T002 (TRD-060), JOT-T003 (TRD-061), JOT-T004 (TRD-062).
   Backed by `jido_otel` (TRD-059) for tracer configuration.
 
-  Each emit function is a leaf call (no callable block) suitable for
+  `with_agent_span/4` wraps a callable block in a root agent span. The other
+  emit functions are leaf calls (no callable block) suitable for
   instrumentation call sites that have already measured `duration_us` or
   have the LLM/signal attributes in hand.
   """
@@ -61,16 +62,19 @@ defmodule ForemanServer.Agents.OtelSpanEmitter do
 
   @doc """
   The `gen_ai.input.messages` / `gen_ai.output.messages` attribute value Lens
-  and other GenAI viewers read: a JSON list of `%{role, content}`. `text` is
-  truncated to #{@max_message_chars} characters with a marker.
+  and other GenAI viewers read: a JSON list of `%{role, content}`. Total for
+  any binary: invalid UTF-8 bytes are replaced, then `text` is truncated to
+  #{@max_message_chars} characters with a marker. Callers redact secrets first.
   """
   @spec message_json(String.t(), String.t()) :: String.t()
   def message_json(role, text) when is_binary(role) and is_binary(text) do
+    valid = String.replace_invalid(text)
+
     content =
-      if String.length(text) > @max_message_chars do
-        String.slice(text, 0, @max_message_chars) <> "\n…[truncated]"
+      if String.length(valid) > @max_message_chars do
+        String.slice(valid, 0, @max_message_chars) <> "\n…[truncated]"
       else
-        text
+        valid
       end
 
     Jason.encode!([%{role: role, content: content}])

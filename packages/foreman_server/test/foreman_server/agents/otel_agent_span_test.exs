@@ -54,6 +54,14 @@ defmodule ForemanServer.Agents.OtelAgentSpanTest do
       assert String.length(content) < 8_100
       assert String.ends_with?(content, "[truncated]")
     end
+
+    test "is total for invalid UTF-8: bytes are replaced, never raised on" do
+      json = OtelSpanEmitter.message_json("user", <<"ab", 0xFF, "cd">>)
+
+      assert [%{"role" => "user", "content" => content}] = Jason.decode!(json)
+      assert String.valid?(content)
+      assert content =~ "ab" and content =~ "cd"
+    end
   end
 
   describe "usage_attributes/1" do

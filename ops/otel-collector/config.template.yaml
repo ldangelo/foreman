@@ -1,13 +1,13 @@
 # OTel Collector config (template — entrypoint.sh envsubst's
 # ${LANGFUSE_HOST}, ${LANGFUSE_PUBLIC_KEY}, ${LANGFUSE_SECRET_KEY},
-# ${LANGFUSE_BASIC_AUTH} before exec'ing the collector).
+# ${LANGFUSE_BASIC_AUTH}, ${LITELLM_TRACING_KEY} before exec'ing the collector).
 #
 # Receivers:
 #   otlp/http on :4318   - Foreman's OTLP exporter (config.exs)
 #   otlp/grpc on :4317   - gRPC variant (future-proof)
 #
 # Exporters:
-#   debug          - log spans/logs to stdout for debugging
+#   debug          - counts only (verbosity basic); no span ids/attributes
 #   otlphttp/langfuse  - HTTP-only OTLP exporter with full-URL endpoint
 #                    support; forwards to Langfuse v3's OTLP ingest at
 #                    http://${LANGFUSE_HOST}/api/public/otel/v1/traces
@@ -39,9 +39,9 @@ processors:
 
 exporters:
   debug:
-    verbosity: normal
-    sampling_initial: 5
-    sampling_thereafter: 200
+    # basic = counts only. normal/detailed print span attributes, which now
+    # include message text (gen_ai.input/output.messages); keep this at basic.
+    verbosity: basic
 
   otlphttp/langfuse:
     # Langfuse v3 OTLP ingest endpoint (HTTP/protobuf). The otlphttp

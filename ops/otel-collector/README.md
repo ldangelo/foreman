@@ -32,18 +32,23 @@ foreman_server
     │  POST /v1/traces
     ▼
 otel-collector:4318  ◄── this repo, ops/otel-collector/
-    │  HTTP Basic (public:secret)
-    │  POST /api/public/otel/v1/traces
-    ▼
-langfuse-web:3000    ◄── external: ~/Development/Sunstone/litellm-langfuse-stack/
+    ├─ HTTP Basic (public:secret) POST /api/public/otel/v1/traces
+    │    ▼
+    │  langfuse-web:3000    ◄── external: ~/Development/Sunstone/litellm-langfuse-stack/
+    └─ Bearer (LITELLM_TRACING_KEY) POST /v1/traces
+         ▼
+       lens:4318
 ```
 
 ## Files
 
 - `Dockerfile` — multi-stage (alpine + contrib) with healthcheck on :13133.
 - `config.template.yaml` — single `pipelines:` map (traces + logs),
-  receivers `otlp` (http + grpc), exporters `debug` + `otlphttp/langfuse`,
-  batch processor, health extension. **Envsubst at container start.**
+  receivers `otlp` (http + grpc), exporters `debug` (verbosity `basic`:
+  counts only, so message text in span attributes never reaches the container
+  log; read a span's attributes in the Lens UI, or temporarily set `detailed`,
+  which writes message text to the log), `otlphttp/langfuse` and
+  `otlphttp/lens`, batch processor, health extension. **Envsubst at container start.**
 - `entrypoint.sh` — envsubst's `${LANGFUSE_HOST}` and computes
   `LANGFUSE_BASIC_AUTH = base64(public:secret)`, then execs
   `/otelcol-contrib --config=$CONF`. The `--config` flag is required in
