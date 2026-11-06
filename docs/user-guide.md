@@ -1936,8 +1936,11 @@ Defaults and env vars:
   (`foreman.coordinator.turn`, `foreman.workflow.phase`, from
   `OtelSpanEmitter.with_agent_span/3`) carrying only ids, never message text.
   Pi/claude model calls themselves run outside the BEAM, so they are not
-  child spans. Status: compiled and unit-tested; not yet verified end to end
-  against Lens.
+  child spans. Status: `foreman.coordinator.turn` is verified end to end
+  (collector, Lens receipt `received:true`, trace visible under agent
+  `foreman`); `foreman.workflow.phase` is unit-tested but not yet seen in Lens.
+  Run `mix test` with `MIX_ENV=test`: in `:dev` the tracer is live and test
+  spans are exported to the collector and on to Lens.
 - LiteLLM defaults to `LITELLM_ENDPOINT=http://localhost:4000`;
   `agent_model: "auto"` maps through `:jido_ai` model aliases to
   LiteLLM.
