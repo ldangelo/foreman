@@ -188,16 +188,31 @@ defmodule Jido.Harness.Adapters.Pi do
     with {:ok, argv} <- build_argv(request, options) do
       executable = options[:cli_path] || Helpers.cli_path(context.config, spec().executable)
 
-      if options[:live_input] == true do
-        CLIStream.run(:pi, prepare_request(request), context, executable, argv, &map_live_event/1, nil,
-          live_input: [
+      mapper = if options[:live_input] == true, do: &map_live_event/1, else: &map_event/1
+      live_lines =
+        if options[:live_input] == true do
+          [
             Jason.encode!(%{"id" => "foreman-prompt", "type" => "prompt", "message" => request.prompt}) <> "\n",
             Jason.encode!(%{"id" => "foreman-get-state", "type" => "get_state"}) <> "\n"
           ]
+        end
+
+      # `stream_end:` is what makes an pi that exits after failed turns — with no `agent_end`
+      # (json) and no `agent_settled` (rpc) — fail the run instead of completing it; see
+      # `stream_end/1`. Both modes need it, so it goes through the one `CLIStream.run/8` call.
+      CLIStream.run(
+        :pi,
+        prepare_request(request),
+        context,
+        executable,
+        argv,
+        mapper,
+        nil,
+        Keyword.merge(
+          [stream_end: &stream_end/1],
+          if(live_lines, do: [live_input: live_lines], else: [])
         )
-      else
-        CLIStream.run(:pi, prepare_request(request), context, executable, argv, &map_event/1)
-      end
+      )
     end
   end
 
@@ -505,6 +520,21 @@ defmodule Jido.Harness.Adapters.Pi do
 
   defp provider_event(raw),
     do: Helpers.event(:pi, :provider_event, nil, %{"type" => Map.get(raw, "type"), "mapped" => false}, raw)
+
+  # Fail-loud answer for `CLIStream`'s `:stream_end` hook, which `run/2` passes for both pi modes.
+  # Pi writes its session JSONL even when every provider call fails (HTTP 429) and then exits 0
+  # WITHOUT the `agent_end` (json) or `agent_settled` (rpc) record that `map_event/1` and
+  # `map_live_event/1` turn into a terminal event — run-4290a162's phase-1 session is exactly that:
+  # four assistant turns with `stopReason: "error"` and zero output, then nothing, and the run
+  # looked successful. Fields are the shape `CLIStream.new_chunk/0` documents.
+  @doc false
+  @spec stream_end(map()) :: :ok | {:run_failed, String.t()}
+  def stream_end(%{seen_terminal: true}), do: :ok
+  def stream_end(%{turn_outcome: :failed, turn_error: error}) when is_binary(error), do: {:run_failed, error}
+  def stream_end(%{turn_outcome: :worked}), do: :ok
+
+  def stream_end(%{turn_outcome: :nothing}),
+    do: {:run_failed, "Pi exited without reporting a turn outcome (no agent_end or agent_settled)."}
 
   defp project_trust(nil), do: {:ok, []}
   defp project_trust(:default), do: {:ok, []}

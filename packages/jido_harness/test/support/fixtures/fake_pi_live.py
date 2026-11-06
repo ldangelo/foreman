@@ -16,7 +16,12 @@ FAKE_PI_OUTCOME picks what the run ends in (default `steer`, the success above):
             pi_live_error.jsonl (HTTP 401, `stopReason: "error"`) precedes `agent_settled`. A
             provider error after the steered work is done, the shape of the e2e hang.
   rejected  pi's answer to a `prompt` it cannot start (no API key for the model): a failed
-            `response`, then silence, alive until stdin EOF."""
+            `response`, then silence, alive until stdin EOF.
+  no_settle  the 429 shape of run-4290a162: pi answers the `prompt` command, echoes the user
+            message, and writes four assistant turns that all fail with `stopReason: "error"` and
+            no content, then emits NO `agent_end` and NO `agent_settled` and exits 0. Without a
+            terminal event the harness must fail the run, not complete it.
+  silent     pi answers the `prompt` command and writes nothing else before exiting 0."""
 import json, os, select, sys, time
 
 here = os.path.dirname(os.path.abspath(__file__))
@@ -26,6 +31,8 @@ recordings = {
     "steer_error": "pi_live_input.jsonl",
     "error": "pi_live_error.jsonl",
     "rejected": None,
+    "no_settle": None,
+    "silent": None,
 }
 if outcome not in recordings:
     sys.exit("fake_pi_live: unknown FAKE_PI_OUTCOME %r" % outcome)
@@ -50,6 +57,34 @@ def wait_for_eof():
         pass
     if os.environ.get("FAKE_PI_IGNORE_EOF") == "1":
         time.sleep(120)
+
+ERR_429 = ('429 {"error":{"type":"rate_limit_error","code":"bili_throttle_hold",'
+           '"stage":"forward","message":"upstream rate-limited 1 request per 60 seconds"}}')
+
+
+def failed_turn_message():
+    return {"role": "assistant", "content": [], "api": "anthropic-messages", "provider": "minimax",
+            "model": "MiniMax-M2.7-highspeed", "stopReason": "error", "errorMessage": ERR_429,
+            "usage": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 0,
+                      "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0}}}
+
+
+if outcome == "no_settle":
+    # The real pi gives up retrying and its process exits; nothing here waits for stdin EOF.
+    emit({"id": "foreman-prompt", "type": "response", "command": "prompt", "success": True,
+          "data": {"disposition": "started"}})
+    emit({"type": "agent_start"})
+    emit({"type": "turn_start"})
+    emit({"type": "message_start", "message": {"role": "user", "content": [{"type": "text", "text": "prompt"}]}})
+    for _ in range(4):
+        emit({"type": "message_end", "message": failed_turn_message()})
+    emit({"type": "turn_end", "message": failed_turn_message()})
+    sys.exit(0)
+
+if outcome == "silent":
+    emit({"id": "foreman-prompt", "type": "response", "command": "prompt", "success": True,
+          "data": {"disposition": "started"}})
+    sys.exit(0)
 
 if outcome == "rejected":
     emit({"id": "foreman-prompt", "type": "response", "command": "prompt", "success": False,
