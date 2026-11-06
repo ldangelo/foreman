@@ -18,7 +18,6 @@ defmodule ForemanServerWeb.OperatorRunDashboardUITest do
   import Phoenix.LiveViewTest
 
   alias ForemanServer.ProjectionStore
-  alias ForemanServerWeb.Workspace.Layouts
   alias ForemanServer.TestSupport.ProjectionStoreReset
 
   @endpoint ForemanServerWeb.Endpoint
