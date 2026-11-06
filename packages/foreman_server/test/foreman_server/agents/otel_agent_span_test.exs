@@ -23,6 +23,21 @@ defmodule ForemanServer.Agents.OtelAgentSpanTest do
     end
   end
 
+  describe "a raised exception" do
+    test "is re-raised unchanged, message and all, by both span kinds" do
+      for span <- [&OtelSpanEmitter.with_agent_span/3, &OtelSpanEmitter.with_chat_span/3] do
+        assert_raise ArgumentError, "secret-bearing message", fn ->
+          span.("t.raise", %{}, fn -> raise ArgumentError, "secret-bearing message" end)
+        end
+      end
+    end
+
+    test "throws and exits pass through untouched" do
+      assert catch_throw(OtelSpanEmitter.with_chat_span("t", %{}, fn -> throw(:x) end)) == :x
+      assert catch_exit(OtelSpanEmitter.with_agent_span("t", %{}, fn -> exit(:y) end)) == :y
+    end
+  end
+
   describe "with_chat_span/4" do
     test "returns the wrapped function's result unchanged, errors included" do
       assert {:ok, :done} == OtelSpanEmitter.with_chat_span("chat m", %{}, fn -> {:ok, :done} end)

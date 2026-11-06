@@ -1939,21 +1939,21 @@ Defaults and env vars:
   (`foreman.coordinator.turn`, `foreman.workflow.phase`, from
   `OtelSpanEmitter.with_agent_span/4`). A turn span carries the operator
   message(s) that triggered it (`gen_ai.input.messages`), the reply
-  (`gen_ai.output.messages`), the model (`gen_ai.request.model`) and token usage
-  (`gen_ai.usage.*`); a phase span carries the rendered prompt the agent got
-  (input) and its final reply text (output). Message text is capped at 8,000
-  characters, is redacted with the project's secrets before export, and goes to every trace backend behind the collector (Langfuse and
-  Lens). Each coordinator turn is an `invoke_agent` root span with a child
-  `chat <model>` span (`OtelSpanEmitter.with_chat_span/4`), which is what Lens
-  needs to fill its Request tab; phases have only the root span. Pi/claude model
-  calls of a phase run outside the BEAM, so a phase has no chat child span and no
-  model or token counts.
-  Status: verified end to end in Lens (receipt `received:true`, agent `foreman`):
-  `foreman.coordinator.turn` with user message, reply, model and token usage;
-  `foreman.workflow.phase` with its step and jobsite ids. The phase span's
-  rendered-prompt input and reply output have not yet been seen in Lens (the
-  first phase span showed the template name `assess.md` as its input, which
-  this change fixes).
+  (`gen_ai.output.messages`) and the model (`gen_ai.request.model`); a phase
+  span carries the rendered prompt the agent got (input) and its final reply
+  text (output). Message text is capped at 8,000 characters, is redacted with
+  the project's secrets before export, and goes to every trace backend behind
+  the collector (Langfuse and Lens). Each coordinator turn is an `invoke_agent`
+  root span with a child `chat <model>` span (`OtelSpanEmitter.with_chat_span/4`),
+  which is what Lens needs to fill its Request tab; the token usage
+  (`gen_ai.usage.*`) is on that child only, so it is counted once. Phases have
+  only the root span: Pi/claude model calls of a phase run outside the BEAM, so
+  a phase has no chat child span and no model or token counts.
+  Status: verified in Lens (receipt `received:true`, agent `foreman`): the
+  `foreman.coordinator.turn` span with its ids and its content (user message,
+  reply, model), and `foreman.workflow.phase` with its step and jobsite ids.
+  NOT yet seen in Lens: the child `chat <model>` span and the Request tab, token
+  usage on it, and the phase span's rendered-prompt input and reply output.
 - The test suite exports no spans: `config/test.exs` sets
   `traces_exporter: :none` (opt-in tracer tests used to ship spans to the live
   collector). An explicit `MIX_ENV` other than `test` (plain `mix test` already

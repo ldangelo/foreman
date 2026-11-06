@@ -14,17 +14,19 @@ defmodule ForemanServer.Agents.OtelSpanEmitter do
   require OpenTelemetry.Tracer
 
   # GenAI semantic-convention agent name, stamped on every span this emitter
-  # produces (each is the root of its own trace, so Lens reads it there). The
-  # project's stable name, not the OTel service.name (`foreman_server`).
+  # produces. The project's stable name, not the OTel service.name
+  # (`foreman_server`).
   @agent_name "foreman"
 
   @doc """
   Run `fun` inside a root agent span named `span_name`, carrying
   `gen_ai.agent.name` and `gen_ai.operation.name = "invoke_agent"` plus
   `attributes`, and return `fun`'s result unchanged. Unlike the leaf emitters
-  this wraps the work, so an agent turn or workflow phase is one trace with the
-  agent name on its root span. An `{:error, _}` result marks the span errored;
-  an exception is recorded by `with_span` and re-raised.
+  this wraps the work, so a workflow phase is one trace with the agent name on
+  its root span; a coordinator turn is this root span plus a child
+  `with_chat_span/4` span (a phase has only the root). An `{:error, _}` result
+  marks the span errored; a raised exception marks it errored with its type
+  only (never its message or stacktrace) and is re-raised unchanged.
 
   `annotate` receives the result and returns extra attributes (e.g. the reply
   text and token usage) set on the span once the work finished. It must not
@@ -65,22 +67,41 @@ defmodule ForemanServer.Agents.OtelSpanEmitter do
     run_genai_span(span_name, "chat", attributes, fun, annotate)
   end
 
+  # `OpenTelemetry.Tracer.with_span` (opentelemetry_api 1.5 / opentelemetry
+  # 1.7: `otel_tracer_default:with_span/5`) is `try Fun after end_span`: it
+  # records no exception itself. A raise would leave the span with no status,
+  # so it is caught here, the span marked errored with the exception TYPE only
+  # (a message can carry a secret and nothing redacts it here), and the
+  # original exception re-raised with its own stacktrace.
   defp run_genai_span(span_name, operation, attributes, fun, annotate) do
     base = %{"gen_ai.agent.name" => @agent_name, "gen_ai.operation.name" => operation}
 
     OpenTelemetry.Tracer.with_span span_name, %{attributes: Map.merge(base, attributes)} do
-      result = fun.()
+      try do
+        result = fun.()
 
-      case result do
-        {:error, _, _} -> OpenTelemetry.Tracer.set_status(OpenTelemetry.status(:error, "error"))
-        {:error, _} -> OpenTelemetry.Tracer.set_status(OpenTelemetry.status(:error, "error"))
-        _ -> :ok
+        case result do
+          {:error, _, _} -> mark_error("error")
+          {:error, _} -> mark_error("error")
+          _ -> :ok
+        end
+
+        OpenTelemetry.Tracer.set_attributes(annotate.(result))
+        result
+      rescue
+        exception ->
+          mark_error(inspect(exception.__struct__))
+          reraise exception, __STACKTRACE__
+      catch
+        kind, reason ->
+          mark_error(Atom.to_string(kind))
+          :erlang.raise(kind, reason, __STACKTRACE__)
       end
-
-      OpenTelemetry.Tracer.set_attributes(annotate.(result))
-      result
     end
   end
+
+  defp mark_error(description),
+    do: OpenTelemetry.Tracer.set_status(OpenTelemetry.status(:error, description))
 
   # Bound on the text one message attribute carries. Prompts and replies can be
   # large; a trace viewer needs the gist, not the whole transcript.

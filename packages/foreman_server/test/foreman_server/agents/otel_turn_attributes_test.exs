@@ -56,14 +56,37 @@ defmodule ForemanServer.Agents.OtelTurnAttributesTest do
     refute Map.has_key?(attrs, "gen_ai.request.model")
   end
 
-  test "an ok turn carries the reply as assistant output plus token usage", %{project_id: p} do
+  test "the root span carries the reply but NO usage; the chat span carries both", %{
+    project_id: p
+  } do
     usage = %Usage{input_tokens: 7, output_tokens: 3}
-    attrs = TurnRunner.turn_result_attributes(p, {:ok, %Turn{reply: "done", usage: usage}})
+    result = {:ok, %Turn{reply: "done", usage: usage}}
 
-    assert [%{"role" => "assistant"}] = Jason.decode!(attrs["gen_ai.output.messages"])
-    assert decode(attrs["gen_ai.output.messages"]) == "done"
-    assert attrs["gen_ai.usage.input_tokens"] == 7
-    assert attrs["gen_ai.usage.output_tokens"] == 3
+    root = TurnRunner.turn_result_attributes(p, result)
+    assert [%{"role" => "assistant"}] = Jason.decode!(root["gen_ai.output.messages"])
+    assert decode(root["gen_ai.output.messages"]) == "done"
+    refute Map.has_key?(root, "gen_ai.usage.input_tokens")
+    refute Map.has_key?(root, "gen_ai.usage.output_tokens")
+
+    chat = TurnRunner.chat_result_attributes(p, result)
+    assert decode(chat["gen_ai.output.messages"]) == "done"
+    assert chat["gen_ai.usage.input_tokens"] == 7
+    assert chat["gen_ai.usage.output_tokens"] == 3
+  end
+
+  test "an error result is the same on both spans and carries no usage", %{project_id: p} do
+    result = {:error, Error.new(:agent_failed, "it broke")}
+
+    assert TurnRunner.chat_result_attributes(p, result) ==
+             TurnRunner.turn_result_attributes(p, result)
+  end
+
+  test "the chat span name carries the model, bounded" do
+    assert TurnRunner.chat_span_name([]) == "chat"
+    assert TurnRunner.chat_span_name(model: "m-1") == "chat m-1"
+
+    name = TurnRunner.chat_span_name(model: String.duplicate("x", 500))
+    assert name == "chat " <> String.duplicate("x", 80)
   end
 
   test "an error turn carries its message", %{project_id: p} do

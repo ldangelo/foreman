@@ -139,7 +139,8 @@ defmodule ForemanServer.Coordinator.TurnRunner do
     # The redaction list is resolved ONCE per turn and shared by every attribute.
     redact = ForemanServer.Coordinator.Redact.redactor(project_id)
     span_attrs = turn_span_attributes(project_id, turn_id, context, opts, redact)
-    annotate = &turn_result_attributes(project_id, &1, redact)
+    root_annotate = &turn_result_attributes(project_id, &1, redact)
+    chat_annotate = &chat_result_attributes(project_id, &1, redact)
 
     result =
       ForemanServer.Agents.OtelSpanEmitter.with_agent_span(
@@ -150,20 +151,26 @@ defmodule ForemanServer.Coordinator.TurnRunner do
             chat_span_name(opts),
             Map.take(span_attrs, ["gen_ai.input.messages", "gen_ai.request.model"]),
             fn -> call_agent(rt, context, opts) end,
-            annotate
+            chat_annotate
           )
         end,
-        annotate
+        root_annotate
       )
 
     :ok = record_usage(project_id, rt, turn_id, opts, result)
     result
   end
 
-  defp chat_span_name(opts) do
+  # Bound on the model part of the chat span name: the model comes from
+  # settings, and a span name must not be unbounded.
+  @max_model_name_chars 80
+
+  @doc false
+  @spec chat_span_name(keyword()) :: String.t()
+  def chat_span_name(opts) do
     case opts[:model] do
       nil -> "chat"
-      model -> "chat " <> to_string(model)
+      model -> "chat " <> (model |> to_string() |> String.slice(0, @max_model_name_chars))
     end
   end
 
@@ -179,7 +186,7 @@ defmodule ForemanServer.Coordinator.TurnRunner do
           term(),
           map(),
           keyword(),
-          (String.t() -> String.t())
+          (String.t() -> String.t()) | nil
         ) :: map()
   def turn_span_attributes(
         project_id,
@@ -208,6 +215,9 @@ defmodule ForemanServer.Coordinator.TurnRunner do
     end
   end
 
+  # The root turn span's result attributes: the reply or error. Token usage is
+  # NOT here (see `chat_result_attributes/3`): the child chat span is the model
+  # call, so usage on both spans would be counted twice by trace backends.
   @doc false
   @spec turn_result_attributes(
           String.t(),
@@ -216,22 +226,38 @@ defmodule ForemanServer.Coordinator.TurnRunner do
         ) :: map()
   def turn_result_attributes(project_id, result, redact \\ nil)
 
-  def turn_result_attributes(project_id, {:ok, %Turn{reply: reply, usage: usage}}, redact) do
+  def turn_result_attributes(project_id, {:ok, %Turn{reply: reply}}, redact) do
     redact = redact || ForemanServer.Coordinator.Redact.redactor(project_id)
 
-    Map.merge(
-      %{
-        "gen_ai.output.messages" =>
-          ForemanServer.Agents.OtelSpanEmitter.message_json("assistant", redact.(reply))
-      },
-      ForemanServer.Agents.OtelSpanEmitter.usage_attributes(usage)
-    )
+    %{
+      "gen_ai.output.messages" =>
+        ForemanServer.Agents.OtelSpanEmitter.message_json("assistant", redact.(reply))
+    }
   end
 
   def turn_result_attributes(project_id, {:error, %Error{} = error}, redact) do
     redact = redact || ForemanServer.Coordinator.Redact.redactor(project_id)
     %{"error.message" => redact.(error.message)}
   end
+
+  # The child chat span's result attributes: the root's plus the token usage.
+  @doc false
+  @spec chat_result_attributes(
+          String.t(),
+          {:ok, Turn.t()} | {:error, Error.t()},
+          (String.t() -> String.t()) | nil
+        ) :: map()
+  def chat_result_attributes(project_id, result, redact \\ nil)
+
+  def chat_result_attributes(project_id, {:ok, %Turn{usage: usage}} = result, redact) do
+    Map.merge(
+      turn_result_attributes(project_id, result, redact),
+      ForemanServer.Agents.OtelSpanEmitter.usage_attributes(usage)
+    )
+  end
+
+  def chat_result_attributes(project_id, {:error, %Error{}} = result, redact),
+    do: turn_result_attributes(project_id, result, redact)
 
   defp call_agent(rt, context, opts) do
     try do
