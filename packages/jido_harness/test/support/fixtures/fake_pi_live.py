@@ -24,8 +24,15 @@ FAKE_PI_OUTCOME picks what the run ends in (default `steer`, the success above):
             turn and an `agent_end`, each behind a BEL that a global extension wrote to stdout (so
             no `agent_end` decodes), then `auto_retry_end` and `agent_settled`. Then it waits for
             stdin EOF like the real rpc CLI.
-  silent    pi answers the `prompt` command and writes nothing else before exiting 0."""
-import json, os, select, sys, time
+  silent    pi answers the `prompt` command and writes nothing else before exiting 0.
+  ask       pi 1.5.0 with an extension whose `ask` tool raises dialogs (`ctx.ui.select`, `confirm`, `input`, `editor`).
+            rpc mode has ctx.hasUI, so each one is an `extension_ui_request` that blocks pi until the client answers
+            with an `extension_ui_response` of the same id (docs/rpc-extension-ui.md; the record shapes are those of
+            real Foreman runs). Fire-and-forget requests (notify, setStatus, setWidget, setTitle, set_editor_text)
+            come in between and take no answer. Blocks like pi does: nobody answering is a hang, which SIGALRM ends
+            after FAKE_PI_ASK_DEADLINE seconds (default 60). The text of its final message is the JSON list of the
+            `extension_ui_response` lines it was sent, in order."""
+import json, os, queue, select, signal, sys, threading, time
 
 here = os.path.dirname(os.path.abspath(__file__))
 outcome = os.environ.get("FAKE_PI_OUTCOME", "steer")
@@ -37,6 +44,7 @@ recordings = {
     "no_settle": None,
     "exhausted": None,
     "silent": None,
+    "ask": None,
 }
 if outcome not in recordings:
     sys.exit("fake_pi_live: unknown FAKE_PI_OUTCOME %r" % outcome)
@@ -118,6 +126,64 @@ if outcome == "exhausted":
 if outcome == "silent":
     emit({"id": "foreman-prompt", "type": "response", "command": "prompt", "success": True,
           "data": {"disposition": "started"}})
+    sys.exit(0)
+
+if outcome == "ask":
+    signal.alarm(int(os.environ.get("FAKE_PI_ASK_DEADLINE", "60")))
+    inbox = queue.Queue()
+    answers = []
+
+    def pump():
+        for line in sys.stdin:
+            inbox.put(line)
+        inbox.put(None)
+
+    threading.Thread(target=pump, daemon=True).start()
+
+    def notice(request_id, method, **fields):
+        emit({"type": "extension_ui_request", "id": request_id, "method": method, **fields})
+
+    def dialog(request_id, method, **fields):
+        notice(request_id, method, **fields)
+        while True:
+            line = inbox.get()
+            if line is None:
+                sys.exit("fake_pi_live: stdin closed while %s %s was unanswered" % (method, request_id))
+            command = json.loads(line)
+            if command.get("type") == "extension_ui_response":
+                answers.append(command)
+                if command.get("id") == request_id:
+                    return command
+
+    emit({"id": "foreman-prompt", "type": "response", "command": "prompt", "success": True,
+          "data": {"disposition": "started"}})
+    emit({"type": "agent_start"})
+    emit({"type": "turn_start"})
+    notice("ui-notify", "notify", message="extension loaded", notifyType="info")
+    notice("ui-status", "setStatus", statusKey="ext", statusText="ready")
+    emit({"type": "tool_execution_start", "toolCallId": "ask-1", "toolName": "ask",
+          "args": {"question": "Which extension do you mean?"}})
+    # Each fire-and-forget request is followed by a dialog: an answer the harness wrongly gave it would be on stdin
+    # ahead of that dialog's answer, and so in `answers`.
+    dialog("ui-select", "select", title="Which extension do you mean?", options=["notify.ts", "pi-yaml-hooks"])
+    notice("ui-widget", "setWidget", widgetKey="ext", widgetLines=["asking"], widgetPlacement="aboveEditor")
+    dialog("ui-confirm", "confirm", title="Proceed with notify.ts?", message="Nobody can answer this.")
+    notice("ui-title", "setTitle", title="pi - asking")
+    dialog("ui-input", "input", title="Name the extension", placeholder="notify.ts")
+    notice("ui-editor-text", "set_editor_text", text="prefilled text")
+    dialog("ui-editor", "editor", title="Edit the plan", prefill="Line 1")
+    # What the `ask` tool of the ask-user pi extension returns to the model once its dialog is dismissed.
+    cancelled = all(a.get("cancelled") is True for a in answers)
+    reply = "User cancelled or provided no answer." if cancelled else "User answered: " + json.dumps(answers)
+    emit({"type": "tool_execution_end", "toolCallId": "ask-1", "toolName": "ask", "isError": False,
+          "result": {"content": [{"type": "text", "text": reply}]}})
+    final = {"role": "assistant", "stopReason": "stop", "content": [{"type": "text", "text": json.dumps(answers)}]}
+    emit({"type": "message_end", "message": final})
+    emit({"type": "turn_end", "message": final, "toolResults": []})
+    emit({"type": "agent_end", "willRetry": False, "messages": [final]})
+    emit({"type": "agent_settled", "aborted": False})
+    while inbox.get() is not None:
+        pass
     sys.exit(0)
 
 if outcome == "rejected":

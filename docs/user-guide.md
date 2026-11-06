@@ -1288,6 +1288,10 @@ first terminal event (a turn the provider failed included). A CLI still alive fo
 `live_exit_grace_ms` after its input closed (`provider_config`, a positive integer in
 milliseconds, default 10000) is stopped and the run finishes from what it recorded, with a
 `live_exit_grace_expired` provider event in the run's events.
+A `pi` extension dialog (what an `ask` tool raises: a `select`, `confirm`, `input` or `editor` request) has no one to answer it
+in a phase, so Foreman cancels it on pi's input at once: the agent's `ask` returns as cancelled and it decides for itself,
+instead of the phase waiting for ever. Each one is recorded as a `ui_request_cancelled` provider event in the run's events
+(`ui_request_unanswered` when pi's input was already closed).
 
 Pause/resume flow. `run.steer` queues a
 `RunSteerQueued` event (durable, idempotent per `message_id`); the run is

@@ -9,6 +9,7 @@ defmodule Jido.Harness.Adapters.Pi do
     Capabilities,
     Error,
     Event,
+    ProcessManager,
     RunRequest,
     SessionRequest
   }
@@ -190,7 +191,9 @@ defmodule Jido.Harness.Adapters.Pi do
       executable = options[:cli_path] || Helpers.cli_path(context.config, spec().executable)
 
       if options[:live_input] == true do
-        CLIStream.run(:pi, prepare_request(request), context, executable, argv, track(&map_live_event/1), :nothing,
+        mapper = track(cancel_ui_requests(&map_live_event/1, context))
+
+        CLIStream.run(:pi, prepare_request(request), context, executable, argv, mapper, :nothing,
           live_input: [
             Jason.encode!(%{"id" => "foreman-prompt", "type" => "prompt", "message" => request.prompt}) <> "\n",
             Jason.encode!(%{"id" => "foreman-get-state", "type" => "get_state"}) <> "\n"
@@ -509,6 +512,44 @@ defmodule Jido.Harness.Adapters.Pi do
 
   defp provider_event(raw),
     do: Helpers.event(:pi, :provider_event, nil, %{"type" => Map.get(raw, "type"), "mapped" => false}, raw)
+
+  # In rpc mode pi shows an extension's `ctx.ui` dialogs (`select`, `confirm`, `input`, `editor`) as an
+  # `extension_ui_request` that blocks the extension until the client sends an `extension_ui_response` with the same
+  # id. `notify`, `setStatus`, `setWidget`, `setTitle` and `set_editor_text` are fire-and-forget: they take no answer
+  # (pi 1.5.0, `docs/rpc-extension-ui.md`). `ctx.hasUI` is true in rpc mode, so the `ask` tool of an extension raises a
+  # dialog in a phase, where nobody can answer it: run-ec9d1ce7 and run-552e1f41 sat on one for 5 and 45+ minutes (a
+  # phase has no deadline unless it sets `timeout_minutes`). A dialog is therefore answered `cancelled` on pi's stdin
+  # the moment it is read, the answer a dismissed dialog gets: the extension receives `undefined` (`false` for
+  # `confirm`), the `ask` call returns and the turn goes on.
+  @ui_dialogs ["select", "confirm", "input", "editor"]
+
+  defp cancel_ui_requests(mapper, context) do
+    fn
+      %{"type" => "extension_ui_request", "method" => method, "id" => id} = raw when method in @ui_dialogs ->
+        [cancel_ui_request(raw, id, context)]
+
+      raw ->
+        mapper.(raw)
+    end
+  end
+
+  # The answer is recorded as a `provider_event` (the request is the agent's, and `raw` is not kept). An answer that
+  # cannot be written (the run closed pi's stdin, or pi is gone) is recorded as well and the run goes on: pi is ending.
+  defp cancel_ui_request(%{"method" => method} = raw, id, context) do
+    manager = Map.get(context, :process_manager, ProcessManager)
+    answer = Jason.encode!(%{"type" => "extension_ui_response", "id" => id, "cancelled" => true}) <> "\n"
+
+    outcome =
+      with {:ok, process_id} <- Helpers.live_process_id(manager, context.run_id),
+           :ok <- manager.send_input(process_id, answer) do
+        %{"kind" => "ui_request_cancelled"}
+      else
+        {:error, reason} -> %{"kind" => "ui_request_unanswered", "error" => inspect(reason)}
+      end
+
+    payload = Map.merge(outcome, %{"method" => method, "request_id" => id, "title" => raw["title"]})
+    Helpers.event(:pi, :provider_event, nil, payload, raw)
+  end
 
   # What `stream_end/1` is asked about. `run/2` keeps it as the mapper state (`track/1`): `:nothing`
   # until pi reports an assistant turn, then `:turn_ok` or `{:turn_failed, error}` for the latest one,
