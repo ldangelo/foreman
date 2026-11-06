@@ -90,4 +90,39 @@ defmodule ForemanServer.Agents.OtelTurnAttributesTest do
     refute Enum.any?(all, &(&1 =~ "hunter2pw"))
     refute Enum.any?(all, &(&1 =~ @secret))
   end
+
+  describe "a project whose environment is refused" do
+    setup do
+      id = "otel-turn-refused-#{System.unique_integer([:positive])}"
+
+      :ok =
+        ForemanServer.ProjectionStore.apply_events([
+          %{
+            event_type: "ProjectRegistered",
+            payload: %{
+              project_id: id,
+              path: "/tmp/#{id}",
+              config: %{env: %{"FOREMAN_RUN_ID" => "sneaky-value-9"}}
+            }
+          }
+        ])
+
+      assert_raise ArgumentError, fn -> ForemanServer.ProjectEnvironment.secrets(id) end
+      {:ok, refused: id}
+    end
+
+    test "the builders never raise and the built-in token patterns still redact",
+         %{refused: id} do
+      context = %{trigger_messages: [%{text: "tok password=hunter2 end"}]}
+
+      input = TurnRunner.turn_span_attributes(id, "t", context, [])
+      assert decode(input["gen_ai.input.messages"]) == "tok password=[REDACTED] end"
+
+      ok = TurnRunner.turn_result_attributes(id, {:ok, %Turn{reply: "pw password=hunter2"}})
+      assert decode(ok["gen_ai.output.messages"]) == "pw password=[REDACTED]"
+
+      err = TurnRunner.turn_result_attributes(id, {:error, Error.new(:x, "bad password=hunter2")})
+      assert err["error.message"] == "bad password=[REDACTED]"
+    end
+  end
 end

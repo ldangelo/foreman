@@ -40,7 +40,33 @@ defmodule ForemanServer.Agents.OtelSpanEmitter do
   def with_agent_span(span_name, attributes, fun, annotate \\ fn _ -> %{} end)
       when is_binary(span_name) and is_map(attributes) and is_function(fun, 0) and
              is_function(annotate, 1) do
-    base = %{"gen_ai.agent.name" => @agent_name, "gen_ai.operation.name" => "invoke_agent"}
+    run_genai_span(span_name, "invoke_agent", attributes, fun, annotate)
+  end
+
+  @doc """
+  Run `fun` inside a model-call span named `span_name` (conventionally
+  `"chat <model>"`) with `gen_ai.operation.name = "chat"` and
+  `gen_ai.agent.name`, and return `fun`'s result unchanged. Behaves like
+  `with_agent_span/4` (error results mark the span errored; `annotate` adds
+  attributes from the result) except that it is NOT a root: it nests under the
+  current span, so a viewer such as Lens shows the turn's `invoke_agent` root
+  with this span as its model request.
+  """
+  @spec with_chat_span(
+          String.t(),
+          %{String.t() => String.t() | number()},
+          (-> result),
+          (result -> %{String.t() => String.t() | number()})
+        ) :: result
+        when result: term()
+  def with_chat_span(span_name, attributes, fun, annotate \\ fn _ -> %{} end)
+      when is_binary(span_name) and is_map(attributes) and is_function(fun, 0) and
+             is_function(annotate, 1) do
+    run_genai_span(span_name, "chat", attributes, fun, annotate)
+  end
+
+  defp run_genai_span(span_name, operation, attributes, fun, annotate) do
+    base = %{"gen_ai.agent.name" => @agent_name, "gen_ai.operation.name" => operation}
 
     OpenTelemetry.Tracer.with_span span_name, %{attributes: Map.merge(base, attributes)} do
       result = fun.()

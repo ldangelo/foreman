@@ -270,9 +270,12 @@ defmodule ForemanServer.Workflow.JobsiteObserver do
   # Put a bounded, redacted message on the phase's span (the one
   # `Jobsite.Engine` opened in this process), so a trace viewer shows what the
   # agent was asked and said. Text is redacted with the run's project secrets
-  # first. Anything that is not text is left off rather than guessed at.
+  # first, via `Redact.redactor/1` (resolved once per call; it never raises, so
+  # a refused project environment degrades to the built-in patterns). Anything
+  # that is not text is left off rather than guessed at.
   defp trace_message(key, role, text, executor) when is_binary(text) do
-    redacted = ForemanServer.Coordinator.Redact.text(project_id(executor), text)
+    redact = ForemanServer.Coordinator.Redact.redactor(project_id(executor))
+    redacted = redact.(text)
 
     OpenTelemetry.Tracer.set_attribute(
       key,

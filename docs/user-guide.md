@@ -1943,8 +1943,11 @@ Defaults and env vars:
   (`gen_ai.usage.*`); a phase span carries the rendered prompt the agent got
   (input) and its final reply text (output). Message text is capped at 8,000
   characters, is redacted with the project's secrets before export, and goes to every trace backend behind the collector (Langfuse and
-  Lens). Pi/claude model calls themselves run outside the BEAM, so they are not
-  child spans and a phase span has no model or token counts.
+  Lens). Each coordinator turn is an `invoke_agent` root span with a child
+  `chat <model>` span (`OtelSpanEmitter.with_chat_span/4`), which is what Lens
+  needs to fill its Request tab; phases have only the root span. Pi/claude model
+  calls of a phase run outside the BEAM, so a phase has no chat child span and no
+  model or token counts.
   Status: verified end to end in Lens (receipt `received:true`, agent `foreman`):
   `foreman.coordinator.turn` with user message, reply, model and token usage;
   `foreman.workflow.phase` with its step and jobsite ids. The phase span's

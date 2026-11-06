@@ -23,6 +23,45 @@ defmodule ForemanServer.Agents.OtelAgentSpanTest do
     end
   end
 
+  describe "with_chat_span/4" do
+    test "returns the wrapped function's result unchanged, errors included" do
+      assert {:ok, :done} == OtelSpanEmitter.with_chat_span("chat m", %{}, fn -> {:ok, :done} end)
+
+      assert {:error, :boom} ==
+               OtelSpanEmitter.with_chat_span("chat m", %{}, fn -> {:error, :boom} end)
+
+      assert {:error, :a, :b} ==
+               OtelSpanEmitter.with_chat_span("chat m", %{}, fn -> {:error, :a, :b} end)
+
+      assert :plain == OtelSpanEmitter.with_chat_span("chat", %{}, fn -> :plain end)
+    end
+
+    test "an exception inside the function propagates" do
+      assert_raise RuntimeError, "boom", fn ->
+        OtelSpanEmitter.with_chat_span("chat m", %{}, fn -> raise "boom" end)
+      end
+    end
+
+    test "nests inside an agent span and annotate sees the result" do
+      test_pid = self()
+
+      assert {:ok, 1} ==
+               OtelSpanEmitter.with_agent_span("t.root", %{}, fn ->
+                 OtelSpanEmitter.with_chat_span(
+                   "chat m",
+                   %{"gen_ai.request.model" => "m"},
+                   fn -> {:ok, 1} end,
+                   fn result ->
+                     send(test_pid, {:chat_annotated, result})
+                     %{}
+                   end
+                 )
+               end)
+
+      assert_received {:chat_annotated, {:ok, 1}}
+    end
+  end
+
   describe "with_agent_span/4 annotate" do
     test "receives the result, and the result still comes back unchanged" do
       test_pid = self()
