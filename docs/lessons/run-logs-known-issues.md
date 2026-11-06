@@ -296,8 +296,11 @@ fire-and-forget (a pi with extensions writes dozens per run) and take no answer.
 `{"type":"extension_ui_response","id":<the request's id>,"cancelled":true}` (`Helpers.live_process_id/2` and `send_input/2`, the
 path a steer takes): the answer a dismissed dialog gets, so the extension sees `undefined` (`false` for `confirm`), `ask`
 returns "User cancelled or provided no answer." and the agent decides for itself. The answer is recorded as a
-`provider_event` with `"kind" => "ui_request_cancelled"` (`method`, `request_id`, `title`); one that cannot be written (stdin
-already closed, the process gone) is `"ui_request_unanswered"` with the `error`, and the run goes on. Fire-and-forget requests
+`provider_event` with `"kind" => "ui_request_cancelled"` (`method`, `request_id`, `title`); one that cannot be written (no live pi
+process to write to, or the process manager refuses the write: `:not_running`, `:not_found`) is `"ui_request_unanswered"` with
+the `error`, and the run goes on. A dialog raised after the run has closed pi's stdin is still recorded `ui_request_cancelled`:
+the process manager accepts a write into a closed stdin and drops it (erlexec: "Data sent to closed stdin is ignored"), so the
+harness cannot tell; pi shuts down when its stdin ends, so nothing is left waiting. Fire-and-forget requests
 stay unmapped provider events. Not changed: no deadline was added (`timeout_minutes` stays unset on the bundled phases), so a
 phase that hangs for another reason still has none; and `Jido.Harness.Session` over pi rpc (`session/transports/pi_rpc.ex`)
 is a separate transport and answers nothing (the coordinator's pi runs with `no_extensions`). The four dialog methods are the

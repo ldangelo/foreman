@@ -533,8 +533,11 @@ defmodule Jido.Harness.Adapters.Pi do
     end
   end
 
-  # The answer is recorded as a `provider_event` (the request is the agent's, and `raw` is not kept). An answer that
-  # cannot be written (the run closed pi's stdin, or pi is gone) is recorded as well and the run goes on: pi is ending.
+  # The answer is recorded as a `provider_event`: its payload says what was asked, while the request itself stays in the
+  # event's in-memory `raw` (never journaled). An answer that cannot be written (no live pi process to write to, or the
+  # process manager refuses the write) is recorded as `ui_request_unanswered` and the run goes on: pi is ending. A write
+  # into a stdin the run has already closed is accepted and dropped by the process manager (erlexec ignores data sent to
+  # a closed stdin), so that answer reads `ui_request_cancelled` too: pi shuts down when its stdin ends.
   defp cancel_ui_request(%{"method" => method} = raw, id, context) do
     manager = Map.get(context, :process_manager, ProcessManager)
     answer = Jason.encode!(%{"type" => "extension_ui_response", "id" => id, "cancelled" => true}) <> "\n"

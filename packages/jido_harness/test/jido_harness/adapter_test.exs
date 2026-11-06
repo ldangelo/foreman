@@ -399,8 +399,10 @@ defmodule Jido.Harness.AdapterTest do
     end
   end
 
-  # The run's pi has closed its stdin: the prompt went in, nothing written after it does.
-  defmodule ClosedStdinProcessManager do
+  # The run's process is listed but gone by the time of the write (torn down between `list_processes/1` and
+  # `send_input/2`): the real process manager refuses it with `{:error, :not_found}`. (A write into a stdin the run has
+  # closed is not refused at all: erlexec ignores the data and the manager answers `:ok`.)
+  defmodule RefusingProcessManager do
     @moduledoc false
     defdelegate start_owned_process(spec, events), to: ReplayProcessManager
     defdelegate stream_process(events), to: ReplayProcessManager
@@ -408,7 +410,7 @@ defmodule Jido.Harness.AdapterTest do
 
     def send_input(process, line) do
       if line =~ "extension_ui_response",
-        do: {:error, :input_closed},
+        do: {:error, :not_found},
         else: ReplayProcessManager.send_input(process, line)
     end
   end
@@ -620,7 +622,7 @@ defmodule Jido.Harness.AdapterTest do
 
     test "an answer that cannot be written is recorded as unanswered and the run goes on" do
       for {process_manager, reason} <- [
-            {ClosedStdinProcessManager, ":input_closed"},
+            {RefusingProcessManager, ":not_found"},
             {GonePiProcessManager, ":not_running"}
           ] do
         events = rpc_run([stdout(ui_request("req-1", "input", %{"title" => "Name it"}))], process_manager)
