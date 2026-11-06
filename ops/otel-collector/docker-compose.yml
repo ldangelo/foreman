@@ -51,6 +51,7 @@ services:
       LANGFUSE_HOST: ${LANGFUSE_HOST:-langfuse-web:3000}
       LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
       LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      LITELLM_TRACING_KEY: ${LITELLM_TRACING_KEY:-}
     # Attach to the stack's network so we can resolve langfuse-web:3000 by
     # service name (envsubst's default in entrypoint.sh).
     networks:
@@ -73,3 +74,4 @@ services:
       LANGFUSE_HOST: ${LANGFUSE_HOST:-langfuse-web:3000}
       LANGFUSE_PUBLIC_KEY: pk-lf-validate
       LANGFUSE_SECRET_KEY: sk-lf-validate
+      LITELLM_TRACING_KEY: lens-trace-validate

@@ -134,7 +134,14 @@ defmodule ForemanServer.Coordinator.TurnRunner do
   # The agent call, then the bookkeeping of what it cost (success or failure).
   defp run_agent(project_id, rt, turn_id, context) do
     opts = Keyword.merge(agent_settings(project_id, rt), rt.agent_opts)
-    result = call_agent(rt, context, opts)
+
+    result =
+      ForemanServer.Agents.OtelSpanEmitter.with_agent_span(
+        "foreman.coordinator.turn",
+        %{"foreman.project_id" => to_string(project_id), "foreman.turn_id" => to_string(turn_id)},
+        fn -> call_agent(rt, context, opts) end
+      )
+
     :ok = record_usage(project_id, rt, turn_id, opts, result)
     result
   end

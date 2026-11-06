@@ -233,7 +233,8 @@ Enablement, the per-project `task_provider` block, and doctor output are
 documented in [`docs/user-guide.md`](./docs/user-guide.md) §10.
 
 Observability is split by destination: Langfuse remains the LLM trace target
-for existing OTel spans, while SigNoz operational logs are opt-in via
+for existing OTel spans (the collector also fans them out to Lens when
+`LITELLM_TRACING_KEY` is set), while SigNoz operational logs are opt-in via
 `FOREMAN_SIGNOZ_LOGS_ENABLED=true` plus `FOREMAN_SIGNOZ_OTLP_ENDPOINT` for an
 OTLP logs endpoint, `FOREMAN_SIGNOZ_OTLP_HEADERS` for optional collector
 credentials (comma-separated `key=value` pairs), and `FOREMAN_SIGNOZ_LOG_LEVEL`

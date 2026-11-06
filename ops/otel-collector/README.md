@@ -77,6 +77,19 @@ The collector reads:
 
 - `LANGFUSE_HOST` (optional, default `langfuse-web:3000`)
 - `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` (from the stack's `.env`)
+- `LITELLM_TRACING_KEY` (optional): the dedicated Lens tracing key, created in
+  Lens Home under "Tracing key" and saved in this repo's git-ignored `.env`.
+  It authorises trace uploads only; never use a Lens admin or gateway secret.
+  When it is empty or wrong the `otlphttp/lens` exporter gets `401` from Lens
+  (Langfuse delivery is unaffected). `entrypoint.sh` must export it, because
+  `envsubst` only substitutes exported variables.
+
+The template is baked into the image: after changing it, rebuild and recreate
+the collector (`docker compose up -d --build otel-collector`), with BOTH the
+stack's `.env` and this repo's `.env` sourced (the devbox scripts do this).
+Sourcing only one leaves the other exporter's header empty. The compose file
+lives in `ops/otel-collector/`, so it does not read the repo-root `.env` by
+itself.
 
 The devbox scripts source the stack's `.env` automatically. If you invoke
 docker compose directly, set them yourself.

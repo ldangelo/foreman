@@ -1906,6 +1906,7 @@ Local stack topology:
 
 ```text
 Foreman OTLP exporter -> ops/otel-collector -> Langfuse v3
+                                            -> Lens (otlphttp/lens)
 ```
 
 Defaults and env vars:
@@ -1922,6 +1923,21 @@ Defaults and env vars:
   public key returns `403`.
 - In production, set `OTEL_EXPORTER_OTLP_ENDPOINT` when
   `http://localhost:4318` is not the target collector/ingest URL.
+- The collector also fans every trace out to Lens with `otlphttp/lens` to
+  `http://lens:4318` (same Docker network; the exporter appends `/v1/traces`).
+  Auth is a dedicated Lens tracing key in `LITELLM_TRACING_KEY` (from Lens Home,
+  saved in the git-ignored `.env`, never a Lens admin or gateway secret);
+  without it Lens answers `401` and only Lens delivery is affected. The
+  collector's `debug` exporter stays at `normal` verbosity, sampled (first 5
+  spans, then 1 in 200), so it is not a way to read every span's ids.
+- App-side spans carry `gen_ai.agent.name = "foreman"`. The leaf spans
+  (`jido.cmd`, `jido.llm`, `jido.signal`) are rarely on the normal path; each
+  coordinator turn and each workflow agent phase is wrapped in a root span
+  (`foreman.coordinator.turn`, `foreman.workflow.phase`, from
+  `OtelSpanEmitter.with_agent_span/3`) carrying only ids, never message text.
+  Pi/claude model calls themselves run outside the BEAM, so they are not
+  child spans. Status: compiled and unit-tested; not yet verified end to end
+  against Lens.
 - LiteLLM defaults to `LITELLM_ENDPOINT=http://localhost:4000`;
   `agent_model: "auto"` maps through `:jido_ai` model aliases to
   LiteLLM.

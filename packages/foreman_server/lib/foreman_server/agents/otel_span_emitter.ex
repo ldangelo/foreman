@@ -12,6 +12,39 @@ defmodule ForemanServer.Agents.OtelSpanEmitter do
 
   require OpenTelemetry.Tracer
 
+  # GenAI semantic-convention agent name, stamped on every span this emitter
+  # produces (each is the root of its own trace, so Lens reads it there). The
+  # project's stable name, not the OTel service.name (`foreman_server`).
+  @agent_name "foreman"
+
+  @doc """
+  Run `fun` inside a root agent span named `span_name`, carrying
+  `gen_ai.agent.name` and `gen_ai.operation.name = "invoke_agent"` plus
+  `attributes`, and return `fun`'s result unchanged. Unlike the leaf emitters
+  this wraps the work, so an agent turn or workflow phase is one trace with the
+  agent name on its root span. An `{:error, _}` result marks the span errored;
+  an exception is recorded by `with_span` and re-raised.
+  """
+  @spec with_agent_span(String.t(), %{String.t() => String.t() | number()}, (-> result)) ::
+          result
+        when result: term()
+  def with_agent_span(span_name, attributes, fun)
+      when is_binary(span_name) and is_map(attributes) and is_function(fun, 0) do
+    base = %{"gen_ai.agent.name" => @agent_name, "gen_ai.operation.name" => "invoke_agent"}
+
+    OpenTelemetry.Tracer.with_span span_name, %{attributes: Map.merge(base, attributes)} do
+      result = fun.()
+
+      case result do
+        {:error, _, _} -> OpenTelemetry.Tracer.set_status(OpenTelemetry.status(:error, "error"))
+        {:error, _} -> OpenTelemetry.Tracer.set_status(OpenTelemetry.status(:error, "error"))
+        _ -> :ok
+      end
+
+      result
+    end
+  end
+
   @doc """
   Emit a `jido.cmd` span capturing the agent id, action name, and duration
   in microseconds. Called from the Jido `cmd/2` instrumentation hook.
@@ -22,6 +55,7 @@ defmodule ForemanServer.Agents.OtelSpanEmitter do
     OpenTelemetry.Tracer.with_span "jido.cmd",
                                    %{
                                      attributes: %{
+                                       "gen_ai.agent.name" => @agent_name,
                                        "jido.agent_id" => agent_id,
                                        "jido.action" => action_name,
                                        "duration_us" => duration_us
@@ -58,7 +92,11 @@ defmodule ForemanServer.Agents.OtelSpanEmitter do
   @spec llm_span_attributes(String.t(), non_neg_integer() | nil, number() | nil, String.t()) ::
           %{String.t() => String.t() | number()}
   def llm_span_attributes(model, token_count, cost_usd, routing_reason) do
-    %{"llm.model" => model, "llm.routing_reason" => routing_reason}
+    %{
+      "gen_ai.agent.name" => @agent_name,
+      "llm.model" => model,
+      "llm.routing_reason" => routing_reason
+    }
     |> put_unless_nil("llm.tokens", token_count)
     |> put_unless_nil("llm.cost_usd", cost_usd)
   end
@@ -76,6 +114,7 @@ defmodule ForemanServer.Agents.OtelSpanEmitter do
     OpenTelemetry.Tracer.with_span "jido.signal",
                                    %{
                                      attributes: %{
+                                       "gen_ai.agent.name" => @agent_name,
                                        "signal.type" => signal_type,
                                        "signal.topic" => topic,
                                        "signal.delivery_status" => delivery_status

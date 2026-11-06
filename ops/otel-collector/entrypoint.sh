@@ -40,6 +40,10 @@ TEMPLATE=/etc/otelcol-contrib/config.template.yaml
 LANGFUSE_HOST="${LANGFUSE_HOST:-langfuse-web:3000}"
 LANGFUSE_PUBLIC_KEY="${LANGFUSE_PUBLIC_KEY:-}"
 LANGFUSE_SECRET_KEY="${LANGFUSE_SECRET_KEY:-}"
+# Dedicated Lens tracing key (Lens Home -> Tracing key). Must be exported below:
+# envsubst only substitutes exported variables, and an unexported one would ship
+# the literal string "Bearer ${LITELLM_TRACING_KEY}" to Lens.
+LITELLM_TRACING_KEY="${LITELLM_TRACING_KEY:-}"
 
 # Compute the HTTP Basic auth header value (empty string if either key is
 # missing — the collector will then omit the header entirely). Base64 must
@@ -51,7 +55,7 @@ if [ -n "$LANGFUSE_PUBLIC_KEY" ] && [ -n "$LANGFUSE_SECRET_KEY" ]; then
 else
   LANGFUSE_BASIC_AUTH=""
 fi
-export LANGFUSE_HOST LANGFUSE_PUBLIC_KEY LANGFUSE_SECRET_KEY LANGFUSE_BASIC_AUTH
+export LANGFUSE_HOST LANGFUSE_PUBLIC_KEY LANGFUSE_SECRET_KEY LANGFUSE_BASIC_AUTH LITELLM_TRACING_KEY
 
 envsubst < "$TEMPLATE" > "$CONF"
 
