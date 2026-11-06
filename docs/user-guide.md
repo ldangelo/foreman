@@ -1937,14 +1937,17 @@ Defaults and env vars:
   `OtelSpanEmitter.with_agent_span/4`). A turn span carries the operator
   message(s) that triggered it (`gen_ai.input.messages`), the reply
   (`gen_ai.output.messages`), the model (`gen_ai.request.model`) and token usage
-  (`gen_ai.usage.*`); a phase span carries its resolved prompt as input. Message
-  text is capped at 8,000 characters and goes to every trace backend behind the
-  collector (Langfuse and Lens). Pi/claude model calls themselves run outside
-  the BEAM, so they are not child spans and a phase span has no output text.
-  Status: `foreman.coordinator.turn` is verified end to end, including content
-  (collector, Lens receipt `received:true`, and the trace under agent `foreman`
-  shows the user message, the reply, the model and token usage). The
-  `foreman.workflow.phase` span has not yet been seen in Lens.
+  (`gen_ai.usage.*`); a phase span carries the rendered prompt the agent got
+  (input) and its final reply text (output). Message text is capped at 8,000
+  characters and goes to every trace backend behind the collector (Langfuse and
+  Lens). Pi/claude model calls themselves run outside the BEAM, so they are not
+  child spans and a phase span has no model or token counts.
+  Status: verified end to end in Lens (receipt `received:true`, agent `foreman`):
+  `foreman.coordinator.turn` with user message, reply, model and token usage;
+  `foreman.workflow.phase` with its step and jobsite ids. The phase span's
+  rendered-prompt input and reply output have not yet been seen in Lens (the
+  first phase span showed the template name `assess.md` as its input, which
+  this change fixes).
 - The test suite exports no spans: `config/test.exs` sets
   `traces_exporter: :none` (opt-in tracer tests used to ship spans to the live
   collector). Running `mix test` outside `MIX_ENV=test` uses the live dev
