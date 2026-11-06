@@ -1349,7 +1349,7 @@ carry the text hint `operator: foreman run approve-merge/merge`.
 
 Open `/dashboard/runs` with the same bearer token accepted by the browser dashboard guard: `Authorization: Bearer <token>` or `?token=<token>`. The route fails closed with `401 unauthorized` when the token is missing, wrong, or `:api_bearer_token` is unset. `/dashboard` remains the separate Jido live dashboard.
 
-The run dashboard lists projection-backed runs, task/ad-hoc context, phase status, PR markers, durable worker logs, and read-only change evidence. Logs are read from `ProjectionStore.run_logs/1`; server `Logger` output is not copied into run logs. Missing worktrees, branches, bases, or PR evidence show explicit unavailable states rather than shelling into private paths.
+The run dashboard lists projection-backed runs (each row shows the run id, its task or `ad-hoc run` label, a status chip, workflow, current phase and PR marker), phase status, durable worker logs, and read-only change evidence. Status chips colour known statuses (for example `needs_recovery` and `failed` are red); a status the page has no colour for is shown in the warning colour so it is noticed rather than looking like `completed`. Logs are read from `ProjectionStore.run_logs/1`; server `Logger` output is not copied into run logs. Missing worktrees, branches, bases, or PR evidence show explicit unavailable states rather than shelling into private paths.
 
 Deep links: `/dashboard/runs?run_id=<run-id>[&tab=summary|logs|changes|actions][&file=<path>]`.
 

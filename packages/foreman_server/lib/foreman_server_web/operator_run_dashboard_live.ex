@@ -19,6 +19,31 @@ defmodule ForemanServerWeb.OperatorRunDashboardLive do
 
   @tabs ~w(summary logs changes actions)
 
+  # Maps the run/phase status strings the projections produce onto a colour modifier of the
+  # workspace's shared `.chip--*` / `.thread-dot--*` classes. `Workspace.Components.thread_chip/1`
+  # is the same idea for threads (there `completed` is deliberately muted, and the `ok` colour is
+  # reserved for review groups that no run status maps to).
+  @chip_kinds %{
+    # run statuses (projection_store.ex: RunStarted -> awaiting_worker/in_progress, the terminal
+    # events, RunPaused, and the unresponsive-worker transition to needs_recovery)
+    "completed" => "muted",
+    "in_progress" => "info",
+    "awaiting_worker" => "info",
+    "failed" => "err",
+    "blocked" => "warn",
+    "stuck" => "err",
+    "paused" => "warn",
+    "cancelled" => "warn",
+    "deleted" => "muted",
+    # an operator-action state: `OperatorDashboard.actions_for_status/1` enables Stop and Reset
+    "needs_recovery" => "err",
+    # phase statuses (aggregates/phase.ex)
+    "pending" => "muted",
+    "timed_out" => "err",
+    "retrying" => "info",
+    "skipped" => "muted"
+  }
+
   @refresh_ms 2_000
 
   @impl true
@@ -120,78 +145,100 @@ defmodule ForemanServerWeb.OperatorRunDashboardLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <main id="main" class="operator-run-dashboard">
-      <header>
-        <h1>{@page_title}</h1>
-        <p>Run management dashboard. Existing Jido dashboard remains at <a href="/dashboard">/dashboard</a>.</p>
-        <p :if={@last_refresh_at}>Last refresh: {@last_refresh_at}</p>
-        <p :if={@stale?} class="dashboard-stale">Stale: refresh failed; showing last known state.</p>
-        <p :if={@error} class="dashboard-error">Error: {inspect(@error)}</p>
-        <p :if={@action_result} class="dashboard-action-result">{@action_result}</p>
+    <main id="main" class="ws-main">
+      <header class="ws-header">
+        <div class="ws-header-title">
+          <h1>{@page_title}</h1>
+          <p class="ws-muted">Run management dashboard. Existing Jido dashboard remains at <a href="/dashboard">/dashboard</a>.</p>
+          <p :if={@last_refresh_at} class="ws-muted">Last refresh: {@last_refresh_at}</p>
+        </div>
+        <nav class="ws-header-actions" aria-label="Dashboard">
+          <button type="button" class="btn ws-btn" phx-click="refresh">Refresh</button>
+        </nav>
+        <div id="notice" role="status" aria-live="polite" class={(@stale? || @error != nil) && "ws-error"}>
+          <p :if={@stale?}>Stale: refresh failed; showing last known state.</p>
+          <p :if={@error}>Error: {describe(@error)}</p>
+          <p :if={@action_result}>{@action_result}</p>
+        </div>
       </header>
 
-      <form phx-submit="filter" id="run-filters">
+      <form class="ws-card" phx-submit="filter" id="run-filters">
         <label>Status <input name="status" value={@status_filter} /></label>
         <label>Project <input name="project_id" value={@project_filter} /></label>
         <label>Limit <input name="limit" value={@limit} /></label>
-        <button type="submit">Apply filters</button>
-        <button type="button" phx-click="refresh">Refresh</button>
+        <button type="submit" class="btn ws-btn">Apply filters</button>
       </form>
 
-      <section class="dashboard-layout">
-        <aside class="run-list" aria-label="Runs">
-          <h2>Runs</h2>
-          <p :if={@runs == []}>No runs found.</p>
-          <ul :if={@runs != []}>
+      <div class="ws-layout ws-layout--runs">
+        <nav id="run-list" class="ws-threads" aria-label="Runs">
+          <h2 id="runs-heading" class="ws-group-title">
+            Runs <span class="ws-count">({length(@runs)})</span>
+          </h2>
+          <p :if={@runs == []} class="ws-muted">No runs found.</p>
+          <ul class="thread-rows" :if={@runs != []}>
             <li :for={run <- @runs}>
-              <button type="button" phx-click="select-run" phx-value-run-id={run.run_id}>
-                <span class="focus-marker">▶</span>
-                <strong>{run.run_id}</strong>
-                <span>[{run.status}]</span>
-                <span>{run.workflow}</span>
-                <span>{run.task_label}</span>
-                <span>{run.current_phase_name}</span>
-                <span>{run.pr_marker}</span>
-              </button>
+              <.run_row run={run} selected_id={@selected_run_id} />
             </li>
           </ul>
-        </aside>
+        </nav>
 
-        <section class="run-detail" aria-label="Run detail">
+        <section class="ws-main-col" aria-label="Run detail">
           <%= if @detail do %>
-            <h2>Run {@detail.run.run_id}</h2>
-            <nav aria-label="Run detail tabs">
-              <button phx-click="tab" phx-value-tab="summary">Summary</button>
-              <button phx-click="tab" phx-value-tab="logs">Logs</button>
-              <button phx-click="tab" phx-value-tab="changes">Changes</button>
-              <button phx-click="tab" phx-value-tab="actions">Actions</button>
-            </nav>
+            <header class="ws-header">
+              <div class="ws-header-title"><h2>Run {@detail.run.run_id}</h2></div>
+              <nav class="ws-header-actions" aria-label="Run status">
+                <span class={["chip", "chip--" <> chip_kind(@detail.run.status)]} role="status">{@detail.run.status}</span>
+                <span :if={@detail.run.completed_with_errors} class="chip chip--warn" role="status">completed with errors</span>
+              </nav>
+            </header>
+            <div role="tablist" aria-label="Run detail tabs">
+              <button type="button" role="tab" class="btn ws-btn" phx-click="tab" phx-value-tab="summary"
+                id="dash-tab-summary" aria-controls="dash-panel"
+                aria-selected={to_string(@active_tab == "summary")}>Summary</button>
+              <button type="button" role="tab" class="btn ws-btn" phx-click="tab" phx-value-tab="logs"
+                id="dash-tab-logs" aria-controls="dash-panel"
+                aria-selected={to_string(@active_tab == "logs")}>Logs</button>
+              <button type="button" role="tab" class="btn ws-btn" phx-click="tab" phx-value-tab="changes"
+                id="dash-tab-changes" aria-controls="dash-panel"
+                aria-selected={to_string(@active_tab == "changes")}>Changes</button>
+              <button type="button" role="tab" class="btn ws-btn" phx-click="tab" phx-value-tab="actions"
+                id="dash-tab-actions" aria-controls="dash-panel"
+                aria-selected={to_string(@active_tab == "actions")}>Actions</button>
+            </div>
+            <div id="dash-panel" role="tabpanel" aria-labelledby={"dash-tab-" <> @active_tab} tabindex="0">
 
-            <section :if={@active_tab == "summary"}>
+            <section :if={@active_tab == "summary"} class="ws-card">
               <h3>Summary</h3>
               <dl>
-                <dt>Status</dt><dd>{@detail.run.status}</dd>
-                <dt>Project</dt><dd>{@detail.run.project_id}</dd>
-                <dt>Task</dt><dd>{@detail.run.task_label}</dd>
-                <dt>Latest stall</dt><dd>{inspect(@detail.run.latest_stall)}</dd>
-                <dt>Failure</dt><dd>{inspect(@detail.run.failure_reason)}</dd>
-                <dt>PR</dt><dd>{inspect(@detail.run.pr_url)}</dd>
+                <dt>Status</dt><dd><span class={["chip", "chip--" <> chip_kind(@detail.run.status)]}>{@detail.run.status}</span></dd>
+                <dt>Project</dt><dd>{describe(@detail.run.project_id)}</dd>
+                <dt>Task</dt><dd>{describe(@detail.run.task_label)}</dd>
+                <dt>Current phase</dt><dd>{describe(@detail.run.current_phase_name)}</dd>
+                <dt>Workflow</dt><dd>{describe(@detail.run.workflow)}</dd>
+                <dt>Latest stall</dt><dd>{describe(@detail.run.latest_stall)}</dd>
+                <dt>Failure</dt><dd>{describe(@detail.run.failure_reason)}</dd>
+                <dt>PR</dt><dd>{describe(@detail.run.pr_url)}</dd>
               </dl>
 
               <h3>Phases</h3>
-              <ol>
+              <ul :if={@detail.phases != []} class="ws-panel-list">
                 <li :for={phase <- @detail.phases}>
-                  <strong>{phase.name}</strong> [{phase.status}] artifact={inspect(phase.artifact)} stall={inspect(phase.latest_stall)} failure={inspect(phase.failure_reason)}
+                  <span class={["chip", "chip--" <> chip_kind(phase.status)]}>{phase.status}</span>
+                  <span>{phase.name}</span>
+                  <span class="ws-ellipsis" title={describe(phase.artifact)}>artifact={describe(phase.artifact)}</span>
+                  <span>stall={describe(phase.latest_stall)}</span>
+                  <span>failure={describe(phase.failure_reason)}</span>
                 </li>
-              </ol>
+              </ul>
+              <p :if={@detail.phases == []} class="ws-muted">No phases recorded.</p>
             </section>
 
-            <section :if={@active_tab == "logs"}>
+            <section :if={@active_tab == "logs"} class="ws-card">
               <h3>Durable worker logs</h3>
               {render_logs(@detail.logs)}
             </section>
 
-            <section :if={@active_tab == "changes"}>
+            <section :if={@active_tab == "changes"} class="ws-card">
               <h3>Code changes and PR evidence</h3>
               {render_changes(@detail.changes, %{
                 run_id: @detail.run.run_id,
@@ -201,32 +248,37 @@ defmodule ForemanServerWeb.OperatorRunDashboardLive do
               })}
             </section>
 
-            <section :if={@active_tab == "actions"}>
+            <section :if={@active_tab == "actions"} class="ws-card">
               <h3>Run controls</h3>
               <p>Stop pauses the run with reason <code>operator_pause</code>. Cancel is not Stop.</p>
               <form phx-submit="run-action">
                 <input type="hidden" name="run-id" value={@detail.run.run_id} />
                 <input type="hidden" name="intent-key" value={@action_intent_key} />
                 <label>Reason <input name="reason" placeholder="operator reason" /></label>
-                <button name="action" value="stop" disabled={!@detail.run.actions.stop.enabled}>Stop / pause</button>
-                <button name="action" value="resume" disabled={!@detail.run.actions.resume.enabled}>Resume</button>
-                <button name="action" value="reset" disabled={!@detail.run.actions.reset.enabled}>Restart / reset</button>
-                <button name="action" value="abandon" disabled={!@detail.run.actions.abandon.enabled}>Abandon / remove</button>
+                <button type="submit" class="btn ws-btn" name="action" value="stop" disabled={!@detail.run.actions.stop.enabled}>Stop / pause</button>
+                <button type="submit" class="btn ws-btn" name="action" value="resume" disabled={!@detail.run.actions.resume.enabled}>Resume</button>
+                <button type="submit" class="btn ws-btn" name="action" value="reset" disabled={!@detail.run.actions.reset.enabled}>Restart / reset</button>
+                <button type="submit" class="btn ws-btn" name="action" value="abandon" disabled={!@detail.run.actions.abandon.enabled}>Abandon / remove</button>
               </form>
             </section>
+            </div>
           <% else %>
             <%= if @detail_error do %>
-              <h2>Run detail unavailable</h2>
-              <p class="dashboard-detail-error">
-                Could not load run <code>{elem(@detail_error, 0)}</code>: {inspect(elem(@detail_error, 1))}
-              </p>
+              <section class="ws-card">
+                <h2>Run detail unavailable</h2>
+                <p class="ws-error">
+                  Could not load run <code>{elem(@detail_error, 0)}</code>: {describe(elem(@detail_error, 1))}
+                </p>
+              </section>
             <% else %>
-              <h2>No run selected</h2>
-              <p>Select a run to inspect phases, logs, changes, and safe actions.</p>
+              <section class="ws-card">
+                <h2>No run selected</h2>
+                <p class="ws-muted">Select a run to inspect phases, logs, changes, and safe actions.</p>
+              </section>
             <% end %>
           <% end %>
         </section>
-      </section>
+      </div>
     </main>
     """
   end
@@ -411,15 +463,22 @@ defmodule ForemanServerWeb.OperatorRunDashboardLive do
     assigns = %{logs: logs}
 
     ~H"""
-    <p>count={@logs.count} limit={@logs.limit} truncated={inspect(@logs.truncated)}</p>
-    <p :if={@logs.truncated}>Tail shown; omitted entries={@logs.omitted_entries}, omitted bytes={@logs.omitted_bytes}.</p>
-    <ol>
-      <li :for={entry <- @logs.entries}>
-        <span>[{entry.channel}]</span>
-        <span>seq={entry.sequence}</span>
-        <code>{entry.content}</code>
-      </li>
-    </ol>
+    <p class="ws-muted">
+      <span class="chip chip--muted">{@logs.count} entries</span>
+      <span> · showing up to limit {@logs.limit}</span>
+      <span :if={@logs.truncated}> · tail shown, {@logs.omitted_entries} entries ({@logs.omitted_bytes} bytes) omitted</span>
+    </p>
+    <div id="run-log" class="conv-transcript" role="log" aria-live="polite" aria-label="Run worker logs">
+      <div class="conv-inner">
+      <article :for={entry <- @logs.entries} id={"log-entry-#{entry.sequence}"} class={["msg", entry_kind(entry.channel)]}>
+        <p class="msg-meta">
+          <span class="msg-sender">{describe(entry.channel)}</span>
+          <span>#{entry.sequence}</span>
+        </p>
+        <div class="msg-text">{entry.content}</div>
+      </article>
+      </div>
+    </div>
     """
   end
 
@@ -427,9 +486,19 @@ defmodule ForemanServerWeb.OperatorRunDashboardLive do
     assigns = %{}
 
     ~H"""
-    <p>run_not_found</p>
+    <p class="ws-error">run_not_found</p>
     """
   end
+
+  # Worker log channels onto the workspace's message variants (`layouts.ex` styles
+  # `.msg--agent`/`.msg--stderr`/`.msg--system`/...). `stdout` is the worker's own output and reads
+  # as agent output, not as a system notice. A channel not listed reads as system.
+  defp entry_kind("stderr"), do: "msg--stderr"
+  defp entry_kind("stdout"), do: "msg--agent"
+  defp entry_kind("system"), do: "msg--system"
+  defp entry_kind("operator"), do: "msg--operator"
+  defp entry_kind("agent"), do: "msg--agent"
+  defp entry_kind(_), do: "msg--system"
 
   # The selected file's diff is shown beside any list state: the diff read is independent of the
   # list (and may fail the same way, e.g. git unavailable), so its typed message still appears.
@@ -438,9 +507,9 @@ defmodule ForemanServerWeb.OperatorRunDashboardLive do
 
     ~H"""
     {render_change_list(@changes, @ctx)}
-    <section :if={@ctx.selected_file} id="change-preview" aria-live="polite">
+    <section :if={@ctx.selected_file} id="change-preview" class="ws-card" aria-live="polite">
       <h4>Diff of {@ctx.selected_file}</h4>
-      <p>This is the <code>git diff</code> patch of the file against the run's base, not the file itself.</p>
+      <p class="ws-muted">This is the <code>git diff</code> patch of the file against the run's base, not the file itself.</p>
       {render_preview(@ctx.preview)}
     </section>
     """
@@ -450,11 +519,15 @@ defmodule ForemanServerWeb.OperatorRunDashboardLive do
     assigns = %{changes: changes, ctx: ctx}
 
     ~H"""
-    <p>source={@changes.source} truncated={inspect(@changes.truncated?)}</p>
-    <ul>
+    <p class="ws-muted">
+      <span class="chip chip--info" role="status">{length(@changes.files)} files</span>
+      <span> · source {describe(@changes.source)}</span>
+      <span :if={@changes.truncated?}> · truncated</span>
+    </p>
+    <ul class="ws-panel-list">
       <li :for={file <- @changes.files}>
-        {file.status}
-        <.link patch={Components.run_detail_path(@ctx.run_id, @ctx.token, tab: "changes", file: file.path)}>
+        <span class={["chip", change_kind(file.status)]}>{file.status}</span>
+        <.link patch={Components.run_detail_path(@ctx.run_id, @ctx.token, tab: "changes", file: file.path)} class="btn--link ws-ellipsis">
           {file.path}
         </.link>
       </li>
@@ -463,10 +536,11 @@ defmodule ForemanServerWeb.OperatorRunDashboardLive do
   end
 
   defp render_change_list({:ok, %{state: state} = changes}, _ctx) do
-    assigns = %{state: state, changes: changes}
+    assigns = %{state: state, meta: Map.get(changes, :meta)}
 
     ~H"""
-    <p>Change evidence unavailable: {inspect(@state)} {inspect(Map.get(@changes, :meta, %{}))}</p>
+    <p class="ws-error">Change evidence unavailable: {describe(@state)}</p>
+    {render_meta(@meta)}
     """
   end
 
@@ -474,7 +548,7 @@ defmodule ForemanServerWeb.OperatorRunDashboardLive do
     assigns = %{reason: reason}
 
     ~H"""
-    <p>Change evidence unavailable: {inspect(@reason)}</p>
+    <p class="ws-error">Change evidence unavailable: {describe(@reason)}</p>
     """
   end
 
@@ -482,7 +556,41 @@ defmodule ForemanServerWeb.OperatorRunDashboardLive do
     assigns = %{}
 
     ~H"""
-    <p>Open the Changes tab to load evidence.</p>
+    <p class="ws-muted">Open the Changes tab to load evidence.</p>
+    """
+  end
+
+  # `git status --porcelain` letters onto the shared chip modifiers.
+  defp change_kind("A"), do: "chip--ok"
+  defp change_kind("M"), do: "chip--info"
+  defp change_kind("D"), do: "chip--err"
+  defp change_kind("R"), do: "chip--info"
+  defp change_kind("?"), do: "chip--warn"
+  defp change_kind(_), do: "chip--muted"
+
+  # Evidence metadata is an open map, and never as an inspected struct. The `:meta` key is absent
+  # for some unavailable states, so `nil` must render nothing: a bare `nil` in a HEEx interpolation
+  # drops the whole rendered result, silently hiding the message beside it.
+  defp render_meta(meta) when meta in [nil, %{}], do: nil
+
+  defp render_meta(meta) when is_map(meta) do
+    assigns = %{meta: meta}
+
+    ~H"""
+    <ul class="ws-panel-list">
+      <li :for={{key, value} <- @meta}>
+        <span>{to_string(key)}</span>
+        <span>{describe(value)}</span>
+      </li>
+    </ul>
+    """
+  end
+
+  defp render_meta(other) do
+    assigns = %{other: other}
+
+    ~H"""
+    <p class="ws-muted">{describe(@other)}</p>
     """
   end
 
@@ -490,8 +598,8 @@ defmodule ForemanServerWeb.OperatorRunDashboardLive do
     assigns = %{diff: diff, truncated?: truncated?, bytes: bytes}
 
     ~H"""
-    <pre>{@diff}</pre>
-    <p :if={@truncated?}>Diff truncated: showing {byte_size(@diff)} of {@bytes} bytes</p>
+    <pre class="ws-msg">{@diff}</pre>
+    <p :if={@truncated?} class="ws-muted">Diff truncated: showing {byte_size(@diff)} of {@bytes} bytes</p>
     """
   end
 
@@ -499,7 +607,7 @@ defmodule ForemanServerWeb.OperatorRunDashboardLive do
     assigns = %{message: preview_error(reason)}
 
     ~H"""
-    <p class="dashboard-detail-error">{@message}</p>
+    <p class="ws-error">{@message}</p>
     """
   end
 
@@ -507,7 +615,7 @@ defmodule ForemanServerWeb.OperatorRunDashboardLive do
     assigns = %{}
 
     ~H"""
-    <p>Loading diff…</p>
+    <p class="ws-muted">Loading diff…</p>
     """
   end
 
@@ -522,4 +630,45 @@ defmodule ForemanServerWeb.OperatorRunDashboardLive do
     do: "Diff unavailable: git is not available on the server."
 
   defp preview_error(:evidence_timeout), do: "Diff unavailable: reading the diff timed out."
+
+  # Run/phase fields are `:absent` when the projection has no value, and `nil` in a few others.
+  # `inspect/1` leaked those as `:absent` / `nil` / `[status]` brackets on the page; the workspace
+  # instead says "not available". Anything unrenderable reads as its inspected term so no value is
+  # ever silently dropped.
+  defp describe(nil), do: "not available"
+  defp describe(:absent), do: "not available"
+  defp describe(value) when is_binary(value), do: value
+  defp describe(value) when is_boolean(value), do: to_string(value)
+  defp describe(value) when is_atom(value), do: Atom.to_string(value)
+  defp describe(value), do: inspect(value)
+
+  # The run row mirrors `Workspace.Components.thread_row/1`. It stays a `button` + `phx-click`
+  # (not the workspace's `<.link patch=...>`): there is no per-run route to patch to, the detail
+  # is loaded by server-side selection.
+  attr(:run, ForemanServerWeb.OperatorDashboard.RunDTO, required: true)
+  attr(:selected_id, :string, default: nil)
+
+  defp run_row(assigns) do
+    ~H"""
+    <button type="button" class="thread-row" phx-click="select-run" phx-value-run-id={@run.run_id}
+      aria-current={if @run.run_id == @selected_id, do: "page"}>
+      <span class="thread-row-title" title={@run.run_id}>{@run.run_id}</span>
+      <span class="thread-row-meta">
+        <span class="ws-ellipsis" title={describe(@run.task_label)}>{describe(@run.task_label)}</span>
+      </span>
+      <span class="thread-row-meta">
+        <span class={["thread-dot", "thread-dot--" <> chip_kind(@run.status)]} aria-hidden="true"></span>
+        <span class={["chip", "chip--" <> chip_kind(@run.status)]}>{@run.status}</span>
+        <span>{describe(@run.workflow)}</span>
+        <span>{describe(@run.current_phase_name)}</span>
+        <span>{describe(@run.pr_marker)}</span>
+      </span>
+    </button>
+    """
+  end
+
+  # An unmapped status is a vocabulary gap, not a calm state: it renders as `warn` so it is
+  # noticed and gets mapped, never as the muted colour that `completed` uses.
+  defp chip_kind(status) when is_binary(status), do: Map.get(@chip_kinds, status, "warn")
+  defp chip_kind(_status), do: "warn"
 end
