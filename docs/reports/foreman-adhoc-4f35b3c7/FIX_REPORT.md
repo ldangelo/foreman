@@ -15,3 +15,7 @@ Phase 1 complete. Report: `docs/reports/foreman-adhoc-4f35b3c7/FIX_REPORT.md`.
 2. `.ws-layout--runs` (2-column override) is an app-shell change that may conflict with concurrent run `run-df42b06452304231a63e9218316cd259`.
 
 Not done (in `Follow-ups`): `/dashboard` root and `/admin` still use the old invented classes; out of this brief. No commit, branch, push or PR — tree left staged-free for Foreman to commit. `foreman_inbox_send`/`foreman_task_add_comment` were unavailable and `ask_advisor` fails in this worktree (`Advisor model not found: openai-codex/gpt-5.5`), so progress updates and the advisor gate could not be run.
+
+---
+
+**Follow-up note (2026-11-06).** The doc-gate line above ("no edits needed") no longer holds: the PR 836 follow-up edited `docs/user-guide.md` (run list wording). The tablist is still four static buttons, now sharing one always-present `#dash-panel` tabpanel, and the new dashboard event tests supersede the "7 parity tests" count.

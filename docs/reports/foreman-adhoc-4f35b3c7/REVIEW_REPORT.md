@@ -15,3 +15,12 @@ Phase complete. Report-only run, per operator instruction.
 **Not run here:** compile, tests, formatter — nothing was changed to verify; earlier green-test claims are explicitly not endorsed.
 
 Scratch diff files deleted from the worktree and from the run directory.
+
+---
+
+**Resolved in follow-up commit (2026-11-06).** The review above covers an earlier head (`b6d70d41`); against the PR 836 follow-up these findings were addressed and no longer hold:
+- Major, silent `"muted"` default in `chip_kind/1` (`operator_run_dashboard_live.ex`): `needs_recovery` (red), `retrying` (info) and `skipped` (muted) are now mapped, and an unmapped status renders in the visible `warn` colour. The `entry_kind/1` catch-all is unchanged except that `stdout` now maps to the agent style instead of falling through to system.
+- The run row once more shows the task label, the shared stylesheet's generic button rule no longer overrides the run rows' selected marker, and the dashboard's events (tabs, refresh, filter, select-run, run action) are now driven by tests through the rendered DOM.
+- `docs/user-guide.md` describes the final run list.
+
+Not addressed and still open: the `ChangeEvidence` vocabulary duplication, the untyped `meta` map, and the `styled_classes/0` guard's looseness. The statement that earlier green-test claims are not endorsed is left as written.

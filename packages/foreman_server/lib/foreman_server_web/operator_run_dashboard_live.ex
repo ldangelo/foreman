@@ -24,7 +24,8 @@ defmodule ForemanServerWeb.OperatorRunDashboardLive do
   # is the same idea for threads (there `completed` is deliberately muted, and the `ok` colour is
   # reserved for review groups that no run status maps to).
   @chip_kinds %{
-    # run statuses
+    # run statuses (projection_store.ex: RunStarted -> awaiting_worker/in_progress, the terminal
+    # events, RunPaused, and the unresponsive-worker transition to needs_recovery)
     "completed" => "muted",
     "in_progress" => "info",
     "awaiting_worker" => "info",
@@ -34,9 +35,13 @@ defmodule ForemanServerWeb.OperatorRunDashboardLive do
     "paused" => "warn",
     "cancelled" => "warn",
     "deleted" => "muted",
-    # phase statuses
+    # an operator-action state: `OperatorDashboard.actions_for_status/1` enables Stop and Reset
+    "needs_recovery" => "err",
+    # phase statuses (aggregates/phase.ex)
     "pending" => "muted",
-    "timed_out" => "err"
+    "timed_out" => "err",
+    "retrying" => "info",
+    "skipped" => "muted"
   }
 
   @refresh_ms 2_000
@@ -188,20 +193,21 @@ defmodule ForemanServerWeb.OperatorRunDashboardLive do
             </header>
             <div role="tablist" aria-label="Run detail tabs">
               <button type="button" role="tab" class="btn ws-btn" phx-click="tab" phx-value-tab="summary"
-                id="dash-tab-summary" aria-controls="dash-panel-summary"
+                id="dash-tab-summary" aria-controls="dash-panel"
                 aria-selected={to_string(@active_tab == "summary")}>Summary</button>
               <button type="button" role="tab" class="btn ws-btn" phx-click="tab" phx-value-tab="logs"
-                id="dash-tab-logs" aria-controls="dash-panel-logs"
+                id="dash-tab-logs" aria-controls="dash-panel"
                 aria-selected={to_string(@active_tab == "logs")}>Logs</button>
               <button type="button" role="tab" class="btn ws-btn" phx-click="tab" phx-value-tab="changes"
-                id="dash-tab-changes" aria-controls="dash-panel-changes"
+                id="dash-tab-changes" aria-controls="dash-panel"
                 aria-selected={to_string(@active_tab == "changes")}>Changes</button>
               <button type="button" role="tab" class="btn ws-btn" phx-click="tab" phx-value-tab="actions"
-                id="dash-tab-actions" aria-controls="dash-panel-actions"
+                id="dash-tab-actions" aria-controls="dash-panel"
                 aria-selected={to_string(@active_tab == "actions")}>Actions</button>
             </div>
+            <div id="dash-panel" role="tabpanel" aria-labelledby={"dash-tab-" <> @active_tab} tabindex="0">
 
-            <section :if={@active_tab == "summary"} id="dash-panel-summary" role="tabpanel" aria-labelledby="dash-tab-summary" tabindex="0" class="ws-card">
+            <section :if={@active_tab == "summary"} class="ws-card">
               <h3>Summary</h3>
               <dl>
                 <dt>Status</dt><dd><span class={["chip", "chip--" <> chip_kind(@detail.run.status)]}>{@detail.run.status}</span></dd>
@@ -227,12 +233,12 @@ defmodule ForemanServerWeb.OperatorRunDashboardLive do
               <p :if={@detail.phases == []} class="ws-muted">No phases recorded.</p>
             </section>
 
-            <section :if={@active_tab == "logs"} id="dash-panel-logs" role="tabpanel" aria-labelledby="dash-tab-logs" tabindex="0" class="ws-card">
+            <section :if={@active_tab == "logs"} class="ws-card">
               <h3>Durable worker logs</h3>
               {render_logs(@detail.logs)}
             </section>
 
-            <section :if={@active_tab == "changes"} id="dash-panel-changes" role="tabpanel" aria-labelledby="dash-tab-changes" tabindex="0" class="ws-card">
+            <section :if={@active_tab == "changes"} class="ws-card">
               <h3>Code changes and PR evidence</h3>
               {render_changes(@detail.changes, %{
                 run_id: @detail.run.run_id,
@@ -242,7 +248,7 @@ defmodule ForemanServerWeb.OperatorRunDashboardLive do
               })}
             </section>
 
-            <section :if={@active_tab == "actions"} id="dash-panel-actions" role="tabpanel" aria-labelledby="dash-tab-actions" tabindex="0" class="ws-card">
+            <section :if={@active_tab == "actions"} class="ws-card">
               <h3>Run controls</h3>
               <p>Stop pauses the run with reason <code>operator_pause</code>. Cancel is not Stop.</p>
               <form phx-submit="run-action">
@@ -255,6 +261,7 @@ defmodule ForemanServerWeb.OperatorRunDashboardLive do
                 <button type="submit" class="btn ws-btn" name="action" value="abandon" disabled={!@detail.run.actions.abandon.enabled}>Abandon / remove</button>
               </form>
             </section>
+            </div>
           <% else %>
             <%= if @detail_error do %>
               <section class="ws-card">
@@ -457,7 +464,7 @@ defmodule ForemanServerWeb.OperatorRunDashboardLive do
 
     ~H"""
     <p class="ws-muted">
-      <span class="chip chip--muted" role="status">{@logs.count} entries</span>
+      <span class="chip chip--muted">{@logs.count} entries</span>
       <span> · showing up to limit {@logs.limit}</span>
       <span :if={@logs.truncated}> · tail shown, {@logs.omitted_entries} entries ({@logs.omitted_bytes} bytes) omitted</span>
     </p>
@@ -484,8 +491,10 @@ defmodule ForemanServerWeb.OperatorRunDashboardLive do
   end
 
   # Worker log channels onto the workspace's message variants (`layouts.ex` styles
-  # `.msg--agent`/`.msg--stderr`/`.msg--system`/...); an unrecognised channel reads as system.
+  # `.msg--agent`/`.msg--stderr`/`.msg--system`/...). `stdout` is the worker's own output and reads
+  # as agent output, not as a system notice. A channel not listed reads as system.
   defp entry_kind("stderr"), do: "msg--stderr"
+  defp entry_kind("stdout"), do: "msg--agent"
   defp entry_kind("system"), do: "msg--system"
   defp entry_kind("operator"), do: "msg--operator"
   defp entry_kind("agent"), do: "msg--agent"
@@ -645,6 +654,9 @@ defmodule ForemanServerWeb.OperatorRunDashboardLive do
       aria-current={if @run.run_id == @selected_id, do: "page"}>
       <span class="thread-row-title" title={@run.run_id}>{@run.run_id}</span>
       <span class="thread-row-meta">
+        <span class="ws-ellipsis" title={describe(@run.task_label)}>{describe(@run.task_label)}</span>
+      </span>
+      <span class="thread-row-meta">
         <span class={["thread-dot", "thread-dot--" <> chip_kind(@run.status)]} aria-hidden="true"></span>
         <span class={["chip", "chip--" <> chip_kind(@run.status)]}>{@run.status}</span>
         <span>{describe(@run.workflow)}</span>
@@ -655,6 +667,8 @@ defmodule ForemanServerWeb.OperatorRunDashboardLive do
     """
   end
 
-  defp chip_kind(status) when is_binary(status), do: Map.get(@chip_kinds, status, "muted")
-  defp chip_kind(_status), do: "muted"
+  # An unmapped status is a vocabulary gap, not a calm state: it renders as `warn` so it is
+  # noticed and gets mapped, never as the muted colour that `completed` uses.
+  defp chip_kind(status) when is_binary(status), do: Map.get(@chip_kinds, status, "warn")
+  defp chip_kind(_status), do: "warn"
 end

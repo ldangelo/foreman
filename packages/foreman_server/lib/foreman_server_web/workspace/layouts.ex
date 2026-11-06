@@ -81,7 +81,7 @@ defmodule ForemanServerWeb.Workspace.Layouts do
           .btn--primary, button.ws-btn--primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
           .btn[disabled], button.ws-btn[disabled], button[disabled] { opacity: .5; cursor: not-allowed; }
           .btn--link { min-height: 0; padding: 0; border: 0; background: none; color: var(--accent); font-size: 14px; cursor: pointer; }
-          button:not(.btn):not(.btn--link):not([role="tab"]) { min-height: 34px; font-size: 14px; padding: 2px 12px;
+          button:not(.btn):not(.btn--link):not(.thread-row):not([role="tab"]) { min-height: 34px; font-size: 14px; padding: 2px 12px;
             border-radius: 8px; border: 1px solid var(--border); background: transparent; color: var(--text); cursor: pointer; }
           summary { cursor: pointer; }
 
@@ -151,6 +151,12 @@ defmodule ForemanServerWeb.Workspace.Layouts do
             color: var(--text); text-decoration: none; }
           .thread-row:hover { background: var(--card-2); }
           .thread-row[aria-current="page"] { background: var(--card); border-left-color: var(--accent); }
+          /* The run dashboard's rows are buttons (no per-run route to patch to), the workspace's are
+             links. A button opts out of the generic button rule above through its :not(.thread-row)
+             and gets only the reset it needs; the 0,1,1 specificity here stays below
+             .thread-row:hover / [aria-current] (0,2,0), so hover and the selected marker still win. */
+          button.thread-row { width: 100%; text-align: left; font: inherit; background: transparent;
+            border-top: 0; border-right: 0; border-bottom: 0; cursor: pointer; }
           .thread-row--chat { flex-direction: row; align-items: center; justify-content: space-between; gap: 8px; }
           .thread-row-title { font-weight: 500; min-width: 0; overflow: hidden; overflow-wrap: anywhere;
             display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
