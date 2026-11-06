@@ -387,10 +387,41 @@ defmodule Jido.Harness.AdapterTest do
   defmodule ReplayProcessManager do
     @moduledoc false
     # Stands in for the process manager: the "process" is the list of process events `run_owner` carries,
-    # what the CLI would have produced.
+    # what the CLI would have produced. What the run writes to the CLI's stdin goes to the calling process as
+    # `{:stdin, line}`.
     def start_owned_process(_spec, events), do: {:ok, events}
     def stream_process(events), do: {:ok, events}
-    def send_input(_events, _line), do: :ok
+    def list_processes(_filters), do: [%{process_id: :replay, metadata: %{run_id: "run_replay"}}]
+
+    def send_input(_process, line) do
+      send(self(), {:stdin, line})
+      :ok
+    end
+  end
+
+  # The run's process is listed but gone by the time of the write (torn down between `list_processes/1` and
+  # `send_input/2`): the real process manager refuses it with `{:error, :not_found}`. (A write into a stdin the run has
+  # closed is not refused at all: erlexec ignores the data and the manager answers `:ok`.)
+  defmodule RefusingProcessManager do
+    @moduledoc false
+    defdelegate start_owned_process(spec, events), to: ReplayProcessManager
+    defdelegate stream_process(events), to: ReplayProcessManager
+    defdelegate list_processes(filters), to: ReplayProcessManager
+
+    def send_input(process, line) do
+      if line =~ "extension_ui_response",
+        do: {:error, :not_found},
+        else: ReplayProcessManager.send_input(process, line)
+    end
+  end
+
+  # No process of the run is alive any more.
+  defmodule GonePiProcessManager do
+    @moduledoc false
+    defdelegate start_owned_process(spec, events), to: ReplayProcessManager
+    defdelegate stream_process(events), to: ReplayProcessManager
+    defdelegate send_input(process, line), to: ReplayProcessManager
+    def list_processes(_filters), do: []
   end
 
   # pi can end its process (exit 0) without the record that ends a run (`agent_end` in json mode,
@@ -529,12 +560,122 @@ defmodule Jido.Harness.AdapterTest do
     end
   end
 
-  defp pi_run(process_events, provider_options \\ %{}) do
+  # pi 1.5.0 (docs/rpc-extension-ui.md): a dialog method blocks pi until the client answers with an `extension_ui_response`
+  # carrying the request's id; every other method is fire-and-forget. Nobody can answer in a headless run (run-ec9d1ce7,
+  # run-552e1f41), so `Pi.run/2` answers each dialog `cancelled` on pi's stdin itself.
+  @dialog_methods ["select", "confirm", "input", "editor"]
+  @fire_and_forget_methods ["notify", "setStatus", "setWidget", "setTitle", "set_editor_text"]
+
+  describe "Pi.run/2 answering pi's extension UI requests" do
+    test "every dialog method is answered cancelled on pi's stdin, with the request's own id" do
+      for method <- @dialog_methods do
+        rpc_run([stdout(ui_request("req-#{method}", method))])
+
+        assert [line] = Enum.filter(stdin_lines(), &(&1 =~ "extension_ui_response"))
+        assert String.ends_with?(line, "\n") and not String.contains?(String.trim_trailing(line, "\n"), "\n")
+        assert Jason.decode!(line) == %{"type" => "extension_ui_response", "id" => "req-#{method}", "cancelled" => true}
+      end
+    end
+
+    test "the answer is recorded with what was asked and does not change how the run ends" do
+      dialog = ui_request("req-1", "select", %{"title" => "Which extension do you mean?", "options" => ["a", "b"]})
+      records = [stdout(message_end(failed_turn("429 live"))), stdout(dialog), process_event(:exited, nil)]
+
+      events = pi_run(records, %{live_input: true})
+
+      assert [%Event{type: :provider_event, provider: :pi, payload: payload}] =
+               Enum.filter(events, &match?(%Event{payload: %{"kind" => "ui_request_cancelled"}}, &1))
+
+      assert payload == %{
+               "kind" => "ui_request_cancelled",
+               "method" => "select",
+               "request_id" => "req-1",
+               "title" => "Which extension do you mean?"
+             }
+
+      # The dialog is neither a terminal record nor an assistant turn: the latest turn still decides the run.
+      assert run_failed_errors(events) == ["429 live"]
+    end
+
+    test "fire-and-forget methods take no answer and stay unmapped provider events" do
+      for method <- @fire_and_forget_methods do
+        events = rpc_run([stdout(ui_request("req-#{method}", method))])
+
+        assert Enum.filter(stdin_lines(), &(&1 =~ "extension_ui_response")) == []
+        assert [%Event{payload: %{"mapped" => false}}] = ui_request_events(events)
+        refute Enum.any?(events, &match?(%Event{payload: %{"kind" => "ui_request_cancelled"}}, &1))
+      end
+    end
+
+    test "only an rpc-mode run answers: a json-mode pi has no stdin to answer on" do
+      records = [
+        stdout(ui_request("req-1", "select")),
+        stdout(message_end(text_turn("done"))),
+        process_event(:exited, nil)
+      ]
+
+      events = pi_run(records)
+
+      assert stdin_lines() == []
+      assert [%Event{payload: %{"mapped" => false}}] = ui_request_events(events)
+    end
+
+    test "an answer that cannot be written is recorded as unanswered and the run goes on" do
+      for {process_manager, reason} <- [
+            {RefusingProcessManager, ":not_found"},
+            {GonePiProcessManager, ":not_running"}
+          ] do
+        events = rpc_run([stdout(ui_request("req-1", "input", %{"title" => "Name it"}))], process_manager)
+
+        assert [%Event{payload: payload}] =
+                 Enum.filter(events, &match?(%Event{payload: %{"kind" => "ui_request_unanswered"}}, &1))
+
+        assert payload == %{
+                 "kind" => "ui_request_unanswered",
+                 "error" => reason,
+                 "method" => "input",
+                 "request_id" => "req-1",
+                 "title" => "Name it"
+               }
+
+        assert run_failed_errors(events) == []
+        refute Enum.any?(events, &match?(%Event{payload: %{"kind" => "ui_request_cancelled"}}, &1))
+      end
+    end
+  end
+
+  defp pi_run(process_events, provider_options \\ %{}, process_manager \\ ReplayProcessManager) do
     request = RunRequest.new!(%{prompt: "x", provider_options: provider_options})
-    context = %{run_id: "run_replay", config: %{}, run_owner: process_events, process_manager: ReplayProcessManager}
+    context = %{run_id: "run_replay", config: %{}, run_owner: process_events, process_manager: process_manager}
 
     assert {:ok, stream} = Pi.run(request, context)
     Enum.to_list(stream)
+  end
+
+  # An rpc-mode run of `records` that ends in a finished turn, so that nothing but the records under test can fail it.
+  defp rpc_run(records, process_manager \\ ReplayProcessManager) do
+    finished = [
+      stdout(message_end(text_turn("done"))),
+      stdout(%{"type" => "agent_settled", "aborted" => false}),
+      process_event(:exited, nil)
+    ]
+
+    pi_run(records ++ finished, %{live_input: true}, process_manager)
+  end
+
+  defp ui_request(id, method, fields \\ %{}),
+    do: Map.merge(fields, %{"type" => "extension_ui_request", "id" => id, "method" => method})
+
+  defp ui_request_events(events),
+    do: Enum.filter(events, &match?(%Event{payload: %{"type" => "extension_ui_request"}}, &1))
+
+  # What the run wrote to pi's stdin (`ReplayProcessManager` sends each line to the test process), oldest first.
+  defp stdin_lines(lines \\ []) do
+    receive do
+      {:stdin, line} -> stdin_lines([line | lines])
+    after
+      0 -> Enum.reverse(lines)
+    end
   end
 
   defp run_failed_errors(events), do: for(%Event{type: :run_failed, payload: %{"error" => error}} <- events, do: error)

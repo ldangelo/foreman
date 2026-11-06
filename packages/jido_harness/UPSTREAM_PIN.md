@@ -76,6 +76,9 @@ four ways; the first two are described under "Build role and sync" above.
    and the pi adapter maps a failed `prompt` response to `run_failed` (2026-10-26, see `docs/lessons/run-logs-known-issues.md`).
    A pi that exits 0 also fails the run when its latest assistant turn failed or it reported no turn: the `stream_end`
    option in `adapters/cli_stream.ex` and `Pi.stream_end/1` (2026-11-06, foreman-vbfmo.2, same lessons entry).
+   A pi in rpc mode that raises an extension dialog (`extension_ui_request`: `select`, `confirm`, `input`, `editor`) has it
+   answered `cancelled` on its stdin, so a headless `ask` cannot block for ever: `Pi.run/2` (2026-11-06, foreman-vbfmo.3, same
+   lessons file, "A headless pi's `ask`").
 3. **erlexec process-group startup patch** (below), plus the `deps.get` /
    `deps.loadpaths` / `deps.compile` aliases and a `Code.require_file` line it
    adds to `mix.exs`, and a patched `deps/erlexec/c_src/exec_impl.cpp`.

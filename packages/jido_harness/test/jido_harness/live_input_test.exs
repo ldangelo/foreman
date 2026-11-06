@@ -306,4 +306,51 @@ defmodule Jido.Harness.LiveInputTest do
       assert reason =~ "live_exit_grace_ms must be a positive integer"
     end
   end
+
+  # pi shows an extension's `ctx.ui` dialogs (what its `ask` tool raises) as an `extension_ui_request` that blocks pi until
+  # the client answers (pi 1.5.0, docs/rpc-extension-ui.md). Nobody can answer in a headless phase: run-ec9d1ce7 and
+  # run-552e1f41 waited 5 and 45+ minutes for an answer. `FAKE_PI_OUTCOME=ask` is such a pi: it raises all four dialogs, with
+  # fire-and-forget requests in between, and blocks on each dialog until it is answered.
+  describe "pi extension dialogs in a headless run" do
+    test "every dialog is answered cancelled on pi's stdin, so an `ask` cannot block the run" do
+      run_id = start_live(:pi, "prompt", %{"FAKE_PI_OUTCOME" => "ask"})
+
+      assert {:ok, result} = Run.await(run_id, 15_000)
+      assert result.status == :completed
+      refute Enum.any?(result.events, &(&1.type == :run_failed))
+      refute Enum.any?(result.events, &exit_grace_expired?/1)
+
+      # What pi was sent, as its final message reports it: one `cancelled` answer per dialog, in order, with the
+      # request's own id, and none for the fire-and-forget requests (each is followed by a dialog, so a stray answer
+      # would be listed ahead of it).
+      assert [%Event{payload: %{"text" => text}}] = Enum.filter(result.events, &(&1.type == :output_text_final))
+
+      assert Jason.decode!(text) ==
+               for(
+                 id <- ["ui-select", "ui-confirm", "ui-input", "ui-editor"],
+                 do: %{"type" => "extension_ui_response", "id" => id, "cancelled" => true}
+               )
+
+      # The agent turn saw the cancellation: the `ask` tool call returned the text the real ask-user extension returns.
+      assert [%Event{payload: %{"name" => "ask", "output" => %{"content" => [%{"text" => reply}]}}}] =
+               Enum.filter(result.events, &(&1.type == :tool_result))
+
+      assert reply == "User cancelled or provided no answer."
+
+      # Each cancellation is recorded, with what was asked...
+      assert [
+               %{"method" => "select", "request_id" => "ui-select", "title" => "Which extension do you mean?"},
+               %{"method" => "confirm", "request_id" => "ui-confirm"},
+               %{"method" => "input", "request_id" => "ui-input"},
+               %{"method" => "editor", "request_id" => "ui-editor"}
+             ] = for(%Event{payload: %{"kind" => "ui_request_cancelled"} = payload} <- result.events, do: payload)
+
+      # ...and the fire-and-forget requests stay what they were: unmapped provider events.
+      assert Enum.count(
+               result.events,
+               &match?(%Event{payload: %{"type" => "extension_ui_request", "mapped" => false}}, &1)
+             ) ==
+               5
+    end
+  end
 end

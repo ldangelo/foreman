@@ -274,6 +274,41 @@ turns, then exit 0 with no `agent_end` / `agent_settled`; `=silent`: answers the
 ("Pi.run/2 once pi has exited 0": json and rpc mode, replayed process events); against the pre-fix `pi.ex` /
 `cli_stream.ex` the e2e runs end `:completed`.
 
+## A headless pi's `ask` is an RPC dialog nobody can answer, so the harness cancels it (2026-11-06, foreman-vbfmo.3)
+
+**Symptom.** A phase sat on an `ask` until an operator stepped in: `run-ec9d1ce7` (ensemble `br-mvaw`, `coderabbit-review`: "Which
+extension do you mean?") for 5+ minutes, until pause/resume; `run-552e1f41` (`create-prd`: "Confirm how to proceed with the
+operator-dashboard restyle ...") for 45+ minutes, until cancelled. `latest_stall` stayed null: nothing was failing, the agent was
+waiting for a person, and an absent `timeout_minutes` is no deadline (`FailurePolicy.resolve/2`).
+
+**Cause.** `ask` is a tool of a global pi extension (`ask-user.ts` in `~/.pi/agent/extensions`). It returns an error at once when
+`ctx.hasUI` is false, but `pi --mode rpc`, which every live phase runs, reports `ctx.hasUI` true and turns `ctx.ui.select` /
+`ctx.ui.input` into an `extension_ui_request` on stdout; the call resolves only when the client writes an
+`extension_ui_response` with the same id to stdin (pi 1.5.0: `docs/rpc-extension-ui.md`, `dist/modes/rpc/rpc-mode.js`
+`createDialogPromise`; no timeout unless the request carries one). `Pi.map_event/1` turned the record into an unmapped
+`provider_event` and nothing answered it. The process journals of such runs (`~/Library/Caches/jido_harness/proc_*`) all read
+the same: `tool_execution_start` for `ask`, then `{"type":"extension_ui_request","id":"…","method":"select","title":"…",
+"options":[…]}`, then no more agent output until the cancel (a steer written meanwhile only queues). The dialog methods are
+`select`, `confirm`, `input` and `editor`; `notify`, `setStatus`, `setWidget`, `setTitle` and `set_editor_text` are
+fire-and-forget (a pi with extensions writes dozens per run) and take no answer.
+
+**Fix.** `Pi.run/2` in rpc mode (`live_input`) answers every dialog request at once on pi's stdin with
+`{"type":"extension_ui_response","id":<the request's id>,"cancelled":true}` (`Helpers.live_process_id/2` and `send_input/2`, the
+path a steer takes): the answer a dismissed dialog gets, so the extension sees `undefined` (`false` for `confirm`), `ask`
+returns "User cancelled or provided no answer." and the agent decides for itself. The answer is recorded as a
+`provider_event` with `"kind" => "ui_request_cancelled"` (`method`, `request_id`, `title`); one that cannot be written (no live pi
+process to write to, or the process manager refuses the write, e.g. `:not_running`, `:not_found`) is `"ui_request_unanswered"` with
+the `error`, and the run goes on. A dialog raised after the run has closed pi's stdin is still recorded `ui_request_cancelled`:
+the process manager accepts a write into a closed stdin and drops it (erlexec: "Data sent to closed stdin is ignored"), so the
+harness cannot tell; pi shuts down when its stdin ends, so nothing is left waiting. Fire-and-forget requests
+stay unmapped provider events. Not changed: no deadline was added (`timeout_minutes` stays unset on the bundled phases), so a
+phase that hangs for another reason still has none; and `Jido.Harness.Session` over pi rpc (`session/transports/pi_rpc.ex`)
+is a separate transport and answers nothing (the coordinator's pi runs with `no_extensions`). The four dialog methods are the
+documented contract, so a pi that adds a fifth would block again until `@ui_dialogs` in `pi.ex` learns it.
+Pinned by `live_input_test.exs` (`FAKE_PI_OUTCOME=ask`: all four dialogs with fire-and-forget requests in between, each
+blocking until answered; against the pre-fix `pi.ex` the run never finishes) and `adapter_test.exs` ("Pi.run/2 answering pi's
+extension UI requests": every method, the recorded event, the unanswerable case, json mode).
+
 ## Worker stdout/stderr is recorded while the agent runs (2026-11-02, foreman-h1j5y)
 
 **Symptom.** A running phase's worker stream held `WorkerStarted` and heartbeats only: `foreman_run_get_logs` returned no
