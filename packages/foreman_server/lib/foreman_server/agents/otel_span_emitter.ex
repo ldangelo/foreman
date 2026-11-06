@@ -5,12 +5,147 @@ defmodule ForemanServer.Agents.OtelSpanEmitter do
   TRD-2026-4212be7e / JOT-T002 (TRD-060), JOT-T003 (TRD-061), JOT-T004 (TRD-062).
   Backed by `jido_otel` (TRD-059) for tracer configuration.
 
-  Each emit function is a leaf call (no callable block) suitable for
+  `with_agent_span/4` wraps a callable block in a root agent span. The other
+  emit functions are leaf calls (no callable block) suitable for
   instrumentation call sites that have already measured `duration_us` or
   have the LLM/signal attributes in hand.
   """
 
   require OpenTelemetry.Tracer
+
+  # GenAI semantic-convention agent name, stamped on every span this emitter
+  # produces. The project's stable name, not the OTel service.name
+  # (`foreman_server`).
+  @agent_name "foreman"
+
+  @doc """
+  Run `fun` inside a root agent span named `span_name`, carrying
+  `gen_ai.agent.name` and `gen_ai.operation.name = "invoke_agent"` plus
+  `attributes`, and return `fun`'s result unchanged. Unlike the leaf emitters
+  this wraps the work, so a workflow phase is one trace with the agent name on
+  its root span; a coordinator turn is this root span plus a child
+  `with_chat_span/4` span (a phase has only the root). An `{:error, _}` result
+  marks the span errored; a raised exception marks it errored with its type
+  only (never its message or stacktrace) and is re-raised unchanged.
+
+  `annotate` receives the result and returns extra attributes (e.g. the reply
+  text and token usage) set on the span once the work finished. It must not
+  raise; build the attributes with `message_json/2` and `usage_attributes/1`.
+  """
+  @spec with_agent_span(
+          String.t(),
+          %{String.t() => String.t() | number()},
+          (-> result),
+          (result -> %{String.t() => String.t() | number()})
+        ) :: result
+        when result: term()
+  def with_agent_span(span_name, attributes, fun, annotate \\ fn _ -> %{} end)
+      when is_binary(span_name) and is_map(attributes) and is_function(fun, 0) and
+             is_function(annotate, 1) do
+    run_genai_span(span_name, "invoke_agent", attributes, fun, annotate)
+  end
+
+  @doc """
+  Run `fun` inside a model-call span named `span_name` (conventionally
+  `"chat <model>"`) with `gen_ai.operation.name = "chat"` and
+  `gen_ai.agent.name`, and return `fun`'s result unchanged. Behaves like
+  `with_agent_span/4` (error results mark the span errored; `annotate` adds
+  attributes from the result) except that it is NOT a root: it nests under the
+  current span, so a viewer such as Lens shows the turn's `invoke_agent` root
+  with this span as its model request.
+  """
+  @spec with_chat_span(
+          String.t(),
+          %{String.t() => String.t() | number()},
+          (-> result),
+          (result -> %{String.t() => String.t() | number()})
+        ) :: result
+        when result: term()
+  def with_chat_span(span_name, attributes, fun, annotate \\ fn _ -> %{} end)
+      when is_binary(span_name) and is_map(attributes) and is_function(fun, 0) and
+             is_function(annotate, 1) do
+    run_genai_span(span_name, "chat", attributes, fun, annotate)
+  end
+
+  # `OpenTelemetry.Tracer.with_span` (opentelemetry_api 1.5 / opentelemetry
+  # 1.7: `otel_tracer_default:with_span/5`) is `try Fun after end_span`: it
+  # records no exception itself. A raise would leave the span with no status,
+  # so it is caught here, the span marked errored with the exception TYPE only
+  # (a message can carry a secret and nothing redacts it here), and the
+  # original exception re-raised with its own stacktrace.
+  defp run_genai_span(span_name, operation, attributes, fun, annotate) do
+    base = %{"gen_ai.agent.name" => @agent_name, "gen_ai.operation.name" => operation}
+
+    OpenTelemetry.Tracer.with_span span_name, %{attributes: Map.merge(base, attributes)} do
+      try do
+        result = fun.()
+
+        case result do
+          {:error, _, _} -> mark_error("error")
+          {:error, _} -> mark_error("error")
+          _ -> :ok
+        end
+
+        OpenTelemetry.Tracer.set_attributes(annotate.(result))
+        result
+      rescue
+        exception ->
+          mark_error(inspect(exception.__struct__))
+          reraise exception, __STACKTRACE__
+      catch
+        kind, reason ->
+          mark_error(Atom.to_string(kind))
+          :erlang.raise(kind, reason, __STACKTRACE__)
+      end
+    end
+  end
+
+  defp mark_error(description),
+    do: OpenTelemetry.Tracer.set_status(OpenTelemetry.status(:error, description))
+
+  # Bound on the text one message attribute carries. Prompts and replies can be
+  # large; a trace viewer needs the gist, not the whole transcript.
+  @max_message_chars 8_000
+
+  @doc """
+  The `gen_ai.input.messages` / `gen_ai.output.messages` attribute value Lens
+  and other GenAI viewers read: a JSON list of `%{role, content}`. Total for
+  any binary: invalid UTF-8 bytes are replaced, then `text` is truncated to
+  #{@max_message_chars} characters with a marker. Callers redact secrets first.
+  """
+  @spec message_json(String.t(), String.t()) :: String.t()
+  def message_json(role, text) when is_binary(role) and is_binary(text) do
+    valid = String.replace_invalid(text)
+
+    content =
+      if String.length(valid) > @max_message_chars do
+        String.slice(valid, 0, @max_message_chars) <> "\n…[truncated]"
+      else
+        valid
+      end
+
+    Jason.encode!([%{role: role, content: content}])
+  end
+
+  @doc """
+  GenAI token-usage attributes for a `ForemanServer.Usage`; absent counts are
+  left out, never zero-filled. `nil` and anything that is not a `Usage` yield
+  no attributes: this runs inside the traced work, so it must never raise (the
+  caller's own usage bookkeeping is what reports a malformed value).
+  """
+  @spec usage_attributes(term()) :: %{String.t() => non_neg_integer()}
+  def usage_attributes(nil), do: %{}
+
+  def usage_attributes(%ForemanServer.Usage{} = usage) do
+    [
+      {"gen_ai.usage.input_tokens", usage.input_tokens},
+      {"gen_ai.usage.output_tokens", usage.output_tokens}
+    ]
+    |> Enum.reject(fn {_key, count} -> is_nil(count) end)
+    |> Map.new()
+  end
+
+  def usage_attributes(_other), do: %{}
 
   @doc """
   Emit a `jido.cmd` span capturing the agent id, action name, and duration
@@ -22,6 +157,7 @@ defmodule ForemanServer.Agents.OtelSpanEmitter do
     OpenTelemetry.Tracer.with_span "jido.cmd",
                                    %{
                                      attributes: %{
+                                       "gen_ai.agent.name" => @agent_name,
                                        "jido.agent_id" => agent_id,
                                        "jido.action" => action_name,
                                        "duration_us" => duration_us
@@ -58,7 +194,11 @@ defmodule ForemanServer.Agents.OtelSpanEmitter do
   @spec llm_span_attributes(String.t(), non_neg_integer() | nil, number() | nil, String.t()) ::
           %{String.t() => String.t() | number()}
   def llm_span_attributes(model, token_count, cost_usd, routing_reason) do
-    %{"llm.model" => model, "llm.routing_reason" => routing_reason}
+    %{
+      "gen_ai.agent.name" => @agent_name,
+      "llm.model" => model,
+      "llm.routing_reason" => routing_reason
+    }
     |> put_unless_nil("llm.tokens", token_count)
     |> put_unless_nil("llm.cost_usd", cost_usd)
   end
@@ -76,6 +216,7 @@ defmodule ForemanServer.Agents.OtelSpanEmitter do
     OpenTelemetry.Tracer.with_span "jido.signal",
                                    %{
                                      attributes: %{
+                                       "gen_ai.agent.name" => @agent_name,
                                        "signal.type" => signal_type,
                                        "signal.topic" => topic,
                                        "signal.delivery_status" => delivery_status

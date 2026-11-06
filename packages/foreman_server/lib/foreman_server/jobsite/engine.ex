@@ -436,6 +436,17 @@ defmodule ForemanServer.Jobsite.Engine do
   # ---------------------------------------------------------------------
 
   defp run_step(%Step{kind: :agent} = step, ctx, observer, observer_state, intent_fun) do
+    ForemanServer.Agents.OtelSpanEmitter.with_agent_span(
+      "foreman.workflow.phase",
+      %{
+        "foreman.jobsite_id" => to_string(ctx.jobsite_id),
+        "foreman.step_id" => to_string(step.id)
+      },
+      fn -> run_agent_step(step, ctx, observer, observer_state, intent_fun) end
+    )
+  end
+
+  defp run_agent_step(%Step{} = step, ctx, observer, observer_state, intent_fun) do
     case Prompt.resolve(agent_prompt_opts(step.opts), ctx.sandbox, %{}) do
       {:ok, prompt_text} ->
         open_archive(step.opts, ctx, prompt_text)

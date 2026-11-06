@@ -1906,6 +1906,7 @@ Local stack topology:
 
 ```text
 Foreman OTLP exporter -> ops/otel-collector -> Langfuse v3
+                                            -> Lens (otlphttp/lens)
 ```
 
 Defaults and env vars:
@@ -1922,6 +1923,41 @@ Defaults and env vars:
   public key returns `403`.
 - In production, set `OTEL_EXPORTER_OTLP_ENDPOINT` when
   `http://localhost:4318` is not the target collector/ingest URL.
+- The collector also fans every trace out to Lens with `otlphttp/lens` to
+  `http://lens:4318` (same Docker network; the exporter appends `/v1/traces`).
+  Auth is a dedicated Lens tracing key in `LITELLM_TRACING_KEY` (from Lens Home,
+  saved in the git-ignored `.env`, never a Lens admin or gateway secret);
+  without it Lens answers `401` and only Lens delivery is affected (the
+  `otlphttp/lens` exporter is always in the traces pipeline). The collector's
+  `debug` exporter is at `basic` verbosity: it prints counts only, no span ids
+  or attributes. To read a span's ids or attributes use the Lens UI (Attributes
+  tab), or temporarily set `detailed`, knowing that this writes message text to
+  the container log.
+- App-side spans carry `gen_ai.agent.name = "foreman"`. The leaf spans
+  (`jido.cmd`, `jido.llm`, `jido.signal`) are rarely on the normal path; each
+  coordinator turn and each workflow agent phase is wrapped in a root span
+  (`foreman.coordinator.turn`, `foreman.workflow.phase`, from
+  `OtelSpanEmitter.with_agent_span/4`). A turn span carries the operator
+  message(s) that triggered it (`gen_ai.input.messages`), the reply
+  (`gen_ai.output.messages`) and the model (`gen_ai.request.model`); a phase
+  span carries the rendered prompt the agent got (input) and its final reply
+  text (output). Message text is capped at 8,000 characters, is redacted with
+  the project's secrets before export, and goes to every trace backend behind
+  the collector (Langfuse and Lens). Each coordinator turn is an `invoke_agent`
+  root span with a child `chat <model>` span (`OtelSpanEmitter.with_chat_span/4`),
+  which is what Lens needs to fill its Request tab; the token usage
+  (`gen_ai.usage.*`) is on that child only, so it is counted once. Phases have
+  only the root span: Pi/claude model calls of a phase run outside the BEAM, so
+  a phase has no chat child span and no model or token counts.
+  Status: verified in Lens (receipt `received:true`, agent `foreman`): the
+  `foreman.coordinator.turn` span with its ids and its content (user message,
+  reply, model), and `foreman.workflow.phase` with its step and jobsite ids.
+  NOT yet seen in Lens: the child `chat <model>` span and the Request tab, token
+  usage on it, and the phase span's rendered-prompt input and reply output.
+- The test suite exports no spans: `config/test.exs` sets
+  `traces_exporter: :none` (opt-in tracer tests used to ship spans to the live
+  collector). An explicit `MIX_ENV` other than `test` (plain `mix test` already
+  runs in `test`) uses the live dev exporter and does ship them.
 - LiteLLM defaults to `LITELLM_ENDPOINT=http://localhost:4000`;
   `agent_model: "auto"` maps through `:jido_ai` model aliases to
   LiteLLM.

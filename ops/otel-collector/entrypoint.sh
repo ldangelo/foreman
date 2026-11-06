@@ -1,6 +1,6 @@
 #!/bin/sh
 # Templates the collector config from env vars (LANGFUSE_PUBLIC_KEY +
-# LANGFUSE_SECRET_KEY + LANGFUSE_HOST), then execs the collector binary.
+# LANGFUSE_SECRET_KEY + LANGFUSE_HOST + LITELLM_TRACING_KEY), then execs the collector binary.
 #
 # The base image is `otel/opentelemetry-collector-contrib:0.104.x`, which
 # ships the binary at /otelcol-contrib and the default config at
@@ -40,6 +40,20 @@ TEMPLATE=/etc/otelcol-contrib/config.template.yaml
 LANGFUSE_HOST="${LANGFUSE_HOST:-langfuse-web:3000}"
 LANGFUSE_PUBLIC_KEY="${LANGFUSE_PUBLIC_KEY:-}"
 LANGFUSE_SECRET_KEY="${LANGFUSE_SECRET_KEY:-}"
+# Dedicated Lens tracing key (Lens Home -> Tracing key). Must be exported below:
+# envsubst only substitutes exported variables, and an unexported one would ship
+# the literal string "Bearer ${LITELLM_TRACING_KEY}" to Lens.
+LITELLM_TRACING_KEY="${LITELLM_TRACING_KEY:-}"
+# The key is substituted raw into a double-quoted YAML scalar: any character
+# outside this set (quote, backslash, newline, CR, ...) would break the rendered
+# YAML and stop the whole collector. Drop the key instead (Lens 401s, Langfuse
+# keeps working). Never print the value.
+case "$LITELLM_TRACING_KEY" in
+  *[!A-Za-z0-9._~+/=-]*)
+    echo "entrypoint: LITELLM_TRACING_KEY contains unsupported characters; ignoring it (Lens will answer 401)" >&2
+    LITELLM_TRACING_KEY=""
+    ;;
+esac
 
 # Compute the HTTP Basic auth header value (empty string if either key is
 # missing — the collector will then omit the header entirely). Base64 must
@@ -51,7 +65,7 @@ if [ -n "$LANGFUSE_PUBLIC_KEY" ] && [ -n "$LANGFUSE_SECRET_KEY" ]; then
 else
   LANGFUSE_BASIC_AUTH=""
 fi
-export LANGFUSE_HOST LANGFUSE_PUBLIC_KEY LANGFUSE_SECRET_KEY LANGFUSE_BASIC_AUTH
+export LANGFUSE_HOST LANGFUSE_PUBLIC_KEY LANGFUSE_SECRET_KEY LANGFUSE_BASIC_AUTH LITELLM_TRACING_KEY
 
 envsubst < "$TEMPLATE" > "$CONF"
 

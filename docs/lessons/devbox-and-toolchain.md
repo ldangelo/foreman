@@ -78,7 +78,8 @@ exporter (`packages/foreman_server/config/config.exs`,
 `packages/foreman_server/config/prod.exs`) and Langfuse v3's OTLP ingest
 endpoint. Foreman exports to `http://127.0.0.1:4318`; the collector batches,
 retries, and forwards to `http://langfuse-web:3000/api/public/otel/v1/traces`
-with HTTP Basic auth (`base64(public:secret)`).
+with HTTP Basic auth (`base64(public:secret)`), and also to Lens
+(`http://lens:4318`, `otlphttp/lens`, Bearer `LITELLM_TRACING_KEY`).
 
 Why this exists:
 

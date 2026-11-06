@@ -129,6 +129,11 @@ config :foreman_server, :jido_vfs,
 # :otel_tracer_default via Application.put_env/3.
 config :opentelemetry, :tracer, :otel_tracer_noop
 
+# Opt-in tests (above) enable the real tracer and never switch it back, so
+# every later span in the same VM would otherwise be batched to the live
+# collector (localhost:4318) and on to Langfuse/Lens. No test may export.
+config :opentelemetry, traces_exporter: :none
+
 # MCP server disabled in test env (MCPSupervisorTest asserts get_env returns config)
 config :foreman_server, :mcp,
   enabled: false,
