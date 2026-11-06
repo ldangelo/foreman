@@ -55,7 +55,7 @@ defmodule Jido.Harness.Adapters.CLIStream do
   # `seen_terminal` is what keeps an event from a failed, timed-out or cancelled process, or from
   # any record, from being contradicted by a second answer.
   defp decode(stream, provider, mapper, mapper_state, stream_end) do
-    initial = Map.merge(new_chunk(), %{buffer: "", mapper_state: mapper_state, asked: false})
+    initial = fn -> Map.merge(new_chunk(), %{buffer: "", mapper_state: mapper_state, asked: false}) end
 
     Stream.transform(
       stream,
@@ -147,16 +147,28 @@ defmodule Jido.Harness.Adapters.CLIStream do
   # `errorMessage` when the provider call failed, else a plain non-error stop reason. All three
   # report an outcome, so this is where the last one is found — json mode gives no other evidence
   # that a turn was even attempted, and `agent_end` is absent from exactly the streams that matter.
-  defp note_turn(state, %{"type" => type, "message" => %{"role" => "assistant"} = message})
+  defp note_turn(state, %{"type" => type, "message" => message} = value)
        when type in ["message_end", "turn_end"] do
-    cond do
-      assistant_had_work?(message) -> %{state | turn_outcome: :worked, turn_error: nil}
-      get_in(message, ["stopReason"]) == "error" -> %{state | turn_outcome: :failed, turn_error: error_text(message)}
-      true -> %{state | turn_outcome: :worked, turn_error: nil}
+    case message_role(value) do
+      "assistant" ->
+        cond do
+          assistant_had_work?(message) -> %{state | turn_outcome: :worked, turn_error: nil}
+          get_in(message, ["stopReason"]) == "error" -> %{state | turn_outcome: :failed, turn_error: error_text(message)}
+          true -> %{state | turn_outcome: :worked, turn_error: nil}
+        end
+
+      # A turn with no assistant message at all (rpc-mode `turn_end` records carry none, and a
+      # `message_end` can name another role) reports no outcome of its own, so it must not
+      # overwrite the outcome of the failed assistant turn that preceded it.
+      _other ->
+        state
     end
   end
 
   defp note_turn(state, _value), do: state
+
+  defp message_role(%{"message" => %{"role" => role}}) when is_binary(role), do: role
+  defp message_role(_value), do: nil
 
   defp error_text(message) do
     case Map.get(message, "errorMessage") do
@@ -189,7 +201,9 @@ defmodule Jido.Harness.Adapters.CLIStream do
   defp flush(state, provider, mapper), do: map_lines([state.buffer], %{state | buffer: ""}, provider, mapper)
 
   defp map_lines(lines, state, provider, mapper) do
-    Enum.map_reduce(lines, state, &map_line(&1, &2, provider, mapper))
+    lines
+    |> Enum.map_reduce(state, &map_line(&1, &2, provider, mapper))
+    |> then(fn {events, state} -> {List.flatten(events), state} end)
   end
 
   defp map_line(line, state, provider, mapper) do
