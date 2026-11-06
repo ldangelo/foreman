@@ -1291,7 +1291,7 @@ milliseconds, default 10000) is stopped and the run finishes from what it record
 A `pi` extension dialog (what an `ask` tool raises: a `select`, `confirm`, `input` or `editor` request) has no one to answer it
 in a phase, so Foreman cancels it on pi's input at once: the agent's `ask` returns as cancelled and it decides for itself,
 instead of the phase waiting for ever. Each one is recorded as a `ui_request_cancelled` provider event in the run's events
-(`ui_request_unanswered` when there was no live pi process to write the answer to).
+(`ui_request_unanswered` when the answer could not be written to a running pi process).
 
 Pause/resume flow. `run.steer` queues a
 `RunSteerQueued` event (durable, idempotent per `message_id`); the run is
