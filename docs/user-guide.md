@@ -2272,8 +2272,8 @@ approval and the run ends with no changes. Use `:auto_edit` to allow edits or
 `:auto_approve` to bypass prompts, the latter ideally only inside a container
 sandbox: `Agents.claude("claude-sonnet-4-6", approval_mode: :auto_approve)`.
 An agent that fails outright (rejected credentials, bad model, non-zero exit, a `pi`
-that exits 0 after only failed model calls such as HTTP 429 or without reporting any
-turn) fails the jobsite with `:agent_failed`; it does not report a completed run.
+that exits 0 whose last model call failed, such as HTTP 429, or that reports no turn)
+fails the jobsite with `:agent_failed`; it does not report a completed run.
 If `ANTHROPIC_API_KEY` is set in the environment it takes precedence over a
 `claude` login, so an exhausted API key fails the run even when the login works.
 

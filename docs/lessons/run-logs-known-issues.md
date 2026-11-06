@@ -245,7 +245,7 @@ drives the same through a real `JidoHarnessWorker`, including the e2e's own shap
 consumed, last turn fails). Tell a fake CLI what to do through the run's env (`env_map:`), not `System.put_env/2`: an
 already-running erlexec port hands its children the environment it was started with.
 
-**Follow-up: a run whose turns all failed is not a completed run (2026-11-06, foreman-vbfmo.2).** The mirror image of the
+**Follow-up: a run whose last turn failed is not a completed run (2026-11-06, foreman-vbfmo.2).** The mirror image of the
 hang. `run-4290a162` (the `prd` workflow, seven pi phases) was recorded `completed`, opened PR #835 with two empty report
 files and reported the work done, although every model call of every phase had failed (HTTP 429: four assistant turns per
 phase with `stopReason: "error"`, zero tokens, 0-byte `phase-N.md`). The harness's process journals of the seven pi
@@ -265,6 +265,10 @@ assistant turn at all (pi answered the `prompt` and went quiet): `run_failed` sa
 nothing is added, so a turn that failed and was retried successfully is not a failure. This is still not an idle timeout: it
 runs only once the process has EXITED, and a silent but alive pi is a running agent. Not changed: `CLIStream` still cannot
 decode a record with a control character in front of it, so such a pi's `agent_end` (and its `willRetry`) stays invisible.
+Not covered either: the hook runs only for a pi that exits by itself. A live pi that outlives its closed stdin past
+`live_exit_grace_ms` is stopped, and when its failure was unreadable (the BEL case) the run still finishes completed from
+its idle turn (`run/worker.ex`, as before). A final turn that ended `aborted` behind an unreadable `agent_end` counts as a
+worked turn.
 Pinned by `live_input_test.exs` (`FAKE_PI_OUTCOME=exhausted`: the incident's stream, BEL included; `=no_settle`: four 429
 turns, then exit 0 with no `agent_end` / `agent_settled`; `=silent`: answers the prompt, then exit 0) and `adapter_test.exs`
 ("Pi.run/2 once pi has exited 0": json and rpc mode, replayed process events); against the pre-fix `pi.ex` /

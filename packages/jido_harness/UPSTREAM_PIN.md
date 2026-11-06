@@ -74,8 +74,8 @@ four ways; the first two are described under "Build role and sync" above.
    Upstream `main` (3.0.0-rc.1) has no `Run.send_input/3`; its steering is ACP-based. A live run's CLI exits only when its stdin
    closes, so `run/worker.ex` also closes it on a terminal event and stops a CLI that outlives the close (`live_exit_grace_ms`),
    and the pi adapter maps a failed `prompt` response to `run_failed` (2026-10-26, see `docs/lessons/run-logs-known-issues.md`).
-   A pi that exits 0 with no terminal event fails the run as well: the `stream_end` option in `adapters/cli_stream.ex`
-   and `Pi.stream_end/1` (2026-11-06, foreman-vbfmo.2, same lessons entry).
+   A pi that exits 0 also fails the run when its latest assistant turn failed or it reported no turn: the `stream_end`
+   option in `adapters/cli_stream.ex` and `Pi.stream_end/1` (2026-11-06, foreman-vbfmo.2, same lessons entry).
 3. **erlexec process-group startup patch** (below), plus the `deps.get` /
    `deps.loadpaths` / `deps.compile` aliases and a `Code.require_file` line it
    adds to `mix.exs`, and a patched `deps/erlexec/c_src/exec_impl.cpp`.
