@@ -245,6 +245,31 @@ drives the same through a real `JidoHarnessWorker`, including the e2e's own shap
 consumed, last turn fails). Tell a fake CLI what to do through the run's env (`env_map:`), not `System.put_env/2`: an
 already-running erlexec port hands its children the environment it was started with.
 
+**Follow-up: a run whose turns all failed is not a completed run (2026-11-06, foreman-vbfmo.2).** The mirror image of the
+hang. `run-4290a162` (the `prd` workflow, seven pi phases) was recorded `completed`, opened PR #835 with two empty report
+files and reported the work done, although every model call of every phase had failed (HTTP 429: four assistant turns per
+phase with `stopReason: "error"`, zero tokens, 0-byte `phase-N.md`). The harness's process journals of the seven pi
+processes (`~/Library/Caches/jido_harness/proc_*`, rpc mode) hold their exact stdout: three retries (2, 4, 8 s), a final
+`agent_end` with `willRetry: false`, `auto_retry_end {success: false}`, `agent_settled`, exit status 0. `Pi.map_event/1`
+fails a run on that `agent_end`, but the global pi extension `notify.ts` notifies on every `agent_end` through stdout, so
+each `agent_end` line began with a BEL (`\x07{"type":"agent_end",...}`): `String.trim/1` keeps it, `Jason.decode/1` refuses
+it, and the record became a `provider_event` with a `decode_error`. What was left was `agent_settled`, which maps to
+`:input_idle`: the run closed stdin on it and `RunWorker.finish_success/1` recorded a run with no terminal event as
+`run_completed`. (The first RCA read "pi wrote no `agent_end`" off pi's session file, which never holds `agent_end`
+records.) The end of a pi process is not a success by itself, whatever became of its terminal record: `Pi.run/2` keeps the
+latest assistant turn it saw (`message_end` / `turn_end`) as the mapper state and hands `CLIStream` a `stream_end` hook,
+asked once after a process that exited 0. A mapped terminal event (`agent_end` failed or aborted, a failed `prompt`
+response) already ended the run: nothing is added. Otherwise the latest turn failed (`stopReason: "error"`, with or without
+partial output, as `agent_end` already treats it): `run_failed` carrying that turn's own `errorMessage` (`429 {...}`). No
+assistant turn at all (pi answered the `prompt` and went quiet): `run_failed` saying so. The latest turn did not fail:
+nothing is added, so a turn that failed and was retried successfully is not a failure. This is still not an idle timeout: it
+runs only once the process has EXITED, and a silent but alive pi is a running agent. Not changed: `CLIStream` still cannot
+decode a record with a control character in front of it, so such a pi's `agent_end` (and its `willRetry`) stays invisible.
+Pinned by `live_input_test.exs` (`FAKE_PI_OUTCOME=exhausted`: the incident's stream, BEL included; `=no_settle`: four 429
+turns, then exit 0 with no `agent_end` / `agent_settled`; `=silent`: answers the prompt, then exit 0) and `adapter_test.exs`
+("Pi.run/2 once pi has exited 0": json and rpc mode, replayed process events); against the pre-fix `pi.ex` /
+`cli_stream.ex` the e2e runs end `:completed`.
+
 ## Worker stdout/stderr is recorded while the agent runs (2026-11-02, foreman-h1j5y)
 
 **Symptom.** A running phase's worker stream held `WorkerStarted` and heartbeats only: `foreman_run_get_logs` returned no

@@ -17,11 +17,14 @@ FAKE_PI_OUTCOME picks what the run ends in (default `steer`, the success above):
             provider error after the steered work is done, the shape of the e2e hang.
   rejected  pi's answer to a `prompt` it cannot start (no API key for the model): a failed
             `response`, then silence, alive until stdin EOF.
-  no_settle  the 429 shape of run-4290a162: pi answers the `prompt` command, echoes the user
-            message, and writes four assistant turns that all fail with `stopReason: "error"` and
-            no content, then emits NO `agent_end` and NO `agent_settled` and exits 0. Without a
-            terminal event the harness must fail the run, not complete it.
-  silent     pi answers the `prompt` command and writes nothing else before exiting 0."""
+  no_settle four assistant turns that all fail (HTTP 429, `stopReason: "error"`, no content), then
+            NO `agent_end` and NO `agent_settled`, and the process exits 0 (nothing waits for stdin
+            EOF). Without a terminal event the harness must fail the run, not complete it.
+  exhausted the stream of run-4290a162 (pi 1.5.0, HTTP 429 retries spent): per attempt a failed
+            turn and an `agent_end`, each behind a BEL that a global extension wrote to stdout (so
+            no `agent_end` decodes), then `auto_retry_end` and `agent_settled`. Then it waits for
+            stdin EOF like the real rpc CLI.
+  silent    pi answers the `prompt` command and writes nothing else before exiting 0."""
 import json, os, select, sys, time
 
 here = os.path.dirname(os.path.abspath(__file__))
@@ -32,6 +35,7 @@ recordings = {
     "error": "pi_live_error.jsonl",
     "rejected": None,
     "no_settle": None,
+    "exhausted": None,
     "silent": None,
 }
 if outcome not in recordings:
@@ -79,6 +83,36 @@ if outcome == "no_settle":
     for _ in range(4):
         emit({"type": "message_end", "message": failed_turn_message()})
     emit({"type": "turn_end", "message": failed_turn_message()})
+    sys.exit(0)
+
+def emit_behind_bel(ev):
+    # A global pi extension rings the terminal bell on `agent_end` by writing to stdout, ahead of the record.
+    print("\x07" + json.dumps(ev), flush=True)
+
+
+if outcome == "exhausted":
+    emit({"id": "foreman-prompt", "type": "response", "command": "prompt", "success": True,
+          "data": {"disposition": "started"}})
+    emit({"id": "foreman-get-state", "type": "response", "command": "get_state", "success": True,
+          "data": {"sessionId": "01a1accc-1613-7793-ad8f-01f7fb9321e8"}})
+    emit({"type": "agent_start"})
+    for attempt in range(4):
+        emit({"type": "turn_start"})
+        if attempt == 0:
+            user = {"role": "user", "content": [{"type": "text", "text": "prompt"}]}
+            emit({"type": "message_start", "message": user})
+            emit({"type": "message_end", "message": user})
+        emit({"type": "message_start", "message": failed_turn_message()})
+        emit({"type": "message_end", "message": failed_turn_message()})
+        emit({"type": "turn_end", "message": failed_turn_message(), "toolResults": []})
+        emit_behind_bel({"type": "agent_end", "messages": [failed_turn_message()], "willRetry": attempt < 3})
+        if attempt < 3:
+            emit({"type": "auto_retry_start", "attempt": attempt + 1, "maxAttempts": 3,
+                  "delayMs": 2000 * 2 ** attempt, "errorMessage": ERR_429})
+            emit({"type": "agent_start"})
+    emit({"type": "auto_retry_end", "success": False, "attempt": 3, "finalError": ERR_429})
+    emit({"type": "agent_settled", "aborted": False})
+    wait_for_eof()
     sys.exit(0)
 
 if outcome == "silent":

@@ -47,6 +47,8 @@ defmodule Jido.Harness.LiveInputTest do
 
   defp exit_grace_expired?(%Event{type: :provider_event, payload: %{"kind" => "live_exit_grace_expired"}}), do: true
   defp exit_grace_expired?(_event), do: false
+  defp undecodable?(%Event{type: :provider_event, payload: %{"decode_error" => _}}), do: true
+  defp undecodable?(_event), do: false
 
   # The process the run's CLI ran as, once the run has finished.
   defp run_process(run_id) do
@@ -218,6 +220,49 @@ defmodule Jido.Harness.LiveInputTest do
       assert {:ok, result} = Run.await(run_id, 15_000)
       assert result.status == :failed
       assert result.error.message =~ "No API key found for minimax"
+      refute Enum.any?(result.events, &exit_grace_expired?/1)
+    end
+
+    # The opposite of the hangs above: pi ends its own process (exit 0) and nothing maps to a terminal event, so the
+    # run used to be recorded as completed. The real shape (run-4290a162) first, then no terminal record at all, then silence.
+    test "pi: HTTP 429 retries spent, every agent_end unreadable behind a BEL and only agent_settled left, fails the run (run-4290a162)" do
+      run_id = start_live(:pi, "prompt", %{"FAKE_PI_OUTCOME" => "exhausted"})
+
+      assert {:ok, result} = Run.await(run_id, 15_000)
+      assert result.status == :failed
+      assert result.error.message =~ "bili_throttle_hold"
+
+      # The records that would have failed the run never decoded and the harness went idle on agent_settled:
+      # the failed turns pi reported are the only outcome left.
+      assert Enum.count(result.events, &undecodable?/1) == 4
+      assert Enum.count(result.events, &(&1.type == :input_idle)) == 1
+      assert Enum.count(result.events, &(&1.type == :run_failed)) == 1
+      refute Enum.any?(result.events, &(&1.type == :run_completed))
+      refute Enum.any?(result.events, &exit_grace_expired?/1)
+    end
+
+    test "pi: turns that all fail (HTTP 429) and a process that exits with no terminal event fail the run with the provider's error" do
+      run_id = start_live(:pi, "prompt", %{"FAKE_PI_OUTCOME" => "no_settle"})
+
+      assert {:ok, result} = Run.await(run_id, 15_000)
+      assert result.status == :failed
+      assert result.error.message =~ "429"
+      assert result.error.message =~ "bili_throttle_hold"
+
+      assert [%Event{payload: %{"error" => error}}] = Enum.filter(result.events, &(&1.type == :run_failed))
+      assert error == result.error.message
+      refute Enum.any?(result.events, &(&1.type == :run_completed))
+      refute Enum.any?(result.events, &exit_grace_expired?/1)
+    end
+
+    test "pi: a pi that goes silent (answers the prompt, then exits with nothing else) fails the run instead of completing it" do
+      run_id = start_live(:pi, "prompt", %{"FAKE_PI_OUTCOME" => "silent"})
+
+      assert {:ok, result} = Run.await(run_id, 15_000)
+      assert result.status == :failed
+      assert result.error.message =~ "no agent_end or agent_settled"
+      assert Enum.count(result.events, &(&1.type == :run_failed)) == 1
+      refute Enum.any?(result.events, &(&1.type == :run_completed))
       refute Enum.any?(result.events, &exit_grace_expired?/1)
     end
 
