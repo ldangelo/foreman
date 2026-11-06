@@ -18,6 +18,13 @@ Supersedes: PRD-2026-7735ac9c REQ-015 / AC-015-1 (the "no run-detail links" boun
 > bead title)** and link to **the run's details, the TRD (when the run is a PRD run), the
 > branch, the worktree, and the like.**
 
+> **Note (2026-11-06, run-c5530c375ee791d5dd62d0817eb65f12):** this document was delivered as
+> `FOREMAN_SOURCE_PRD_PATH` for a task whose subject is unrelated to it — "Bridge the agent ask
+> tool to Telegram/Slack so Foreman can ask the operator a question and get an answer". That run's
+> PRD/TRD/implement phases were blocked on the mismatch and landed nothing. The mismatch is in the
+> *task's* source-PRD pointer, not here: this PRD is a point-in-time spec for workspace nav run
+> provenance links and needs no edits from that run.
+
 ## PRD Health
 
 - Requirements by priority: Must (15), Should (3), Could (0), Won't (1)
@@ -597,3 +604,9 @@ or Finder is out of scope.
 - Initial draft from the operator's request in the 2026-11-04 session. Supersedes only
   the "no run-detail links" boundary of PRD-2026-7735ac9c (REQ-015 / AC-015-1); that
   document and its TRD are intentionally not edited.
+
+### 2026-11-06 — note added (no requirement change)
+
+- Forward-pointing note under the title recording that run-c5530c375ee791d5dd62d0817eb65f12
+  delivered this PRD as `FOREMAN_SOURCE_PRD_PATH` for an unrelated task subject (agent `ask`
+  bridge to Telegram/Slack). Requirements, ACs and scores are unchanged.
