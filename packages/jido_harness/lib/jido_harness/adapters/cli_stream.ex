@@ -7,8 +7,14 @@ defmodule Jido.Harness.Adapters.CLIStream do
   # prompt, in streaming-input mode). A live run keeps stdin open so
   # `Jido.Harness.Run.send_input/3` can write more lines later; every other run
   # closes stdin as before.
+  #
+  # `opts[:stream_end]` is a 1-arity function asked what to make of a CLI that exited 0, given the
+  # mapper state at that point: `:ok`, or `{:run_failed, message}` to fail the run. A CLI can exit 0
+  # with no terminal event mapped (pi once its HTTP 429 retries are spent: its `agent_end` is missing or
+  # unreadable), and nothing else would stop that run from being recorded as completed.
   def run(provider, %RunRequest{} = request, context, executable, argv, mapper, mapper_state \\ nil, opts \\ []) do
     live_lines = Keyword.get(opts, :live_input)
+    stream_end = Keyword.get(opts, :stream_end)
 
     spec = %{
       executable: executable,
@@ -28,7 +34,7 @@ defmodule Jido.Harness.Adapters.CLIStream do
     with {:ok, process_id} <- process_manager.start_owned_process(spec, context.run_owner),
          {:ok, process_stream} <- process_manager.stream_process(process_id),
          :ok <- write_live_lines(process_manager, process_id, live_lines) do
-      {:ok, decode(process_stream, provider, mapper, mapper_state)}
+      {:ok, decode(process_stream, provider, mapper, mapper_state, stream_end)}
     end
   end
 
@@ -43,7 +49,7 @@ defmodule Jido.Harness.Adapters.CLIStream do
     end)
   end
 
-  defp decode(stream, provider, mapper, mapper_state) do
+  defp decode(stream, provider, mapper, mapper_state, stream_end) do
     Stream.transform(
       stream,
       fn -> %{buffer: "", mapper_state: mapper_state} end,
@@ -68,13 +74,26 @@ defmodule Jido.Harness.Adapters.CLIStream do
           {events ++ [Helpers.event(provider, :run_cancelled, nil, %{"reason" => "cancelled"})], state}
 
         %ProcessEvent{type: :exited}, state ->
-          flush(state, provider, mapper)
+          {events, state} = flush(state, provider, mapper)
+          {events ++ stream_end_events(stream_end, state.mapper_state, provider), state}
 
         _event, state ->
           {[], state}
       end,
       fn state -> state |> flush(provider, mapper) |> elem(0) end
     )
+  end
+
+  defp stream_end_events(nil, _mapper_state, _provider), do: []
+
+  defp stream_end_events(stream_end, mapper_state, provider) do
+    case stream_end.(mapper_state) do
+      :ok ->
+        []
+
+      {:run_failed, message} when is_binary(message) ->
+        [Helpers.event(provider, :run_failed, nil, %{"error" => message})]
+    end
   end
 
   defp split_lines(data) do

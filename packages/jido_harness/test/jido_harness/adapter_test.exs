@@ -2,7 +2,7 @@ defmodule Jido.Harness.AdapterTest do
   use ExUnit.Case, async: true
 
   alias Jido.Harness.Adapters.{Amp, Claude, CLIMapper, Codex, Gemini, Grok, JSONMapper, Kimi, OpenCode, Pi, Zai}
-  alias Jido.Harness.{Error, Event, RequestResolver, RunRequest}
+  alias Jido.Harness.{Error, Event, ProcessEvent, RequestResolver, RunRequest}
 
   test "Amp builds execute-mode streaming argv with resume and MCP options" do
     request =
@@ -383,6 +383,181 @@ defmodule Jido.Harness.AdapterTest do
                ]
              })
   end
+
+  defmodule ReplayProcessManager do
+    @moduledoc false
+    # Stands in for the process manager: the "process" is the list of process events `run_owner` carries,
+    # what the CLI would have produced.
+    def start_owned_process(_spec, events), do: {:ok, events}
+    def stream_process(events), do: {:ok, events}
+    def send_input(_events, _line), do: :ok
+  end
+
+  # pi can end its process (exit 0) without the record that ends a run (`agent_end` in json mode,
+  # `agent_settled` in rpc mode). `Pi.run/2` fails such a run from the latest assistant turn it saw
+  # instead of leaving it to be recorded as completed.
+  describe "Pi.run/2 once pi has exited 0" do
+    test "turns that all fail and no terminal record: the run fails with the provider's last error" do
+      events =
+        pi_run([
+          stdout(%{"type" => "session", "id" => "pi-session"}),
+          stdout(%{"type" => "turn_start"}),
+          stdout(message_end(failed_turn("429 first"))),
+          stdout(message_end(failed_turn("429 last"))),
+          stdout(turn_end(failed_turn("429 last"))),
+          process_event(:exited, nil)
+        ])
+
+      assert run_failed_errors(events) == ["429 last"]
+      assert %Event{type: :run_failed} = List.last(events)
+    end
+
+    test "a failed turn without an error text fails the run with pi's default" do
+      failed = %{"role" => "assistant", "stopReason" => "error", "content" => []}
+
+      assert run_failed_errors(pi_run([stdout(message_end(failed)), process_event(:exited, nil)])) ==
+               ["Pi request failed"]
+    end
+
+    test "a pi that reported no turn and no terminal record fails the run" do
+      assert [error] = [process_event(:exited, nil)] |> pi_run() |> run_failed_errors()
+      assert error =~ "no agent_end or agent_settled"
+    end
+
+    test "a turn that worked ends the run without a failure, with or without agent_end" do
+      agent_end = %{"type" => "agent_end", "willRetry" => false, "messages" => [text_turn("done")]}
+
+      for closing <- [[], [stdout(agent_end)]] do
+        events =
+          pi_run(
+            [stdout(message_end(text_turn("done"))), stdout(turn_end(text_turn("done")))] ++
+              closing ++ [process_event(:exited, nil)]
+          )
+
+        assert run_failed_errors(events) == []
+        assert Enum.any?(events, &(&1.type == :output_text_final))
+      end
+    end
+
+    test "the latest assistant turn decides, and records of other roles do not hide it" do
+      retried = [stdout(message_end(failed_turn("429"))), stdout(message_end(text_turn("done")))]
+      assert run_failed_errors(pi_run(retried ++ [process_event(:exited, nil)])) == []
+
+      tool_result = %{"role" => "toolResult", "content" => [%{"type" => "text", "text" => "ok"}]}
+
+      failed_last = [
+        stdout(message_end(text_turn("work"))),
+        stdout(message_end(failed_turn("429 last"))),
+        stdout(message_end(tool_result)),
+        stdout(%{"type" => "turn_end", "toolResults" => []})
+      ]
+
+      assert run_failed_errors(pi_run(failed_last ++ [process_event(:exited, nil)])) == ["429 last"]
+    end
+
+    test "a terminal record that already failed the run is not answered a second time" do
+      agent_end = %{"type" => "agent_end", "willRetry" => false, "messages" => [failed_turn("authentication failed")]}
+
+      events =
+        pi_run([
+          stdout(message_end(failed_turn("authentication failed"))),
+          stdout(agent_end),
+          process_event(:exited, nil)
+        ])
+
+      assert run_failed_errors(events) == ["authentication failed"]
+    end
+
+    test "the last line is decoded before the exit is judged" do
+      unterminated = Jason.encode!(message_end(failed_turn("429 unterminated")))
+
+      assert run_failed_errors(pi_run([process_event(:stdout, unterminated), process_event(:exited, nil)])) ==
+               ["429 unterminated"]
+    end
+
+    test "a non-zero exit fails the run on its own, without asking about the turns" do
+      events = pi_run([stdout(message_end(failed_turn("429"))), process_event(:failed, {:exit_status, 1})])
+
+      assert run_failed_errors(events) == [inspect({:exit_status, 1})]
+    end
+
+    test "rpc mode: agent_settled after a failed final turn does not make the run a success" do
+      events =
+        pi_run(
+          [
+            stdout(message_end(failed_turn("429 live"))),
+            stdout(%{"type" => "agent_settled", "aborted" => false}),
+            process_event(:exited, nil)
+          ],
+          %{live_input: true}
+        )
+
+      assert events |> Enum.map(& &1.type) |> Enum.filter(&(&1 in [:input_idle, :run_failed])) ==
+               [:input_idle, :run_failed]
+
+      assert run_failed_errors(events) == ["429 live"]
+    end
+
+    # run-4290a162: a pi extension wrote a BEL to stdout right before every `agent_end`, so the one record that
+    # fails a run never decoded and only `agent_settled` (an idle, not an outcome) was left.
+    test "rpc mode: an agent_end that does not decode (a BEL in front of it) does not hide the failed turns" do
+      agent_end = %{"type" => "agent_end", "willRetry" => false, "messages" => [failed_turn("429 live")]}
+
+      events =
+        pi_run(
+          [
+            stdout(message_end(failed_turn("429 live"))),
+            stdout(turn_end(failed_turn("429 live"))),
+            process_event(:stdout, "\a" <> Jason.encode!(agent_end) <> "\n"),
+            stdout(%{"type" => "agent_settled", "aborted" => false}),
+            process_event(:exited, nil)
+          ],
+          %{live_input: true}
+        )
+
+      assert Enum.any?(events, &match?(%Event{type: :provider_event, payload: %{"decode_error" => _}}, &1))
+      assert Enum.any?(events, &(&1.type == :input_idle))
+      assert run_failed_errors(events) == ["429 live"]
+    end
+
+    test "stream_end/1 answers from what the stream revealed" do
+      assert Pi.stream_end(:reported) == :ok
+      assert Pi.stream_end(:turn_ok) == :ok
+      assert Pi.stream_end({:turn_failed, "429"}) == {:run_failed, "429"}
+      assert {:run_failed, message} = Pi.stream_end(:nothing)
+      assert message =~ "no agent_end or agent_settled"
+    end
+  end
+
+  defp pi_run(process_events, provider_options \\ %{}) do
+    request = RunRequest.new!(%{prompt: "x", provider_options: provider_options})
+    context = %{run_id: "run_replay", config: %{}, run_owner: process_events, process_manager: ReplayProcessManager}
+
+    assert {:ok, stream} = Pi.run(request, context)
+    Enum.to_list(stream)
+  end
+
+  defp run_failed_errors(events), do: for(%Event{type: :run_failed, payload: %{"error" => error}} <- events, do: error)
+
+  defp process_event(type, data) do
+    ProcessEvent.new!(%{
+      process_id: "replay",
+      sequence: System.unique_integer([:positive, :monotonic]),
+      timestamp: "2026-11-06T00:00:00Z",
+      type: type,
+      data: data
+    })
+  end
+
+  defp stdout(record), do: process_event(:stdout, Jason.encode!(record) <> "\n")
+  defp message_end(message), do: %{"type" => "message_end", "message" => message}
+  defp turn_end(message), do: %{"type" => "turn_end", "message" => message}
+
+  defp text_turn(text),
+    do: %{"role" => "assistant", "stopReason" => "stop", "content" => [%{"type" => "text", "text" => text}]}
+
+  defp failed_turn(error),
+    do: %{"role" => "assistant", "stopReason" => "error", "content" => [], "errorMessage" => error}
 
   test "Pi rejects conflicting sessions, unsafe credential argv, and unsupported controls" do
     session_request = RunRequest.new!(%{prompt: "pi", provider_session_id: "session-uuid"})
