@@ -1941,10 +1941,10 @@ Defaults and env vars:
   text is capped at 8,000 characters and goes to every trace backend behind the
   collector (Langfuse and Lens). Pi/claude model calls themselves run outside
   the BEAM, so they are not child spans and a phase span has no output text.
-  Status: the id-only `foreman.coordinator.turn` is verified end to end
-  (collector, Lens receipt `received:true`, trace visible under agent
-  `foreman`); the message, usage and phase attributes (their helpers are
-  unit-tested) have not yet been seen in Lens.
+  Status: `foreman.coordinator.turn` is verified end to end, including content
+  (collector, Lens receipt `received:true`, and the trace under agent `foreman`
+  shows the user message, the reply, the model and token usage). The
+  `foreman.workflow.phase` span has not yet been seen in Lens.
 - The test suite exports no spans: `config/test.exs` sets
   `traces_exporter: :none` (opt-in tracer tests used to ship spans to the live
   collector). Running `mix test` outside `MIX_ENV=test` uses the live dev
