@@ -1934,13 +1934,21 @@ Defaults and env vars:
   (`jido.cmd`, `jido.llm`, `jido.signal`) are rarely on the normal path; each
   coordinator turn and each workflow agent phase is wrapped in a root span
   (`foreman.coordinator.turn`, `foreman.workflow.phase`, from
-  `OtelSpanEmitter.with_agent_span/3`) carrying only ids, never message text.
-  Pi/claude model calls themselves run outside the BEAM, so they are not
-  child spans. Status: `foreman.coordinator.turn` is verified end to end
+  `OtelSpanEmitter.with_agent_span/4`). A turn span carries the operator
+  message(s) that triggered it (`gen_ai.input.messages`), the reply
+  (`gen_ai.output.messages`), the model (`gen_ai.request.model`) and token usage
+  (`gen_ai.usage.*`); a phase span carries its resolved prompt as input. Message
+  text is capped at 8,000 characters and goes to every trace backend behind the
+  collector (Langfuse and Lens). Pi/claude model calls themselves run outside
+  the BEAM, so they are not child spans and a phase span has no output text.
+  Status: the id-only `foreman.coordinator.turn` is verified end to end
   (collector, Lens receipt `received:true`, trace visible under agent
-  `foreman`); `foreman.workflow.phase` is unit-tested but not yet seen in Lens.
-  Run `mix test` with `MIX_ENV=test`: in `:dev` the tracer is live and test
-  spans are exported to the collector and on to Lens.
+  `foreman`); the message, usage and phase attributes (their helpers are
+  unit-tested) have not yet been seen in Lens.
+- The test suite exports no spans: `config/test.exs` sets
+  `traces_exporter: :none` (opt-in tracer tests used to ship spans to the live
+  collector). Running `mix test` outside `MIX_ENV=test` uses the live dev
+  exporter and does ship them.
 - LiteLLM defaults to `LITELLM_ENDPOINT=http://localhost:4000`;
   `agent_model: "auto"` maps through `:jido_ai` model aliases to
   LiteLLM.

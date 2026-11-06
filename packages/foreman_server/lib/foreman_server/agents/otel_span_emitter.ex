@@ -24,12 +24,21 @@ defmodule ForemanServer.Agents.OtelSpanEmitter do
   this wraps the work, so an agent turn or workflow phase is one trace with the
   agent name on its root span. An `{:error, _}` result marks the span errored;
   an exception is recorded by `with_span` and re-raised.
+
+  `annotate` receives the result and returns extra attributes (e.g. the reply
+  text and token usage) set on the span once the work finished. It must not
+  raise; build the attributes with `message_json/2` and `usage_attributes/1`.
   """
-  @spec with_agent_span(String.t(), %{String.t() => String.t() | number()}, (-> result)) ::
-          result
+  @spec with_agent_span(
+          String.t(),
+          %{String.t() => String.t() | number()},
+          (-> result),
+          (result -> %{String.t() => String.t() | number()})
+        ) :: result
         when result: term()
-  def with_agent_span(span_name, attributes, fun)
-      when is_binary(span_name) and is_map(attributes) and is_function(fun, 0) do
+  def with_agent_span(span_name, attributes, fun, annotate \\ fn _ -> %{} end)
+      when is_binary(span_name) and is_map(attributes) and is_function(fun, 0) and
+             is_function(annotate, 1) do
     base = %{"gen_ai.agent.name" => @agent_name, "gen_ai.operation.name" => "invoke_agent"}
 
     OpenTelemetry.Tracer.with_span span_name, %{attributes: Map.merge(base, attributes)} do
@@ -41,9 +50,51 @@ defmodule ForemanServer.Agents.OtelSpanEmitter do
         _ -> :ok
       end
 
+      OpenTelemetry.Tracer.set_attributes(annotate.(result))
       result
     end
   end
+
+  # Bound on the text one message attribute carries. Prompts and replies can be
+  # large; a trace viewer needs the gist, not the whole transcript.
+  @max_message_chars 8_000
+
+  @doc """
+  The `gen_ai.input.messages` / `gen_ai.output.messages` attribute value Lens
+  and other GenAI viewers read: a JSON list of `%{role, content}`. `text` is
+  truncated to #{@max_message_chars} characters with a marker.
+  """
+  @spec message_json(String.t(), String.t()) :: String.t()
+  def message_json(role, text) when is_binary(role) and is_binary(text) do
+    content =
+      if String.length(text) > @max_message_chars do
+        String.slice(text, 0, @max_message_chars) <> "\n…[truncated]"
+      else
+        text
+      end
+
+    Jason.encode!([%{role: role, content: content}])
+  end
+
+  @doc """
+  GenAI token-usage attributes for a `ForemanServer.Usage`; absent counts are
+  left out, never zero-filled. `nil` and anything that is not a `Usage` yield
+  no attributes: this runs inside the traced work, so it must never raise (the
+  caller's own usage bookkeeping is what reports a malformed value).
+  """
+  @spec usage_attributes(term()) :: %{String.t() => non_neg_integer()}
+  def usage_attributes(nil), do: %{}
+
+  def usage_attributes(%ForemanServer.Usage{} = usage) do
+    [
+      {"gen_ai.usage.input_tokens", usage.input_tokens},
+      {"gen_ai.usage.output_tokens", usage.output_tokens}
+    ]
+    |> Enum.reject(fn {_key, count} -> is_nil(count) end)
+    |> Map.new()
+  end
+
+  def usage_attributes(_other), do: %{}
 
   @doc """
   Emit a `jido.cmd` span capturing the agent id, action name, and duration

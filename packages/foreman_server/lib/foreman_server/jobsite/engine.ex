@@ -449,6 +449,13 @@ defmodule ForemanServer.Jobsite.Engine do
   defp run_agent_step(%Step{} = step, ctx, observer, observer_state, intent_fun) do
     case Prompt.resolve(agent_prompt_opts(step.opts), ctx.sandbox, %{}) do
       {:ok, prompt_text} ->
+        # The phase's input for a trace viewer (bounded); the span is the one
+        # `run_step/5` opened in this process.
+        OpenTelemetry.Tracer.set_attribute(
+          "gen_ai.input.messages",
+          ForemanServer.Agents.OtelSpanEmitter.message_json("user", prompt_text)
+        )
+
         open_archive(step.opts, ctx, prompt_text)
 
         _ =

@@ -138,12 +138,44 @@ defmodule ForemanServer.Coordinator.TurnRunner do
     result =
       ForemanServer.Agents.OtelSpanEmitter.with_agent_span(
         "foreman.coordinator.turn",
-        %{"foreman.project_id" => to_string(project_id), "foreman.turn_id" => to_string(turn_id)},
-        fn -> call_agent(rt, context, opts) end
+        turn_span_attributes(project_id, turn_id, context, opts),
+        fn -> call_agent(rt, context, opts) end,
+        &turn_result_attributes/1
       )
 
     :ok = record_usage(project_id, rt, turn_id, opts, result)
     result
+  end
+
+  # What a trace viewer shows for the turn: the operator message(s) that
+  # triggered it and the model asked. Bounded by `OtelSpanEmitter.message_json/2`.
+  defp turn_span_attributes(project_id, turn_id, %{trigger_messages: messages}, opts) do
+    input = messages |> Enum.map(& &1.text) |> Enum.join("\n\n")
+
+    base = %{
+      "foreman.project_id" => to_string(project_id),
+      "foreman.turn_id" => to_string(turn_id),
+      "gen_ai.input.messages" => ForemanServer.Agents.OtelSpanEmitter.message_json("user", input)
+    }
+
+    case opts[:model] do
+      nil -> base
+      model -> Map.put(base, "gen_ai.request.model", to_string(model))
+    end
+  end
+
+  defp turn_result_attributes({:ok, %Turn{reply: reply, usage: usage}}) do
+    Map.merge(
+      %{
+        "gen_ai.output.messages" =>
+          ForemanServer.Agents.OtelSpanEmitter.message_json("assistant", reply)
+      },
+      ForemanServer.Agents.OtelSpanEmitter.usage_attributes(usage)
+    )
+  end
+
+  defp turn_result_attributes({:error, %Error{} = error}) do
+    %{"error.message" => error.message}
   end
 
   defp call_agent(rt, context, opts) do
