@@ -1,7 +1,7 @@
 ---
 document_id: PRD-2026-a804d1c7
 label: prd-phase-0-durable-execution
-version: 1.1.5
+version: 1.1.6
 status: Draft
 date: 2026-11-08
 scale_depth: STANDARD
@@ -67,7 +67,7 @@ Verified gaps this PRD closes (source in each requirement):
 * Prove restart recovery, human-wait durability, retry exhaustion and run cancellation with automated tests; close gaps found.
 * Extend existing projections and events with stage input references and context identity. Do not add a parallel store.
 * Make the isolation profile of each launch inspectable, and block runs whose required properties the backend cannot enforce.
-* Extend run-admission preflight to the harnesses and `command:` executables a run needs.
+* Extend run-admission preflight to the harnesses and the skills named by `command:` phases a run needs.
 * Record the engine decision with evidence and migration/rollback implications.
 
 ### Out of scope (Won't, this phase)
@@ -153,12 +153,12 @@ Evidence: `NetworkPolicy` enforces `none` and `allowlist` on the **docker jobsit
 
 ### REQ-007: Preflight the capabilities a run needs
 
-Priority: Should; Complexity: Medium. [RISK: a run starts without a harness or tool it needs and fails midway.]
-Owns: harness and executable availability at admission. Defers: model and provider-catalog preflight to PRD-2026-44b49f94 (Locked).
-Evidence: `kickoff_preflight/1` (`run_executor.ex:424`) already runs before the task claim and the first phase; it checks provider readiness (`ReadinessCheck.installed?/1`, `run_executor.ex:825`) and models. No manifest field declares tools or skills.
+Priority: Should; Complexity: Medium. [RISK: a run starts without a harness or skill it needs and fails midway.]
+Owns: harness and skill availability at admission. Defers: model and provider-catalog preflight to PRD-2026-44b49f94 (Locked).
+Evidence: `kickoff_preflight/1` (`run_executor.ex:424`) already runs before the task claim and the first phase; it checks provider readiness (`ReadinessCheck.installed?/1`, `run_executor.ex:825`) and models. A `command:` phase is an agent slash command such as `/skill:ensemble-create-prd {{input.prompt}} --foreman` sent to the harness (`workflow/lowering.ex:134`), not a shell executable, and `bash:` phases are refused at lowering (`lowering.ex:125`). `Workflow.Validator` checks the named skill only against a hard-coded `@known_skills` list at manifest load (`workflow/validator.ex:15,117`), which says nothing about whether the harness can resolve it. Neither `pi` nor `claude` lists skills; both discover them from directories (for pi, `~/.pi/agent/skills/<name>/SKILL.md`). No manifest field declares tools or skills.
 
-* AC-007-1: Given a run is admitted, when kickoff preflight runs, then it reports available and missing capabilities, with versions where obtainable, for the harness providers the workflow uses and for the executable of each `command:` phase, each resolved in the environment where that phase will execute (the jobsite container for a docker jobsite, the server host for a host run) and not against the server host's PATH by default; for `bash:` phases only the shell is checked and inner commands are not parsed.
-* AC-007-2: Given a required harness or executable is unavailable, when preflight finishes, then the run ends before the task claim, worktree creation or first phase with a typed reason naming the phase, the missing capability and the backend it was checked against.
+* AC-007-1: Given a run is admitted, when kickoff preflight runs, then it reports available and missing capabilities for the harness providers the workflow uses and, for each `command:` phase that names a skill, whether that skill resolves in the harness's skill directories on the host that will run it; on a backend where Foreman cannot see the execution environment (a docker jobsite image) the skill is reported as unverifiable and never as available.
+* AC-007-2: Given a required harness is not installed, or a `command:` phase's skill does not resolve on a host run, when preflight finishes, then the run ends before the task claim, worktree creation or first phase with a typed reason naming the phase, the missing capability and the backend it was checked against; an unverifiable skill is recorded and does not block.
 
 ## 5. Dependencies and Exit Criteria
 
@@ -193,7 +193,7 @@ No `[NEEDS CLARIFICATION]` markers remain. Decisions resolved in v1.1.1 (2026-11
 | Resumed run with missing worktree | Provision a fresh worktree and record the loss | AC-002-5 |
 | Effect classes reconciled | PR create, branch push, task-provider state change; PR comment/review post is deferred to the phase that first posts one, and stays fail-closed until its reconciler is registered | AC-004-1, AC-004-3 |
 | Isolation policy | Block only when the project requires a policy the backend cannot enforce; otherwise record | AC-006-2, AC-006-5 |
-| Executable preflight | Check `command:` executables; `bash:` checks the shell only | AC-007-1 |
+| Skill preflight | Check the skill each `command:` names resolves in the harness's skill directories on a host run; report unverifiable (never available) elsewhere. `command:` is an agent slash command, not an executable | AC-007-1, AC-007-2 |
 
 For the TRD to settle: the recovery-time threshold. The maximum-attempt question is closed: Phase 0 relies on the existing 5-attempt `RestartBackoff` limit and makes its count durable.
 
@@ -218,3 +218,4 @@ For the TRD to settle: the recovery-time threshold. The maximum-attempt question
 | 1.1.3 | 2026-11-08 | Correction found while preparing the TRD: filesystem confinement of a host agent is not enforced (`VfsIsolation.allowed?/2` is never called; bind is fail-open; the shell runner is an in-memory mount). Removed the "worktree-scoped VFS guard" from the existing-machinery list; rewrote REQ-006 evidence; AC-006-3 now applies to a backend that records filesystem as enforced; added AC-006-6 (unenforced is recorded, never reported as enforced). 29 ACs. |
 | 1.1.4 | 2026-11-08 | Retry scope and effect-design decisions applied. `PhaseStarted.attempt` is hard-coded to 1 and no retry events exist, so AC-002-2 now requires attempts derived from durable history; AC-002-6 is rewritten around the real gap (the recovery re-dispatch counter is in-memory and a block is log-only, so a restart resets the budget); phase-level retry exhaustion is a named prerequisite on PRD-2026-af25d0cb, not a Phase 0 guarantee. REQ-004: push, PR create, PR comment and provider effects hold no idempotency key today, so AC-004-5 requires an intent key written before each effect, and the evidence line says so. 30 ACs. |
 | 1.1.5 | 2026-11-08 | Effect set narrowed from four classes to three. A search of `lib/` finds no `gh pr comment`/review post or any other PR comment call site, so a PR-comment reconciler would have nothing to reconcile and would be a stub. The enumerated set is now PR create, branch push and task-provider state change; the future PR-comment class is covered by AC-004-3 (fail closed with no reconciler) and must register its reconciler when Phase 1 adds the effect. 30 ACs. |
+| 1.1.6 | 2026-11-08 | REQ-007 premise corrected. A `command:` phase is an agent slash command (`/skill:<name> ...`) and `bash:` phases are refused at lowering, so there is no executable to resolve on PATH. AC-007-1/2 now check that the named skill resolves in the harness's skill directories on a host run, and report it unverifiable on a backend whose environment Foreman cannot see; skill-name validation against the hard-coded `@known_skills` list stays with `Workflow.Validator`. 30 ACs. |
