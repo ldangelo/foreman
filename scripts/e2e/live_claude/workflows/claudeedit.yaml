@@ -12,5 +12,5 @@ phases:
     provider: claude
     approval_mode: auto_approve
     models:
-      default: haiku
+      default: sonnet
     commit: true
