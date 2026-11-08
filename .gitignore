@@ -119,3 +119,4 @@ packages/*/deps/**/*.credo.exs
 /.ensemble/state/
 /.ensemble/pr-review/
 *.coverdata
+.kata.local.toml
