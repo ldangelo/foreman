@@ -6,7 +6,7 @@ status: Draft
 date: 2026-11-08
 source_prd: PRD-2026-a804d1c7
 prd_reference: docs/PRD/PRD-2026-a804d1c7-phase-0-durable-execution.md
-prd_version_locked: 1.1.8
+prd_version_locked: 1.1.9
 kind: trd
 design_readiness_score: 4.0
 ---
@@ -17,7 +17,7 @@ design_readiness_score: 4.0
 
 | Metric | Value |
 |---|---|
-| Source PRD | docs/PRD/PRD-2026-a804d1c7-phase-0-durable-execution.md (PRD-2026-a804d1c7 v1.1.8: 7 requirements, 30 acceptance criteria) |
+| Source PRD | docs/PRD/PRD-2026-a804d1c7-phase-0-durable-execution.md (PRD-2026-a804d1c7 v1.1.9: 7 requirements, 30 acceptance criteria) |
 | Implementation tasks | 24 |
 | Test tasks | 24 |
 | Total estimate | 188.5h |
@@ -29,7 +29,7 @@ design_readiness_score: 4.0
 
 Phase 0 of the SunStone software factory (umbrella `PRD-2026-b7c2e941`) is a **prove-and-close-gaps** phase, not a redesign. The PRD fixes the expected outcome: extend Foreman's event-sourced engine; Temporal or Conductor are admissible only for a criterion that cannot be closed in it. This TRD designs the smallest change that makes each PRD criterion true and provable, and plans the decision record (REQ-001) last, citing the evidence the earlier tasks produce.
 
-Every design claim below was read from source on 2026-11-08 and carries a `path:line`. Preparing this TRD revised the PRD repeatedly (v1.1.3 to v1.1.8); each correction is a place where a plausible assumption was wrong, so the TRD re-verifies rather than inherits. Areas that rest on the author's own source reads, and that an implementer should re-validate before relying on them, are marked in §5.
+Every design claim below was read from source on 2026-11-08 and carries a `path:line`. Preparing this TRD revised the PRD repeatedly (v1.1.3 to v1.1.9); each correction is a place where a plausible assumption was wrong, so the TRD re-verifies rather than inherits. Areas that rest on the author's own source reads, and that an implementer should re-validate before relying on them, are marked in §5.
 
 ## 2. Scope and Non-Goals
 
