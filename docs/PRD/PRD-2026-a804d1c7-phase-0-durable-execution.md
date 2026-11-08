@@ -1,12 +1,12 @@
 ---
 document_id: PRD-2026-a804d1c7
 label: prd-phase-0-durable-execution
-version: 1.1.3
+version: 1.1.4
 status: Draft
 date: 2026-11-08
 scale_depth: STANDARD
 total_requirements: 7
-total_acceptance_criteria: 29
+total_acceptance_criteria: 30
 readiness_score: 4.25
 ---
 
@@ -33,7 +33,7 @@ readiness_score: 4.25
 | REQ-001 | Record an evidence-backed engine decision | Must | High | 3 |
 | REQ-002 | Resume runs across a restart without repeating completed work | Must | Medium | 7 |
 | REQ-003 | Human waits survive restart and are answered once | Must | Medium | 4 |
-| REQ-004 | Reconcile or block uncertain external effects | Must | High | 4 |
+| REQ-004 | Reconcile or block uncertain external effects | Must | High | 5 |
 | REQ-005 | Record stage provenance and project-context identity | Must | Medium | 3 |
 | REQ-006 | Make the executor isolation contract explicit and enforced | Must | High | 6 |
 | REQ-007 | Preflight the capabilities a run needs | Should | Medium | 2 |
@@ -93,15 +93,16 @@ Owns: the decision record. Defers: criteria themselves to REQ-002…REQ-006.
 ### REQ-002: Resume runs across a restart without repeating completed work
 
 Priority: Must; Complexity: Medium. [RISK: duplicate phase execution corrupts repository state.]
-Owns: restart/resume semantics, including retry exhaustion and cancellation surviving a restart. Defers: slot/queue recovery to PRD-2026-d3051d4b and PRD-2026-0eac69b3; retry policy and the `PhaseRetryExhausted` event to PRD-2026-af25d0cb.
+Owns: restart/resume semantics, including durable attempt counting, the recovery re-dispatch limit and cancellation surviving a restart. Defers: slot/queue recovery to PRD-2026-d3051d4b and PRD-2026-0eac69b3; phase-level retry policy, its maximum-attempt setting and the `PhaseRetryExhausted` event to PRD-2026-af25d0cb, which is Draft and unimplemented, so phase-level retry exhaustion is a named blocking prerequisite on that PRD and not a Phase 0 guarantee.
 Evidence: `Dispatcher.resume_from_index/2` (`dispatcher.ex:1052`) skips phases whose projection status is `completed`; `rehydrate_resume_context` fails with `:resume_context_unresolvable` when the base cannot be resolved (`run_executor.ex:719`) and, when no worktree entry exists for a resumed run, logs a warning and provisions a fresh worktree (`run_executor.ex:722`); tests under `test/foreman_server/idempotency/` and `workflow/dispatcher_crash_recovery_test.exs`. Retry limits and cancellation are not yet proven across a restart.
+Evidence (attempts): `PhaseStarted.attempt` is hard-coded to `1` (`run_executor.ex:1286`), so a resumed phase never records a second attempt. No `PhaseRetrying` or `PhaseRetryExhausted` event exists. Recovery re-dispatch is capped at 5 by `RestartBackoff` (`idempotency/restart_backoff.ex`), but `BootReconciliation` counts attempts in the in-memory ETS table `:boot_recon_dispatch_attempts` (`boot_reconciliation.ex:71,1335`), so a restart resets the budget, and reaching the cap emits only a log line and telemetry (`boot_reconciliation.ex:1310-1331`) and deletes the counter.
 
 * AC-002-1: Given a server restart at each boundary — before a phase starts, after `PhaseStarted` and before completion, after `PhaseCompleted` and before the next phase, while waiting on a human, and after the last phase and before the terminal event — when the service recovers, then status, artifact references and attempt are reconstructed from the event stream and no phase that has `PhaseCompleted` is launched again. One automated test per boundary fails if a completed phase relaunches.
-* AC-002-2: Given a restart during an in-flight phase, when the run resumes, then orphaned agents of the earlier attempt are reaped before relaunch and the new attempt is recorded and visible.
+* AC-002-2: Given a restart during an in-flight phase, when the run resumes, then orphaned agents of the earlier attempt are reaped before relaunch and the phase records its next attempt number, derived from its durable `PhaseStarted` history and not from process memory, visible on the run projection.
 * AC-002-3: Given the resume base cannot be determined, when recovery runs, then the run ends with a typed reason and is never started from a guessed base.
 * AC-002-4: Given a server restart, when recovery completes, then the time from boot to resumed-or-blocked is measured, recorded on the run and reported; the pass/fail threshold is set by the TRD's operating plan, not by this PRD.
 * AC-002-5: Given a resumed run's worktree no longer exists, when recovery provisions a fresh one, then the run projection records that prior working-tree changes were not carried over and the warning names the discarded worktree path; the run is never silently restarted as if nothing was lost.
-* AC-002-6: Given a phase has exhausted its configured maximum attempts, when the server restarts, then the exhausted state is preserved, no further attempt is launched, and the run follows its failure path.
+* AC-002-6: Given recovery has re-dispatched a run up to the `RestartBackoff` limit, when the server restarts, then the attempt count survives because it is derived from durable events, and a run that reached the limit stays blocked with a durable, operator-visible reason and is not re-dispatched with a fresh budget.
 * AC-002-7: Given an operator cancels a run, when the cancel is processed and again after a later restart, then the run is in the terminal cancelled state (`RunCancelled` on the event stream) and recovery does not resume it; the agent has been signalled and the harness's SIGTERM/SIGKILL escalation is allowed to complete; and any process still alive afterwards is reaped by `Workflow.OrphanReaper` and is observable. "The agent is stopped" is asserted only after escalation and reaping, never at cancel time, because `Run.cancel/1` finalizes the run once it has signalled the agent.
 
 ### REQ-003: Human waits survive restart and are answered once
@@ -119,12 +120,13 @@ Evidence: `QuestionOpened`, `QuestionAnswered`, `QuestionExpired`, `QuestionAnsw
 
 Priority: Must; Complexity: High. [RISK: blindly repeating a push, PR or comment after a crash duplicates or corrupts external state. Four reconcilers touch four different code paths, and the task-provider class reaches every `TaskProvider` adapter.]
 Owns: deciding whether an external effect already happened, and blocking or retrying accordingly, for PR create, branch push, GitHub PR comment/review post, and task-provider state change. Defers: authoring task work-log comments to PRD-2026-3a76a0f0; retry policy and the default-safety rule for non-idempotent work (REQ-011, REQ-012) to PRD-2026-af25d0cb.
-Evidence: keys move `started → completed | ambiguous | failed` (`idempotency/key_store.ex`); keys are written by the Overwatch runner (`jobsite/runners/overwatch.ex:131`); `CrashRecovery.has_no_side_effects?/1` checks only PR association and created worktrees, and `{:retry, :side_effects_present}` marks the key completed and **allows retry** (`idempotency/crash_recovery.ex:6`). `KeyStore` falls back to an in-process ETS table when the repo is not configured.
+Evidence: keys move `started → completed | ambiguous | failed` (`idempotency/key_store.ex`); keys are written only around agent-phase dispatch by the Overwatch runner (`jobsite/runners/overwatch.ex:131`), and `AutoPR`, `PhasePR` and `PrCreate` (which run `git push` and `gh pr create`) never reference a key, so a crash during those effects leaves no ambiguous key at all; `CrashRecovery.has_no_side_effects?/1` checks only PR association and created worktrees, and `{:retry, :side_effects_present}` marks the key completed and **allows retry** (`idempotency/crash_recovery.ex:6`). `KeyStore` falls back to an in-process ETS table when the repo is not configured.
 
 * AC-004-1: Given a crash leaves a key ambiguous for an effect class in the enumerated set — PR create, branch push, PR comment/review post, and task-provider state change — when recovery runs, then Foreman consults external truth for that class (the existing PR, the remote branch head, the existing comment, the provider's current state) before any retry; one automated test per class proves it.
 * AC-004-2: Given reconciliation finds the effect already present or cannot establish the outcome, when recovery finishes, then the run blocks with an operator-visible reason and nothing is repeated.
 * AC-004-3: Given an ambiguous key for an effect class that has no reconciler, when recovery runs, then it fails closed (blocks) and never retries.
 * AC-004-4: Given a production configuration with the durable key store unavailable and the ETS fallback active, when the server boots, then it reports the idempotency store as non-durable instead of claiming crash safety.
+* AC-004-5: Given an effect in the enumerated set is about to run, when it starts, then an intent key is durably recorded before the effect runs and marked completed or failed after it, so that a crash during the effect leaves an ambiguous key for recovery to reconcile.
 
 ### REQ-005: Record stage provenance and project-context identity
 
@@ -179,7 +181,7 @@ Phase 0 exits only when every row below is demonstrably met. An unmet guarantee 
 | REQ-006 | Existing jobsite and workflow execution | Host-run limits become explicit, not hidden. |
 | REQ-007 | Existing kickoff preflight | Extends the same seam. |
 
-Exit also requires: the decision record exists; the REQ-002 boundary, retry-exhaustion and cancellation tests, the REQ-003 tests, and one REQ-004 reconciliation test per effect class pass in isolation and in the full suite; stage provenance is inspectable through the existing status surface; and executor limitations are recorded on each run.
+Exit also requires: the decision record exists; the REQ-002 boundary, recovery-attempt and cancellation tests, the REQ-003 tests, and one REQ-004 reconciliation test per effect class pass in isolation and in the full suite; stage provenance is inspectable through the existing status surface; and executor limitations are recorded on each run. Phase-level retry exhaustion is explicitly not an exit criterion; it is a prerequisite owned by PRD-2026-af25d0cb.
 
 ## 6. Open Decisions
 
@@ -193,12 +195,12 @@ No `[NEEDS CLARIFICATION]` markers remain. Decisions resolved in v1.1.1 (2026-11
 | Isolation policy | Block only when the project requires a policy the backend cannot enforce; otherwise record | AC-006-2, AC-006-5 |
 | Executable preflight | Check `command:` executables; `bash:` checks the shell only | AC-007-1 |
 
-For the TRD to settle: the source of the maximum-attempt setting that AC-002-6 refers to, and the recovery-time threshold.
+For the TRD to settle: the recovery-time threshold. The maximum-attempt question is closed: Phase 0 relies on the existing 5-attempt `RestartBackoff` limit and makes its count durable.
 
 ## 7. Readiness Gate
 
 * Completeness 5/5 — every Phase 0 outcome named by the umbrella and by Phases 1, 3 and 4 maps to a requirement, and the retry-limit and cancellation scope gap is closed; seven requirements (not five) is justified in the sizing note.
-* Testability 4/5 — every AC names an observable event, field, typed error or test; AC-002-6 depends on a maximum-attempt setting the TRD must name.
+* Testability 4/5 — every AC names an observable event, field, typed error or test; the recovery-time threshold is left to the TRD operating plan.
 * Clarity 4/5 — ownership lines separate Phase 0 from six existing PRDs; no open markers remain.
 * Feasibility 4/5 — each requirement extends a named existing seam; REQ-004 (four reconcilers) and REQ-006 need cross-backend work.
 
@@ -214,3 +216,4 @@ For the TRD to settle: the source of the maximum-attempt setting that AC-002-6 r
 | 1.1.1 | 2026-11-08 | Refinement: resolved all five clarification markers; added AC-002-5 (missing worktree), AC-002-6 (retry exhaustion), AC-002-7 (cancellation), AC-006-5 (host run with no policy); enumerated effect classes in AC-004-1; `command:` executables in AC-007-1 (28 ACs). Readiness 4.0 → 4.25. |
 | 1.1.2 | 2026-11-08 | Review fixes: AC-002-7 no longer asserts a synchronous agent stop (cancel finalizes at SIGINT; escalation and orphan reaping follow); AC-007-1/2 resolve executables in the phase's execution environment and name the backend; REQ-004 ownership scoped to reconciliation with retry policy deferred to PRD-2026-af25d0cb; REQ-007 (Should) removed from the Phase 1 prerequisite row; sizing note states the `scale_depth` choice. 28 ACs. |
 | 1.1.3 | 2026-11-08 | Correction found while preparing the TRD: filesystem confinement of a host agent is not enforced (`VfsIsolation.allowed?/2` is never called; bind is fail-open; the shell runner is an in-memory mount). Removed the "worktree-scoped VFS guard" from the existing-machinery list; rewrote REQ-006 evidence; AC-006-3 now applies to a backend that records filesystem as enforced; added AC-006-6 (unenforced is recorded, never reported as enforced). 29 ACs. |
+| 1.1.4 | 2026-11-08 | Retry scope and effect-design decisions applied. `PhaseStarted.attempt` is hard-coded to 1 and no retry events exist, so AC-002-2 now requires attempts derived from durable history; AC-002-6 is rewritten around the real gap (the recovery re-dispatch counter is in-memory and a block is log-only, so a restart resets the budget); phase-level retry exhaustion is a named prerequisite on PRD-2026-af25d0cb, not a Phase 0 guarantee. REQ-004: push, PR create, PR comment and provider effects hold no idempotency key today, so AC-004-5 requires an intent key written before each effect, and the evidence line says so. 30 ACs. |
