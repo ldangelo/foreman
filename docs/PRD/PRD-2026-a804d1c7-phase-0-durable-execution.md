@@ -202,7 +202,7 @@ Not settled here: the phase-level maximum-attempt setting stays owned by PRD-202
 
 ## 7. Readiness Gate
 
-* Completeness 5/5 — every Phase 0 outcome named by the umbrella and by Phases 1, 3 and 4 maps to a requirement, and the retry-limit and cancellation scope gap is closed; seven requirements (not five) is justified in the sizing note.
+* Completeness 5/5 — every Phase 0 outcome named by the umbrella and by Phases 1, 3 and 4 maps to a requirement (Phase 5 names none), and the retry-limit and cancellation scope gap is closed; seven requirements (not five) is justified in the sizing note.
 * Testability 4/5 — every AC names an observable behaviour (event, field, typed error, test or recorded value); the TRD fixes the channel through which the report-style ACs (AC-004-4, AC-006-1, AC-007-1) are observed. Recovery time is measured and reported with no pass/fail threshold, so AC-002-4 is verified by the recorded value existing, not by a limit.
 * Clarity 4/5 — ownership lines separate Phase 0 from six existing PRDs; no open markers remain.
 * Feasibility 4/5 — each requirement extends a named existing seam; REQ-004 (three reconcilers) and REQ-006 need cross-backend work.
