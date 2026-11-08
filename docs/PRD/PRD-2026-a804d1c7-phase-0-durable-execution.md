@@ -1,7 +1,7 @@
 ---
 document_id: PRD-2026-a804d1c7
 label: prd-phase-0-durable-execution
-version: 1.1.6
+version: 1.1.7
 status: Draft
 date: 2026-11-08
 scale_depth: STANDARD
@@ -142,6 +142,7 @@ Evidence: `PhaseCompleted` carries `artifact_path`, `artifact_sha256`, `artifact
 
 Priority: Must; Complexity: High. [RISK: a git worktree is mistaken for a security sandbox.]
 Owns: the inspectable profile and the fail-closed rule. Defers: credential scoping to PRD-2026-aba4b79c.
+Evidence (policy surface): `Aggregates.Project.Environment` accepts only the keys `vars`, `setup_script` and `network` (`@record_keys`), so a project can require a network policy but cannot require filesystem confinement; AC-006-2 therefore blocks on network only, and a host run is never blocked for filesystem in Phase 0, only recorded as unenforced (AC-006-6). The one real filesystem boundary is the docker jobsite's bind mount of the worktree.
 Evidence: `NetworkPolicy` enforces `none` and `allowlist` on the **docker jobsite only** (`network_enforced_on/0`), returns `:network_policy_unsupported` for a non-default policy on the host sandbox, and sweeps orphans at boot; the workflow door runs agents on the server host and cannot enforce network policy. `VfsIsolation` keeps a per-agent registry of worktree roots and emits `[:foreman_server, :security, :vfs_denied]` from `allowed?/2`, but nothing in `lib/` calls `allowed?/2` (`run_executor.ex:4578` only binds, and a refused bind logs a warning and continues, `run_executor.ex:4559-4590`); `JidoShellRunner` does not confine real host commands (`jido_shell_runner.ex:84-97`). The harness pi profile uses `sandbox_mode: :read_only`. The TRD must establish which backend, if any, genuinely confines filesystem access.
 
 * AC-006-1: Given an agent starts, when its execution profile is resolved, then the backend (docker jobsite or host workflow) and, for filesystem, network, credentials and cleanup, whether each property is enforced or unenforced-with-reason are recorded and inspectable after launch.
@@ -195,7 +196,7 @@ No `[NEEDS CLARIFICATION]` markers remain. Decisions resolved in v1.1.1 (2026-11
 | Isolation policy | Block only when the project requires a policy the backend cannot enforce; otherwise record | AC-006-2, AC-006-5 |
 | Skill preflight | Check the skill each `command:` names resolves in the harness's skill directories on a host run; report unverifiable (never available) elsewhere. `command:` is an agent slash command, not an executable | AC-007-1, AC-007-2 |
 
-For the TRD to settle: the recovery-time threshold. The maximum-attempt question is closed: Phase 0 relies on the existing 5-attempt `RestartBackoff` limit and makes its count durable.
+For the TRD to settle: the recovery-time threshold for boot-to-resumed-or-blocked (the existing 30s NFR-03 bounds only the reconcile decision layer). The phase-level maximum-attempt setting is not settled here: it stays owned by PRD-2026-af25d0cb. What Phase 0 makes durable is the phase attempt number (AC-002-2) and the recovery re-dispatch budget already capped at 5 by `RestartBackoff` (AC-002-6); these are two separate budgets.
 
 ## 7. Readiness Gate
 
@@ -219,3 +220,4 @@ For the TRD to settle: the recovery-time threshold. The maximum-attempt question
 | 1.1.4 | 2026-11-08 | Retry scope and effect-design decisions applied. `PhaseStarted.attempt` is hard-coded to 1 and no retry events exist, so AC-002-2 now requires attempts derived from durable history; AC-002-6 is rewritten around the real gap (the recovery re-dispatch counter is in-memory and a block is log-only, so a restart resets the budget); phase-level retry exhaustion is a named prerequisite on PRD-2026-af25d0cb, not a Phase 0 guarantee. REQ-004: push, PR create, PR comment and provider effects hold no idempotency key today, so AC-004-5 requires an intent key written before each effect, and the evidence line says so. 30 ACs. |
 | 1.1.5 | 2026-11-08 | Effect set narrowed from four classes to three. A search of `lib/` finds no `gh pr comment`/review post or any other PR comment call site, so a PR-comment reconciler would have nothing to reconcile and would be a stub. The enumerated set is now PR create, branch push and task-provider state change; the future PR-comment class is covered by AC-004-3 (fail closed with no reconciler) and must register its reconciler when Phase 1 adds the effect. 30 ACs. |
 | 1.1.6 | 2026-11-08 | REQ-007 premise corrected. A `command:` phase is an agent slash command (`/skill:<name> ...`) and `bash:` phases are refused at lowering, so there is no executable to resolve on PATH. AC-007-1/2 now check that the named skill resolves in the harness's skill directories on a host run, and report it unverifiable on a backend whose environment Foreman cannot see; skill-name validation against the hard-coded `@known_skills` list stays with `Workflow.Validator`. 30 ACs. |
+| 1.1.7 | 2026-11-08 | Review corrections. §6 no longer calls the maximum-attempt question closed: the phase-level setting stays with PRD-2026-af25d0cb, and the two durable budgets (phase attempt, recovery re-dispatch) are named separately. REQ-006 states that `Environment` has a closed key set, so no project can require filesystem confinement today. 30 ACs. |
