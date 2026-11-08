@@ -6,7 +6,7 @@ status: Draft
 date: 2026-11-08
 scale_depth: STANDARD
 total_requirements: 7
-total_acceptance_criteria: 23
+total_acceptance_criteria: 24
 readiness_score: 4.0
 ---
 
@@ -32,7 +32,7 @@ readiness_score: 4.0
 |---|---|---|---|---:|
 | REQ-001 | Record an evidence-backed engine decision | Must | High | 3 |
 | REQ-002 | Resume runs across a restart without repeating completed work | Must | Medium | 4 |
-| REQ-003 | Human waits survive restart and are answered once | Must | Medium | 3 |
+| REQ-003 | Human waits survive restart and are answered once | Must | Medium | 4 |
 | REQ-004 | Reconcile or block uncertain external effects | Must | High | 4 |
 | REQ-005 | Record stage provenance and project-context identity | Must | Medium | 3 |
 | REQ-006 | Make the executor isolation contract explicit and enforced | Must | High | 4 |
@@ -109,8 +109,9 @@ Owns: wait durability. Defers: the merge gate (operator-only, SHA-pinned) and ch
 Evidence: `QuestionOpened`, `QuestionAnswered`, `QuestionExpired`, `QuestionAnswerUndelivered` are typed events; the actor answers a repeated `command_id` with the first result instead of appending (`aggregate/actor.ex:864`).
 
 * AC-003-1: Given a run waiting on an unanswered question, when the server restarts, then the question is still pending and listed, and only the matching run resumes when it is answered.
-* AC-003-2: Given an answer is submitted twice — with the same `command_id` and, separately, with a different one — when both reach the server after a restart, then exactly one `QuestionAnswered` exists, the second is rejected with a typed not-pending error, and the run resumes once.
-* AC-003-3: Given a question expires while the server is down, when it boots, then expiry is recorded once and the run follows its configured policy rather than being asked again silently.
+* AC-003-2: Given an answer is re-submitted with the same `command_id` after a restart, when it reaches the server, then the first result is returned as an idempotent success and no second `QuestionAnswered` is appended.
+* AC-003-3: Given a second answer with a different `command_id` arrives for an already-answered question, when it reaches the server, then it is rejected with a typed not-pending error, exactly one `QuestionAnswered` exists, and the run resumes once.
+* AC-003-4: Given a question expires while the server is down, when it boots, then expiry is recorded once and the run follows its configured policy rather than being asked again silently.
 
 ### REQ-004: Reconcile or block uncertain external effects
 
