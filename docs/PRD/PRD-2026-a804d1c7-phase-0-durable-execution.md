@@ -1,12 +1,12 @@
 ---
 document_id: PRD-2026-a804d1c7
 label: prd-phase-0-durable-execution
-version: 1.1.2
+version: 1.1.3
 status: Draft
 date: 2026-11-08
 scale_depth: STANDARD
 total_requirements: 7
-total_acceptance_criteria: 28
+total_acceptance_criteria: 29
 readiness_score: 4.25
 ---
 
@@ -35,14 +35,14 @@ readiness_score: 4.25
 | REQ-003 | Human waits survive restart and are answered once | Must | Medium | 4 |
 | REQ-004 | Reconcile or block uncertain external effects | Must | High | 4 |
 | REQ-005 | Record stage provenance and project-context identity | Must | Medium | 3 |
-| REQ-006 | Make the executor isolation contract explicit and enforced | Must | High | 5 |
+| REQ-006 | Make the executor isolation contract explicit and enforced | Must | High | 6 |
 | REQ-007 | Preflight the capabilities a run needs | Should | Medium | 2 |
 
 **Sizing note.** The series convention is 4–5 requirements per phase. Phase 0 has 7 because the v1.0.0 requirements bundled distinct observable behaviors (restart, human wait and effect reconciliation were one requirement; provenance and context identity another). Each REQ below states one behavior and names the proof that closes it. `scale_depth` stays STANDARD to match the other five phase PRDs and the umbrella, even though the count exceeds the series norm. Evidence cited here was read from source on 2026-11-08; the TRD must re-validate it (umbrella §Current baseline).
 
 ## 1. Executive Summary
 
-Before Foreman adds more factory automation, it needs evidence that long-lived work recovers safely from process failure, restart and human wait states. Foreman already has most of the machinery: typed, `command_id`-deduplicated events; actors that rehydrate via `Aggregate.load/2`; `resume_from_index` skipping completed phases; question events; durable idempotency keys with a crash-recovery reconciler; a worktree-scoped VFS guard; and a fail-closed docker network policy. Phase 0 therefore **establishes and proves guarantees and closes the specific gaps below**; it is not a redesign.
+Before Foreman adds more factory automation, it needs evidence that long-lived work recovers safely from process failure, restart and human wait states. Foreman already has most of the machinery: typed, `command_id`-deduplicated events; actors that rehydrate via `Aggregate.load/2`; `resume_from_index` skipping completed phases; question events; durable idempotency keys with a crash-recovery reconciler; and a fail-closed docker network policy. Filesystem confinement of a host agent is **not** among them (see §2). Phase 0 therefore **establishes and proves guarantees and closes the specific gaps below**; it is not a redesign.
 
 The expected outcome is to extend the current engine. Temporal or Conductor are admissible only for a criterion the evidence shows cannot be closed in the current engine (umbrella §Portfolio sequencing). The phase does not implement the idea-to-PR lifecycle, risk-tiered merging, Kubernetes or external memory.
 
@@ -58,6 +58,7 @@ Verified gaps this PRD closes (source in each requirement):
 * Project-context identity (`sha256`, bytes, truncation, redactions) reaches only a log line and an optional archive file.
 * Phases record their output artifact hash but not their inputs.
 * A host (workflow-door) run cannot enforce a network policy, and nothing records that fact on the run.
+* Filesystem confinement of a host agent is not enforced: `VfsIsolation.allowed?/2` has no caller outside its tests, `RunExecutor.bind_vfs/2` is fail-open, and `JidoShellRunner` is an in-memory mount whose own documentation says host commands run via `System.cmd` against the real filesystem.
 
 ## 3. Scope
 
@@ -139,13 +140,14 @@ Evidence: `PhaseCompleted` carries `artifact_path`, `artifact_sha256`, `artifact
 
 Priority: Must; Complexity: High. [RISK: a git worktree is mistaken for a security sandbox.]
 Owns: the inspectable profile and the fail-closed rule. Defers: credential scoping to PRD-2026-aba4b79c.
-Evidence: `VfsIsolation.allowed?/2` binds an agent to worktree roots and emits `[:foreman_server, :security, :vfs_denied]`; `NetworkPolicy` enforces `none` and `allowlist` on the **docker jobsite only** (`network_enforced_on/0`), returns `:network_policy_unsupported` for a non-default policy on the host sandbox, and sweeps orphans at boot; the workflow door runs agents on the server host and cannot enforce network policy. The harness pi profile uses `sandbox_mode: :read_only`.
+Evidence: `NetworkPolicy` enforces `none` and `allowlist` on the **docker jobsite only** (`network_enforced_on/0`), returns `:network_policy_unsupported` for a non-default policy on the host sandbox, and sweeps orphans at boot; the workflow door runs agents on the server host and cannot enforce network policy. `VfsIsolation` keeps a per-agent registry of worktree roots and emits `[:foreman_server, :security, :vfs_denied]` from `allowed?/2`, but nothing in `lib/` calls `allowed?/2` (`run_executor.ex:4578` only binds, and a refused bind logs a warning and continues, `run_executor.ex:4559-4590`); `JidoShellRunner` does not confine real host commands (`jido_shell_runner.ex:84-97`). The harness pi profile uses `sandbox_mode: :read_only`. The TRD must establish which backend, if any, genuinely confines filesystem access.
 
 * AC-006-1: Given an agent starts, when its execution profile is resolved, then the backend (docker jobsite or host workflow) and, for filesystem, network, credentials and cleanup, whether each property is enforced or unenforced-with-reason are recorded and inspectable after launch.
 * AC-006-2: Given a project requires a network policy other than default and the selected backend cannot enforce it, when provisioning occurs, then the run is blocked before any agent code runs with a typed unsupported reason — on the workflow door as well as the jobsite.
-* AC-006-3: Given an agent accesses a path outside its bound worktree roots, when the access is attempted, then it is denied and a `vfs_denied` event is emitted; a negative test proves it.
+* AC-006-3: Given a backend whose profile records filesystem as enforced, when an agent accesses a path outside its worktree roots, then the access is denied at an enforcement point (not only recorded in a registry) and a `vfs_denied` event is emitted; a negative test proves it.
 * AC-006-4: Given a jobsite ends by any route, including a server crash, when cleanup runs or the server next boots, then its containers and network are removed.
 * AC-006-5: Given a project sets no network policy and the run executes on the host workflow backend, when it launches, then the run proceeds and its profile records network as unenforced with the reason; this case is recorded, never blocked.
+* AC-006-6: Given a backend with no filesystem enforcement point, when the profile is resolved, then filesystem is recorded as unenforced with the reason and is never reported as enforced.
 
 ### REQ-007: Preflight the capabilities a run needs
 
@@ -211,3 +213,4 @@ For the TRD to settle: the source of the maximum-attempt setting that AC-002-6 r
 | 1.1.0+ | 2026-11-08 | Split AC-003-2 into idempotent replay (AC-003-2) and different-`command_id` rejection (AC-003-3); expiry renumbered AC-003-4 (24 ACs). |
 | 1.1.1 | 2026-11-08 | Refinement: resolved all five clarification markers; added AC-002-5 (missing worktree), AC-002-6 (retry exhaustion), AC-002-7 (cancellation), AC-006-5 (host run with no policy); enumerated effect classes in AC-004-1; `command:` executables in AC-007-1 (28 ACs). Readiness 4.0 → 4.25. |
 | 1.1.2 | 2026-11-08 | Review fixes: AC-002-7 no longer asserts a synchronous agent stop (cancel finalizes at SIGINT; escalation and orphan reaping follow); AC-007-1/2 resolve executables in the phase's execution environment and name the backend; REQ-004 ownership scoped to reconciliation with retry policy deferred to PRD-2026-af25d0cb; REQ-007 (Should) removed from the Phase 1 prerequisite row; sizing note states the `scale_depth` choice. 28 ACs. |
+| 1.1.3 | 2026-11-08 | Correction found while preparing the TRD: filesystem confinement of a host agent is not enforced (`VfsIsolation.allowed?/2` is never called; bind is fail-open; the shell runner is an in-memory mount). Removed the "worktree-scoped VFS guard" from the existing-machinery list; rewrote REQ-006 evidence; AC-006-3 now applies to a backend that records filesystem as enforced; added AC-006-6 (unenforced is recorded, never reported as enforced). 29 ACs. |
