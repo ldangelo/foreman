@@ -1,7 +1,7 @@
 ---
 document_id: PRD-2026-a804d1c7
 label: prd-phase-0-durable-execution
-version: 1.1.4
+version: 1.1.5
 status: Draft
 date: 2026-11-08
 scale_depth: STANDARD
@@ -118,15 +118,15 @@ Evidence: `QuestionOpened`, `QuestionAnswered`, `QuestionExpired`, `QuestionAnsw
 
 ### REQ-004: Reconcile or block uncertain external effects
 
-Priority: Must; Complexity: High. [RISK: blindly repeating a push, PR or comment after a crash duplicates or corrupts external state. Four reconcilers touch four different code paths, and the task-provider class reaches every `TaskProvider` adapter.]
-Owns: deciding whether an external effect already happened, and blocking or retrying accordingly, for PR create, branch push, GitHub PR comment/review post, and task-provider state change. Defers: authoring task work-log comments to PRD-2026-3a76a0f0; retry policy and the default-safety rule for non-idempotent work (REQ-011, REQ-012) to PRD-2026-af25d0cb.
+Priority: Must; Complexity: High. [RISK: blindly repeating a push, PR create or provider change after a crash duplicates or corrupts external state. Three reconcilers touch three different code paths, and the task-provider class reaches every `TaskProvider` adapter.]
+Owns: deciding whether an external effect already happened, and blocking or retrying accordingly, for PR create, branch push and task-provider state change (claim, complete, fail, reopen, annotate). GitHub PR comment/review posting has no call site in `lib/` today; the phase that introduces it (Phase 1 risk comments) must register its reconciler before shipping, and AC-004-3 keeps it fail-closed until then. Defers: authoring task work-log comments to PRD-2026-3a76a0f0; retry policy and the default-safety rule for non-idempotent work (REQ-011, REQ-012) to PRD-2026-af25d0cb.
 Evidence: keys move `started → completed | ambiguous | failed` (`idempotency/key_store.ex`); keys are written only around agent-phase dispatch by the Overwatch runner (`jobsite/runners/overwatch.ex:131`), and `AutoPR`, `PhasePR` and `PrCreate` (which run `git push` and `gh pr create`) never reference a key, so a crash during those effects leaves no ambiguous key at all; `CrashRecovery.has_no_side_effects?/1` checks only PR association and created worktrees, and `{:retry, :side_effects_present}` marks the key completed and **allows retry** (`idempotency/crash_recovery.ex:6`). `KeyStore` falls back to an in-process ETS table when the repo is not configured.
 
-* AC-004-1: Given a crash leaves a key ambiguous for an effect class in the enumerated set — PR create, branch push, PR comment/review post, and task-provider state change — when recovery runs, then Foreman consults external truth for that class (the existing PR, the remote branch head, the existing comment, the provider's current state) before any retry; one automated test per class proves it.
+* AC-004-1: Given a crash leaves a key ambiguous for an effect class in the enumerated set — PR create, branch push, and task-provider state change — when recovery runs, then Foreman consults external truth for that class (the existing PR, the remote branch head, the provider's current state) before any retry; one automated test per class proves it.
 * AC-004-2: Given reconciliation finds the effect already present or cannot establish the outcome, when recovery finishes, then the run blocks with an operator-visible reason and nothing is repeated.
 * AC-004-3: Given an ambiguous key for an effect class that has no reconciler, when recovery runs, then it fails closed (blocks) and never retries.
 * AC-004-4: Given a production configuration with the durable key store unavailable and the ETS fallback active, when the server boots, then it reports the idempotency store as non-durable instead of claiming crash safety.
-* AC-004-5: Given an effect in the enumerated set is about to run, when it starts, then an intent key is durably recorded before the effect runs and marked completed or failed after it, so that a crash during the effect leaves an ambiguous key for recovery to reconcile.
+* AC-004-5: Given an effect in the enumerated set is about to run, when it starts, then an intent key is durably recorded before the effect runs and marked completed or failed after it, so that a crash during the effect leaves an ambiguous key for recovery to reconcile; adding an effect class later requires registering its reconciler (AC-004-3).
 
 ### REQ-005: Record stage provenance and project-context identity
 
@@ -181,7 +181,7 @@ Phase 0 exits only when every row below is demonstrably met. An unmet guarantee 
 | REQ-006 | Existing jobsite and workflow execution | Host-run limits become explicit, not hidden. |
 | REQ-007 | Existing kickoff preflight | Extends the same seam. |
 
-Exit also requires: the decision record exists; the REQ-002 boundary, recovery-attempt and cancellation tests, the REQ-003 tests, and one REQ-004 reconciliation test per effect class pass in isolation and in the full suite; stage provenance is inspectable through the existing status surface; and executor limitations are recorded on each run. Phase-level retry exhaustion is explicitly not an exit criterion; it is a prerequisite owned by PRD-2026-af25d0cb.
+Exit also requires: the decision record exists; the REQ-002 boundary, recovery-attempt and cancellation tests, the REQ-003 tests, and one REQ-004 reconciliation test per enumerated effect class pass in isolation and in the full suite; stage provenance is inspectable through the existing status surface; and executor limitations are recorded on each run. Phase-level retry exhaustion is explicitly not an exit criterion; it is a prerequisite owned by PRD-2026-af25d0cb.
 
 ## 6. Open Decisions
 
@@ -191,7 +191,7 @@ No `[NEEDS CLARIFICATION]` markers remain. Decisions resolved in v1.1.1 (2026-11
 |---|---|---|
 | Recovery-time target | Measure, record and report boot-to-resumed time; threshold set by the TRD operating plan | AC-002-4 |
 | Resumed run with missing worktree | Provision a fresh worktree and record the loss | AC-002-5 |
-| Effect classes reconciled | PR create, branch push, PR comment/review post, task-provider state change | AC-004-1 |
+| Effect classes reconciled | PR create, branch push, task-provider state change; PR comment/review post is deferred to the phase that first posts one, and stays fail-closed until its reconciler is registered | AC-004-1, AC-004-3 |
 | Isolation policy | Block only when the project requires a policy the backend cannot enforce; otherwise record | AC-006-2, AC-006-5 |
 | Executable preflight | Check `command:` executables; `bash:` checks the shell only | AC-007-1 |
 
@@ -202,7 +202,7 @@ For the TRD to settle: the recovery-time threshold. The maximum-attempt question
 * Completeness 5/5 — every Phase 0 outcome named by the umbrella and by Phases 1, 3 and 4 maps to a requirement, and the retry-limit and cancellation scope gap is closed; seven requirements (not five) is justified in the sizing note.
 * Testability 4/5 — every AC names an observable event, field, typed error or test; the recovery-time threshold is left to the TRD operating plan.
 * Clarity 4/5 — ownership lines separate Phase 0 from six existing PRDs; no open markers remain.
-* Feasibility 4/5 — each requirement extends a named existing seam; REQ-004 (four reconcilers) and REQ-006 need cross-backend work.
+* Feasibility 4/5 — each requirement extends a named existing seam; REQ-004 (three reconcilers) and REQ-006 need cross-backend work.
 
 **Overall 4.25/5 — PASS (was 4.0).** This PRD authorizes Phase 0 refinement only, not an engine replacement.
 
@@ -217,3 +217,4 @@ For the TRD to settle: the recovery-time threshold. The maximum-attempt question
 | 1.1.2 | 2026-11-08 | Review fixes: AC-002-7 no longer asserts a synchronous agent stop (cancel finalizes at SIGINT; escalation and orphan reaping follow); AC-007-1/2 resolve executables in the phase's execution environment and name the backend; REQ-004 ownership scoped to reconciliation with retry policy deferred to PRD-2026-af25d0cb; REQ-007 (Should) removed from the Phase 1 prerequisite row; sizing note states the `scale_depth` choice. 28 ACs. |
 | 1.1.3 | 2026-11-08 | Correction found while preparing the TRD: filesystem confinement of a host agent is not enforced (`VfsIsolation.allowed?/2` is never called; bind is fail-open; the shell runner is an in-memory mount). Removed the "worktree-scoped VFS guard" from the existing-machinery list; rewrote REQ-006 evidence; AC-006-3 now applies to a backend that records filesystem as enforced; added AC-006-6 (unenforced is recorded, never reported as enforced). 29 ACs. |
 | 1.1.4 | 2026-11-08 | Retry scope and effect-design decisions applied. `PhaseStarted.attempt` is hard-coded to 1 and no retry events exist, so AC-002-2 now requires attempts derived from durable history; AC-002-6 is rewritten around the real gap (the recovery re-dispatch counter is in-memory and a block is log-only, so a restart resets the budget); phase-level retry exhaustion is a named prerequisite on PRD-2026-af25d0cb, not a Phase 0 guarantee. REQ-004: push, PR create, PR comment and provider effects hold no idempotency key today, so AC-004-5 requires an intent key written before each effect, and the evidence line says so. 30 ACs. |
+| 1.1.5 | 2026-11-08 | Effect set narrowed from four classes to three. A search of `lib/` finds no `gh pr comment`/review post or any other PR comment call site, so a PR-comment reconciler would have nothing to reconcile and would be a stub. The enumerated set is now PR create, branch push and task-provider state change; the future PR-comment class is covered by AC-004-3 (fail closed with no reconciler) and must register its reconciler when Phase 1 adds the effect. 30 ACs. |
