@@ -1,7 +1,7 @@
 ---
 document_id: PRD-2026-a804d1c7
 label: prd-phase-0-durable-execution
-version: 1.1.7
+version: 1.1.8
 status: Draft
 date: 2026-11-08
 scale_depth: STANDARD
@@ -100,7 +100,7 @@ Evidence (attempts): `PhaseStarted.attempt` is hard-coded to `1` (`run_executor.
 * AC-002-1: Given a server restart at each boundary — before a phase starts, after `PhaseStarted` and before completion, after `PhaseCompleted` and before the next phase, while waiting on a human, and after the last phase and before the terminal event — when the service recovers, then status, artifact references and attempt are reconstructed from the event stream and no phase that has `PhaseCompleted` is launched again. One automated test per boundary fails if a completed phase relaunches.
 * AC-002-2: Given a restart during an in-flight phase, when the run resumes, then orphaned agents of the earlier attempt are reaped before relaunch and the phase records its next attempt number, derived from its durable `PhaseStarted` history and not from process memory, visible on the run projection.
 * AC-002-3: Given the resume base cannot be determined, when recovery runs, then the run ends with a typed reason and is never started from a guessed base.
-* AC-002-4: Given a server restart, when recovery completes, then the time from boot to resumed-or-blocked is measured, recorded on the run and reported; the pass/fail threshold is set by the TRD's operating plan, not by this PRD.
+* AC-002-4: Given a server restart, when recovery completes, then the time from boot to resumed-or-blocked is measured, recorded on the run and reported; Phase 0 sets no pass/fail threshold on it (the existing 30s NFR-03 bounds only the reconcile decision layer), so the recorded values are the evidence a later phase uses to choose one.
 * AC-002-5: Given a resumed run's worktree no longer exists, when recovery provisions a fresh one, then the run projection records that prior working-tree changes were not carried over and the warning names the discarded worktree path; the run is never silently restarted as if nothing was lost.
 * AC-002-6: Given recovery has re-dispatched a run up to the `RestartBackoff` limit, when the server restarts, then the attempt count survives because it is derived from durable events, and a run that reached the limit stays blocked with a durable, operator-visible reason and is not re-dispatched with a fresh budget.
 * AC-002-7: Given an operator cancels a run, when the cancel is processed and again after a later restart, then the run is in the terminal cancelled state (`RunCancelled` on the event stream) and recovery does not resume it; the agent has been signalled and the harness's SIGTERM/SIGKILL escalation is allowed to complete; and any process still alive afterwards is reaped by `Workflow.OrphanReaper` and is observable. "The agent is stopped" is asserted only after escalation and reaping, never at cancel time, because `Run.cancel/1` finalizes the run once it has signalled the agent.
@@ -190,18 +190,18 @@ No `[NEEDS CLARIFICATION]` markers remain. Decisions resolved in v1.1.1 (2026-11
 
 | Decision | Resolution | Where |
 |---|---|---|
-| Recovery-time target | Measure, record and report boot-to-resumed time; threshold set by the TRD operating plan | AC-002-4 |
+| Recovery-time target | Measure, record and report boot-to-resumed-or-blocked time; no pass/fail threshold in Phase 0 | AC-002-4 |
 | Resumed run with missing worktree | Provision a fresh worktree and record the loss | AC-002-5 |
 | Effect classes reconciled | PR create, branch push, task-provider state change; PR comment/review post is deferred to the phase that first posts one, and stays fail-closed until its reconciler is registered | AC-004-1, AC-004-3 |
 | Isolation policy | Block only when the project requires a policy the backend cannot enforce; otherwise record | AC-006-2, AC-006-5 |
 | Skill preflight | Check the skill each `command:` names resolves in the harness's skill directories on a host run; report unverifiable (never available) elsewhere. `command:` is an agent slash command, not an executable | AC-007-1, AC-007-2 |
 
-For the TRD to settle: the recovery-time threshold for boot-to-resumed-or-blocked (the existing 30s NFR-03 bounds only the reconcile decision layer). The phase-level maximum-attempt setting is not settled here: it stays owned by PRD-2026-af25d0cb. What Phase 0 makes durable is the phase attempt number (AC-002-2) and the recovery re-dispatch budget already capped at 5 by `RestartBackoff` (AC-002-6); these are two separate budgets.
+Not settled here: the phase-level maximum-attempt setting stays owned by PRD-2026-af25d0cb. What Phase 0 makes durable is the phase attempt number (AC-002-2) and the recovery re-dispatch budget already capped at 5 by `RestartBackoff` (AC-002-6); these are two separate budgets. The recovery-time question is closed: it is measured and reported, not gated.
 
 ## 7. Readiness Gate
 
 * Completeness 5/5 — every Phase 0 outcome named by the umbrella and by Phases 1, 3 and 4 maps to a requirement, and the retry-limit and cancellation scope gap is closed; seven requirements (not five) is justified in the sizing note.
-* Testability 4/5 — every AC names an observable event, field, typed error or test; the recovery-time threshold is left to the TRD operating plan.
+* Testability 4/5 — every AC names an observable event, field, typed error or test; recovery time is measured and reported with no pass/fail threshold, so AC-002-4 is verified by the recorded value existing, not by a limit.
 * Clarity 4/5 — ownership lines separate Phase 0 from six existing PRDs; no open markers remain.
 * Feasibility 4/5 — each requirement extends a named existing seam; REQ-004 (three reconcilers) and REQ-006 need cross-backend work.
 
@@ -221,3 +221,4 @@ For the TRD to settle: the recovery-time threshold for boot-to-resumed-or-blocke
 | 1.1.5 | 2026-11-08 | Effect set narrowed from four classes to three. A search of `lib/` finds no `gh pr comment`/review post or any other PR comment call site, so a PR-comment reconciler would have nothing to reconcile and would be a stub. The enumerated set is now PR create, branch push and task-provider state change; the future PR-comment class is covered by AC-004-3 (fail closed with no reconciler) and must register its reconciler when Phase 1 adds the effect. 30 ACs. |
 | 1.1.6 | 2026-11-08 | REQ-007 premise corrected. A `command:` phase is an agent slash command (`/skill:<name> ...`) and `bash:` phases are refused at lowering, so there is no executable to resolve on PATH. AC-007-1/2 now check that the named skill resolves in the harness's skill directories on a host run, and report it unverifiable on a backend whose environment Foreman cannot see; skill-name validation against the hard-coded `@known_skills` list stays with `Workflow.Validator`. 30 ACs. |
 | 1.1.7 | 2026-11-08 | Review corrections. §6 no longer calls the maximum-attempt question closed: the phase-level setting stays with PRD-2026-af25d0cb, and the two durable budgets (phase attempt, recovery re-dispatch) are named separately. REQ-006 states that `Environment` has a closed key set, so no project can require filesystem confinement today. 30 ACs. |
+| 1.1.8 | 2026-11-08 | Closed a dangling dependency. AC-002-4, §6 and the Readiness Gate deferred the recovery-time threshold to a TRD "operating plan" that no document contained. Phase 0 now only measures, records and reports boot-to-resumed-or-blocked time and sets no threshold. 30 ACs. |

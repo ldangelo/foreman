@@ -1,12 +1,12 @@
 ---
 document_id: TRD-2026-a804d1c7
 label: trd-phase-0-durable-execution
-version: 1.0.0
+version: 1.0.1
 status: Draft
 date: 2026-11-08
 source_prd: PRD-2026-a804d1c7
 prd_reference: docs/PRD/PRD-2026-a804d1c7-phase-0-durable-execution.md
-prd_version_locked: 1.1.7
+prd_version_locked: 1.1.8
 kind: trd
 design_readiness_score: 4.0
 ---
@@ -93,7 +93,7 @@ Each row is a fact the design depends on; the PRD's claims that turned out wrong
 ### Components and changes
 
 1. **Phase attempts (REQ-002).** Register a typed `PhaseRetried` event; let `phase.retry` apply to an in-flight phase when `reason: "resumed"`; set `attempt` in `PhaseStarted`'s apply; `RunExecutor` dispatches `phase.retry` after reaping orphans when it resumes an in-progress phase. The attempt is then derived from the stream. Not a policy retry; it only records that a crash abandoned the earlier attempt. `PRD-2026-af25d0cb` builds its scheduled retries on the same event.
-2. **Recovery attempts (REQ-002).** A typed `RunRecoveryAttempted` event on the run stream replaces the ETS counter: `attempt`, `outcome` (`dispatched | failed | blocked`), `kind`, `reason`, `elapsed_since_boot_ms`. The projection folds the latest value into `run.recovery`. `BootReconciliation` reads the count from the projection and appends the event; a `blocked` outcome is durable and operator-visible, and recovery stops re-dispatching it.
+2. **Recovery attempts (REQ-002).** A typed `RunRecoveryAttempted` event on the run stream replaces the ETS counter: `attempt`, `outcome` (`dispatched | failed`), `kind`, `reason`, `elapsed_since_boot_ms`. The projection folds the latest value into `run.recovery`. `BootReconciliation` reads the count from the projection and appends the event. When the budget is exhausted it dispatches the existing `run.block` command: `RunBlocked` is already terminal, already mapped by the notifier and projection, and already used by `Overwatch.CrashLoopDetector`, so no new "blocked" outcome is invented. `run.resume` is accepted only from `paused` (`aggregates/run.ex:588`), so a blocked run is not resumed and cannot regain a fresh budget; that is exactly AC-002-6. `RunBlocked.reason` is a `String.t()`, so every Phase 0 block uses a stable snake_case code (`recovery_budget_exhausted`, `effect_outcome_ambiguous`, `effect_already_done`, `effect_class_unregistered`) and puts structured detail (class, key, attempts) in the preceding `RunRecoveryAttempted.reason` and telemetry, never in a tuple inside the string.
 3. **Worktree loss and context identity (REQ-002, REQ-005).** Optional `prior_worktree_discarded` and `input_artifacts` fields on `PhaseStarted` and `PhaseRetried`; a new `PhaseContextRecorded` event emitted from `build_agent_launch` (the bundle exists only there). All fold into the existing `state.phases` entry and the DTO.
 4. **Effects (REQ-004).** `Idempotency.Effect.run/4` writes a `started` intent key before an effect and `completed`/`failed` after; boot already marks orphaned `started` keys `ambiguous`. A `Reconciler` behaviour registered by key class replaces the PR/worktree guess in `CrashRecovery` for effect keys: effect present or unknown yields `blocked`, never retry; an unregistered class yields `blocked` (fail closed). Three classes: PR create, branch push, task-provider state change.
 5. **Isolation profile (REQ-006).** `Jobsite.ExecutionProfile` resolves `{backend, filesystem, network, credentials, cleanup}` each as `enforced | unenforced(reason)` from the real backend, is recorded on `PhaseStarted`, and kickoff preflight blocks a host run when the project requires a network policy the host cannot enforce.
@@ -105,7 +105,7 @@ Each row is a fact the design depends on; the PRD's claims that turned out wrong
 ```
 crash -> boot -> BootReconciliation ──reads run.recovery (projection)──▶ dispatch?
                      │ ambiguous keys ──▶ CrashRecovery ──▶ Reconciler[class] ──▶ blocked | retry
-                     └ append RunRecoveryAttempted (CommandRouter)
+                     └ append RunRecoveryAttempted (CommandRouter); at the cap, dispatch run.block (RunBlocked, terminal, string reason code)
 resume ─▶ RunExecutor ─ reap orphans ─▶ phase.retry(reason: resumed) ─▶ PhaseRetried (attempt+1)
 launch ─▶ build_agent_launch ─▶ PhaseContextRecorded ; ExecutionProfile ─▶ PhaseStarted fields
 effect ─▶ Effect.run(class, key, fun): started key ─▶ fun ─▶ completed|failed
@@ -149,16 +149,17 @@ Task ids are hyphenated (`TRD-NNN`, tests `TRD-NNN-TEST`); estimates are `(Nh)`.
   - Target Files: `packages/foreman_server/test/foreman_server/workflow/run_executor_resume_attempt_test.exs`
   - Test AC:
     - [ ] Given `TRD-002`'s dispatch is removed, when the test runs, then the attempt assertion fails.
-- [ ] **TRD-003**: Make the recovery budget durable. New typed `RunRecoveryAttempted` event (`run_id`, `attempt`, `outcome` in `dispatched|failed|blocked`, `kind`, `reason`, `elapsed_since_boot_ms`) with a `run.recovery_attempt` command on the Run aggregate, a `run.recovery` field in the run projection, and `BootReconciliation` reading and appending it instead of the ETS `:boot_recon_dispatch_attempts` table. A `blocked` outcome is durable, stops re-dispatch, and carries an operator-visible reason. [satisfies REQ-002] (7h)
+- [ ] **TRD-003**: Make the recovery budget durable. New typed `RunRecoveryAttempted` event (`run_id`, `attempt`, `outcome` in `dispatched|failed`, `kind`, `reason`, `elapsed_since_boot_ms`) with a `run.recovery_attempt` command on the Run aggregate, a `run.recovery` field in the run projection, and `BootReconciliation` reading and appending it instead of the ETS `:boot_recon_dispatch_attempts` table. When `RestartBackoff` reports `{:blocked, :max_attempts_exceeded}`, `BootReconciliation` dispatches the existing `run.block` with reason code `recovery_budget_exhausted` instead of only logging (`boot_reconciliation.ex:1310`). [satisfies REQ-002] (7h)
   - Validates PRD ACs: AC-002-6, AC-002-4
   - Target Files: `packages/foreman_server/lib/foreman_server/events/run_recovery_attempted.ex`, `packages/foreman_server/lib/foreman_server/event_codec.ex`, `packages/foreman_server/lib/foreman_server/aggregates/run.ex`, `packages/foreman_server/lib/foreman_server/projection_store.ex`, `packages/foreman_server/lib/foreman_server/workflow/boot_reconciliation.ex`, `packages/foreman_server/lib/foreman_server/idempotency/restart_backoff.ex`, `packages/foreman_server/lib/foreman_server/incarnation.ex`
   - Implementation AC:
     - [ ] Given recovery has failed to dispatch a run 5 times, when the server restarts, then the run is still blocked and is not re-dispatched.
-    - [ ] Given a blocked run, when an operator resumes it manually, then the counter starts again and the block is cleared by an event.
+    - [ ] Given a run blocked by recovery exhaustion, when `run.resume` is dispatched for it, then it is rejected (`RunBlocked` is terminal and `run.resume` is accepted only from `paused`), so a restart or an operator action cannot give it a fresh budget.
+    - [ ] Given the budget is exhausted, when the block is recorded, then `RunBlocked.reason` is the string `recovery_budget_exhausted`, the attempt count and last failure are in the preceding `RunRecoveryAttempted`, and the run status DTO shows both.
     - [ ] Given a dispatch succeeds, when the event is appended, then it carries `elapsed_since_boot_ms` measured from application start.
     - [ ] Given no boot timestamp exists today (`Incarnation` exposes only `id/0`), when the application starts, then `Incarnation` records a start time (`started_at_ms/0`, taken with `System.monotonic_time(:millisecond)` in the same place the id is created) and `elapsed_since_boot_ms` is a monotonic difference, never a wall-clock subtraction.
     - [ ] Given the recovery budget described here is the boot re-dispatch cap (`RestartBackoff`, 5), when it is made durable, then it stays a separate budget from phase attempts: the phase-level maximum-attempt setting belongs to `PRD-2026-af25d0cb`.
-- [ ] **TRD-003-TEST**: Extend the dispatch-backoff tests: five failures, restart via `DispatcherRestart`, assert still blocked with a durable reason; success resets; the ETS table no longer exists. [verifies TRD-003] [satisfies REQ-002] [depends: TRD-003] (4h)
+- [ ] **TRD-003-TEST**: Extend the dispatch-backoff tests: five failures, restart via `DispatcherRestart`, assert the run is `blocked` with reason `recovery_budget_exhausted`, is not re-dispatched, and rejects `run.resume`; success resets; the ETS table no longer exists. [verifies TRD-003] [satisfies REQ-002] [depends: TRD-003] (4h)
   - Validates PRD ACs: AC-002-6
   - Target Files: `packages/foreman_server/test/foreman_server/workflow/boot_reconciliation_dispatch_backoff_test.exs`
   - Test AC:
@@ -174,7 +175,7 @@ Task ids are hyphenated (`TRD-NNN`, tests `TRD-NNN-TEST`); estimates are `(Nh)`.
   - Target Files: `packages/foreman_server/test/foreman_server/workflow/run_executor_resume_attempt_test.exs`
   - Test AC:
     - [ ] Given the field is not set on re-provision, when the test runs, then the DTO assertion fails.
-- [ ] **TRD-005**: Report recovery: surface `run.recovery` (attempts used, limit, outcome, `elapsed_since_boot_ms`, blocked reason) in the status DTO and emit it as telemetry. The existing NFR-03 (`resumption_time_test.exs`) bounds the reconcile decision layer at 30s and is extended, not replaced; the boot-to-resumed-or-blocked threshold is set in the operating plan, and this task only measures and reports it, never failing the run on it. [satisfies REQ-002] [depends: TRD-003] (3h)
+- [ ] **TRD-005**: Report recovery: surface `run.recovery` (attempts used, limit, outcome, `elapsed_since_boot_ms`, blocked reason) in the status DTO and emit it as telemetry. The existing NFR-03 (`resumption_time_test.exs`) bounds the reconcile decision layer at 30s and is extended, not replaced. Boot-to-resumed-or-blocked time is only measured, recorded and reported: Phase 0 sets no threshold on it (PRD AC-002-4, v1.1.8), and the task never fails a run on it. [satisfies REQ-002] [depends: TRD-003] (3h)
   - Validates PRD ACs: AC-002-4
   - Target Files: `packages/foreman_server/lib/foreman_server/mcp/tools.ex`, `packages/foreman_server/lib/foreman_server/workflow/boot_reconciliation.ex`
   - Implementation AC:
@@ -271,7 +272,7 @@ Task ids are hyphenated (`TRD-NNN`, tests `TRD-NNN-TEST`); estimates are `(Nh)`.
   - Target Files: `packages/foreman_server/test/foreman_server/idempotency/effect_test.exs`
   - Test AC:
     - [ ] Given the key is written after the effect, when the ordering test runs, then it fails.
-- [ ] **TRD-012**: Add the `Idempotency.Reconciler` behaviour and a class registry consulted by `CrashRecovery` for `effect:` keys: a registered reconciler returns `:not_done | :done | :unknown`; `:not_done` allows retry, `:done` and `:unknown` block with an operator-visible reason, and an unregistered class blocks (fail closed). Record a block as `RunRecoveryAttempted(outcome: blocked, kind: :effect)`. Leave agent-phase keys on their existing path. [satisfies REQ-004] [depends: TRD-003] [depends: TRD-011] (6h)
+- [ ] **TRD-012**: Add the `Idempotency.Reconciler` behaviour and a class registry consulted by `CrashRecovery` for `effect:` keys: a registered reconciler returns `:not_done | :done | :unknown`; `:not_done` allows retry, `:done` and `:unknown` block, and an unregistered class blocks (fail closed). A block dispatches the existing `run.block` with a stable reason code (`effect_already_done`, `effect_outcome_ambiguous`, `effect_class_unregistered`) after recording `RunRecoveryAttempted(kind: :effect)` with the class and key as detail. Leave agent-phase keys on their existing path. [satisfies REQ-004] [depends: TRD-003] [depends: TRD-011] (6h)
   - Validates PRD ACs: AC-004-2, AC-004-3
   - Target Files: `packages/foreman_server/lib/foreman_server/idempotency/reconciler.ex`, `packages/foreman_server/lib/foreman_server/idempotency/crash_recovery.ex`, `packages/foreman_server/lib/foreman_server/workflow/boot_reconciliation.ex`
   - Implementation AC:
@@ -279,6 +280,7 @@ Task ids are hyphenated (`TRD-NNN`, tests `TRD-NNN-TEST`); estimates are `(Nh)`.
     - [ ] Given an ambiguous `effect:` key of an unregistered class, when recovery runs, then it blocks.
     - [ ] Given an ambiguous agent-phase key, when recovery runs, then its existing behavior is unchanged.
     - [ ] Given a key's metadata names its effect class, when `CrashRecovery` reconciles it, then dispatch is by that class; the existing single global `side_effects_check` has no per-class dispatch today.
+    - [ ] Given an effect block, when the run status is read, then `RunBlocked.reason` is one of the three stable codes and the class and key appear in the run's recovery record, so an operator can tell which effect to inspect.
 - [ ] **TRD-012-TEST**: Registry tests for `:not_done`, `:done`, `:unknown` and unregistered classes, plus the unchanged agent-phase path against the existing characterization test. [verifies TRD-012] [satisfies REQ-004] [depends: TRD-012] (4h)
   - Validates PRD ACs: AC-004-2, AC-004-3
   - Target Files: `packages/foreman_server/test/foreman_server/idempotency/crash_recovery_test.exs`, `packages/foreman_server/test/foreman_server/workflow/boot_reconciliation_ambiguous_keys_test.exs`
@@ -428,7 +430,7 @@ Task ids are hyphenated (`TRD-NNN`, tests `TRD-NNN-TEST`); estimates are `(Nh)`.
 
 **Shippable State:** A decision record maps every durability criterion to source and test evidence with a pass or fail, states the decision to extend the current engine, links from the umbrella roadmap, and the operator documentation describes the new status fields, preflight failure and doctor line.
 
-- [ ] **TRD-023**: Write `docs/decisions/phase-0-durable-execution-engine.md` in the house format of `docs/decisions/project-delete.md` (`# Decision:` title, a `Status:` line saying the operator may veto it in review, `## Context`, `## Decision`, `## Alternatives considered`, `## Future path (not built)`): a table of criteria (REQ-002 to REQ-006) with source and test evidence, pass/fail and remaining gaps; the comparison of extending the engine against Temporal and Conductor with migration, operational and rollback cost; the decision ("extend the current engine"); the recovery measurement, stating that the existing 30s NFR-03 covers the reconcile decision layer and that the boot-to-resumed threshold is set in the operating plan; and the named prerequisite on `PRD-2026-af25d0cb`. Add a forward-pointer line to the umbrella PRD's Phase 0 row. The record is an output of the other tasks, so it is written last. [satisfies REQ-001] [depends: TRD-005] [depends: TRD-008] [depends: TRD-010] [depends: TRD-015] [depends: TRD-017] [depends: TRD-020] [depends: TRD-022] (4h)
+- [ ] **TRD-023**: Write `docs/decisions/phase-0-durable-execution-engine.md` in the house format of `docs/decisions/project-delete.md` (`# Decision:` title, a `Status:` line saying the operator may veto it in review, `## Context`, `## Decision`, `## Alternatives considered`, `## Future path (not built)`): a table of criteria (REQ-002 to REQ-006) with source and test evidence, pass/fail and remaining gaps; the comparison of extending the engine against Temporal and Conductor with migration, operational and rollback cost; the decision ("extend the current engine"); the recovery measurement, stating that the existing 30s NFR-03 covers the reconcile decision layer, that boot-to-resumed-or-blocked time is recorded with no threshold, and the measured values; and the named prerequisite on `PRD-2026-af25d0cb`. Add a forward-pointer line to the umbrella PRD's Phase 0 row. The record is an output of the other tasks, so it is written last. [satisfies REQ-001] [depends: TRD-005] [depends: TRD-008] [depends: TRD-010] [depends: TRD-015] [depends: TRD-017] [depends: TRD-020] [depends: TRD-022] (4h)
   - Validates PRD ACs: AC-001-1, AC-001-2, AC-001-3
   - Target Files: `docs/decisions/phase-0-durable-execution-engine.md`, `docs/PRD/PRD-2026-b7c2e941-sunstone-software-factory.md`
   - Implementation AC:
@@ -556,3 +558,10 @@ Dependency and estimate:
 | Estimate confidence | 3 | Three 7h tasks cross new-event, aggregate and external-call boundaries; docker proof depends on a local run. |
 
 **Overall 4.0/5 — PASS.** Estimate confidence is the weak dimension; the three 7h tasks are the first candidates to split if their first spike runs long.
+
+## 16. Changelog
+
+| Version | Date | Changes |
+|---|---|---|
+| 1.0.0 | 2026-11-08 | Initial TRD: 48 tasks, 9 PRs, 30 of 30 PRD ACs covered. |
+| 1.0.1 | 2026-11-08 | Refinement. (1) Target Files carried `(new)` annotations that the parser kept as part of the path, so 31 parsed `targetFiles` were not real paths; new files are declared once under "Files this TRD creates". (2) A durable "blocked" verdict now uses the existing terminal `RunBlocked` event via `run.block`, not a new `blocked` outcome on `RunRecoveryAttempted` (TRD-003, TRD-012); the AC that had an operator resuming a blocked run is replaced, because `run.resume` is accepted only from `paused`. (3) Block reasons are stable snake_case codes, with structured detail in the recovery record. (4) The "operating plan" threshold, which no document contained, is removed from TRD-005 and TRD-023 and from PRD AC-002-4: boot-to-resumed-or-blocked time is measured and reported only (PRD v1.1.8). (5) Added monotonic `Incarnation.started_at_ms`, typed effect-key metadata with `run_id`, a Deferred section, and a provenance note on §5. Locked to PRD v1.1.8; 48 tasks, 186.5h, score 4.0 unchanged. |
