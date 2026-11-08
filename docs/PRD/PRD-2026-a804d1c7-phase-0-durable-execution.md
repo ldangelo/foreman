@@ -1,7 +1,7 @@
 ---
 document_id: PRD-2026-a804d1c7
 label: prd-phase-0-durable-execution
-version: 1.1.1
+version: 1.1.2
 status: Draft
 date: 2026-11-08
 scale_depth: STANDARD
@@ -38,7 +38,7 @@ readiness_score: 4.25
 | REQ-006 | Make the executor isolation contract explicit and enforced | Must | High | 5 |
 | REQ-007 | Preflight the capabilities a run needs | Should | Medium | 2 |
 
-**Sizing note.** The series convention is 4–5 requirements per phase. Phase 0 has 7 because the v1.0.0 requirements bundled distinct observable behaviors (restart, human wait and effect reconciliation were one requirement; provenance and context identity another). Each REQ below states one behavior and names the proof that closes it. Evidence cited here was read from source on 2026-11-08; the TRD must re-validate it (umbrella §Current baseline).
+**Sizing note.** The series convention is 4–5 requirements per phase. Phase 0 has 7 because the v1.0.0 requirements bundled distinct observable behaviors (restart, human wait and effect reconciliation were one requirement; provenance and context identity another). Each REQ below states one behavior and names the proof that closes it. `scale_depth` stays STANDARD to match the other five phase PRDs and the umbrella, even though the count exceeds the series norm. Evidence cited here was read from source on 2026-11-08; the TRD must re-validate it (umbrella §Current baseline).
 
 ## 1. Executive Summary
 
@@ -101,7 +101,7 @@ Evidence: `Dispatcher.resume_from_index/2` (`dispatcher.ex:1052`) skips phases w
 * AC-002-4: Given a server restart, when recovery completes, then the time from boot to resumed-or-blocked is measured, recorded on the run and reported; the pass/fail threshold is set by the TRD's operating plan, not by this PRD.
 * AC-002-5: Given a resumed run's worktree no longer exists, when recovery provisions a fresh one, then the run projection records that prior working-tree changes were not carried over and the warning names the discarded worktree path; the run is never silently restarted as if nothing was lost.
 * AC-002-6: Given a phase has exhausted its configured maximum attempts, when the server restarts, then the exhausted state is preserved, no further attempt is launched, and the run follows its failure path.
-* AC-002-7: Given an operator cancels a run, when the cancel completes and again after a later restart, then its agent subprocess is stopped, the cancelled state is preserved, and recovery does not resume the run.
+* AC-002-7: Given an operator cancels a run, when the cancel is processed and again after a later restart, then the run is in the terminal cancelled state (`RunCancelled` on the event stream) and recovery does not resume it; the agent has been signalled and the harness's SIGTERM/SIGKILL escalation is allowed to complete; and any process still alive afterwards is reaped by `Workflow.OrphanReaper` and is observable. "The agent is stopped" is asserted only after escalation and reaping, never at cancel time, because `Run.cancel/1` finalizes the run once it has signalled the agent.
 
 ### REQ-003: Human waits survive restart and are answered once
 
@@ -116,8 +116,8 @@ Evidence: `QuestionOpened`, `QuestionAnswered`, `QuestionExpired`, `QuestionAnsw
 
 ### REQ-004: Reconcile or block uncertain external effects
 
-Priority: Must; Complexity: High. [RISK: blindly repeating a push, PR or comment after a crash duplicates or corrupts external state.]
-Owns: effect reconciliation for run-level effects — PR create, branch push, GitHub PR comments and reviews, and task-provider state changes. Defers: the content of task work-log comments to PRD-2026-3a76a0f0.
+Priority: Must; Complexity: High. [RISK: blindly repeating a push, PR or comment after a crash duplicates or corrupts external state. Four reconcilers touch four different code paths, and the task-provider class reaches every `TaskProvider` adapter.]
+Owns: deciding whether an external effect already happened, and blocking or retrying accordingly, for PR create, branch push, GitHub PR comment/review post, and task-provider state change. Defers: authoring task work-log comments to PRD-2026-3a76a0f0; retry policy and the default-safety rule for non-idempotent work (REQ-011, REQ-012) to PRD-2026-af25d0cb.
 Evidence: keys move `started → completed | ambiguous | failed` (`idempotency/key_store.ex`); keys are written by the Overwatch runner (`jobsite/runners/overwatch.ex:131`); `CrashRecovery.has_no_side_effects?/1` checks only PR association and created worktrees, and `{:retry, :side_effects_present}` marks the key completed and **allows retry** (`idempotency/crash_recovery.ex:6`). `KeyStore` falls back to an in-process ETS table when the repo is not configured.
 
 * AC-004-1: Given a crash leaves a key ambiguous for an effect class in the enumerated set — PR create, branch push, PR comment/review post, and task-provider state change — when recovery runs, then Foreman consults external truth for that class (the existing PR, the remote branch head, the existing comment, the provider's current state) before any retry; one automated test per class proves it.
@@ -153,8 +153,8 @@ Priority: Should; Complexity: Medium. [RISK: a run starts without a harness or t
 Owns: harness and executable availability at admission. Defers: model and provider-catalog preflight to PRD-2026-44b49f94 (Locked).
 Evidence: `kickoff_preflight/1` (`run_executor.ex:424`) already runs before the task claim and the first phase; it checks provider readiness (`ReadinessCheck.installed?/1`, `run_executor.ex:825`) and models. No manifest field declares tools or skills.
 
-* AC-007-1: Given a run is admitted, when kickoff preflight runs, then it reports available and missing capabilities, with versions where obtainable, for the harness providers the workflow uses and for the executable of each `command:` phase; for `bash:` phases only the shell is checked and inner commands are not parsed.
-* AC-007-2: Given a required harness or executable is unavailable, when preflight finishes, then the run ends before the task claim, worktree creation or first phase with a typed reason naming the phase and the missing capability.
+* AC-007-1: Given a run is admitted, when kickoff preflight runs, then it reports available and missing capabilities, with versions where obtainable, for the harness providers the workflow uses and for the executable of each `command:` phase, each resolved in the environment where that phase will execute (the jobsite container for a docker jobsite, the server host for a host run) and not against the server host's PATH by default; for `bash:` phases only the shell is checked and inner commands are not parsed.
+* AC-007-2: Given a required harness or executable is unavailable, when preflight finishes, then the run ends before the task claim, worktree creation or first phase with a typed reason naming the phase, the missing capability and the backend it was checked against.
 
 ## 5. Dependencies and Exit Criteria
 
@@ -162,7 +162,7 @@ Phase 0 exits only when every row below is demonstrably met. An unmet guarantee 
 
 | Later phase | Names as its Phase 0 prerequisite | Met by |
 |---|---|---|
-| Phase 1 (PR delivery) | durable run and provenance guarantees; execution capability | REQ-002, REQ-005, REQ-006, REQ-007 |
+| Phase 1 (PR delivery) | durable run and provenance guarantees; execution capability | REQ-002, REQ-005, REQ-006 |
 | Phase 3 (idea-to-spec) | durable stage state and provenance | REQ-002, REQ-005 |
 | Phase 4 (operator interaction) | durable waits and provenance | REQ-003, REQ-005 |
 | Phase 5 (scale/memory) | measured recovery and isolation results (umbrella row) | REQ-002, REQ-006 |
@@ -210,3 +210,4 @@ For the TRD to settle: the source of the maximum-attempt setting that AC-002-6 r
 | 1.1.0 | 2026-11-08 | Split into 7 single-behavior requirements (23 ACs); added source evidence, ownership lines, later-phase prerequisite map; narrowed preflight scope. |
 | 1.1.0+ | 2026-11-08 | Split AC-003-2 into idempotent replay (AC-003-2) and different-`command_id` rejection (AC-003-3); expiry renumbered AC-003-4 (24 ACs). |
 | 1.1.1 | 2026-11-08 | Refinement: resolved all five clarification markers; added AC-002-5 (missing worktree), AC-002-6 (retry exhaustion), AC-002-7 (cancellation), AC-006-5 (host run with no policy); enumerated effect classes in AC-004-1; `command:` executables in AC-007-1 (28 ACs). Readiness 4.0 → 4.25. |
+| 1.1.2 | 2026-11-08 | Review fixes: AC-002-7 no longer asserts a synchronous agent stop (cancel finalizes at SIGINT; escalation and orphan reaping follow); AC-007-1/2 resolve executables in the phase's execution environment and name the backend; REQ-004 ownership scoped to reconciliation with retry policy deferred to PRD-2026-af25d0cb; REQ-007 (Should) removed from the Phase 1 prerequisite row; sizing note states the `scale_depth` choice. 28 ACs. |
