@@ -1,7 +1,7 @@
 ---
 document_id: PRD-2026-a804d1c7
 label: prd-phase-0-durable-execution
-version: 1.1.10
+version: 1.1.11
 status: Draft
 date: 2026-11-08
 scale_depth: STANDARD
@@ -125,8 +125,8 @@ Owns: deciding whether an external effect already happened, and blocking or retr
 Evidence: keys move `started → completed | ambiguous | failed` (`idempotency/key_store.ex`); keys are written only around agent-phase dispatch by the Overwatch runner (`jobsite/runners/overwatch.ex:131`), and `AutoPR`, `PhasePR` and `PrCreate` (which run `git push` and `gh pr create`) never reference a key, so a crash during those effects leaves no ambiguous key at all; `CrashRecovery.has_no_side_effects?/1` checks only PR association and created worktrees, and `{:retry, :side_effects_present}` marks the key completed and **allows retry** (`idempotency/crash_recovery.ex:6`). `KeyStore` falls back to an in-process ETS table when the repo is not configured.
 
 * AC-004-1: Given a crash leaves a key ambiguous for an effect class in the enumerated set — PR create, branch push, and task-provider state change (claim, complete, fail, reopen) — when recovery runs, then Foreman consults external truth for that class before any retry: the existing PR; for a push, the remote branch head, meaning the remote ref's commit SHA compared with the two SHAs recorded in the effect's intent key before the push (the remote SHA before the push and the local SHA being pushed), where equal to the pushed SHA means the push landed, equal to the pre-push SHA means it did not, and anything else is unknown; and the provider's current state. One automated test per class proves it, and the push test covers all three outcomes.
-* AC-004-2: Given reconciliation finds the effect already present or cannot establish the outcome, when recovery finishes, then the run blocks with an operator-visible reason and nothing is repeated.
-* AC-004-3: Given an ambiguous key for an effect class that has no reconciler, when recovery runs, then it fails closed (blocks) and never retries.
+* AC-004-2: Given reconciliation finds the effect already present or cannot establish the outcome, when recovery finishes, then nothing is repeated and the operator can see which effect to inspect: a run that is not terminal blocks with an operator-visible reason; a run that is already terminal cannot be blocked, so its verdict is logged and counted in telemetry, the effect key stays unresolved (`ambiguous`), and the operator health report (`foreman_doctor`) lists that key with its effect class, identity and run id.
+* AC-004-3: Given an ambiguous key for an effect class that has no reconciler, when recovery runs, then it fails closed as AC-004-2 describes (blocks a run that is not terminal; surfaces the key for a terminal run) and never retries.
 * AC-004-4: Given a production configuration with the durable key store unavailable and the ETS fallback active, when the server boots, then it reports the idempotency store as non-durable instead of claiming crash safety.
 * AC-004-5: Given an effect in the enumerated set is about to run, when it starts, then an intent key is durably recorded before the effect runs and marked completed or failed after it, so that a crash during the effect leaves an ambiguous key for recovery to reconcile; adding an effect class later requires registering its reconciler (AC-004-3).
 
@@ -188,7 +188,7 @@ The exit rule is the one at the top of this section. Phase-level retry exhaustio
 
 ## 6. Open Decisions
 
-No `[NEEDS CLARIFICATION]` markers remain. Decisions resolved in v1.1.1 (2026-11-08), as amended through v1.1.10:
+No `[NEEDS CLARIFICATION]` markers remain. Decisions resolved in v1.1.1 (2026-11-08), as amended through v1.1.11:
 
 | Decision | Resolution | Where |
 |---|---|---|
@@ -226,3 +226,4 @@ Not settled here: the phase-level maximum-attempt setting stays owned by PRD-202
 | 1.1.8 | 2026-11-08 | Closed a dangling dependency. AC-002-4, §6 and the Readiness Gate deferred the recovery-time threshold to a TRD "operating plan" that no document contained. Phase 0 now only measures, records and reports boot-to-resumed-or-blocked time and sets no threshold. 30 ACs. |
 | 1.1.9 | 2026-11-08 | Reviewer findings applied after source spot-check. AC-002-6: a run at the recovery limit is not re-armed by restart or recovery; operator `run.reset` is the one deliberate re-arm, recorded by `RunReset`. AC-002-2: attempt derived from `PhaseStarted` and `PhaseRetried` history. §3: "retry exhaustion" is "recovery re-dispatch exhaustion". Effect set: `annotate` removed from the enumerated set and recorded as deferred; state changes are claim, complete, fail, reopen. AC-004-1 defines "remote branch head" as the remote ref compared with both the pre-push remote SHA and the pushed local SHA recorded in the intent key (landed, not landed, unknown), and the push test covers all three. AC-005-3 narrowed to project-context redaction (per-chunk soundness stays with foreman-l30ao.5). AC-006-2 is a workflow-door check; AC-006-3 requires a negative read test on the docker jobsite and a `vfs_denied` event only where `VfsIsolation.allowed?/2` mediates access. REQ-006 retitled and §2 records the host workflow door as an exception to the umbrella constraint. §5 has one exit rule (all 30 ACs pass, or each failing AC is named with its engine decision), and the old exit-test list is removed; Phase 1 row adds REQ-004; Phase 5 row no longer cites an umbrella row that does not exist. §7 testability claim softened. Corrected the `{:resume_context_unresolvable, reason}` evidence and `AGENTS.md §5.7` citation. 30 ACs. |
 | 1.1.10 | 2026-11-09 | §5 exit rule: a test the default run excludes (the `:docker`-tagged tests for AC-006-3 and AC-006-4) passes when it passes in a run that includes its tag, and the decision record states how and when that run was made. Under the earlier wording those two criteria could never pass. 30 ACs. |
+| 1.1.11 | 2026-11-09 | AC-004-2 and AC-004-3 scoped to what the system can do. `run.block` is rejected for a terminal run, and a boot `reopen`'s run is usually terminal, so "the run blocks" could not hold there. A run that is not terminal still blocks with an operator-visible reason; for a terminal run the verdict is logged and counted in telemetry, the key stays `ambiguous` so nothing is repeated, and the doctor report lists the key with its class, identity and run id (the verdict itself is not stored). 30 ACs. |
