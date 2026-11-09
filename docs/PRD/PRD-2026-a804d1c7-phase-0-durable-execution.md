@@ -1,7 +1,7 @@
 ---
 document_id: PRD-2026-a804d1c7
 label: prd-phase-0-durable-execution
-version: 1.1.9
+version: 1.1.10
 status: Draft
 date: 2026-11-08
 scale_depth: STANDARD
@@ -165,7 +165,7 @@ Evidence: `kickoff_preflight/1` (`run_executor.ex:424`) already runs before the 
 
 ## 5. Dependencies and Exit Criteria
 
-Phase 0 exits when all 30 acceptance criteria pass, or each failing criterion is named in the decision record together with the resulting engine decision (AC-001-2, AC-001-3). A criterion passes only when its test passes in isolation and in the full suite. The table below maps later phases to the requirements that meet the prerequisite each one names; it adds no exit condition.
+Phase 0 exits when all 30 acceptance criteria pass, or each failing criterion is named in the decision record together with the resulting engine decision (AC-001-2, AC-001-3). A criterion passes only when its test passes in isolation and in the full suite; a test that needs an environment the default run excludes (the `:docker`-tagged tests for AC-006-3 and AC-006-4, excluded by `test_helper.exs`) counts as passing when it passes in a run that includes its tag, and the decision record states how and when that run was made. The table below maps later phases to the requirements that meet the prerequisite each one names; it adds no exit condition.
 
 | Later phase | Names as its Phase 0 prerequisite | Met by |
 |---|---|---|
@@ -225,3 +225,4 @@ Not settled here: the phase-level maximum-attempt setting stays owned by PRD-202
 | 1.1.7 | 2026-11-08 | Review corrections. §6 no longer calls the maximum-attempt question closed: the phase-level setting stays with PRD-2026-af25d0cb, and the two durable budgets (phase attempt, recovery re-dispatch) are named separately. REQ-006 states that `Environment` has a closed key set, so no project can require filesystem confinement today. 30 ACs. |
 | 1.1.8 | 2026-11-08 | Closed a dangling dependency. AC-002-4, §6 and the Readiness Gate deferred the recovery-time threshold to a TRD "operating plan" that no document contained. Phase 0 now only measures, records and reports boot-to-resumed-or-blocked time and sets no threshold. 30 ACs. |
 | 1.1.9 | 2026-11-08 | Reviewer findings applied after source spot-check. AC-002-6: a run at the recovery limit is not re-armed by restart or recovery; operator `run.reset` is the one deliberate re-arm, recorded by `RunReset`. AC-002-2: attempt derived from `PhaseStarted` and `PhaseRetried` history. §3: "retry exhaustion" is "recovery re-dispatch exhaustion". Effect set: `annotate` removed from the enumerated set and recorded as deferred; state changes are claim, complete, fail, reopen. AC-004-1 defines "remote branch head" as the remote ref compared with both the pre-push remote SHA and the pushed local SHA recorded in the intent key (landed, not landed, unknown), and the push test covers all three. AC-005-3 narrowed to project-context redaction (per-chunk soundness stays with foreman-l30ao.5). AC-006-2 is a workflow-door check; AC-006-3 requires a negative read test on the docker jobsite and a `vfs_denied` event only where `VfsIsolation.allowed?/2` mediates access. REQ-006 retitled and §2 records the host workflow door as an exception to the umbrella constraint. §5 has one exit rule (all 30 ACs pass, or each failing AC is named with its engine decision), and the old exit-test list is removed; Phase 1 row adds REQ-004; Phase 5 row no longer cites an umbrella row that does not exist. §7 testability claim softened. Corrected the `{:resume_context_unresolvable, reason}` evidence and `AGENTS.md §5.7` citation. 30 ACs. |
+| 1.1.10 | 2026-11-09 | §5 exit rule: a test the default run excludes (the `:docker`-tagged tests for AC-006-3 and AC-006-4) passes when it passes in a run that includes its tag, and the decision record states how and when that run was made. Under the earlier wording those two criteria could never pass. 30 ACs. |
