@@ -188,7 +188,7 @@ The exit rule is the one at the top of this section. Phase-level retry exhaustio
 
 ## 6. Open Decisions
 
-No `[NEEDS CLARIFICATION]` markers remain. Decisions resolved in v1.1.1 (2026-11-08), as amended in v1.1.9:
+No `[NEEDS CLARIFICATION]` markers remain. Decisions resolved in v1.1.1 (2026-11-08), as amended through v1.1.10:
 
 | Decision | Resolution | Where |
 |---|---|---|
