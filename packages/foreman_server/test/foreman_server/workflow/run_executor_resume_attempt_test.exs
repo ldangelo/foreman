@@ -20,6 +20,7 @@ defmodule ForemanServer.Workflow.RunExecutorResumeAttemptTest do
   import ExUnit.CaptureLog
 
   alias ForemanServer.{CommandGateway, Identity, Incarnation, ProjectionStore}
+  alias ForemanServer.MCP.Tools
   alias ForemanServer.EventStore, as: Store
   alias ForemanServer.TestSupport.{MeckScope, UniqueIds}
   alias ForemanServer.Workflow.{OrphanReaper, RunExecutor}
@@ -63,7 +64,8 @@ defmodule ForemanServer.Workflow.RunExecutorResumeAttemptTest do
       assert {:ok, _state} = RunExecutor.__resume_prelude_for_test__(state(ctx))
 
       # The reap ran while the phase was still on attempt 1: it precedes PhaseRetried.
-      assert_received {:reaped, "/wt/" <> _, 1}
+      wt = worktree_dir(ctx)
+      assert_received {:reaped, ^wt, 1}
       assert_attempt(ctx.run_id, 2)
       assert retried_count(ctx) == 1
 
@@ -149,6 +151,187 @@ defmodule ForemanServer.Workflow.RunExecutorResumeAttemptTest do
     end
   end
 
+  describe "resume against a real git repository (AC-002-5)" do
+    test "no worktree entry: the discard has no path and rides the resumed PhaseRetried", ctx do
+      ctx = real_repo!(ctx)
+      name = "wt-" <> ctx.run_id
+
+      log =
+        capture_log(fn ->
+          assert {:ok, state} = RunExecutor.__resume_prelude_for_test__(real_state(ctx))
+          # Carried by the retry, so cleared: nothing repeats it later.
+          refute Map.has_key?(state, :prior_worktree_discarded)
+        end)
+
+      assert log =~ name
+      assert_attempt(ctx.run_id, 2)
+
+      assert %{prior_worktree_discarded: %{name: ^name, path: nil}} = phase(ctx.run_id)
+
+      assert %{current_phase: %{index: 1, prior_worktree_discarded: %{name: ^name, path: nil}}} =
+               run_status!(ctx.run_id)
+
+      # The fresh worktree is provisioned against the real repository.
+      record = provision_worktree!(ctx)
+      assert File.dir?(record.worktree_path)
+      assert git!(record.worktree_path, ["rev-parse", "--abbrev-ref", "HEAD"]) == record.branch
+    end
+
+    test "an entry whose directory is gone while git still lists it is re-provisioned", ctx do
+      ctx = real_repo!(ctx)
+      name = "wt-" <> ctx.run_id
+
+      record = provision_worktree!(ctx)
+      path = record.worktree_path
+
+      File.write!(Path.join(path, "committed.txt"), "kept")
+      git!(path, ["add", "committed.txt"])
+      git!(path, ["commit", "--no-gpg-sign", "-m", "work", "--quiet"])
+      File.write!(Path.join(path, "uncommitted.txt"), "lost")
+
+      File.rm_rf!(path)
+      refute File.exists?(path)
+      assert listed_worktrees(ctx.repo) =~ path
+
+      state = real_state(ctx)
+
+      log =
+        capture_log(fn ->
+          assert {:ok, state} = RunExecutor.__resume_prelude_for_test__(state)
+          send(self(), {:state, state})
+        end)
+
+      assert_received {:state, state}
+
+      # Named in the warning, with the path the entry recorded.
+      assert log =~ name
+      assert log =~ path
+
+      # The entry is not rehydrated, so the run is not ended with `:run_worktree_vanished`.
+      refute Map.has_key?(state, :run_worktree)
+      refute Map.has_key?(state, :prior_worktree_discarded)
+      refute_received {:reaped, _, _}
+
+      assert_attempt(ctx.run_id, 2)
+      assert %{prior_worktree_discarded: %{name: ^name, path: ^path}} = phase(ctx.run_id)
+
+      assert %{current_phase: %{prior_worktree_discarded: %{name: ^name, path: ^path}}} =
+               run_status!(ctx.run_id)
+
+      # Git's record of the missing worktree was pruned, so provisioning succeeds.
+      refute listed_worktrees(ctx.repo) =~ path
+      assert {:ok, fresh} = RunExecutor.__ensure_run_worktree_for_test__(state, 1)
+      assert fresh.worktree_path == path
+      assert File.read!(Path.join(path, "committed.txt")) == "kept"
+      refute File.exists?(Path.join(path, "uncommitted.txt"))
+    end
+
+    test "an entry whose directory is present discards nothing", ctx do
+      ctx = real_repo!(ctx)
+      record = provision_worktree!(ctx)
+      path = record.worktree_path
+      File.write!(Path.join(path, "pending.txt"), "still here")
+
+      log =
+        capture_log(fn ->
+          assert {:ok, state} = RunExecutor.__resume_prelude_for_test__(real_state(ctx))
+          assert %{run_worktree: %{worktree_path: ^path}} = state
+          refute Map.has_key?(state, :prior_worktree_discarded)
+        end)
+
+      refute log =~ "uncommitted changes are lost"
+      assert_received {:reaped, ^path, _}
+      assert_attempt(ctx.run_id, 2)
+
+      refute Map.has_key?(phase(ctx.run_id), :prior_worktree_discarded)
+      assert %{current_phase: %{prior_worktree_discarded: nil}} = run_status!(ctx.run_id)
+      assert File.read!(Path.join(path, "pending.txt")) == "still here"
+    end
+
+    test "a later phase of the same run does not repeat the discard", ctx do
+      ctx = real_repo!(ctx)
+      state = real_state(ctx)
+
+      capture_log(fn ->
+        assert {:ok, state} = RunExecutor.__resume_prelude_for_test__(state)
+        send(self(), {:state, state})
+      end)
+
+      assert_received {:state, state}
+      assert_attempt(ctx.run_id, 2)
+
+      [_, second] = state.phase_specs
+      assert {:ok, _state, _record} = RunExecutor.phase_begin(state, second, 1)
+
+      second_phase = Enum.find(ProjectionStore.phases_for_run(ctx.run_id), &(&1.index == 2))
+      assert second_phase.status == "in_progress"
+      refute Map.has_key?(second_phase, :prior_worktree_discarded)
+      assert %{prior_worktree_discarded: %{path: nil}} = phase(ctx.run_id)
+    end
+
+    test "with no phase in flight the discard rides the PhaseStarted of the resume phase", ctx do
+      ctx = real_repo!(ctx)
+      # Phase 1 never started: undo the in-flight phase by using a second run.
+      run_id = UniqueIds.unique_run_id("resume-attempt")
+      ctx = %{ctx | run_id: run_id, phase_id: Identity.phase_id(run_id, 1)}
+      seed_run!(ctx)
+      name = "wt-" <> run_id
+
+      capture_log(fn ->
+        assert {:ok, state} = RunExecutor.__resume_prelude_for_test__(real_state(ctx))
+        assert state.prior_worktree_discarded == %{name: name, path: nil}
+        send(self(), {:state, state})
+      end)
+
+      assert_received {:state, state}
+      assert retried_count(ctx) == 0
+
+      assert {:ok, state, _record} = RunExecutor.phase_begin(state, hd(state.phase_specs), 0)
+      refute Map.has_key?(state, :prior_worktree_discarded)
+
+      assert %{status: "in_progress", attempt: 1, prior_worktree_discarded: %{name: ^name}} =
+               phase(run_id)
+    end
+  end
+
+  describe "PhaseStarted decoding" do
+    test "an event recorded before the field existed decodes with no discard" do
+      assert %ForemanServer.Events.PhaseStarted{prior_worktree_discarded: nil, attempt: 1} =
+               ForemanServer.EventCodec.decode!("PhaseStarted", %{
+                 run_id: "r1",
+                 phase_id: "p1",
+                 index: 1,
+                 name: "dev",
+                 attempt: 1,
+                 artifact_template: %{}
+               })
+    end
+
+    test "a replayed event carries the discard with string keys and folds to one shape", ctx do
+      run_id = ctx.run_id
+      phase_id = ctx.phase_id
+      seed_run!(ctx)
+
+      :ok =
+        ProjectionStore.apply_events([
+          %{
+            event_type: "PhaseStarted",
+            payload: %{
+              "run_id" => run_id,
+              "phase_id" => phase_id,
+              "index" => 1,
+              "name" => "only",
+              "attempt" => 1,
+              "artifact_template" => %{},
+              "prior_worktree_discarded" => %{"name" => "wt-x", "path" => "/gone"}
+            }
+          }
+        ])
+
+      assert %{prior_worktree_discarded: %{name: "wt-x", path: "/gone"}} = phase(run_id)
+    end
+  end
+
   # -- helpers ---------------------------------------------------------------
 
   defp state(ctx) do
@@ -176,7 +359,7 @@ defmodule ForemanServer.Workflow.RunExecutorResumeAttemptTest do
           event_type: "RunStarted",
           payload: %{
             run_id: ctx.run_id,
-            project_id: "project-#{ctx.run_id}",
+            project_id: Map.get(ctx, :project_id, "project-#{ctx.run_id}"),
             task_id: "task-#{ctx.run_id}",
             workflow_snapshot: %{}
           }
@@ -207,7 +390,13 @@ defmodule ForemanServer.Workflow.RunExecutorResumeAttemptTest do
     await(fn -> phase_status(ctx.run_id) == "in_progress" end)
   end
 
+  # The entry's directory exists, so resume reuses it; a directory that is gone is the
+  # re-provisioning case, covered against a real repository below.
+  defp worktree_dir(ctx), do: Path.join(ctx.repo, "wt")
+
   defp seed_worktree!(ctx) do
+    File.mkdir_p!(worktree_dir(ctx))
+
     :ok =
       ProjectionStore.apply_events([
         %{
@@ -218,13 +407,77 @@ defmodule ForemanServer.Workflow.RunExecutorResumeAttemptTest do
             run_id: ctx.run_id,
             phase_id: ctx.phase_id,
             repo_path: ctx.repo,
-            worktree_path: "/wt/#{ctx.run_id}",
+            worktree_path: worktree_dir(ctx),
             branch: "foreman/#{ctx.run_id}",
             base_ref: "0000000000000000000000000000000000000000",
             cleanup: "never"
           }
         }
       ])
+  end
+
+  # -- real git repository -----------------------------------------------------
+
+  # A registered project whose checkout is a real git repository, a run of it, and an
+  # in-flight phase 1. Run worktrees live under the real `~/.foreman/worktrees/<project>`,
+  # so the directory is removed on exit.
+  defp real_repo!(ctx) do
+    project_id = "proj-resume-#{System.unique_integer([:positive])}"
+    git!(ctx.repo, ["init", "--initial-branch=main", "--quiet"])
+    git!(ctx.repo, ["config", "user.email", "t@x"])
+    git!(ctx.repo, ["config", "user.name", "T"])
+    File.write!(Path.join(ctx.repo, "README.md"), "seed")
+    git!(ctx.repo, ["add", "."])
+    git!(ctx.repo, ["commit", "--no-gpg-sign", "-m", "seed", "--quiet"])
+
+    on_exit(fn ->
+      File.rm_rf(Path.join(ForemanServer.Workflow.RunWorktreeLayout.base_root(), project_id))
+    end)
+
+    :ok =
+      ProjectionStore.apply_events([
+        %{event_type: "ProjectRegistered", payload: %{project_id: project_id, path: ctx.repo}}
+      ])
+
+    ctx = Map.put(ctx, :project_id, project_id)
+    start_phase!(ctx)
+    ctx
+  end
+
+  # The executor state of a resumed run of that project: the run's base is the checkout's HEAD,
+  # and phase 1 is the resume phase.
+  defp real_state(ctx) do
+    %{
+      run_id: ctx.run_id,
+      task: %{task_id: "task-#{ctx.run_id}", project_id: ctx.project_id},
+      resuming?: true,
+      resume_from: 0,
+      phase_specs: [%{name: "only"}, %{name: "second"}],
+      worktree_spec: %{},
+      plan_context: nil,
+      artifact_base: Path.join(ctx.repo, "artifacts")
+    }
+  end
+
+  # Provisions the run's worktree through the production path (`Worktree.create/1` ->
+  # CommandGateway -> event store -> projection).
+  defp provision_worktree!(ctx) do
+    assert {:ok, record} = RunExecutor.__create_run_worktree_for_test__(real_state(ctx), 1)
+    record
+  end
+
+  defp listed_worktrees(repo), do: git!(repo, ["worktree", "list", "--porcelain"])
+
+  defp run_status!(run_id) do
+    assert {:ok, dto} = Tools.call_tool("foreman_run_status", %{run_id: run_id})
+    dto
+  end
+
+  defp git!(dir, args) do
+    case System.cmd("git", ["-C", dir | args], stderr_to_stdout: true) do
+      {out, 0} -> String.trim(out)
+      {out, code} -> flunk("git #{Enum.join(args, " ")} failed (#{code}) in #{dir}: #{out}")
+    end
   end
 
   defp phase(run_id), do: Enum.find(ProjectionStore.phases_for_run(run_id), &(&1.index == 1))
