@@ -210,7 +210,11 @@ defmodule ForemanServer.Workflow.BootReconciliation do
   @spec record_dispatch_failure(String.t(), term(), :slot_release | :waiter_remove, term()) :: :ok
   def record_dispatch_failure(run_id, reason, kind, exit_reason)
       when is_binary(run_id) and run_id != "" and kind in [:slot_release, :waiter_remove] do
-    GenServer.call(__MODULE__, {:record_dispatch_failure, run_id, reason, kind, exit_reason})
+    GenServer.call(
+      __MODULE__,
+      {:record_dispatch_failure, run_id, reason, kind, exit_reason},
+      30_000
+    )
   end
 
   @impl true

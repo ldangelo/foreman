@@ -8,6 +8,7 @@ defmodule ForemanServer.Aggregates.RunSlotsTest do
   alias ForemanServer.Events.{
     RunSlotAcquired,
     RunSlotQueued,
+    RunSlotRecoveryAttempted,
     RunSlotReleased,
     RunSlotTransferred,
     RunSlotWaiterRemoved
@@ -20,6 +21,7 @@ defmodule ForemanServer.Aggregates.RunSlotsTest do
       assert state.capacity == nil
       assert state.holders == %{}
       assert state.waiters == []
+      assert state.recovery == %{}
     end
   end
 
@@ -239,9 +241,205 @@ defmodule ForemanServer.Aggregates.RunSlotsTest do
     end
   end
 
+  describe "apply_event — RunSlotRecoveryAttempted (boot cleanup budget)" do
+    test "failed and exhausted write the entry; the latest attempt wins" do
+      state =
+        RunSlots.initial_state()
+        |> apply_acquired("run-1", 3, 100)
+        |> apply_recovery("run-1", "failed", 3, "slot_release", "exit :killed", 40)
+        |> apply_recovery("run-1", "failed", 4, "slot_release", "exit :killed", 90)
+
+      assert state.recovery == %{
+               "run-1" => %{
+                 attempt: 4,
+                 outcome: "failed",
+                 kind: "slot_release",
+                 reason: "exit :killed",
+                 elapsed_since_boot_ms: 90
+               }
+             }
+
+      exhausted = apply_recovery(state, "run-1", "exhausted", 6, "slot_release", nil, 120)
+      assert %{"run-1" => %{attempt: 6, outcome: "exhausted", reason: nil}} = exhausted.recovery
+    end
+
+    test "dispatched deletes the entry, and only that run's" do
+      state =
+        RunSlots.initial_state()
+        |> apply_acquired("run-1", 3, 100)
+        |> apply_acquired("run-2", 3, 101)
+        |> apply_recovery("run-1", "failed", 1, "slot_release", nil, 1)
+        |> apply_recovery("run-2", "failed", 2, "slot_release", nil, 2)
+        |> apply_recovery("run-1", "dispatched", 0, "slot_release", nil, 3)
+
+      assert Map.keys(state.recovery) == ["run-2"]
+    end
+
+    test "a release, a waiter removal and a transfer each take the run's entry with it" do
+      base =
+        RunSlots.initial_state()
+        |> apply_acquired("run-1", 1, 100)
+        |> apply_queued("run-2", 1, 200)
+        |> apply_queued("run-3", 2, 201)
+        |> apply_recovery("run-1", "failed", 1, "slot_release", nil, 1)
+        |> apply_recovery("run-2", "failed", 2, "waiter_remove", nil, 2)
+        |> apply_recovery("run-3", "failed", 3, "waiter_remove", nil, 3)
+
+      assert Map.keys(base.recovery) |> Enum.sort() == ["run-1", "run-2", "run-3"]
+
+      released = RunSlots.apply_event(base, %RunSlotReleased{run_id: "run-1"})
+      assert Map.keys(released.recovery) |> Enum.sort() == ["run-2", "run-3"]
+
+      removed = RunSlots.apply_event(base, %RunSlotWaiterRemoved{run_id: "run-3"})
+      assert Map.keys(removed.recovery) |> Enum.sort() == ["run-1", "run-2"]
+
+      # Transfer: the released holder's entry and the promoted waiter's entry both go.
+      transferred =
+        RunSlots.apply_event(base, %RunSlotTransferred{
+          released_run_id: "run-1",
+          acquired_run_id: "run-2",
+          acquired_at_ms: 300
+        })
+
+      assert Map.keys(transferred.recovery) == ["run-3"]
+    end
+
+    test "replay through Aggregate.load/2's RecordedEvent shape and the codec agree" do
+      data = %{
+        "run_id" => "run-1",
+        "attempt" => 2,
+        "outcome" => "failed",
+        "kind" => "waiter_remove",
+        "reason" => "exit :killed",
+        "elapsed_since_boot_ms" => 55
+      }
+
+      typed =
+        RunSlots.apply_event(
+          RunSlots.initial_state(),
+          EventCodec.decode!("RunSlotRecoveryAttempted", data)
+        )
+
+      recorded =
+        RunSlots.apply_event(
+          RunSlots.initial_state(),
+          %EventStore.RecordedEvent{event_type: "RunSlotRecoveryAttempted", data: data}
+        )
+
+      assert typed.recovery == recorded.recovery
+
+      assert typed.recovery["run-1"] == %{
+               attempt: 2,
+               outcome: "failed",
+               kind: "waiter_remove",
+               reason: "exit :killed",
+               elapsed_since_boot_ms: 55
+             }
+
+      dispatched = Map.put(data, "outcome", "dispatched")
+
+      cleared =
+        RunSlots.apply_event(
+          typed,
+          %EventStore.RecordedEvent{event_type: "RunSlotRecoveryAttempted", data: dispatched}
+        )
+
+      assert cleared.recovery == %{}
+    end
+  end
+
+  describe "handle_command — run_slots.recovery_attempt" do
+    setup do
+      %{
+        state:
+          RunSlots.initial_state()
+          |> apply_acquired("run-1", 2, 100)
+          |> apply_queued("run-2", 1, 200)
+      }
+    end
+
+    test "records a failure or exhaustion for a holder and for a waiter", %{state: state} do
+      assert {:ok,
+              %RunSlotRecoveryAttempted{
+                run_id: "run-1",
+                attempt: 6,
+                outcome: "exhausted",
+                kind: "slot_release",
+                reason: "boom",
+                elapsed_since_boot_ms: 12
+              }} =
+               recovery_command(state,
+                 run_id: "run-1",
+                 attempt: 6,
+                 outcome: "exhausted",
+                 reason: "boom"
+               )
+
+      assert {:ok, %RunSlotRecoveryAttempted{run_id: "run-2", kind: "waiter_remove"}} =
+               recovery_command(state, run_id: "run-2", kind: "waiter_remove")
+    end
+
+    test "appends nothing for a failure or exhaustion when the run no longer holds or waits", %{
+      state: state
+    } do
+      assert {:ok, nil} = recovery_command(state, run_id: "run-9")
+
+      assert {:ok, nil} =
+               recovery_command(state, run_id: "run-9", outcome: "exhausted", attempt: 6)
+    end
+
+    test "dispatched needs no membership because it follows the release", %{state: state} do
+      assert {:ok, %RunSlotRecoveryAttempted{outcome: "dispatched", attempt: 0}} =
+               recovery_command(state, run_id: "run-9", outcome: "dispatched", attempt: 0)
+    end
+
+    test "rejects invalid fields", %{state: state} do
+      for {field, value} <- [
+            run_id: "",
+            attempt: -1,
+            attempt: "1",
+            outcome: "blocked",
+            kind: "other",
+            elapsed_since_boot_ms: -5,
+            elapsed_since_boot_ms: nil,
+            reason: 42
+          ] do
+        assert {:error, {:missing_or_invalid, ^field}} =
+                 recovery_command(state, [{field, value}])
+      end
+    end
+  end
+
   # ---------------------------------------------------------------------------
   # Helpers
   # ---------------------------------------------------------------------------
+
+  defp recovery_command(state, overrides) do
+    payload =
+      Map.merge(
+        %{
+          run_id: "run-1",
+          attempt: 1,
+          outcome: "failed",
+          kind: "slot_release",
+          elapsed_since_boot_ms: 12
+        },
+        Map.new(overrides)
+      )
+
+    RunSlots.handle_command(state, %{type: "run_slots.recovery_attempt", payload: payload})
+  end
+
+  defp apply_recovery(state, run_id, outcome, attempt, kind, reason, elapsed) do
+    RunSlots.apply_event(state, %RunSlotRecoveryAttempted{
+      run_id: run_id,
+      attempt: attempt,
+      outcome: outcome,
+      kind: kind,
+      reason: reason,
+      elapsed_since_boot_ms: elapsed
+    })
+  end
 
   defp apply_acquired(state, run_id, capacity, acquired_at_ms) do
     event = %RunSlotAcquired{run_id: run_id, capacity: capacity, acquired_at_ms: acquired_at_ms}
