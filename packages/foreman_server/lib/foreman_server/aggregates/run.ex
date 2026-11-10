@@ -319,7 +319,12 @@ defmodule ForemanServer.Aggregates.Run do
         put_phase(state, payload, "timed_out")
 
       "PhaseRetried" ->
-        put_phase(state, payload, "retrying")
+        # A resumed retry keeps the phase running; any other reason is a retry in waiting.
+        put_phase(
+          state,
+          payload,
+          if(Aggregate.get(payload, :reason) == "resumed", do: "in_progress", else: "retrying")
+        )
 
       "WorkerStarted" ->
         state = put_worker(state, payload, "running")

@@ -2858,7 +2858,24 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   defp apply_event_by_type(state, "PhaseRetried", payload) do
-    touch_run_for_payload(state, payload)
+    # Only a resumed retry changes the phase entry. Retries recorded before the
+    # typed event existed carry no `reason`, so they are never decoded.
+    if get(payload, :reason) == "resumed" do
+      %ForemanServer.Events.PhaseRetried{phase_id: phase_id} =
+        event = decode_for_projection("PhaseRetried", payload)
+
+      state
+      |> touch_run_for_payload(payload)
+      |> update_existing(:phases, phase_id, "PhaseRetried", fn phase ->
+        phase
+        |> Map.put(:status, "in_progress")
+        |> Map.put(:attempt, event.attempt)
+        |> Map.put(:last_sequence, event.sequence)
+        |> Map.put(:last_event_at_ms, payload_event_at_ms(payload))
+      end)
+    else
+      touch_run_for_payload(state, payload)
+    end
   end
 
   defp apply_event_by_type(state, "TaskCreated", payload) do
