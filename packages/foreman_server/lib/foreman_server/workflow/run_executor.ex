@@ -452,8 +452,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # This function is the kickoff_ready handler that runs when all prerequisites pass.
   # `maybe_claim_task/1` (line 363) calls the TaskProvider.claim/3 before any phase work starts.
   defp handle_kickoff_ready(state) do
-    case rehydrate_resume_context(state) do
-      {:error, reason} ->
+    case resume_prelude(state) do
+      {:error, {:resume_context_unresolvable, reason}} ->
         Logger.error(
           "RunExecutor #{state.run_id} resume context unresolvable: #{inspect(reason)}",
           run_id: state.run_id,
@@ -465,25 +465,99 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
         finalize_terminal_and_stop(state, {:resume_context_unresolvable, reason})
 
+      {:error, {:resume_attempt_not_recorded, reason}} ->
+        Logger.error(
+          "RunExecutor #{state.run_id} could not record the resumed attempt: #{inspect(reason)}",
+          run_id: state.run_id,
+          task_id: task_id(state),
+          operation: "run_executor.resume",
+          outcome: "error",
+          reason: inspect(reason)
+        )
+
+        finalize_terminal_and_stop(state, {:resume_attempt_not_recorded, reason})
+
       {:ok, state} ->
-        claim_result = if state.resuming?, do: :ok, else: maybe_claim_task(state)
+        continue_kickoff(state)
+    end
+  end
 
-        case claim_result do
-          :ok ->
-            run_phases(state)
+  # Resume re-entry in order: rehydrate the worktree (which reaps orphaned
+  # agents), then record the attempt, so a `PhaseRetried` never precedes the
+  # reap. A no-op for a fresh run.
+  defp resume_prelude(state) do
+    with {:ok, state} <- tag_error(rehydrate_resume_context(state), :resume_context_unresolvable),
+         :ok <- tag_error(record_resume_attempt(state), :resume_attempt_not_recorded) do
+      {:ok, state}
+    end
+  end
 
-          {:error, reason} ->
-            Logger.warning("RunExecutor claim #{task_id(state)} failed: #{inspect(reason)}",
-              run_id: state.run_id,
-              task_id: task_id(state),
-              operation: "run_executor.task_claim",
-              outcome: "error",
-              reason: inspect(reason)
-            )
+  defp tag_error({:error, reason}, tag), do: {:error, {tag, reason}}
+  defp tag_error(other, _tag), do: other
 
-            _ = dispatch_task_execution_fail(state, {:claim_failure, reason})
-            finalize_terminal_and_stop(state, {:claim_failure, reason})
+  # A restart that finds the resume phase still `in_progress` is one more
+  # attempt at it. The Phase aggregate stamps the attempt; the command id
+  # carries the incarnation, so a repeat within one boot appends nothing while
+  # every restart appends a new `PhaseRetried`. Runs after
+  # `rehydrate_resume_context/1` so orphaned agents are already reaped.
+  defp record_resume_attempt(%{resuming?: false}), do: :ok
+
+  defp record_resume_attempt(%{resuming?: true} = state) do
+    case Enum.at(state.phase_specs, state.resume_from) do
+      nil ->
+        :ok
+
+      phase_spec ->
+        number = phase_number(phase_spec, state.resume_from)
+        phase_id = Identity.phase_id(state.run_id, number)
+
+        if phase_in_progress?(state.run_id, phase_id) do
+          dispatch_resume_retry(state.run_id, phase_id, number)
+        else
+          :ok
         end
+    end
+  end
+
+  defp phase_in_progress?(run_id, phase_id) do
+    run_id
+    |> ProjectionStore.phases_for_run()
+    |> Enum.any?(&(&1.phase_id == phase_id and &1.status == "in_progress"))
+  end
+
+  defp dispatch_resume_retry(run_id, phase_id, number) do
+    payload = %{run_id: run_id, phase_id: phase_id, index: number, reason: "resumed"}
+
+    case dispatch_system(
+           "phase.retry",
+           payload,
+           run_id,
+           "#{ForemanServer.Incarnation.id()}:#{phase_id}:#{number}",
+           "phase:#{run_id}:#{phase_id}"
+         ) do
+      {:ok, _} -> :ok
+      {:error, _} = error -> error
+    end
+  end
+
+  defp continue_kickoff(state) do
+    claim_result = if state.resuming?, do: :ok, else: maybe_claim_task(state)
+
+    case claim_result do
+      :ok ->
+        run_phases(state)
+
+      {:error, reason} ->
+        Logger.warning("RunExecutor claim #{task_id(state)} failed: #{inspect(reason)}",
+          run_id: state.run_id,
+          task_id: task_id(state),
+          operation: "run_executor.task_claim",
+          outcome: "error",
+          reason: inspect(reason)
+        )
+
+        _ = dispatch_task_execution_fail(state, {:claim_failure, reason})
+        finalize_terminal_and_stop(state, {:claim_failure, reason})
     end
   end
 
@@ -4854,6 +4928,9 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   @doc false
   def __rehydrate_resume_context_for_test__(state), do: rehydrate_resume_context(state)
+
+  @doc false
+  def __resume_prelude_for_test__(state), do: resume_prelude(state)
 
   @doc false
   def __resolve_run_repo_set_for_test__(state), do: resolve_run_repo_set(state)
