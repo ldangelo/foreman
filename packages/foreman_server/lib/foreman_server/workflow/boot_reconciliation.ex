@@ -58,17 +58,11 @@ defmodule ForemanServer.Workflow.BootReconciliation do
   @transition_comment "foreman-run-reconciled"
   @scan_retry_ms 50
   @json_schema_cache_name :foreman_server_json_schema_cache
-  # Per-orphan dispatch-attempt counter for orphan slot releases and waiter
-  # removes. The `run_slots:global` aggregate actor can be force-killed by
-  # test reset helpers or operator intervention; `release_run_slot/2` and
-  # `remove_run_slot_waiter/2` apply the same 5-restart exponential backoff
-  # used by the agent crash-recovery loop (RTE-T004 / RestartBackoff).
-  # After 5 consecutive failures the orphan is logged as BLOCKED with
-  # operator-facing telemetry so operators can intervene. Attempt counts
-  # are per-session (lost on restart, by design — this tracks consecutive
-  # dispatch failures within a boot-reconciliation cycle, mirroring the
-  # semantics in REQ-017 AC-017-5).
-  @dispatch_attempts_table :boot_recon_dispatch_attempts
+  # The boot cleanup budget of an orphaned slot holder/waiter is durable: it is
+  # a `RunSlotRecoveryAttempted` count on the `run_slots:global` stream, because
+  # the run is absent or terminal and has no aggregate to carry it. The same
+  # 5-restart backoff as the agent crash-recovery loop applies (RTE-T004 /
+  # RestartBackoff); the sixth consecutive failure records the entry `exhausted`.
   @dispatch_retry_event [:foreman_server, :workflow, :boot_reconciliation, :dispatch_retry]
   @dispatch_blocked_event [:foreman_server, :workflow, :boot_reconciliation, :dispatch_blocked]
   @spec start_link(term()) :: GenServer.on_start()
@@ -207,18 +201,20 @@ defmodule ForemanServer.Workflow.BootReconciliation do
     GenServer.cast(__MODULE__, {:run_terminated, run_id, reason})
   end
 
+  @doc """
+  Test seam, not an operator API: charge one failed cleanup dispatch to `run_id`'s durable
+  budget by running `handle_dispatch_failure/4` inside the reconciler process, exactly as a
+  caught exit from the `run_slots.release` / `run_slots.remove_waiter` dispatch would. It lets a
+  test force the failure branch without timing a kill of the `run_slots:global` actor.
+  """
+  @spec record_dispatch_failure(String.t(), term(), :slot_release | :waiter_remove, term()) :: :ok
+  def record_dispatch_failure(run_id, reason, kind, exit_reason)
+      when is_binary(run_id) and run_id != "" and kind in [:slot_release, :waiter_remove] do
+    GenServer.call(__MODULE__, {:record_dispatch_failure, run_id, reason, kind, exit_reason})
+  end
+
   @impl true
   def init(_init_arg) do
-    if :ets.whereis(@dispatch_attempts_table) == :undefined do
-      :ets.new(@dispatch_attempts_table, [
-        :set,
-        :named_table,
-        :public,
-        read_concurrency: true,
-        write_concurrency: true
-      ])
-    end
-
     {:ok,
      %{
        reconciled?: false,
@@ -237,6 +233,12 @@ defmodule ForemanServer.Workflow.BootReconciliation do
     state = run_lease_scan_or_defer(state)
     state = run_slot_scan_or_defer(state)
     {:noreply, %{state | reconciled?: true}}
+  end
+
+  @impl true
+  def handle_call({:record_dispatch_failure, run_id, reason, kind, exit_reason}, _from, state) do
+    handle_dispatch_failure(run_id, reason, kind, exit_reason)
+    {:reply, :ok, state}
   end
 
   @impl true
@@ -328,12 +330,6 @@ defmodule ForemanServer.Workflow.BootReconciliation do
         after
           200 -> :ok
         end
-    end
-
-    :ok
-
-    if :ets.whereis(@dispatch_attempts_table) != :undefined do
-      :ets.delete(@dispatch_attempts_table)
     end
 
     :ok
@@ -809,27 +805,74 @@ defmodule ForemanServer.Workflow.BootReconciliation do
     else
       holders_dropped =
         Enum.count(state.holders, fn {run_id, _holder} ->
-          if run_absent_or_terminal?(run_id) do
-            Logger.warning("BootReconciliation: dropping orphan slot holder #{run_id}")
-            release_run_slot(run_id, :boot_orphan_holder)
-            true
-          else
-            false
+          cond do
+            not run_absent_or_terminal?(run_id) ->
+              false
+
+            skip_exhausted?(state, run_id) ->
+              false
+
+            true ->
+              Logger.warning("BootReconciliation: dropping orphan slot holder #{run_id}")
+              release_run_slot(run_id, :boot_orphan_holder, Map.has_key?(state.recovery, run_id))
+              true
           end
         end)
 
       waiters_dropped =
         Enum.count(state.waiters, fn waiter ->
-          if waiter_run_absent_or_terminal?(waiter.run_id) do
-            Logger.warning("BootReconciliation: removing orphan waiter #{waiter.run_id}")
-            remove_run_slot_waiter(waiter.run_id, :boot_orphan_waiter)
-            true
-          else
-            false
+          cond do
+            not waiter_run_absent_or_terminal?(waiter.run_id) ->
+              false
+
+            skip_exhausted?(state, waiter.run_id) ->
+              false
+
+            true ->
+              Logger.warning("BootReconciliation: removing orphan waiter #{waiter.run_id}")
+
+              remove_run_slot_waiter(
+                waiter.run_id,
+                :boot_orphan_waiter,
+                Map.has_key?(state.recovery, waiter.run_id)
+              )
+
+              true
           end
         end)
 
       Telemetry.run_slots_reconciled(holders_dropped, waiters_dropped, :boot)
+    end
+  end
+
+  # An entry that reached the cleanup limit stays in the stream and is not
+  # re-dispatched with a fresh budget; it is logged, emitted as skipped, and
+  # listed in `queue_status/0`. Only its holder or waiter leaving by another
+  # route (the Dispatcher's terminal release, the periodic sweep) removes it.
+  defp skip_exhausted?(state, run_id) do
+    case Map.get(state.recovery, run_id) do
+      %{outcome: "exhausted"} = entry ->
+        Logger.error(
+          "BootReconciliation: orphan slot entry #{run_id} (#{entry.kind}) is exhausted " <>
+            "after #{entry.attempt} failed cleanups; skipping. Operator intervention required."
+        )
+
+        :telemetry.execute(
+          @dispatch_blocked_event,
+          %{count: 1},
+          %{
+            run_id: run_id,
+            kind: entry.kind,
+            attempts: entry.attempt,
+            exit_reason: entry.reason,
+            skipped: true
+          }
+        )
+
+        true
+
+      _ ->
+        false
     end
   end
 
@@ -842,7 +885,7 @@ defmodule ForemanServer.Workflow.BootReconciliation do
 
   defp waiter_run_absent_or_terminal?(run_id), do: run_absent_or_terminal?(run_id)
 
-  defp release_run_slot(run_id, reason) when is_binary(run_id) and run_id != "" do
+  defp release_run_slot(run_id, reason, recorded?) when is_binary(run_id) and run_id != "" do
     ms = System.system_time(:millisecond)
 
     result =
@@ -868,20 +911,21 @@ defmodule ForemanServer.Workflow.BootReconciliation do
         # `:killed` and terminates BootReconciliation, which cascades up to
         # `:foreman_server` shutting down. Apply the 5-restart exponential
         # backoff (RTE-T004 / RestartBackoff); after the limit the orphan is
-        # logged as BLOCKED for operator intervention.
+        # recorded `exhausted` and skipped by later boots.
         :exit, exit_reason ->
           handle_dispatch_failure(run_id, reason, :slot_release, exit_reason)
           :failed
       end
 
-    if result == :ok do
-      reset_dispatch_attempt(run_id)
+    if result == :ok and recorded? do
+      record_recovery(run_id, 0, "dispatched", :slot_release, nil)
     end
 
     :ok
   end
 
-  defp remove_run_slot_waiter(run_id, reason) when is_binary(run_id) and run_id != "" do
+  defp remove_run_slot_waiter(run_id, reason, recorded?)
+       when is_binary(run_id) and run_id != "" do
     ms = System.system_time(:millisecond)
 
     result =
@@ -905,8 +949,8 @@ defmodule ForemanServer.Workflow.BootReconciliation do
           :failed
       end
 
-    if result == :ok do
-      reset_dispatch_attempt(run_id)
+    if result == :ok and recorded? do
+      record_recovery(run_id, 0, "dispatched", :waiter_remove, nil)
     end
 
     :ok
@@ -1287,12 +1331,13 @@ defmodule ForemanServer.Workflow.BootReconciliation do
     Process.send_after(self(), :scan_orphans, @scan_retry_ms)
   end
 
-  # Bump the per-orphan dispatch attempt counter and apply the 5-restart
-  # backoff (RTE-T004). Returns the attempt number that just completed.
-  # On success of the next dispatch, `reset_dispatch_attempt/1` clears the
-  # counter so transient failures don't accumulate forever.
+  # Charge one failed cleanup dispatch to the run's durable budget (TRD-003) and
+  # apply the 5-restart backoff (RTE-T004). The count is read from the
+  # `run_slots:global` state and appended as `RunSlotRecoveryAttempted`: the
+  # run is absent or terminal here, so it has no aggregate that could carry it.
+  # A successful dispatch appends `dispatched` after a recorded failure.
   defp handle_dispatch_failure(run_id, reason, kind, exit_reason) do
-    attempt = bump_dispatch_attempt(run_id)
+    attempt = recorded_attempt(run_id) + 1
 
     case RestartBackoff.next_attempt(attempt) do
       {:retry, delay_ms} ->
@@ -1306,6 +1351,8 @@ defmodule ForemanServer.Workflow.BootReconciliation do
           %{count: 1},
           %{run_id: run_id, kind: kind, attempt: attempt, exit_reason: inspect(exit_reason)}
         )
+
+        record_recovery(run_id, attempt, "failed", kind, inspect(exit_reason))
 
       {:blocked, :max_attempts_exceeded} ->
         Logger.error(
@@ -1326,18 +1373,58 @@ defmodule ForemanServer.Workflow.BootReconciliation do
           }
         )
 
-        # Drop the counter so a later manual recovery does not start with
-        # a stale attempt count.
-        reset_dispatch_attempt(run_id)
+        # The entry stays in the stream as `exhausted`; boot skips it from now on.
+        record_recovery(run_id, attempt, "exhausted", kind, inspect(exit_reason))
     end
   end
 
-  defp bump_dispatch_attempt(run_id) do
-    :ets.update_counter(@dispatch_attempts_table, run_id, 1, {run_id, 0})
+  defp recorded_attempt(run_id) do
+    {state, _version} = Aggregate.load(RunSlots, "run_slots:global")
+
+    case Map.get(state.recovery, run_id) do
+      %{attempt: attempt} when is_integer(attempt) -> attempt
+      nil -> 0
+    end
   end
 
-  defp reset_dispatch_attempt(run_id) do
-    :ets.delete(@dispatch_attempts_table, run_id)
+  # Append one `RunSlotRecoveryAttempted`. A dead `run_slots:global` actor makes
+  # the append exit; that is logged and not counted, and the reconciler stays up.
+  defp record_recovery(run_id, attempt, outcome, kind, detail) do
+    ms = System.system_time(:millisecond)
+
+    command = %{
+      type: "run_slots.recovery_attempt",
+      command_id: "foreman:boot-slot-recovery:#{run_id}:#{outcome}:#{attempt}:#{ms}",
+      aggregate_id: "run_slots:global",
+      payload: %{
+        run_id: run_id,
+        attempt: attempt,
+        outcome: outcome,
+        kind: Atom.to_string(kind),
+        reason: detail,
+        elapsed_since_boot_ms: System.monotonic_time(:millisecond) - Incarnation.started_at_ms()
+      }
+    }
+
+    try do
+      case CommandGateway.dispatch_system(command) do
+        {:error, error} ->
+          Logger.error(
+            "BootReconciliation: recovery record #{outcome} for #{run_id} rejected: " <>
+              inspect(error)
+          )
+
+        _ ->
+          :ok
+      end
+    catch
+      :exit, exit_reason ->
+        Logger.error(
+          "BootReconciliation: recovery record #{outcome} for #{run_id} not written: " <>
+            inspect(exit_reason)
+        )
+    end
+
     :ok
   end
 

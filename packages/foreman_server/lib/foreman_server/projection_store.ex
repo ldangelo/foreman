@@ -111,6 +111,13 @@ defmodule ForemanServer.ProjectionStore do
     }
   end
 
+  defp drop_recovery(slots, run_ids) do
+    case Map.get(slots, :recovery) do
+      nil -> slots
+      recovery -> Map.put(slots, :recovery, Map.drop(recovery, run_ids))
+    end
+  end
+
   @doc "Return the active run ids."
   @spec active_runs() :: [String.t()]
   def active_runs do
@@ -1099,11 +1106,16 @@ defmodule ForemanServer.ProjectionStore do
     GenServer.call(__MODULE__, :list_scheduler_intents)
   end
 
-  @doc "Return the current run-slot queue status: capacity, running run ids, and waiting run ids in FIFO order."
+  @doc """
+  Return the current run-slot queue status: capacity, running run ids, waiting run ids in FIFO
+  order, and `orphan_recovery`, the boot cleanup budget entries of orphaned slot holders/waiters
+  (`%{run_id, kind, attempt, outcome, reason, elapsed_since_boot_ms}`; empty when none).
+  """
   @spec queue_status() :: %{
           capacity: non_neg_integer(),
           running: [String.t()],
-          waiting: [String.t()]
+          waiting: [String.t()],
+          orphan_recovery: [map()]
         }
   def queue_status do
     GenServer.call(__MODULE__, :queue_status)
@@ -1690,10 +1702,17 @@ defmodule ForemanServer.ProjectionStore do
   def handle_call(:queue_status, _from, state) do
     %{capacity: capacity, holders: holders, waiters: waiters} = state.run_slots
 
+    orphan_recovery =
+      state.run_slots
+      |> Map.get(:recovery, %{})
+      |> Enum.map(fn {run_id, entry} -> Map.put(entry, :run_id, run_id) end)
+      |> Enum.sort_by(& &1.run_id)
+
     reply = %{
       capacity: capacity,
       running: Map.keys(holders),
-      waiting: Enum.map(waiters, & &1.run_id)
+      waiting: Enum.map(waiters, & &1.run_id),
+      orphan_recovery: orphan_recovery
     }
 
     {:reply, reply, state}
@@ -3724,7 +3743,7 @@ defmodule ForemanServer.ProjectionStore do
 
     if valid_id?(run_id) do
       Map.update!(state, :run_slots, fn slots ->
-        %{slots | holders: Map.delete(slots.holders, run_id)}
+        %{slots | holders: Map.delete(slots.holders, run_id)} |> drop_recovery([run_id])
       end)
     else
       state
@@ -3746,6 +3765,7 @@ defmodule ForemanServer.ProjectionStore do
         new_waiters = Enum.reject(slots.waiters, &(&1.run_id == acquired_run_id))
 
         %{slots | holders: new_holders, waiters: new_waiters}
+        |> drop_recovery([released_run_id, acquired_run_id])
       end)
     else
       state
@@ -3757,7 +3777,40 @@ defmodule ForemanServer.ProjectionStore do
 
     if valid_id?(run_id) do
       Map.update!(state, :run_slots, fn slots ->
-        %{slots | waiters: Enum.reject(slots.waiters, &(&1.run_id == run_id))}
+        slots
+        |> Map.put(:waiters, Enum.reject(slots.waiters, &(&1.run_id == run_id)))
+        |> drop_recovery([run_id])
+      end)
+    else
+      state
+    end
+  end
+
+  # Boot cleanup budget of an orphan slot entry (TRD-003). Read and written with
+  # Map.get/Map.put: tests replace `run_slots` with a map that has no `recovery` key.
+  defp apply_event_by_type(state, "RunSlotRecoveryAttempted", payload) do
+    run_id = get(payload, :run_id)
+
+    if valid_id?(run_id) do
+      Map.update!(state, :run_slots, fn slots ->
+        recovery = Map.get(slots, :recovery, %{})
+
+        recovery =
+          case get(payload, :outcome) do
+            "dispatched" ->
+              Map.delete(recovery, run_id)
+
+            outcome ->
+              Map.put(recovery, run_id, %{
+                attempt: get(payload, :attempt),
+                outcome: outcome,
+                kind: get(payload, :kind),
+                reason: get(payload, :reason),
+                elapsed_since_boot_ms: get(payload, :elapsed_since_boot_ms)
+              })
+          end
+
+        Map.put(slots, :recovery, recovery)
       end)
     else
       state
