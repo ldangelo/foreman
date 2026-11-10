@@ -70,6 +70,51 @@ defmodule ForemanServer.ProjectionStoreTest do
     assert %{project_id: ^project_id} = ProjectionStore.project(project_id)
   end
 
+  test "a resumed PhaseRetried keeps the phase in_progress and advances attempt; others do not" do
+    suffix = System.unique_integer([:positive])
+    run_id = "run-retry-#{suffix}"
+    phase_id = "phase-retry-#{suffix}"
+
+    started = %{
+      event_type: "PhaseStarted",
+      payload: %{
+        phase_id: phase_id,
+        run_id: run_id,
+        index: 1,
+        name: "dev",
+        attempt: 1,
+        artifact_template: "t"
+      }
+    }
+
+    retried = fn reason, attempt ->
+      %{
+        event_type: "PhaseRetried",
+        payload: %{
+          phase_id: phase_id,
+          run_id: run_id,
+          index: 1,
+          attempt: attempt,
+          reason: reason
+        }
+      }
+    end
+
+    assert :ok = ProjectionStore.apply_events([started, retried.("failed", 2)])
+    assert %{status: "in_progress", attempt: 1} = ProjectionStore.phase_projection(phase_id)
+
+    assert :ok = ProjectionStore.apply_events([retried.("resumed", 2)])
+    assert %{status: "in_progress", attempt: 2} = ProjectionStore.phase_projection(phase_id)
+
+    # A retry recorded before the typed event existed is tolerated and changes nothing.
+    assert :ok =
+             ProjectionStore.apply_events([
+               %{event_type: "PhaseRetried", payload: %{phase_id: phase_id, run_id: run_id}}
+             ])
+
+    assert %{status: "in_progress", attempt: 2} = ProjectionStore.phase_projection(phase_id)
+  end
+
   test "projects are registered and updated from state.projects" do
     project_id = "project-1"
 

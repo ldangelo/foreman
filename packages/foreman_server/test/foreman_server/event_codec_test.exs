@@ -297,6 +297,46 @@ defmodule ForemanServer.EventCodecTest do
     end
   end
 
+  describe "PhaseRetried" do
+    test "round-trips through the codec, with the optional field defaulting to nil" do
+      data = %{run_id: "r1", phase_id: "p1", index: 2, attempt: 3, reason: "resumed"}
+
+      assert %ForemanServer.Events.PhaseRetried{
+               run_id: "r1",
+               phase_id: "p1",
+               index: 2,
+               attempt: 3,
+               reason: "resumed",
+               prior_worktree_discarded: nil
+             } = decoded = EventCodec.decode!("PhaseRetried", data)
+
+      assert EventCodec.decode!("PhaseRetried", decoded) == decoded
+
+      assert EventCodec.decode!("PhaseRetried", Map.new(data, fn {k, v} -> {"#{k}", v} end)) ==
+               decoded
+
+      assert "PhaseRetried" in EventCodec.registered()
+    end
+
+    test "rejects a payload missing an enforced key" do
+      assert_raise ArgumentError, ~r/missing enforced keys/, fn ->
+        EventCodec.decode!("PhaseRetried", %{run_id: "r1", phase_id: "p1"})
+      end
+    end
+
+    test "a stream recorded before the event existed still decodes unchanged" do
+      assert %ForemanServer.Events.PhaseStarted{attempt: 1} =
+               EventCodec.decode!("PhaseStarted", %{
+                 run_id: "r1",
+                 phase_id: "p1",
+                 index: 1,
+                 name: "dev",
+                 attempt: 1,
+                 artifact_template: "t"
+               })
+    end
+  end
+
   describe "decode_recorded!/1" do
     test "decodes a RecordedEvent-shaped map" do
       recorded = %{event_type: "WorkerUnresponsive", data: %{worker_id: "w1", run_id: "r1"}}

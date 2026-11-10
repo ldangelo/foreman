@@ -47,6 +47,36 @@ defmodule ForemanServer.Aggregates.RunTest do
     assert state.terminal? == false
   end
 
+  test "PhaseRetried folds to in_progress for a resumed retry and retrying for any other reason" do
+    started =
+      Run.apply_event(Run.initial_state(), %{
+        event_type: "PhaseStarted",
+        payload: %{run_id: "run-r", phase_id: "p1", index: 1, attempt: 1}
+      })
+
+    retried = fn reason ->
+      Run.apply_event(started, %{
+        event_type: "PhaseRetried",
+        payload: %{run_id: "run-r", phase_id: "p1", index: 1, attempt: 2, reason: reason}
+      })
+    end
+
+    resumed = retried.("resumed").phase_status["p1"]
+    assert resumed.status == "in_progress"
+    assert Aggregate.get(resumed.metadata, :attempt) == 2
+
+    assert retried.("failed").phase_status["p1"].status == "retrying"
+
+    # A retry recorded before the typed event existed has no reason at all.
+    legacy =
+      Run.apply_event(started, %{
+        event_type: "PhaseRetried",
+        payload: %{run_id: "run-r", phase_id: "p1"}
+      })
+
+    assert legacy.phase_status["p1"].status == "retrying"
+  end
+
   test "WorkerStarted transitions awaiting_worker → in_progress" do
     run_id = "run-worker-started-#{uuid()}"
 
