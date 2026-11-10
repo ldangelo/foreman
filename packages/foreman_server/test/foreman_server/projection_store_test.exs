@@ -115,6 +115,56 @@ defmodule ForemanServer.ProjectionStoreTest do
     assert %{status: "in_progress", attempt: 2} = ProjectionStore.phase_projection(phase_id)
   end
 
+  test "RunRecoveryAttempted folds into run.recovery as the latest record; a stream without one has none" do
+    run_id = "run-recovery-#{System.unique_integer([:positive])}"
+
+    started = %{
+      event_type: "RunStarted",
+      payload: %{run_id: run_id, project_id: "p", task_id: "t", workflow_snapshot: %{}}
+    }
+
+    assert :ok = ProjectionStore.apply_events([started])
+    refute Map.has_key?(ProjectionStore.run(run_id), :recovery)
+
+    recorded = fn payload ->
+      %{
+        event_type: "RunRecoveryAttempted",
+        payload: Map.merge(%{run_id: run_id, elapsed_since_boot_ms: 700}, payload)
+      }
+    end
+
+    assert :ok = ProjectionStore.apply_events([recorded.(%{outcome: "resumed"})])
+
+    assert ProjectionStore.run(run_id).recovery == %{
+             outcome: "resumed",
+             elapsed_since_boot_ms: 700
+           }
+
+    # A replayed event carries string keys and folds to the same shape; the latest wins.
+    assert :ok =
+             ProjectionStore.apply_events([
+               %{
+                 event_type: "RunRecoveryAttempted",
+                 payload: %{
+                   "run_id" => run_id,
+                   "outcome" => "effect_blocked",
+                   "elapsed_since_boot_ms" => 900,
+                   "effect_class" => "push",
+                   "effect_key" => "k",
+                   "effect_verdict" => "unknown"
+                 }
+               }
+             ])
+
+    assert ProjectionStore.run(run_id).recovery == %{
+             outcome: "effect_blocked",
+             elapsed_since_boot_ms: 900,
+             effect_class: "push",
+             effect_key: "k",
+             effect_verdict: "unknown"
+           }
+  end
+
   test "projects are registered and updated from state.projects" do
     project_id = "project-1"
 

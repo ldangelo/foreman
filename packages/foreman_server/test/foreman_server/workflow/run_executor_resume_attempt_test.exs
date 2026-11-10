@@ -20,6 +20,7 @@ defmodule ForemanServer.Workflow.RunExecutorResumeAttemptTest do
   import ExUnit.CaptureLog
 
   alias ForemanServer.{CommandGateway, Identity, Incarnation, ProjectionStore}
+  alias ForemanServer.Aggregate.Actor
   alias ForemanServer.MCP.Tools
   alias ForemanServer.EventStore, as: Store
   alias ForemanServer.TestSupport.{MeckScope, UniqueIds}
@@ -53,7 +54,24 @@ defmodule ForemanServer.Workflow.RunExecutorResumeAttemptTest do
       {:ok, []}
     end)
 
-    %{run_id: run_id, repo: repo, phase_id: Identity.phase_id(run_id, 1)}
+    ForemanServer.TestSupport.RunSlotsReset.reset!()
+    project_id = "project-resume-run-#{System.unique_integer([:positive])}"
+
+    {:ok, _} =
+      ForemanServer.CommandRouter.dispatch(%{
+        type: "project.register",
+        payload: %{project_id: project_id, path: repo},
+        aggregate_id: "project:#{project_id}"
+      })
+
+    admit_run!(project_id, run_id)
+
+    %{
+      run_id: run_id,
+      repo: repo,
+      phase_id: Identity.phase_id(run_id, 1),
+      admission_project_id: project_id
+    }
   end
 
   describe "resume of an in-flight phase" do
@@ -148,6 +166,110 @@ defmodule ForemanServer.Workflow.RunExecutorResumeAttemptTest do
 
       assert retried_count(ctx) == 0
       assert_attempt(ctx.run_id, 1)
+    end
+  end
+
+  describe "run recovery record (AC-002-4)" do
+    setup ctx do
+      handler = "resumed-#{ctx.run_id}"
+      parent = self()
+
+      :telemetry.attach(
+        handler,
+        [:foreman_server, :workflow, :run_executor, :resumed],
+        fn _event, measurements, metadata, _ ->
+          send(parent, {:resumed_telemetry, measurements, metadata})
+        end,
+        nil
+      )
+
+      on_exit(fn -> :telemetry.detach(handler) end)
+      :ok
+    end
+
+    test "a resumed run records one `resumed` with the monotonic time since boot, reported once",
+         ctx do
+      start_phase!(ctx)
+      before_ms = System.monotonic_time(:millisecond)
+
+      assert {:ok, _} = RunExecutor.__resume_prelude_for_test__(state(ctx))
+
+      after_ms = System.monotonic_time(:millisecond)
+      await(fn -> recovery(ctx.run_id) != nil end)
+
+      assert %{outcome: "resumed", elapsed_since_boot_ms: elapsed} = recovery(ctx.run_id)
+      # A monotonic difference against the application start, never a wall clock.
+      assert elapsed >= before_ms - Incarnation.started_at_ms()
+      assert elapsed <= after_ms - Incarnation.started_at_ms()
+      assert recovery_events(ctx) == 1
+      assert_received {:resumed_telemetry, %{elapsed_since_boot_ms: ^elapsed}, %{run_id: run_id}}
+      assert run_id == ctx.run_id
+
+      assert %{recovery: %{outcome: "resumed", elapsed_since_boot_ms: ^elapsed}} =
+               run_status!(ctx.run_id)
+
+      # The same resume again in this boot: one record, one telemetry event, and the
+      # command id (workflow:executor:run.recovery_attempt:<run>:<incarnation>) is answered
+      # as a replay.
+      assert {:ok, _} = RunExecutor.__resume_prelude_for_test__(state(ctx))
+      assert recovery_events(ctx) == 1
+      refute_received {:resumed_telemetry, _, _}
+
+      assert {:ok, answer} =
+               CommandGateway.dispatch_system(%{
+                 type: "run.recovery_attempt",
+                 command_id:
+                   "workflow:executor:run.recovery_attempt:#{ctx.run_id}:#{Incarnation.id()}",
+                 aggregate_id: "run:#{ctx.run_id}",
+                 payload: %{run_id: ctx.run_id, outcome: "resumed", elapsed_since_boot_ms: 1}
+               })
+
+      assert Actor.replayed?(answer)
+      assert recovery_events(ctx) == 1
+    end
+
+    test "a new boot records a second `resumed`", ctx do
+      start_phase!(ctx)
+
+      assert {:ok, _} = RunExecutor.__resume_prelude_for_test__(state(ctx))
+      await(fn -> recovery(ctx.run_id) != nil end)
+      first = recovery(ctx.run_id).elapsed_since_boot_ms
+
+      :persistent_term.erase(@incarnation_key)
+
+      assert {:ok, _} = RunExecutor.__resume_prelude_for_test__(state(ctx))
+
+      assert recovery_events(ctx) == 2
+      assert %{outcome: "resumed", elapsed_since_boot_ms: second} = recovery(ctx.run_id)
+      assert is_integer(first) and is_integer(second)
+    end
+
+    test "a resume records even when no phase is in flight; a run that is not resumed has none",
+         ctx do
+      assert {:ok, _} = RunExecutor.__resume_prelude_for_test__(%{state(ctx) | resuming?: false})
+      assert recovery_events(ctx) == 0
+      refute Map.has_key?(ProjectionStore.run(ctx.run_id), :recovery)
+      assert %{recovery: nil} = run_status!(ctx.run_id)
+
+      assert {:ok, _} = RunExecutor.__resume_prelude_for_test__(state(ctx))
+
+      assert recovery_events(ctx) == 1
+      assert retried_count(ctx) == 0
+    end
+
+    test "a terminal run cannot record recovery: the resume stops and appends nothing", ctx do
+      {:ok, _} =
+        CommandGateway.dispatch_system(%{
+          type: "run.fail",
+          command_id: "test:fail:#{ctx.run_id}",
+          aggregate_id: "run:#{ctx.run_id}",
+          payload: %{run_id: ctx.run_id, reason: "boom"}
+        })
+
+      assert {:error, {:resume_attempt_not_recorded, {:run_terminal, "failed"}}} =
+               RunExecutor.__resume_prelude_for_test__(state(ctx))
+
+      assert recovery_events(ctx) == 0
     end
   end
 
@@ -274,6 +396,7 @@ defmodule ForemanServer.Workflow.RunExecutorResumeAttemptTest do
       # Phase 1 never started: undo the in-flight phase by using a second run.
       run_id = UniqueIds.unique_run_id("resume-attempt")
       ctx = %{ctx | run_id: run_id, phase_id: Identity.phase_id(run_id, 1)}
+      admit_run!(ctx.admission_project_id, run_id)
       seed_run!(ctx)
       name = "wt-" <> run_id
 
@@ -348,6 +471,20 @@ defmodule ForemanServer.Workflow.RunExecutorResumeAttemptTest do
         "implementation_key" => "test-key"
       }
     }
+  end
+
+  # The run's own stream, through the production admission path: the
+  # `run.recovery_attempt` command needs a run that exists.
+  defp admit_run!(project_id, run_id) do
+    {:ok, _} =
+      ForemanServer.RunAdmission.start(project_id, %{
+        run_id: run_id,
+        task_id: "task-#{run_id}",
+        workflow_snapshot: %{phases: []},
+        phase_specs: []
+      })
+
+    :ok
   end
 
   defp aggregate_id(ctx), do: "phase:#{ctx.run_id}:#{ctx.phase_id}"
@@ -487,6 +624,15 @@ defmodule ForemanServer.Workflow.RunExecutorResumeAttemptTest do
   defp retried_count(ctx) do
     case Store.read_stream_forward(aggregate_id(ctx), 0, 50) do
       {:ok, events} -> Enum.count(events, &(&1.event_type == "PhaseRetried"))
+      {:error, :stream_not_found} -> 0
+    end
+  end
+
+  defp recovery(run_id), do: Map.get(ProjectionStore.run(run_id), :recovery)
+
+  defp recovery_events(ctx) do
+    case Store.read_stream_forward("run:#{ctx.run_id}", 0, 100) do
+      {:ok, events} -> Enum.count(events, &(&1.event_type == "RunRecoveryAttempted"))
       {:error, :stream_not_found} -> 0
     end
   end

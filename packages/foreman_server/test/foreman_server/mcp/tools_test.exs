@@ -278,6 +278,7 @@ defmodule ForemanServer.MCP.ToolsTest do
                :project_id,
                :provider_session_id,
                :provider_sessions,
+               :recovery,
                :run_id,
                :started_at_ms,
                :status,
