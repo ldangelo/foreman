@@ -43,7 +43,8 @@ defmodule ForemanServer.MCP.Tools do
             latest_stall: map() | nil,
             provider_session_id: String.t() | nil,
             provider_sessions: [map()],
-            usage: ForemanServer.Usage.t() | nil
+            usage: ForemanServer.Usage.t() | nil,
+            recovery: map() | nil
           }
     @derive Jason.Encoder
     defstruct [
@@ -60,6 +61,7 @@ defmodule ForemanServer.MCP.Tools do
       :latest_stall,
       :provider_session_id,
       :usage,
+      :recovery,
       provider_sessions: []
     ]
   end
@@ -3527,7 +3529,8 @@ defmodule ForemanServer.MCP.Tools do
       latest_stall: Map.get(run, :latest_stall),
       provider_session_id: Map.get(run, :provider_session_id),
       provider_sessions: Map.get(run, :provider_sessions) || [],
-      usage: Map.get(run, :usage)
+      usage: Map.get(run, :usage),
+      recovery: Map.get(run, :recovery)
     }
   end
 

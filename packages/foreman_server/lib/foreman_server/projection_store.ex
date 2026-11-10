@@ -2793,6 +2793,24 @@ defmodule ForemanServer.ProjectionStore do
     end)
   end
 
+  # The latest recovery record of the run (`run.recovery`). Effect fields exist
+  # only on the two effect outcomes, so an absent one is left out.
+  defp apply_event_by_type(state, "RunRecoveryAttempted", payload) do
+    %ForemanServer.Events.RunRecoveryAttempted{run_id: run_id} =
+      event = decode_for_projection("RunRecoveryAttempted", payload)
+
+    update_run_projection(state, run_id, payload_event_at_ms(payload), fn run ->
+      recovery =
+        %{outcome: event.outcome, elapsed_since_boot_ms: event.elapsed_since_boot_ms}
+        |> maybe_put(:reason, event.reason)
+        |> maybe_put(:effect_class, event.effect_class)
+        |> maybe_put(:effect_key, event.effect_key)
+        |> maybe_put(:effect_verdict, event.effect_verdict)
+
+      Map.put(run, :recovery, recovery)
+    end)
+  end
+
   defp apply_event_by_type(state, "PhaseStarted", payload) do
     case decode_for_projection("PhaseStarted", payload) do
       %ForemanServer.Events.PhaseStarted{phase_id: phase_id, run_id: run_id} = event

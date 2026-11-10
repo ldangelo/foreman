@@ -68,6 +68,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
   alias ForemanServer.Agents.VfsIsolation
   alias ForemanServer.TaskProvider.Telemetry, as: TaskProviderTelemetry
   alias ForemanServer.TaskProvider.Registry, as: TaskProviderRegistry
+  alias ForemanServer.Aggregate.Actor
+  alias ForemanServer.Incarnation
   alias ForemanServer.Workflow.OrphanReaper
   alias ForemanServer.Workflow.Worktree
   alias ForemanServer.Workflow.RepoPr
@@ -84,6 +86,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
     "fix" => MapSet.new(~w(fix))
   }
   @claim_lost_event [:foreman_server, :task_provider, :claim, :lost]
+  @resumed_event [:foreman_server, :workflow, :run_executor, :resumed]
   @type state :: %{
           task: map(),
           phase_specs: [map()],
@@ -483,10 +486,11 @@ defmodule ForemanServer.Workflow.RunExecutor do
   end
 
   # Resume re-entry in order: rehydrate the worktree (which reaps orphaned
-  # agents), then record the attempt, so a `PhaseRetried` never precedes the
-  # reap. A no-op for a fresh run.
+  # agents), record the run's recovery, then record the phase attempt, so
+  # neither record precedes the reap. A no-op for a fresh run.
   defp resume_prelude(state) do
     with {:ok, state} <- tag_error(rehydrate_resume_context(state), :resume_context_unresolvable),
+         :ok <- tag_error(record_run_recovery(state), :resume_attempt_not_recorded),
          {:ok, state} <- tag_error(record_resume_attempt(state), :resume_attempt_not_recorded) do
       {:ok, state}
     end
@@ -556,6 +560,42 @@ defmodule ForemanServer.Workflow.RunExecutor do
     case Map.get(state, :prior_worktree_discarded) do
       nil -> payload
       discard -> Map.put(payload, :prior_worktree_discarded, discard)
+    end
+  end
+
+  # Every resume, a restart's or an operator's `run.resume` (`resuming?` cannot
+  # tell them apart), records its own time since boot on the run. The command id
+  # carries the incarnation, so a repeat within one boot appends nothing and a
+  # new boot appends one more. The time is only measured and reported
+  # (`run.recovery`, telemetry); nothing fails the run on it.
+  defp record_run_recovery(%{resuming?: false}), do: :ok
+
+  defp record_run_recovery(%{resuming?: true} = state) do
+    elapsed_since_boot_ms = System.monotonic_time(:millisecond) - Incarnation.started_at_ms()
+
+    case dispatch_system(
+           "run.recovery_attempt",
+           %{
+             run_id: state.run_id,
+             outcome: "resumed",
+             elapsed_since_boot_ms: elapsed_since_boot_ms
+           },
+           state.run_id,
+           Incarnation.id(),
+           "run:#{state.run_id}"
+         ) do
+      {:ok, recorded} ->
+        unless Actor.replayed?(recorded) do
+          :telemetry.execute(@resumed_event, %{elapsed_since_boot_ms: elapsed_since_boot_ms}, %{
+            run_id: state.run_id,
+            outcome: "resumed"
+          })
+        end
+
+        :ok
+
+      {:error, _} = error ->
+        error
     end
   end
 
