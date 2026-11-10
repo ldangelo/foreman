@@ -2778,26 +2778,31 @@ defmodule ForemanServer.ProjectionStore do
     case decode_for_projection("PhaseStarted", payload) do
       %ForemanServer.Events.PhaseStarted{phase_id: phase_id, run_id: run_id} = event
       when not is_nil(phase_id) and phase_id != "" and not is_nil(run_id) and run_id != "" ->
-        phase = %{
-          phase_id: phase_id,
-          run_id: run_id,
-          index: event.index,
-          name: event.name,
-          attempt: event.attempt,
-          status: "in_progress",
-          artifact_template: event.artifact_template,
-          artifact: nil,
-          failure_reason: nil,
-          last_sequence: event.sequence,
-          started_at_ms: payload_event_at_ms(payload),
-          last_event_at_ms: payload_event_at_ms(payload),
-          output_activity_at_ms: payload_event_at_ms(payload),
-          messaging_activity_at_ms: payload_event_at_ms(payload),
-          stall_detection_kind: event.stall_detection_kind,
-          stall_threshold_ms: event.stall_threshold_ms,
-          stall_policy: event.stall_policy,
-          latest_stall: nil
-        }
+        phase =
+          %{
+            phase_id: phase_id,
+            run_id: run_id,
+            index: event.index,
+            name: event.name,
+            attempt: event.attempt,
+            status: "in_progress",
+            artifact_template: event.artifact_template,
+            artifact: nil,
+            failure_reason: nil,
+            last_sequence: event.sequence,
+            started_at_ms: payload_event_at_ms(payload),
+            last_event_at_ms: payload_event_at_ms(payload),
+            output_activity_at_ms: payload_event_at_ms(payload),
+            messaging_activity_at_ms: payload_event_at_ms(payload),
+            stall_detection_kind: event.stall_detection_kind,
+            stall_threshold_ms: event.stall_threshold_ms,
+            stall_policy: event.stall_policy,
+            latest_stall: nil
+          }
+          |> maybe_put(
+            :prior_worktree_discarded,
+            discarded_worktree(event.prior_worktree_discarded)
+          )
 
         state
         |> touch_run_for_payload(payload)
@@ -2872,6 +2877,10 @@ defmodule ForemanServer.ProjectionStore do
         |> Map.put(:attempt, event.attempt)
         |> Map.put(:last_sequence, event.sequence)
         |> Map.put(:last_event_at_ms, payload_event_at_ms(payload))
+        |> maybe_put(
+          :prior_worktree_discarded,
+          discarded_worktree(event.prior_worktree_discarded)
+        )
       end)
     else
       touch_run_for_payload(state, payload)
@@ -5682,6 +5691,14 @@ defmodule ForemanServer.ProjectionStore do
 
   defp maybe_put(project, _key, nil), do: project
   defp maybe_put(project, key, value), do: Map.put(project, key, value)
+
+  # The discard record arrives as an atom-keyed map from a live dispatch and as a
+  # string-keyed map from a replayed event; the phase entry holds one shape.
+  defp discarded_worktree(nil), do: nil
+
+  defp discarded_worktree(%{} = discard) do
+    %{name: get(discard, :name), path: get(discard, :path)}
+  end
 
   # -- usage ledger (E14) ------------------------------------------------------
 

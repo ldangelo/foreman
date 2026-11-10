@@ -17,7 +17,7 @@ defmodule ForemanServer.Events.PhaseRetried do
           index: pos_integer(),
           attempt: pos_integer(),
           reason: String.t(),
-          prior_worktree_discarded: term() | nil
+          prior_worktree_discarded: %{name: String.t(), path: String.t() | nil} | nil
         }
   @derive Jason.Encoder
   defstruct [
