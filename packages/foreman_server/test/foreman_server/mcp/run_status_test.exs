@@ -202,6 +202,118 @@ defmodule ForemanServer.MCP.RunStatusTest do
     end
   end
 
+  # TRD-017: the context identity of a launch, through the real launch path.
+  describe "project context of a launch" do
+    @describetag :tmp_dir
+
+    defmodule NotesProvider do
+      @behaviour ForemanServer.ProjectContext.SectionProvider
+
+      def section(_project_id) do
+        body = Enum.map_join(1..40, "\n", &"- note #{&1}, the key is sk-launch-secret-9999")
+        {:ok, ForemanServer.ProjectContext.Section.new(:memory, "Project memory", body)}
+      end
+    end
+
+    setup %{tmp_dir: dir} do
+      :ok = ForemanServer.DispatcherQuiesce.suspend!()
+      RunSlotsReset.reset!()
+
+      store = Application.get_env(:foreman_server, :secret_store)
+      Application.put_env(:foreman_server, :secret_store, Keyword.put(store, :dir, dir))
+      original = Application.get_env(:foreman_server, :project_context)
+
+      Application.put_env(:foreman_server, :project_context,
+        section_providers: [NotesProvider],
+        section_caps: %{memory: 300}
+      )
+
+      on_exit(fn ->
+        Application.put_env(:foreman_server, :secret_store, store)
+
+        if original,
+          do: Application.put_env(:foreman_server, :project_context, original),
+          else: Application.delete_env(:foreman_server, :project_context)
+      end)
+
+      run_id = UniqueIds.unique_run_id("ctx")
+      project_id = "project-#{run_id}"
+
+      {:ok, _} =
+        CommandRouter.dispatch(%{
+          type: "project.register",
+          payload: %{project_id: project_id, path: dir},
+          aggregate_id: "project:#{project_id}"
+        })
+
+      assert {:ok, :stored} =
+               ForemanServer.SecretStore.put(project_id, "LAUNCH_KEY", "sk-launch-secret-9999")
+
+      assert {:ok, started} =
+               ForemanServer.RunAdmission.start(project_id, %{
+                 run_id: run_id,
+                 task_id: "task-#{run_id}",
+                 workflow_snapshot: %{phases: []},
+                 phase_specs: []
+               })
+
+      refute started in [:queued, :slot_queued]
+
+      state = %{
+        run_id: run_id,
+        task: %{task_id: "task-#{run_id}", project_id: project_id},
+        resuming?: false,
+        resume_from: 0,
+        phase_specs: [%{name: "first"}],
+        completed: [],
+        worktree_spec: %{enabled: false},
+        plan_context: nil,
+        artifact_base: Path.join(dir, "artifacts")
+      }
+
+      %{run_id: run_id, state: state}
+    end
+
+    test "the phase entry and the DTO's current phase carry the truncating, redacting launch",
+         %{run_id: run_id, state: state} do
+      spec = Enum.at(state.phase_specs, 0)
+      assert {:ok, state, _} = RunExecutor.phase_begin(state, spec, 0)
+      assert {:ok, launch} = RunExecutor.phase_launch(state, spec, 0, nil)
+
+      assert %{context: context} = phase_entry(run_id, 1)
+
+      assert Map.keys(context) |> Enum.sort() ==
+               [:bytes, :redaction_scope, :redactions, :sections, :sha256, :truncated]
+
+      assert context.redaction_scope == "project_context_sections"
+      assert context.redactions > 0
+      assert [%{section: "memory", omitted_bytes: omitted}] = context.truncated
+      assert omitted > 0
+      assert %{bytes: bytes} = Enum.find(context.sections, &(&1.id == "memory"))
+      assert bytes < context.bytes
+
+      # The hash is of the text the agent was handed.
+      assert [system_prompt: system_text] =
+               Keyword.take(launch.driver_opts.(1_000), [:system_prompt])
+
+      assert context.sha256 == Identity.sha256(system_text)
+      refute system_text =~ "sk-launch-secret-9999"
+
+      assert %{current_phase: %{context: ^context}} = status!(run_id)
+      assert {:ok, _json} = Jason.encode(status!(run_id))
+    end
+
+    test "a phase that recorded no context reports nil", %{run_id: run_id, state: state} do
+      Application.put_env(:foreman_server, :project_context, section_providers: [])
+      spec = Enum.at(state.phase_specs, 0)
+
+      assert {:ok, state, _} = RunExecutor.phase_begin(state, spec, 0)
+      assert {:ok, _launch} = RunExecutor.phase_launch(state, spec, 0, nil)
+
+      assert %{current_phase: %{context: nil}} = status!(run_id)
+    end
+  end
+
   # Events read back from the store carry whatever key form the writer used.
   defp atomized(entries) do
     Enum.map(entries, fn entry ->

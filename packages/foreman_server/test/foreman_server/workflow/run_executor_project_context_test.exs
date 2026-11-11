@@ -6,7 +6,9 @@ defmodule ForemanServer.Workflow.RunExecutorProjectContextTest do
   use ExUnit.Case, async: false
 
   alias ForemanServer.AgentRuntime.JidoHarness.Driver
-  alias ForemanServer.ProjectionStore
+  alias ForemanServer.{CommandGateway, Identity, ProjectContext, ProjectionStore}
+  alias ForemanServer.EventStore, as: Store
+  alias ForemanServer.ProjectContext.Section
   alias ForemanServer.TestSupport.ProjectionStoreReset
   alias ForemanServer.Workflow.RunExecutor
   alias Jido.Harness.{Adapter, AdapterSpec, Capabilities, Event, ProviderStatus}
@@ -90,7 +92,7 @@ defmodule ForemanServer.Workflow.RunExecutorProjectContextTest do
 
   defp state(project_id, workflow_name \\ "implement") do
     %{
-      run_id: "run-ctx",
+      run_id: "run-ctx-#{System.unique_integer([:positive])}",
       plan_context: %{},
       task: %{
         task_id: "t1",
@@ -103,7 +105,34 @@ defmodule ForemanServer.Workflow.RunExecutorProjectContextTest do
     }
   end
 
+  # A launch records its context on the phase `phase_begin` started, so the phase
+  # is started here the way the executor does before it launches.
+  defp start_phase(state, number) do
+    phase_id = Identity.phase_id(state.run_id, number)
+
+    unless Enum.any?(ProjectionStore.phases_for_run(state.run_id), &(&1.phase_id == phase_id)) do
+      assert {:ok, _} =
+               CommandGateway.dispatch_system(%{
+                 type: "phase.start",
+                 command_id: "test:start:#{phase_id}",
+                 aggregate_id: "phase:#{state.run_id}:#{phase_id}",
+                 payload: %{
+                   run_id: state.run_id,
+                   phase_id: phase_id,
+                   index: number,
+                   name: "implement",
+                   attempt: 1,
+                   artifact_template: %{}
+                 }
+               })
+    end
+
+    phase_id
+  end
+
   defp launch(state, phase_spec) do
+    start_phase(state, 1)
+
     {:ok, launch} =
       RunExecutor.__prepare_agent_launch_for_test__(
         state,
@@ -255,6 +284,193 @@ defmodule ForemanServer.Workflow.RunExecutorProjectContextTest do
 
       assert %{"project_context" => "", "project_instructions" => "", "project_memory" => ""} =
                assigns
+    end
+  end
+
+  # TRD-017: the launch builds the project context ONCE and records what it delivered.
+  describe "phase context record" do
+    @describetag :tmp_dir
+
+    defmodule CountingMemory do
+      @behaviour ForemanServer.ProjectContext.SectionProvider
+
+      # Runs once per `ProjectContext.build/1`: the build count of a launch.
+      def section(_project_id) do
+        send(Application.fetch_env!(:jido_harness, :project_context_test_pid), :context_built)
+        body = Enum.map_join(1..40, "\n", &"- note #{&1} about the project style")
+        {:ok, Section.new(:memory, "Project memory", body, hint: "read the topic")}
+      end
+    end
+
+    @db_url "postgres://svc:hunter2pw@db.internal:5432/app"
+
+    setup %{tmp_dir: dir} do
+      store = Application.get_env(:foreman_server, :secret_store)
+      Application.put_env(:foreman_server, :secret_store, Keyword.put(store, :dir, dir))
+      context_config = Application.get_env(:foreman_server, :project_context)
+
+      Application.put_env(:foreman_server, :project_context,
+        section_providers: [CountingMemory],
+        section_caps: %{memory: 200}
+      )
+
+      on_exit(fn ->
+        Application.put_env(:foreman_server, :secret_store, store)
+
+        if context_config,
+          do: Application.put_env(:foreman_server, :project_context, context_config),
+          else: Application.delete_env(:foreman_server, :project_context)
+      end)
+
+      :ok
+    end
+
+    # A project whose context truncates (the memory section is over its cap) and
+    # redacts (instructions quote a stored secret).
+    defp register_truncating_redacting(id) do
+      register(id, %{instructions: "connect with #{@db_url}, not the replica"})
+      assert {:ok, :stored} = ForemanServer.SecretStore.put(id, "DB_URL", @db_url)
+    end
+
+    defp built_count do
+      Stream.repeatedly(fn ->
+        receive do
+          :context_built -> :built
+        after
+          0 -> :none
+        end
+      end)
+      |> Enum.take_while(&(&1 == :built))
+      |> length()
+    end
+
+    defp recorded_events(run_state) do
+      {:ok, events} =
+        Store.read_stream_forward(
+          "phase:#{run_state.run_id}:#{Identity.phase_id(run_state.run_id, 1)}",
+          0,
+          100
+        )
+
+      Enum.filter(events, &(&1.event_type == "PhaseContextRecorded"))
+    end
+
+    defp context_of(run_state) do
+      [%{context: context}] = ProjectionStore.phases_for_run(run_state.run_id)
+      context
+    end
+
+    test "an agent phase builds the context once and records the hash of the delivered text" do
+      register_truncating_redacting("rec-1")
+      run_state = state("rec-1")
+
+      request = request_for(launch(run_state, %{}))
+
+      assert built_count() == 1
+
+      context = context_of(run_state)
+      assert context.sha256 == Identity.sha256(request.system_prompt)
+      assert context.bytes == byte_size(request.system_prompt)
+      assert context.redactions == 1
+      assert context.redaction_scope == "project_context_sections"
+
+      assert [%{section: "memory", omitted_bytes: omitted, omitted_lines: lines}] =
+               context.truncated
+
+      assert omitted > 0 and lines > 0
+      refute request.system_prompt =~ @db_url
+    end
+
+    test "the recorded sections carry byte_size(body), the measure the context endpoint reports" do
+      register_truncating_redacting("rec-2")
+      run_state = state("rec-2")
+      _ = launch(run_state, %{})
+      _ = built_count()
+
+      {:ok, bundle} = ProjectContext.build("rec-2")
+
+      assert context_of(run_state).sections ==
+               Enum.map(bundle.sections, &%{id: to_string(&1.id), bytes: byte_size(&1.body)})
+
+      # The cut memory section is smaller than the text it was cut from.
+      assert Enum.any?(bundle.sections, &(&1.source_bytes > byte_size(&1.body)))
+    end
+
+    test "a command phase builds the context once, for its template and its delivery" do
+      register_truncating_redacting("rec-3")
+      run_state = state("rec-3", "prd")
+
+      phase =
+        ForemanServer.Workflow.PhaseSpec.normalize(%{
+          "name" => "create-prd",
+          "command" => "/skill:create-prd {{project_instructions}}"
+        })
+
+      launch = launch(run_state, phase)
+
+      assert built_count() == 1
+      assert launch.launch_opts[:prompt] =~ "[REDACTED]"
+
+      assert context_of(run_state).sha256 ==
+               ProjectContext.build("rec-3") |> elem(1) |> Map.fetch!(:sha256)
+    end
+
+    test "the record survives a rebuild of the projection from the event log" do
+      register_truncating_redacting("rec-4")
+      run_state = state("rec-4")
+      _ = launch(run_state, %{})
+
+      before = context_of(run_state)
+      assert before.truncated != [] and before.redactions == 1
+
+      assert {:ok, events} = Store.read_all_streams_forward(0, 99_999_999)
+      assert :ok = ProjectionStore.rebuild(events)
+
+      assert context_of(run_state) == before
+    end
+
+    test "a project with no context appends no PhaseContextRecorded" do
+      Application.put_env(:foreman_server, :project_context, section_providers: [])
+      register("rec-5", %{})
+      run_state = state("rec-5")
+
+      _ = launch(run_state, %{})
+
+      assert recorded_events(run_state) == []
+      assert [%{} = phase] = ProjectionStore.phases_for_run(run_state.run_id)
+      refute Map.has_key?(phase, :context)
+    end
+
+    test "repeating one delivery records it once; a changed delivery is recorded, not swallowed" do
+      register_truncating_redacting("rec-6")
+      run_state = state("rec-6")
+
+      _ = launch(run_state, %{})
+      _ = launch(run_state, %{})
+      assert [_one] = recorded_events(run_state)
+
+      register("rec-6", %{instructions: "Always use tabs"})
+      _ = launch(run_state, %{})
+
+      assert [_, _] = recorded_events(run_state)
+
+      assert context_of(run_state).sha256 ==
+               ProjectContext.build("rec-6") |> elem(1) |> Map.fetch!(:sha256)
+    end
+
+    test "a launch whose record cannot be appended fails instead of starting the agent" do
+      register_truncating_redacting("rec-7")
+      run_state = state("rec-7")
+
+      # No phase.start was dispatched, so the Phase aggregate rejects the record.
+      assert {:error, {:project_context_record_failed, :phase_not_started}} =
+               RunExecutor.__prepare_agent_launch_for_test__(
+                 run_state,
+                 %{name: :implement},
+                 0,
+                 1,
+                 nil
+               )
     end
   end
 end

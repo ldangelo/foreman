@@ -337,6 +337,43 @@ defmodule ForemanServer.EventCodecTest do
     end
   end
 
+  describe "PhaseContextRecorded" do
+    @data %{
+      run_id: "r1",
+      phase_id: "p1",
+      sections: [%{id: "instructions", bytes: 12}],
+      sha256: String.duplicate("a", 64),
+      bytes: 40,
+      truncated: [%{section: "memory", omitted_bytes: 5, omitted_lines: 1}],
+      redactions: 1,
+      redaction_scope: "project_context_sections"
+    }
+
+    test "round-trips through the codec and through JSON" do
+      assert %ForemanServer.Events.PhaseContextRecorded{
+               run_id: "r1",
+               phase_id: "p1",
+               sha256: sha,
+               bytes: 40,
+               redactions: 1,
+               redaction_scope: "project_context_sections"
+             } = decoded = EventCodec.decode!("PhaseContextRecorded", @data)
+
+      assert sha == @data.sha256
+      assert EventCodec.decode!("PhaseContextRecorded", decoded) == decoded
+
+      replayed = @data |> Jason.encode!() |> Jason.decode!()
+      assert %{sha256: ^sha, bytes: 40} = EventCodec.decode!("PhaseContextRecorded", replayed)
+      assert "PhaseContextRecorded" in EventCodec.registered()
+    end
+
+    test "rejects a payload missing an enforced key" do
+      assert_raise ArgumentError, ~r/missing enforced keys/, fn ->
+        EventCodec.decode!("PhaseContextRecorded", Map.delete(@data, :redaction_scope))
+      end
+    end
+  end
+
   describe "RunRecoveryAttempted" do
     test "round-trips through the codec with the optional fields defaulting to nil" do
       data = %{run_id: "r1", outcome: "resumed", elapsed_since_boot_ms: 840}
