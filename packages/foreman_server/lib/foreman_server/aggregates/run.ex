@@ -753,8 +753,9 @@ defmodule ForemanServer.Aggregates.Run do
   # run.recovery_attempt — emits `RunRecoveryAttempted`, the recovery record of
   # a run that exists and is not terminal. A terminal run cannot be resumed or
   # blocked by recovery, so its stream takes no such record. Dispatched through
-  # `CommandGateway.dispatch_system/1` by `RunExecutor` (outcome `resumed`) and
-  # by the effect recovery step (the two effect outcomes).
+  # `CommandGateway.dispatch_system/1` by `RunExecutor` (outcome `resumed`). The
+  # two effect outcomes are accepted here for the effect recovery step (TRD-012);
+  # no lib code produces them yet.
   def handle_command(state, %{type: "run.recovery_attempt", payload: payload}) do
     with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
          {:ok, outcome} <- require_recovery_outcome(Aggregate.get(payload, :outcome)),
