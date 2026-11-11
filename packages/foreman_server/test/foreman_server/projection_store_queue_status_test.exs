@@ -108,7 +108,8 @@ defmodule ForemanServer.ProjectionStoreQueueStatusTest do
       assert ProjectionStore.queue_status() == %{
                capacity: 2,
                running: [run_1, run_2],
-               waiting: [run_3, run_4]
+               waiting: [run_3, run_4],
+               orphan_recovery: []
              }
 
       append_and_apply(@run_slots_stream, 4, "RunSlotTransferred", %{
@@ -121,7 +122,8 @@ defmodule ForemanServer.ProjectionStoreQueueStatusTest do
       assert ProjectionStore.queue_status() == %{
                capacity: 2,
                running: [run_2, run_3],
-               waiting: [run_4]
+               waiting: [run_4],
+               orphan_recovery: []
              }
     end
   end

@@ -50,7 +50,46 @@ defmodule ForemanServerWeb.QueueControllerTest do
     assert json_response(conn, 200) == %{
              "capacity" => 3,
              "running" => ["run-1"],
-             "waiting" => ["run-2", "run-3"]
+             "waiting" => ["run-2", "run-3"],
+             "orphan_recovery" => []
+           }
+  end
+
+  test "GET /api/queue lists orphan_recovery entries" do
+    entry = %{
+      attempt: 6,
+      outcome: "exhausted",
+      kind: "slot_release",
+      reason: "exit :killed",
+      elapsed_since_boot_ms: 1234
+    }
+
+    :sys.replace_state(ProjectionStore, fn state ->
+      %{
+        state
+        | run_slots: %{
+            capacity: 1,
+            holders: %{"run-1" => %{}},
+            waiters: [],
+            recovery: %{"run-1" => entry}
+          }
+      }
+    end)
+
+    conn =
+      build_conn()
+      |> put_req_header("authorization", "Bearer #{@token}")
+      |> get("/api/queue")
+
+    assert %{"orphan_recovery" => [listed]} = json_response(conn, 200)
+
+    assert listed == %{
+             "run_id" => "run-1",
+             "attempt" => 6,
+             "outcome" => "exhausted",
+             "kind" => "slot_release",
+             "reason" => "exit :killed",
+             "elapsed_since_boot_ms" => 1234
            }
   end
 

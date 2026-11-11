@@ -319,7 +319,12 @@ defmodule ForemanServer.Aggregates.Run do
         put_phase(state, payload, "timed_out")
 
       "PhaseRetried" ->
-        put_phase(state, payload, "retrying")
+        # A resumed retry keeps the phase running; any other reason is a retry in waiting.
+        put_phase(
+          state,
+          payload,
+          if(Aggregate.get(payload, :reason) == "resumed", do: "in_progress", else: "retrying")
+        )
 
       "WorkerStarted" ->
         state = put_worker(state, payload, "running")
@@ -414,6 +419,11 @@ defmodule ForemanServer.Aggregates.Run do
           | base_branch: base_branch,
             run_id: Aggregate.get(payload, :run_id) || state.run_id
         }
+
+      # Recovery records are read-model facts (`run.recovery`); they change no
+      # aggregate state, and the command guards against a terminal run itself.
+      "RunRecoveryAttempted" ->
+        state
 
       # E9 PR-watch events fold into `pr_watch` / `pr_fixes`.
       type when type in @pr_watch_events ->
@@ -737,6 +747,29 @@ defmodule ForemanServer.Aggregates.Run do
            payload: %{run_id: run_id, message_ids: lost, reason: reason}
          }}
       end
+    end
+  end
+
+  # run.recovery_attempt — emits `RunRecoveryAttempted`, the recovery record of
+  # a run that exists and is not terminal. A terminal run cannot be resumed or
+  # blocked by recovery, so its stream takes no such record. Dispatched through
+  # `CommandGateway.dispatch_system/1` by `RunExecutor` (outcome `resumed`). The
+  # two effect outcomes are accepted here for the effect recovery step (TRD-012);
+  # no lib code produces them yet.
+  def handle_command(state, %{type: "run.recovery_attempt", payload: payload}) do
+    with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
+         {:ok, outcome} <- require_recovery_outcome(Aggregate.get(payload, :outcome)),
+         {:ok, elapsed} <- require_non_negative_integer(payload, :elapsed_since_boot_ms, false),
+         :ok <- require_optional_binary(payload, :reason),
+         :ok <- require_effect_fields(outcome, payload),
+         :ok <- require_exists(state, run_id),
+         :ok <- reject_terminal_mutation(state) do
+      {:ok,
+       %{
+         stream_id: "run:#{run_id}",
+         event_type: "RunRecoveryAttempted",
+         payload: recovery_attempt_payload(payload, run_id, outcome, elapsed)
+       }}
     end
   end
 
@@ -1299,6 +1332,52 @@ defmodule ForemanServer.Aggregates.Run do
 
   defp require_workflow_snapshot(_snapshot),
     do: {:error, {:missing_or_invalid, :workflow_snapshot}}
+
+  @recovery_outcomes ["resumed", "effect_retried", "effect_blocked"]
+  @effect_recovery_fields [:effect_class, :effect_key, :effect_verdict]
+
+  defp require_recovery_outcome(outcome) when outcome in @recovery_outcomes, do: {:ok, outcome}
+  defp require_recovery_outcome(outcome), do: {:error, {:invalid_recovery_outcome, outcome}}
+
+  defp require_optional_binary(payload, key) do
+    case Aggregate.get(payload, key) do
+      nil -> :ok
+      value when is_binary(value) -> :ok
+      value -> {:error, {:missing_or_invalid, key, value}}
+    end
+  end
+
+  # Only the declared `RunRecoveryAttempted` fields reach the stream (AGENTS.md
+  # 5.4b): an undeclared key would make `EventCodec.decode!` raise on replay.
+  # An absent optional field stays absent.
+  defp recovery_attempt_payload(payload, run_id, outcome, elapsed) do
+    optional =
+      for key <- [:reason | @effect_recovery_fields],
+          value = Aggregate.get(payload, key),
+          value != nil,
+          into: %{},
+          do: {key, value}
+
+    Map.merge(optional, %{run_id: run_id, outcome: outcome, elapsed_since_boot_ms: elapsed})
+  end
+
+  # The effect fields name the effect a verdict was reached for, so the two
+  # effect outcomes require all three and `resumed` carries none.
+  defp require_effect_fields("resumed", payload) do
+    case Enum.find(@effect_recovery_fields, &(Aggregate.get(payload, &1) != nil)) do
+      nil -> :ok
+      key -> {:error, {:unexpected_field, key}}
+    end
+  end
+
+  defp require_effect_fields(_effect_outcome, payload) do
+    Enum.reduce_while(@effect_recovery_fields, :ok, fn key, :ok ->
+      case Aggregate.get(payload, key) do
+        value when is_binary(value) and value != "" -> {:cont, :ok}
+        value -> {:halt, {:error, {:missing_or_invalid, key, value}}}
+      end
+    end)
+  end
 
   defp require_exists(%State{exists?: true, run_id: run_id}, run_id), do: :ok
   defp require_exists(%State{}, run_id), do: {:error, {:not_found, :run, run_id}}

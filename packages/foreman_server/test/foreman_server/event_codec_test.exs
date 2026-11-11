@@ -297,6 +297,89 @@ defmodule ForemanServer.EventCodecTest do
     end
   end
 
+  describe "PhaseRetried" do
+    test "round-trips through the codec, with the optional field defaulting to nil" do
+      data = %{run_id: "r1", phase_id: "p1", index: 2, attempt: 3, reason: "resumed"}
+
+      assert %ForemanServer.Events.PhaseRetried{
+               run_id: "r1",
+               phase_id: "p1",
+               index: 2,
+               attempt: 3,
+               reason: "resumed",
+               prior_worktree_discarded: nil
+             } = decoded = EventCodec.decode!("PhaseRetried", data)
+
+      assert EventCodec.decode!("PhaseRetried", decoded) == decoded
+
+      assert EventCodec.decode!("PhaseRetried", Map.new(data, fn {k, v} -> {"#{k}", v} end)) ==
+               decoded
+
+      assert "PhaseRetried" in EventCodec.registered()
+    end
+
+    test "rejects a payload missing an enforced key" do
+      assert_raise ArgumentError, ~r/missing enforced keys/, fn ->
+        EventCodec.decode!("PhaseRetried", %{run_id: "r1", phase_id: "p1"})
+      end
+    end
+
+    test "a stream recorded before the event existed still decodes unchanged" do
+      assert %ForemanServer.Events.PhaseStarted{attempt: 1} =
+               EventCodec.decode!("PhaseStarted", %{
+                 run_id: "r1",
+                 phase_id: "p1",
+                 index: 1,
+                 name: "dev",
+                 attempt: 1,
+                 artifact_template: "t"
+               })
+    end
+  end
+
+  describe "RunRecoveryAttempted" do
+    test "round-trips through the codec with the optional fields defaulting to nil" do
+      data = %{run_id: "r1", outcome: "resumed", elapsed_since_boot_ms: 840}
+
+      assert %ForemanServer.Events.RunRecoveryAttempted{
+               run_id: "r1",
+               outcome: "resumed",
+               elapsed_since_boot_ms: 840,
+               reason: nil,
+               effect_class: nil,
+               effect_key: nil,
+               effect_verdict: nil
+             } = decoded = EventCodec.decode!("RunRecoveryAttempted", data)
+
+      assert EventCodec.decode!("RunRecoveryAttempted", decoded) == decoded
+
+      assert EventCodec.decode!(
+               "RunRecoveryAttempted",
+               Map.new(data, fn {k, v} -> {"#{k}", v} end)
+             ) == decoded
+
+      assert "RunRecoveryAttempted" in EventCodec.registered()
+    end
+
+    test "carries the effect fields of an effect outcome" do
+      assert %{effect_class: "push", effect_key: "k", effect_verdict: "unknown"} =
+               EventCodec.decode!("RunRecoveryAttempted", %{
+                 run_id: "r1",
+                 outcome: "effect_blocked",
+                 elapsed_since_boot_ms: 1,
+                 effect_class: "push",
+                 effect_key: "k",
+                 effect_verdict: "unknown"
+               })
+    end
+
+    test "rejects a payload missing an enforced key" do
+      assert_raise ArgumentError, ~r/missing enforced keys/, fn ->
+        EventCodec.decode!("RunRecoveryAttempted", %{run_id: "r1", outcome: "resumed"})
+      end
+    end
+  end
+
   describe "decode_recorded!/1" do
     test "decodes a RecordedEvent-shaped map" do
       recorded = %{event_type: "WorkerUnresponsive", data: %{worker_id: "w1", run_id: "r1"}}

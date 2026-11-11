@@ -44,6 +44,7 @@ defmodule ForemanServer.ProjectionStore do
 
   alias ForemanServer.Usage
   alias ForemanServer.Usage.Ledger, as: UsageLedger
+  alias ForemanServer.Workflow.WorktreeDiscard
 
   @pr_fold_events ForemanServer.Overview.PrFold.events()
   @pr_watch_only_events ForemanServer.PrWatchFold.events() -- @pr_fold_events
@@ -109,6 +110,13 @@ defmodule ForemanServer.ProjectionStore do
       added_by: nil,
       added_at: Map.get(project, :registered_at)
     }
+  end
+
+  defp drop_recovery(slots, run_ids) do
+    case Map.get(slots, :recovery) do
+      nil -> slots
+      recovery -> Map.put(slots, :recovery, Map.drop(recovery, run_ids))
+    end
   end
 
   @doc "Return the active run ids."
@@ -1099,11 +1107,16 @@ defmodule ForemanServer.ProjectionStore do
     GenServer.call(__MODULE__, :list_scheduler_intents)
   end
 
-  @doc "Return the current run-slot queue status: capacity, running run ids, and waiting run ids in FIFO order."
+  @doc """
+  Return the current run-slot queue status: capacity, running run ids, waiting run ids in FIFO
+  order, and `orphan_recovery`, the boot cleanup budget entries of orphaned slot holders/waiters
+  (`%{run_id, kind, attempt, outcome, reason, elapsed_since_boot_ms}`; empty when none).
+  """
   @spec queue_status() :: %{
           capacity: non_neg_integer(),
           running: [String.t()],
-          waiting: [String.t()]
+          waiting: [String.t()],
+          orphan_recovery: [map()]
         }
   def queue_status do
     GenServer.call(__MODULE__, :queue_status)
@@ -1690,10 +1703,17 @@ defmodule ForemanServer.ProjectionStore do
   def handle_call(:queue_status, _from, state) do
     %{capacity: capacity, holders: holders, waiters: waiters} = state.run_slots
 
+    orphan_recovery =
+      state.run_slots
+      |> Map.get(:recovery, %{})
+      |> Enum.map(fn {run_id, entry} -> Map.put(entry, :run_id, run_id) end)
+      |> Enum.sort_by(& &1.run_id)
+
     reply = %{
       capacity: capacity,
       running: Map.keys(holders),
-      waiting: Enum.map(waiters, & &1.run_id)
+      waiting: Enum.map(waiters, & &1.run_id),
+      orphan_recovery: orphan_recovery
     }
 
     {:reply, reply, state}
@@ -2774,30 +2794,53 @@ defmodule ForemanServer.ProjectionStore do
     end)
   end
 
+  # The latest recovery record of the run (`run.recovery`). Effect fields exist
+  # only on the two effect outcomes, so an absent one is left out.
+  defp apply_event_by_type(state, "RunRecoveryAttempted", payload) do
+    %ForemanServer.Events.RunRecoveryAttempted{run_id: run_id} =
+      event = decode_for_projection("RunRecoveryAttempted", payload)
+
+    update_run_projection(state, run_id, payload_event_at_ms(payload), fn run ->
+      recovery =
+        %{outcome: event.outcome, elapsed_since_boot_ms: event.elapsed_since_boot_ms}
+        |> maybe_put(:reason, event.reason)
+        |> maybe_put(:effect_class, event.effect_class)
+        |> maybe_put(:effect_key, event.effect_key)
+        |> maybe_put(:effect_verdict, event.effect_verdict)
+
+      Map.put(run, :recovery, recovery)
+    end)
+  end
+
   defp apply_event_by_type(state, "PhaseStarted", payload) do
     case decode_for_projection("PhaseStarted", payload) do
       %ForemanServer.Events.PhaseStarted{phase_id: phase_id, run_id: run_id} = event
       when not is_nil(phase_id) and phase_id != "" and not is_nil(run_id) and run_id != "" ->
-        phase = %{
-          phase_id: phase_id,
-          run_id: run_id,
-          index: event.index,
-          name: event.name,
-          attempt: event.attempt,
-          status: "in_progress",
-          artifact_template: event.artifact_template,
-          artifact: nil,
-          failure_reason: nil,
-          last_sequence: event.sequence,
-          started_at_ms: payload_event_at_ms(payload),
-          last_event_at_ms: payload_event_at_ms(payload),
-          output_activity_at_ms: payload_event_at_ms(payload),
-          messaging_activity_at_ms: payload_event_at_ms(payload),
-          stall_detection_kind: event.stall_detection_kind,
-          stall_threshold_ms: event.stall_threshold_ms,
-          stall_policy: event.stall_policy,
-          latest_stall: nil
-        }
+        phase =
+          %{
+            phase_id: phase_id,
+            run_id: run_id,
+            index: event.index,
+            name: event.name,
+            attempt: event.attempt,
+            status: "in_progress",
+            artifact_template: event.artifact_template,
+            artifact: nil,
+            failure_reason: nil,
+            last_sequence: event.sequence,
+            started_at_ms: payload_event_at_ms(payload),
+            last_event_at_ms: payload_event_at_ms(payload),
+            output_activity_at_ms: payload_event_at_ms(payload),
+            messaging_activity_at_ms: payload_event_at_ms(payload),
+            stall_detection_kind: event.stall_detection_kind,
+            stall_threshold_ms: event.stall_threshold_ms,
+            stall_policy: event.stall_policy,
+            latest_stall: nil
+          }
+          |> maybe_put(
+            :prior_worktree_discarded,
+            discarded_worktree(event.prior_worktree_discarded)
+          )
 
         state
         |> touch_run_for_payload(payload)
@@ -2858,7 +2901,28 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   defp apply_event_by_type(state, "PhaseRetried", payload) do
-    touch_run_for_payload(state, payload)
+    # Only a resumed retry changes the phase entry. Retries recorded before the
+    # typed event existed carry no `reason`, so they are never decoded.
+    if get(payload, :reason) == "resumed" do
+      %ForemanServer.Events.PhaseRetried{phase_id: phase_id} =
+        event = decode_for_projection("PhaseRetried", payload)
+
+      state
+      |> touch_run_for_payload(payload)
+      |> update_existing(:phases, phase_id, "PhaseRetried", fn phase ->
+        phase
+        |> Map.put(:status, "in_progress")
+        |> Map.put(:attempt, event.attempt)
+        |> Map.put(:last_sequence, event.sequence)
+        |> Map.put(:last_event_at_ms, payload_event_at_ms(payload))
+        |> maybe_put(
+          :prior_worktree_discarded,
+          discarded_worktree(event.prior_worktree_discarded)
+        )
+      end)
+    else
+      touch_run_for_payload(state, payload)
+    end
   end
 
   defp apply_event_by_type(state, "TaskCreated", payload) do
@@ -3698,7 +3762,7 @@ defmodule ForemanServer.ProjectionStore do
 
     if valid_id?(run_id) do
       Map.update!(state, :run_slots, fn slots ->
-        %{slots | holders: Map.delete(slots.holders, run_id)}
+        %{slots | holders: Map.delete(slots.holders, run_id)} |> drop_recovery([run_id])
       end)
     else
       state
@@ -3720,6 +3784,7 @@ defmodule ForemanServer.ProjectionStore do
         new_waiters = Enum.reject(slots.waiters, &(&1.run_id == acquired_run_id))
 
         %{slots | holders: new_holders, waiters: new_waiters}
+        |> drop_recovery([released_run_id, acquired_run_id])
       end)
     else
       state
@@ -3731,7 +3796,40 @@ defmodule ForemanServer.ProjectionStore do
 
     if valid_id?(run_id) do
       Map.update!(state, :run_slots, fn slots ->
-        %{slots | waiters: Enum.reject(slots.waiters, &(&1.run_id == run_id))}
+        slots
+        |> Map.put(:waiters, Enum.reject(slots.waiters, &(&1.run_id == run_id)))
+        |> drop_recovery([run_id])
+      end)
+    else
+      state
+    end
+  end
+
+  # Boot cleanup budget of an orphan slot entry (TRD-003). Read and written with
+  # Map.get/Map.put: tests replace `run_slots` with a map that has no `recovery` key.
+  defp apply_event_by_type(state, "RunSlotRecoveryAttempted", payload) do
+    run_id = get(payload, :run_id)
+
+    if valid_id?(run_id) do
+      Map.update!(state, :run_slots, fn slots ->
+        recovery = Map.get(slots, :recovery, %{})
+
+        recovery =
+          case get(payload, :outcome) do
+            "dispatched" ->
+              Map.delete(recovery, run_id)
+
+            outcome ->
+              Map.put(recovery, run_id, %{
+                attempt: get(payload, :attempt),
+                outcome: outcome,
+                kind: get(payload, :kind),
+                reason: get(payload, :reason),
+                elapsed_since_boot_ms: get(payload, :elapsed_since_boot_ms)
+              })
+          end
+
+        Map.put(slots, :recovery, recovery)
       end)
     else
       state
@@ -5665,6 +5763,16 @@ defmodule ForemanServer.ProjectionStore do
 
   defp maybe_put(project, _key, nil), do: project
   defp maybe_put(project, key, value), do: Map.put(project, key, value)
+
+  # The discard record arrives as an atom-keyed map from a live dispatch and as a
+  # string-keyed map from a replayed event; `WorktreeDiscard.from_event/1` makes
+  # that one struct and the phase entry holds one shape.
+  defp discarded_worktree(nil), do: nil
+
+  defp discarded_worktree(%{} = discard) do
+    %{name: name, path: path} = WorktreeDiscard.from_event(discard)
+    %{name: name, path: path}
+  end
 
   # -- usage ledger (E14) ------------------------------------------------------
 

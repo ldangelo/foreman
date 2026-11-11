@@ -32,7 +32,8 @@ defmodule ForemanServer.Aggregates.Phase do
             phase_id: Aggregate.get(payload, :phase_id),
             run_id: Aggregate.get(payload, :run_id),
             status: "in_progress",
-            terminal?: false
+            terminal?: false,
+            attempt: Aggregate.get(payload, :attempt, state.attempt)
         }
 
       "PhaseCompleted" ->
@@ -48,12 +49,14 @@ defmodule ForemanServer.Aggregates.Phase do
         %State{state | status: "blocked", terminal?: true}
 
       "PhaseRetried" ->
+        resumed? = Aggregate.get(payload, :reason) == "resumed"
+
         %State{
           state
           | phase_id: Aggregate.get(payload, :phase_id),
             run_id: Aggregate.get(payload, :run_id),
-            attempt: state.attempt + 1,
-            status: "retrying",
+            attempt: Aggregate.get(payload, :attempt, state.attempt + 1),
+            status: if(resumed?, do: "in_progress", else: "retrying"),
             terminal?: false
         }
 
@@ -94,7 +97,7 @@ defmodule ForemanServer.Aggregates.Phase do
          {:ok, phase_id} <-
            Aggregate.required_binary(Aggregate.get(payload, :phase_id), :phase_id),
          :ok <- require_started(state, type),
-         :ok <- reject_terminal_for_non_retry(state, type) do
+         :ok <- reject_terminal_for_non_retry(state, type, payload) do
       event_type =
         %{
           "phase.complete" => "PhaseCompleted",
@@ -109,7 +112,10 @@ defmodule ForemanServer.Aggregates.Phase do
        %{
          stream_id: "phase:#{run_id}:#{phase_id}",
          event_type: event_type,
-         payload: Map.merge(payload, %{run_id: run_id, phase_id: phase_id})
+         payload:
+           type
+           |> event_payload(payload, run_id, phase_id)
+           |> stamp_attempt(type, state)
        }}
     end
   end
@@ -125,10 +131,42 @@ defmodule ForemanServer.Aggregates.Phase do
   defp reject_terminal(%State{terminal?: true}), do: {:error, :phase_terminal}
   defp reject_terminal(_state), do: :ok
 
-  defp reject_terminal_for_non_retry(%State{status: status}, "phase.retry")
-       when status in ["failed", "timed_out", "retrying"],
-       do: :ok
+  # `PhaseRetried` is decoded strictly, so only its declared fields reach the
+  # stream (AGENTS.md 5.4b); an absent optional field stays absent.
+  defp event_payload("phase.retry", payload, run_id, phase_id) do
+    for key <- [:index, :reason, :prior_worktree_discarded],
+        value = Aggregate.get(payload, key),
+        value != nil,
+        into: %{run_id: run_id, phase_id: phase_id},
+        do: {key, value}
+  end
 
-  defp reject_terminal_for_non_retry(%State{}, "phase.retry"), do: {:error, :phase_not_retryable}
-  defp reject_terminal_for_non_retry(state, _type), do: reject_terminal(state)
+  defp event_payload(_type, payload, run_id, phase_id),
+    do: Map.merge(payload, %{run_id: run_id, phase_id: phase_id})
+
+  # The attempt comes from the stream, never from the caller.
+  defp stamp_attempt(payload, "phase.retry", %State{attempt: attempt}),
+    do: Map.put(payload, :attempt, attempt + 1)
+
+  defp stamp_attempt(payload, _type, _state), do: payload
+
+  defp reject_terminal_for_non_retry(%State{status: "in_progress"}, "phase.retry", payload) do
+    if Aggregate.get(payload, :reason) == "resumed",
+      do: :ok,
+      else: {:error, :phase_not_retryable}
+  end
+
+  # `resumed` is the restart of an in_progress phase; a failed, timed-out or
+  # retrying phase takes an ordinary retry only.
+  defp reject_terminal_for_non_retry(%State{status: status}, "phase.retry", payload)
+       when status in ["failed", "timed_out", "retrying"] do
+    if Aggregate.get(payload, :reason) == "resumed",
+      do: {:error, :phase_not_retryable},
+      else: :ok
+  end
+
+  defp reject_terminal_for_non_retry(%State{}, "phase.retry", _payload),
+    do: {:error, :phase_not_retryable}
+
+  defp reject_terminal_for_non_retry(state, _type, _payload), do: reject_terminal(state)
 end

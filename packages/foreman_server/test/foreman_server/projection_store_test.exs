@@ -70,6 +70,101 @@ defmodule ForemanServer.ProjectionStoreTest do
     assert %{project_id: ^project_id} = ProjectionStore.project(project_id)
   end
 
+  test "a resumed PhaseRetried keeps the phase in_progress and advances attempt; others do not" do
+    suffix = System.unique_integer([:positive])
+    run_id = "run-retry-#{suffix}"
+    phase_id = "phase-retry-#{suffix}"
+
+    started = %{
+      event_type: "PhaseStarted",
+      payload: %{
+        phase_id: phase_id,
+        run_id: run_id,
+        index: 1,
+        name: "dev",
+        attempt: 1,
+        artifact_template: "t"
+      }
+    }
+
+    retried = fn reason, attempt ->
+      %{
+        event_type: "PhaseRetried",
+        payload: %{
+          phase_id: phase_id,
+          run_id: run_id,
+          index: 1,
+          attempt: attempt,
+          reason: reason
+        }
+      }
+    end
+
+    assert :ok = ProjectionStore.apply_events([started, retried.("failed", 2)])
+    assert %{status: "in_progress", attempt: 1} = ProjectionStore.phase_projection(phase_id)
+
+    assert :ok = ProjectionStore.apply_events([retried.("resumed", 2)])
+    assert %{status: "in_progress", attempt: 2} = ProjectionStore.phase_projection(phase_id)
+
+    # A retry recorded before the typed event existed is tolerated and changes nothing.
+    assert :ok =
+             ProjectionStore.apply_events([
+               %{event_type: "PhaseRetried", payload: %{phase_id: phase_id, run_id: run_id}}
+             ])
+
+    assert %{status: "in_progress", attempt: 2} = ProjectionStore.phase_projection(phase_id)
+  end
+
+  test "RunRecoveryAttempted folds into run.recovery as the latest record; a stream without one has none" do
+    run_id = "run-recovery-#{System.unique_integer([:positive])}"
+
+    started = %{
+      event_type: "RunStarted",
+      payload: %{run_id: run_id, project_id: "p", task_id: "t", workflow_snapshot: %{}}
+    }
+
+    assert :ok = ProjectionStore.apply_events([started])
+    refute Map.has_key?(ProjectionStore.run(run_id), :recovery)
+
+    recorded = fn payload ->
+      %{
+        event_type: "RunRecoveryAttempted",
+        payload: Map.merge(%{run_id: run_id, elapsed_since_boot_ms: 700}, payload)
+      }
+    end
+
+    assert :ok = ProjectionStore.apply_events([recorded.(%{outcome: "resumed"})])
+
+    assert ProjectionStore.run(run_id).recovery == %{
+             outcome: "resumed",
+             elapsed_since_boot_ms: 700
+           }
+
+    # A replayed event carries string keys and folds to the same shape; the latest wins.
+    assert :ok =
+             ProjectionStore.apply_events([
+               %{
+                 event_type: "RunRecoveryAttempted",
+                 payload: %{
+                   "run_id" => run_id,
+                   "outcome" => "effect_blocked",
+                   "elapsed_since_boot_ms" => 900,
+                   "effect_class" => "push",
+                   "effect_key" => "k",
+                   "effect_verdict" => "unknown"
+                 }
+               }
+             ])
+
+    assert ProjectionStore.run(run_id).recovery == %{
+             outcome: "effect_blocked",
+             elapsed_since_boot_ms: 900,
+             effect_class: "push",
+             effect_key: "k",
+             effect_verdict: "unknown"
+           }
+  end
+
   test "projects are registered and updated from state.projects" do
     project_id = "project-1"
 

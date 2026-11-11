@@ -68,6 +68,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
   alias ForemanServer.Agents.VfsIsolation
   alias ForemanServer.TaskProvider.Telemetry, as: TaskProviderTelemetry
   alias ForemanServer.TaskProvider.Registry, as: TaskProviderRegistry
+  alias ForemanServer.Aggregate.Actor
+  alias ForemanServer.Incarnation
   alias ForemanServer.Workflow.OrphanReaper
   alias ForemanServer.Workflow.Worktree
   alias ForemanServer.Workflow.RepoPr
@@ -84,6 +86,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
     "fix" => MapSet.new(~w(fix))
   }
   @claim_lost_event [:foreman_server, :task_provider, :claim, :lost]
+  @resumed_event [:foreman_server, :workflow, :run_executor, :resumed]
   @type state :: %{
           task: map(),
           phase_specs: [map()],
@@ -452,8 +455,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # This function is the kickoff_ready handler that runs when all prerequisites pass.
   # `maybe_claim_task/1` (line 363) calls the TaskProvider.claim/3 before any phase work starts.
   defp handle_kickoff_ready(state) do
-    case rehydrate_resume_context(state) do
-      {:error, reason} ->
+    case resume_prelude(state) do
+      {:error, {:resume_context_unresolvable, reason}} ->
         Logger.error(
           "RunExecutor #{state.run_id} resume context unresolvable: #{inspect(reason)}",
           run_id: state.run_id,
@@ -465,25 +468,171 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
         finalize_terminal_and_stop(state, {:resume_context_unresolvable, reason})
 
+      {:error, {:resume_worktree_prune_failed, repo_path, code, output} = reason} ->
+        Logger.error(
+          "RunExecutor #{state.run_id} could not prune the worktree record in #{repo_path} " <>
+            "(exit #{code}): #{output}",
+          run_id: state.run_id,
+          task_id: task_id(state),
+          operation: "run_executor.resume",
+          outcome: "error",
+          reason: inspect(reason)
+        )
+
+        finalize_terminal_and_stop(state, reason)
+
+      {:error, {:resume_attempt_not_recorded, reason}} ->
+        Logger.error(
+          "RunExecutor #{state.run_id} could not record the resumed attempt: #{inspect(reason)}",
+          run_id: state.run_id,
+          task_id: task_id(state),
+          operation: "run_executor.resume",
+          outcome: "error",
+          reason: inspect(reason)
+        )
+
+        finalize_terminal_and_stop(state, {:resume_attempt_not_recorded, reason})
+
       {:ok, state} ->
-        claim_result = if state.resuming?, do: :ok, else: maybe_claim_task(state)
+        continue_kickoff(state)
+    end
+  end
 
-        case claim_result do
-          :ok ->
-            run_phases(state)
+  # Resume re-entry in order: rehydrate the worktree (which reaps orphaned
+  # agents), record the run's recovery, then record the phase attempt, so
+  # neither record precedes the reap. A no-op for a fresh run.
+  defp resume_prelude(state) do
+    with {:ok, state} <- tag_error(rehydrate_resume_context(state), :resume_context_unresolvable),
+         :ok <- tag_error(record_run_recovery(state), :resume_attempt_not_recorded),
+         {:ok, state} <- tag_error(record_resume_attempt(state), :resume_attempt_not_recorded) do
+      {:ok, state}
+    end
+  end
 
-          {:error, reason} ->
-            Logger.warning("RunExecutor claim #{task_id(state)} failed: #{inspect(reason)}",
-              run_id: state.run_id,
-              task_id: task_id(state),
-              operation: "run_executor.task_claim",
-              outcome: "error",
-              reason: inspect(reason)
-            )
+  # A prune failure has its own tag: `:resume_context_unresolvable` means the
+  # run's base could not be resolved (AC-002-3).
+  defp tag_error({:error, {:resume_worktree_prune_failed, _, _, _}} = error, _tag), do: error
+  defp tag_error({:error, reason}, tag), do: {:error, {tag, reason}}
+  defp tag_error(other, _tag), do: other
 
-            _ = dispatch_task_execution_fail(state, {:claim_failure, reason})
-            finalize_terminal_and_stop(state, {:claim_failure, reason})
+  # A restart that finds the resume phase still `in_progress` is one more
+  # attempt at it. The Phase aggregate stamps the attempt; the command id
+  # carries the incarnation, so a repeat within one boot appends nothing while
+  # every restart appends a new `PhaseRetried`. Runs after
+  # `rehydrate_resume_context/1` so orphaned agents are already reaped.
+  #
+  # That `PhaseRetried` is the first phase event after the resume, so it
+  # carries `prior_worktree_discarded` when the rehydrate found a worktree it
+  # could not reuse, and the discard is then cleared from the state. When no
+  # phase is in flight the discard stays for the next `PhaseStarted`
+  # (`emit_phase_start/3`).
+  defp record_resume_attempt(%{resuming?: false} = state), do: {:ok, state}
+
+  defp record_resume_attempt(%{resuming?: true} = state) do
+    case Enum.at(state.phase_specs, state.resume_from) do
+      nil ->
+        {:ok, state}
+
+      phase_spec ->
+        number = phase_number(phase_spec, state.resume_from)
+        phase_id = Identity.phase_id(state.run_id, number)
+
+        if phase_in_progress?(state.run_id, phase_id) do
+          with :ok <- dispatch_resume_retry(state, phase_id, number) do
+            {:ok, Map.delete(state, :prior_worktree_discarded)}
+          end
+        else
+          {:ok, state}
         end
+    end
+  end
+
+  defp phase_in_progress?(run_id, phase_id) do
+    run_id
+    |> ProjectionStore.phases_for_run()
+    |> Enum.any?(&(&1.phase_id == phase_id and &1.status == "in_progress"))
+  end
+
+  defp dispatch_resume_retry(state, phase_id, number) do
+    payload =
+      maybe_put_discard(
+        %{run_id: state.run_id, phase_id: phase_id, index: number, reason: "resumed"},
+        state
+      )
+
+    case dispatch_system(
+           "phase.retry",
+           payload,
+           state.run_id,
+           "#{ForemanServer.Incarnation.id()}:#{phase_id}:#{number}",
+           "phase:#{state.run_id}:#{phase_id}"
+         ) do
+      {:ok, _} -> :ok
+      {:error, _} = error -> error
+    end
+  end
+
+  defp maybe_put_discard(payload, state) do
+    case Map.get(state, :prior_worktree_discarded) do
+      nil -> payload
+      discard -> Map.put(payload, :prior_worktree_discarded, discard)
+    end
+  end
+
+  # Every resume, a restart's or an operator's `run.resume` (`resuming?` cannot
+  # tell them apart), records its own time since boot on the run. The command id
+  # carries the incarnation, so a repeat within one boot appends nothing and a
+  # new boot appends one more. The time is only measured and reported
+  # (`run.recovery`, telemetry); nothing fails the run on it.
+  defp record_run_recovery(%{resuming?: false}), do: :ok
+
+  defp record_run_recovery(%{resuming?: true} = state) do
+    elapsed_since_boot_ms = System.monotonic_time(:millisecond) - Incarnation.started_at_ms()
+
+    case dispatch_system(
+           "run.recovery_attempt",
+           %{
+             run_id: state.run_id,
+             outcome: "resumed",
+             elapsed_since_boot_ms: elapsed_since_boot_ms
+           },
+           state.run_id,
+           Incarnation.id(),
+           "run:#{state.run_id}"
+         ) do
+      {:ok, recorded} ->
+        unless Actor.replayed?(recorded) do
+          :telemetry.execute(@resumed_event, %{elapsed_since_boot_ms: elapsed_since_boot_ms}, %{
+            run_id: state.run_id,
+            outcome: "resumed"
+          })
+        end
+
+        :ok
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  defp continue_kickoff(state) do
+    claim_result = if state.resuming?, do: :ok, else: maybe_claim_task(state)
+
+    case claim_result do
+      :ok ->
+        run_phases(state)
+
+      {:error, reason} ->
+        Logger.warning("RunExecutor claim #{task_id(state)} failed: #{inspect(reason)}",
+          run_id: state.run_id,
+          task_id: task_id(state),
+          operation: "run_executor.task_claim",
+          outcome: "error",
+          reason: inspect(reason)
+        )
+
+        _ = dispatch_task_execution_fail(state, {:claim_failure, reason})
+        finalize_terminal_and_stop(state, {:claim_failure, reason})
     end
   end
 
@@ -714,38 +863,89 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # existing checkout (refreshing `base_ref` from HEAD) instead of trying
   # to `git worktree add` a path that already exists. A no-op for a
   # fresh (non-resuming) run.
+  #
+  # A worktree that cannot be reused (no entry, or an entry whose directory is
+  # gone) is recorded in `state.prior_worktree_discarded`, to travel on the first
+  # phase event after the resume. Only uncommitted changes are lost: committed
+  # work lives on the run's branch, which provisioning re-attaches.
   defp rehydrate_resume_context(%{resuming?: false} = state), do: {:ok, state}
 
   defp rehydrate_resume_context(%{resuming?: true} = state) do
+    name = Worktree.operation_id(state.run_id, nil)
+
     case find_resumable_worktree(state.run_id) do
       nil ->
-        Logger.warning(
-          "RunExecutor #{state.run_id} resume found no worktree entry for wt-#{state.run_id}; provisioning a fresh worktree",
-          run_id: state.run_id,
-          task_id: task_id(state),
-          operation: "run_executor.resume"
-        )
+        if worktree_expected?(state) do
+          Logger.warning(
+            "RunExecutor #{state.run_id} resume found no worktree entry for #{name}; provisioning a fresh worktree",
+            run_id: state.run_id,
+            task_id: task_id(state),
+            operation: "run_executor.resume"
+          )
 
-        {:ok, state}
+          {:ok, Map.put(state, :prior_worktree_discarded, %{name: name, path: nil})}
+        else
+          {:ok, state}
+        end
+
+      %{worktree_path: path} = entry when is_binary(path) and path != "" ->
+        if File.dir?(path) do
+          rehydrate_worktree_entry(state, entry)
+        else
+          discard_missing_worktree(state, entry, name)
+        end
 
       entry ->
-        with :ok <- reap_orphaned_agents(state, entry.worktree_path),
-             {:ok, _project_root, _base_ref, implementation_key, trd_scope} <-
-               resolve_run_base(state, state.worktree_spec || %{}) do
-          run_worktree = %{
-            operation_id: entry.operation_id,
-            worktree_path: entry.worktree_path,
-            branch: entry.branch,
-            base_ref: entry.base_ref,
-            project_root: entry.repo_path,
-            project_id: entry.project_id,
-            cleanup: entry.cleanup,
-            implementation_key: implementation_key,
-            trd_scope: trd_scope
-          }
+        rehydrate_worktree_entry(state, entry)
+    end
+  end
 
-          {:ok, state |> Map.put(:run_worktree, run_worktree) |> load_run_worktrees()}
-        end
+  # A missing entry only means lost work when a worktree was ever provisioned: a
+  # run whose workflow disables worktrees has none, and a run resumed before its
+  # first phase began never reached provisioning.
+  defp worktree_expected?(state) do
+    match?(%{enabled: false}, state.worktree_spec) == false and
+      ProjectionStore.phases_for_run(state.run_id) != []
+  end
+
+  defp rehydrate_worktree_entry(state, entry) do
+    with :ok <- reap_orphaned_agents(state, entry.worktree_path),
+         {:ok, _project_root, _base_ref, implementation_key, trd_scope} <-
+           resolve_run_base(state, state.worktree_spec || %{}) do
+      run_worktree = %{
+        operation_id: entry.operation_id,
+        worktree_path: entry.worktree_path,
+        branch: entry.branch,
+        base_ref: entry.base_ref,
+        project_root: entry.repo_path,
+        project_id: entry.project_id,
+        cleanup: entry.cleanup,
+        implementation_key: implementation_key,
+        trd_scope: trd_scope
+      }
+
+      {:ok, state |> Map.put(:run_worktree, run_worktree) |> load_run_worktrees()}
+    end
+  end
+
+  # The entry's directory is gone, so nothing in it can be running and there is
+  # nothing to reuse. Git still lists the worktree and would refuse to add the
+  # same path ("is a missing but already registered worktree"), so its record is
+  # pruned before provisioning creates a fresh one.
+  defp discard_missing_worktree(state, entry, name) do
+    Logger.warning(
+      "RunExecutor #{state.run_id} resume found worktree entry #{name} whose directory #{entry.worktree_path} is gone; its uncommitted changes are lost and a fresh worktree is provisioned",
+      run_id: state.run_id,
+      task_id: task_id(state),
+      operation: "run_executor.resume"
+    )
+
+    case System.cmd("git", ["-C", entry.repo_path, "worktree", "prune"], stderr_to_stdout: true) do
+      {_output, 0} ->
+        {:ok, Map.put(state, :prior_worktree_discarded, %{name: name, path: entry.worktree_path})}
+
+      {output, code} ->
+        {:error, {:resume_worktree_prune_failed, entry.repo_path, code, output}}
     end
   end
 
@@ -1179,6 +1379,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
       with {:ok, state} <- snapshot_checkout(state, worktree_record) do
         {:ok,
          state
+         |> Map.delete(:prior_worktree_discarded)
          |> remember_run_worktree(worktree_record)
          |> remember_worktree(worktree_record)
          |> load_run_worktrees(), worktree_record}
@@ -1289,6 +1490,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
       |> Map.merge(
         ForemanServer.Workflow.StallPolicy.payload_fields(Map.get(phase_spec, :stall_detection))
       )
+      |> maybe_put_discard(state)
 
     dispatch_system(
       "phase.start",
@@ -4854,6 +5056,9 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   @doc false
   def __rehydrate_resume_context_for_test__(state), do: rehydrate_resume_context(state)
+
+  @doc false
+  def __resume_prelude_for_test__(state), do: resume_prelude(state)
 
   @doc false
   def __resolve_run_repo_set_for_test__(state), do: resolve_run_repo_set(state)

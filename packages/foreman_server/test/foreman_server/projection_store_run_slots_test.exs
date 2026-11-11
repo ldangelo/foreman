@@ -266,4 +266,138 @@ defmodule ForemanServer.ProjectionStoreRunSlotsTest do
       assert status.waiting == ["run-3", "run-4"]
     end
   end
+
+  # ---------------------------------------------------------------------------
+  # RunSlotRecoveryAttempted
+  # ---------------------------------------------------------------------------
+
+  describe "apply_event — RunSlotRecoveryAttempted" do
+    test "queue_status lists the latest entry per run as orphan_recovery" do
+      assert ProjectionStore.queue_status().orphan_recovery == []
+
+      :ok =
+        ProjectionStore.apply_events([
+          acquired("run-1"),
+          recovery("run-1", "failed", 1, "slot_release"),
+          recovery("run-1", "exhausted", 6, "slot_release"),
+          queued("run-2"),
+          recovery("run-2", "failed", 2, "waiter_remove")
+        ])
+
+      assert ProjectionStore.queue_status().orphan_recovery == [
+               %{
+                 run_id: "run-1",
+                 attempt: 6,
+                 outcome: "exhausted",
+                 kind: "slot_release",
+                 reason: "exit :killed",
+                 elapsed_since_boot_ms: 6
+               },
+               %{
+                 run_id: "run-2",
+                 attempt: 2,
+                 outcome: "failed",
+                 kind: "waiter_remove",
+                 reason: "exit :killed",
+                 elapsed_since_boot_ms: 2
+               }
+             ]
+    end
+
+    test "dispatched, a release, a waiter removal and a transfer drop the entry" do
+      :ok =
+        ProjectionStore.apply_events([
+          acquired("run-1"),
+          acquired("run-2"),
+          queued("run-3"),
+          queued("run-4"),
+          recovery("run-1", "failed", 1, "slot_release"),
+          recovery("run-2", "failed", 1, "slot_release"),
+          recovery("run-3", "failed", 1, "waiter_remove"),
+          recovery("run-4", "failed", 1, "waiter_remove")
+        ])
+
+      ids = fn -> ProjectionStore.queue_status().orphan_recovery |> Enum.map(& &1.run_id) end
+      assert ids.() == ["run-1", "run-2", "run-3", "run-4"]
+
+      :ok = ProjectionStore.apply_events([recovery("run-1", "dispatched", 0, "slot_release")])
+      assert ids.() == ["run-2", "run-3", "run-4"]
+
+      :ok =
+        ProjectionStore.apply_events([
+          %{event_type: "RunSlotWaiterRemoved", payload: %{run_id: "run-4"}}
+        ])
+
+      assert ids.() == ["run-2", "run-3"]
+
+      # run-2 releases and promotes run-3: both entries go.
+      :ok =
+        ProjectionStore.apply_events([
+          %{
+            event_type: "RunSlotTransferred",
+            payload: %{
+              released_run_id: "run-2",
+              acquired_run_id: "run-3",
+              capacity: 5,
+              acquired_at_ms: 300
+            }
+          }
+        ])
+
+      assert ids.() == []
+    end
+
+    test "a plain release drops the entry" do
+      :ok =
+        ProjectionStore.apply_events([
+          acquired("run-1"),
+          recovery("run-1", "failed", 1, "slot_release"),
+          %{event_type: "RunSlotReleased", payload: %{run_id: "run-1"}}
+        ])
+
+      assert ProjectionStore.queue_status().orphan_recovery == []
+    end
+
+    test "a run_slots map without the recovery key folds and reports without crashing" do
+      :sys.replace_state(ProjectionStore, fn state ->
+        %{state | run_slots: %{capacity: 2, holders: %{"run-1" => :held}, waiters: []}}
+      end)
+
+      assert ProjectionStore.queue_status().orphan_recovery == []
+
+      :ok =
+        ProjectionStore.apply_events([
+          recovery("run-1", "failed", 1, "slot_release"),
+          %{event_type: "RunSlotReleased", payload: %{run_id: "run-1"}}
+        ])
+
+      assert ProjectionStore.queue_status() ==
+               %{capacity: 2, running: [], waiting: [], orphan_recovery: []}
+    end
+  end
+
+  defp acquired(run_id) do
+    %{
+      event_type: "RunSlotAcquired",
+      payload: %{run_id: run_id, capacity: 5, acquired_at_ms: 100}
+    }
+  end
+
+  defp queued(run_id) do
+    %{event_type: "RunSlotQueued", payload: %{run_id: run_id, position: 1, enqueued_at_ms: 200}}
+  end
+
+  defp recovery(run_id, outcome, attempt, kind) do
+    %{
+      event_type: "RunSlotRecoveryAttempted",
+      payload: %{
+        run_id: run_id,
+        attempt: attempt,
+        outcome: outcome,
+        kind: kind,
+        reason: "exit :killed",
+        elapsed_since_boot_ms: attempt
+      }
+    }
+  end
 end

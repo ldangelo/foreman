@@ -314,6 +314,115 @@ defmodule ForemanServer.Aggregates.PhaseTest do
                  payload: %{run_id: skipped.run_id, phase_id: skipped.phase_id}
                })
     end
+
+    test "permits from in_progress only for reason resumed and stamps attempt from the stream" do
+      started = fold(started_state(), "PhaseStarted", %{run_id: "r", phase_id: "p", attempt: 1})
+      assert started.attempt == 1
+
+      {:ok, spec} =
+        Phase.handle_command(started, %{
+          type: "phase.retry",
+          # A caller-supplied attempt is ignored: the stream owns it.
+          payload: %{
+            run_id: started.run_id,
+            phase_id: started.phase_id,
+            index: 1,
+            reason: "resumed",
+            attempt: 99
+          }
+        })
+
+      assert spec.event_type == "PhaseRetried"
+      assert spec.payload.attempt == 2
+
+      for reason <- ["failed", "other", nil] do
+        assert {:error, :phase_not_retryable} =
+                 Phase.handle_command(started, %{
+                   type: "phase.retry",
+                   payload: %{run_id: started.run_id, phase_id: started.phase_id, reason: reason}
+                 })
+      end
+    end
+
+    test "rejects reason resumed from failed, timed_out and retrying (scoped to in_progress)" do
+      for {event, status} <- [
+            {"PhaseFailed", "failed"},
+            {"PhaseTimedOut", "timed_out"},
+            {"PhaseRetried", "retrying"}
+          ] do
+        started = fold(started_state(), "PhaseStarted", %{run_id: "r", phase_id: "p", attempt: 1})
+        state = fold(started, event, %{run_id: "r", phase_id: "p", reason: "boom"})
+        assert state.status == status
+
+        assert {:error, :phase_not_retryable} =
+                 Phase.handle_command(state, %{
+                   type: "phase.retry",
+                   payload: %{run_id: "r", phase_id: "p", reason: "resumed"}
+                 })
+
+        assert {:ok, %{event_type: "PhaseRetried"}} =
+                 Phase.handle_command(state, %{
+                   type: "phase.retry",
+                   payload: %{run_id: "r", phase_id: "p", reason: "again"}
+                 })
+      end
+    end
+
+    test "stores only the declared PhaseRetried fields, so the event decodes strictly" do
+      started = fold(started_state(), "PhaseStarted", %{run_id: "r", phase_id: "p", attempt: 1})
+
+      {:ok, spec} =
+        Phase.handle_command(started, %{
+          type: "phase.retry",
+          payload: %{
+            run_id: "r",
+            phase_id: "p",
+            index: 1,
+            reason: "resumed",
+            prior_worktree_discarded: nil,
+            surprise: "x",
+            command_id: "c"
+          }
+        })
+
+      assert spec.payload == %{
+               run_id: "r",
+               phase_id: "p",
+               index: 1,
+               reason: "resumed",
+               attempt: 2
+             }
+
+      assert %ForemanServer.Events.PhaseRetried{attempt: 2, reason: "resumed"} =
+               ForemanServer.EventCodec.decode!("PhaseRetried", spec.payload)
+
+      {:ok, with_discard} =
+        Phase.handle_command(started, %{
+          type: "phase.retry",
+          payload: %{
+            run_id: "r",
+            phase_id: "p",
+            index: 1,
+            reason: "resumed",
+            prior_worktree_discarded: %{name: "wt", path: nil}
+          }
+        })
+
+      assert with_discard.payload.prior_worktree_discarded == %{name: "wt", path: nil}
+    end
+
+    test "a resumed retry keeps in_progress and advances attempt on each restart" do
+      started = fold(started_state(), "PhaseStarted", %{run_id: "r", phase_id: "p", attempt: 1})
+      command = %{type: "phase.retry", payload: %{run_id: "r", phase_id: "p", reason: "resumed"}}
+
+      {:ok, first} = Phase.handle_command(started, command)
+      resumed = fold(started, first.event_type, first.payload)
+      assert {resumed.status, resumed.attempt, resumed.terminal?} == {"in_progress", 2, false}
+
+      {:ok, second} = Phase.handle_command(resumed, command)
+      again = fold(resumed, second.event_type, second.payload)
+      assert {again.status, again.attempt} == {"in_progress", 3}
+    end
   end
 
   # ---------------------------------------------------------------------------

@@ -1,5 +1,11 @@
 defmodule ForemanServer.Events.PhaseStarted do
-  @moduledoc "Typed event emitted when a workflow phase has started."
+  @moduledoc """
+  Typed event emitted when a workflow phase has started.
+
+  `prior_worktree_discarded` is optional: it carries the record of uncommitted
+  work lost when the run's worktree was re-provisioned on resume, on the first
+  phase event after the resume when no phase was in flight.
+  """
   @enforce_keys [:phase_id, :run_id, :index, :name, :attempt, :artifact_template]
   @type t :: %__MODULE__{
           phase_id: String.t(),
@@ -11,7 +17,8 @@ defmodule ForemanServer.Events.PhaseStarted do
           artifact_template: String.t(),
           stall_detection_kind: String.t() | nil,
           stall_threshold_ms: pos_integer() | nil,
-          stall_policy: String.t() | nil
+          stall_policy: String.t() | nil,
+          prior_worktree_discarded: %{name: String.t(), path: String.t() | nil} | nil
         }
   @derive Jason.Encoder
   defstruct [
@@ -24,6 +31,7 @@ defmodule ForemanServer.Events.PhaseStarted do
     :artifact_template,
     :stall_detection_kind,
     :stall_threshold_ms,
-    :stall_policy
+    :stall_policy,
+    :prior_worktree_discarded
   ]
 end
