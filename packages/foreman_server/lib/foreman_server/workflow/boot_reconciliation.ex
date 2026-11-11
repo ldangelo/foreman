@@ -985,6 +985,7 @@ defmodule ForemanServer.Workflow.BootReconciliation do
 
     with {:ok, _} <- dispatch_effect_command(record),
          {:ok, _} <- dispatch_effect_command(effect_block_command(run_id, reason, version)) do
+      mark_effect_unresolved(key, run_id, reason)
       RunControl.request(run_id, :cancel)
       _ = RunControl.cancel_agent(run_id)
 
@@ -1034,7 +1035,39 @@ defmodule ForemanServer.Workflow.BootReconciliation do
     )
 
     :telemetry.execute(@effect_on_terminal_run_event, %{count: 1}, metadata)
+    # `reason` is nil for the `:not_done` verdict: that retry is legitimate and
+    # stays unmarked even when the terminal run could not record it.
+    if reason, do: mark_effect_unresolved(key, run_id, reason)
     :on_terminal_run
+  end
+
+  # An unresolved key (blocked run, or a terminal run that could not be blocked)
+  # records the run stream's version now. `Effect.run/4` refuses to repeat the
+  # effect, such as the operator's Create PR, until a `run.reset` follows that
+  # version. The `:not_done` verdict never gets here: that retry is legitimate.
+  # A marker that cannot be written is logged loudly; the key is ambiguous
+  # and `foreman_doctor` lists it either way.
+  defp mark_effect_unresolved(key, run_id, reason) do
+    {_state, version} = load_run_stream(run_id)
+
+    case KeyStore.mark_unresolved(key, version, reason) do
+      :ok ->
+        :ok
+
+      other ->
+        Logger.error(
+          "BootReconciliation: effect #{inspect(key)} of run #{run_id} left unresolved but the marker was not recorded: #{inspect(other)}",
+          key: key,
+          run_id: run_id
+        )
+    end
+  catch
+    :exit, exit_reason ->
+      Logger.error(
+        "BootReconciliation: effect #{inspect(key)} of run #{run_id} left unresolved but the marker was not recorded: #{inspect(exit_reason)}",
+        key: key,
+        run_id: run_id
+      )
   end
 
   defp effect_recovery_command(run_id, outcome, fields, reason, command_id) do
