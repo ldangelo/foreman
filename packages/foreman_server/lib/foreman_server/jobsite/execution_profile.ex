@@ -27,8 +27,11 @@ defmodule ForemanServer.Jobsite.ExecutionProfile do
 
   Credentials are unenforced on both backends here: run-scoped credentials
   belong to PRD-2026-aba4b79c (native execution telemetry). Cleanup follows the
-  worktree spec's `cleanup` (`:always` enforced; `:on_success`, `:never` and a
-  run without a worktree are not).
+  worktree spec's `cleanup`. On the host door it is NEVER enforced: the executor
+  removes the worktree only on its own finish paths, a server crash skips them,
+  and boot reconciliation reclaims a worktree only for a terminal run with a clean
+  checkout. On the docker jobsite the spec maps directly (`:always` enforced;
+  `:on_success`, `:never` and a run without a worktree are not).
 
   `to_map/1` is the recorded form: plain maps (`%{state:, reason:}` per
   property, the backend as a string), so the value survives Erlang-term storage,
@@ -85,7 +88,7 @@ defmodule ForemanServer.Jobsite.ExecutionProfile do
          "the agent runs on the server host; the VfsIsolation registry is not an enforcement point"},
       network: network(@host_backend),
       credentials: credentials(),
-      cleanup: cleanup(Keyword.get(opts, :cleanup, :never))
+      cleanup: host_cleanup(Keyword.get(opts, :cleanup, :never))
     }
   end
 
@@ -138,6 +141,19 @@ defmodule ForemanServer.Jobsite.ExecutionProfile do
   end
 
   defp host_root?(path), do: Path.expand(path) == "/"
+
+  # The host door reclaims a worktree only on the executor's own finish paths, so
+  # no spec value makes host cleanup a guarantee: a server crash mid-phase skips
+  # them, and boot reconciliation reclaims a worktree only for a terminal run with
+  # a clean checkout (a dirty one is preserved). `:always` is therefore recorded
+  # unenforced too, with the reason that says so.
+  defp host_cleanup(:always) do
+    {:unenforced,
+     "removed by the executor on its own finish paths; a server crash leaves the worktree, " <>
+       "and boot reclaims it only for a terminal run with a clean worktree"}
+  end
+
+  defp host_cleanup(spec), do: cleanup(spec)
 
   defp cleanup(:always), do: :enforced
 
