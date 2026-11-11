@@ -18,9 +18,9 @@ defmodule ForemanServer.Idempotency.Reconciler do
 
   The registry maps an effect class name (the string `Effect` writes as
   `"effect_class"`: `"branch_push"`, `"pr_create"`, `"task_provider"`) to its
-  module. Phase 0 registers none yet: the push and PR-create reconcilers land in
-  TRD-013 and the task-provider one in TRD-015, so those classes block fail
-  closed until then. The registry is read from
+  module. The push and PR-create reconcilers (TRD-013) are registered in
+  `config/config.exs`; the task-provider one lands in TRD-015, so that class blocks
+  fail closed until then. The registry is read from
   `Application.get_env(:foreman_server, #{inspect(__MODULE__)})[:classes]`, or
   from the `:classes` option of `verdict/3`.
 

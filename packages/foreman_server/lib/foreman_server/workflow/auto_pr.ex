@@ -56,7 +56,27 @@ defmodule ForemanServer.Workflow.AutoPR do
   branch it also counted every commit the run's base branch already carried,
   which is how a run that produced nothing could still look like it had work to
   propose.
+
+  ## The push and the PR create are keyed effects
+
+  Both external calls run through `ForemanServer.Idempotency.Effect.run/4` (TRD-013),
+  so a crash between the call and its outcome leaves an `ambiguous` key that boot
+  reconciliation hands to the class's reconciler instead of repeating the call:
+  `Reconcilers.BranchPush` keys the push by `(run_id, head_branch)` and records the
+  remote head before the push and the local tip being pushed; `Reconcilers.PrCreate`
+  keys the create by `(run_id, head_branch, base_branch)` and asks GitHub.
+
+  Both keys carry `cwd`, the directory the reconcilers run `git` and `gh` in, so a
+  context without a `cwd` cannot push or open a PR: the effect does not run and
+  `maybe_create_pr/1` returns `{:error, {:intent_not_recorded, :cwd_missing}}`. The
+  same shape comes back when the push's remote or local head cannot be read, or the
+  key cannot be written. A push or create that runs keeps its own result and error
+  shapes (`{:git_push_failed, ...}`, `{:gh_pr_create_failed, ...}`).
   """
+
+  alias ForemanServer.Idempotency.Effect
+  alias ForemanServer.Idempotency.Reconcilers.BranchPush
+  alias ForemanServer.Idempotency.Reconcilers.PrCreate, as: PrCreateEffect
 
   require Logger
 
@@ -80,6 +100,8 @@ defmodule ForemanServer.Workflow.AutoPR do
           required(:base_branch) => String.t(),
           optional(:artifact_path) => String.t() | nil,
           optional(:head_branch) => String.t() | nil,
+          # Optional for the commit probe only: the push and the PR create are keyed
+          # effects that record `cwd` and refuse to run without it (TRD-013).
           optional(:cwd) => String.t() | nil,
           # A nil value means the field was never set (the Task aggregate
           # defaults description to nil). Producers MUST omit the key rather
@@ -213,9 +235,26 @@ defmodule ForemanServer.Workflow.AutoPR do
   # fails with "Head ref must be a branch" / "No commits between ...". Foreman
   # creates the run branch locally in a worktree, so it must be published
   # first.
+  #
+  # The push is a keyed effect: `BranchPush.intent/4` reads the remote head and
+  # the local tip BEFORE the push and `Effect.run/4` records them in the
+  # `started` key, so a crash around the push is reconciled against the remote
+  # at boot instead of the push being repeated blind. A push whose intent cannot
+  # be recorded (no `cwd`, an unreadable head, the key store down) does not run.
   defp push_head(context, run_id, head_branch, cwd) do
-    opts = [stderr_to_stdout: true]
-    opts = if cwd, do: Keyword.put(opts, :cd, cwd), else: opts
+    with {:ok, meta} <- BranchPush.intent(runner(context), run_id, head_branch, cwd) do
+      Effect.run(
+        :branch_push,
+        BranchPush.key(run_id, head_branch),
+        fn -> git_push(context, run_id, head_branch, cwd) end,
+        meta
+      )
+    end
+    |> log_refusal(run_id, head_branch, "autopr.git_push", "git push")
+  end
+
+  defp git_push(context, run_id, head_branch, cwd) do
+    opts = [stderr_to_stdout: true, cd: cwd]
 
     Logger.info("AutoPR.run_id=#{run_id} git push -u origin #{head_branch}",
       run_id: run_id,
@@ -242,17 +281,28 @@ defmodule ForemanServer.Workflow.AutoPR do
     end
   end
 
+  # `gh pr create` is a keyed effect too (`Reconcilers.PrCreate`): a crash after
+  # GitHub made the PR and before the run recorded it is found by asking GitHub
+  # at boot, never by creating a second PR.
   defp open_pr(context, run_id, base_branch, head_branch, %{title: title, body: body}, cwd) do
+    Effect.run(
+      :pr_create,
+      PrCreateEffect.key(run_id, head_branch, base_branch),
+      fn -> gh_pr_create(context, run_id, base_branch, head_branch, title, body, cwd) end,
+      PrCreateEffect.intent(run_id, head_branch, base_branch, cwd)
+    )
+    |> log_refusal(run_id, head_branch, "autopr.gh_create", "gh pr create")
+  end
+
+  defp gh_pr_create(context, run_id, base_branch, head_branch, title, body, cwd) do
     cmd =
       @gh_args ++
         ["--base", base_branch, "--head", head_branch, "--title", title, "--body", body]
 
-    opts = [stderr_to_stdout: true]
-    opts = if cwd, do: Keyword.put(opts, :cd, cwd), else: opts
+    opts = [stderr_to_stdout: true, cd: cwd]
 
     Logger.info(
-      "AutoPR.run_id=#{run_id} gh pr create --base=#{base_branch} --head=#{head_branch}" <>
-        if(cwd, do: " (cwd=#{cwd})", else: ""),
+      "AutoPR.run_id=#{run_id} gh pr create --base=#{base_branch} --head=#{head_branch} (cwd=#{cwd})",
       run_id: run_id,
       base_branch: base_branch,
       head_branch: head_branch,
@@ -289,6 +339,29 @@ defmodule ForemanServer.Workflow.AutoPR do
         {:error, {:gh_pr_create_failed, exit_code, String.trim(output)}}
     end
   end
+
+  # An effect whose intent was not recorded did not run. Nothing downstream
+  # tells that from a failed call, so say it here.
+  defp log_refusal(
+         {:error, {:intent_not_recorded, reason}} = result,
+         run_id,
+         head_branch,
+         operation,
+         what
+       ) do
+    Logger.error(
+      "AutoPR.run_id=#{run_id} #{what} NOT run: its intent could not be recorded: #{inspect(reason)}",
+      run_id: run_id,
+      head_branch: head_branch,
+      operation: operation,
+      outcome: "refused",
+      reason: inspect(reason)
+    )
+
+    result
+  end
+
+  defp log_refusal(result, _run_id, _head_branch, _operation, _what), do: result
 
   @doc false
   def __pr_content_for_test__(context), do: pr_content(context)
@@ -362,10 +435,9 @@ defmodule ForemanServer.Workflow.AutoPR do
     %{title: legacy_pr_title(context), body: generated_body(context)}
   end
 
-  defp run(context, executable, args, opts) do
-    runner = Map.get(context, :command_runner) || (&System.cmd/3)
-    runner.(executable, args, opts)
-  end
+  defp run(context, executable, args, opts), do: runner(context).(executable, args, opts)
+
+  defp runner(context), do: Map.get(context, :command_runner) || (&System.cmd/3)
 
   defp pr_url_from_output(output) do
     case Regex.run(~r"https://github\.com/[^\s]+", output) do

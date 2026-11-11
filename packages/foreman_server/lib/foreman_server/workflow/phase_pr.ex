@@ -9,7 +9,18 @@ defmodule ForemanServer.Workflow.PhasePR do
   Phase PR reconciliation must publish the head branch before it reuses a
   matching open PR. Otherwise a reused PR record can look successful while the
   provider still shows an older remote head and a stale cumulative diff.
+
+  The push and the PR create are keyed effects (`ForemanServer.Idempotency.Effect`,
+  TRD-013): a crash around either is reconciled at boot against the remote branch
+  (`Reconcilers.BranchPush`) or GitHub (`Reconcilers.PrCreate`) instead of the call
+  being repeated. An effect whose intent cannot be recorded does not run and
+  returns `%Error{reason: :intent_not_recorded}` (the effect and the recorder's
+  reason in `details`).
   """
+
+  alias ForemanServer.Idempotency.Effect
+  alias ForemanServer.Idempotency.Reconcilers.BranchPush
+  alias ForemanServer.Idempotency.Reconcilers.PrCreate, as: PrCreateEffect
 
   require Logger
 
@@ -182,7 +193,25 @@ defmodule ForemanServer.Workflow.PhasePR do
     end
   end
 
+  # The push is a keyed effect (`Idempotency.Effect`, TRD-013): the remote head
+  # and the local tip are read BEFORE the push and recorded in the `started`
+  # key, so a crash around the push is reconciled against the remote at boot
+  # (`Reconcilers.BranchPush`) instead of the push being repeated blind. An
+  # intent that cannot be recorded means the push did not run.
   defp push_head(request) do
+    with {:ok, meta} <-
+           BranchPush.intent(runner(request), request.run_id, request.head_branch, request.cwd) do
+      Effect.run(
+        :branch_push,
+        BranchPush.key(request.run_id, request.head_branch),
+        fn -> git_push(request) end,
+        meta
+      )
+    end
+    |> effect_result(request, :branch_push)
+  end
+
+  defp git_push(request) do
     Logger.info("PhasePR.run_id=#{request.run_id} git push -u origin #{request.head_branch}")
 
     case run(request, "git", ["push", "-u", "origin", request.head_branch]) do
@@ -197,7 +226,20 @@ defmodule ForemanServer.Workflow.PhasePR do
     end
   end
 
+  # `gh pr create` is a keyed effect too (`Reconcilers.PrCreate`): a crash after
+  # GitHub made the PR is found by asking GitHub at boot, never by creating a
+  # second PR.
   defp open_pr(request) do
+    Effect.run(
+      :pr_create,
+      PrCreateEffect.key(request.run_id, request.head_branch, request.base_branch),
+      fn -> gh_pr_create(request) end,
+      PrCreateEffect.intent(request.run_id, request.head_branch, request.base_branch, request.cwd)
+    )
+    |> effect_result(request, :pr_create)
+  end
+
+  defp gh_pr_create(request) do
     title = "feat(phase): #{request.phase_name}"
 
     body =
@@ -230,6 +272,19 @@ defmodule ForemanServer.Workflow.PhasePR do
         })
     end
   end
+
+  # An effect whose intent was not recorded did not run. This module returns
+  # typed errors only, so it becomes one (`:intent_not_recorded`, the effect and
+  # `Effect.run/4`'s reason in `details`).
+  defp effect_result({:error, {:intent_not_recorded, reason}}, request, effect) do
+    Logger.error(
+      "PhasePR.run_id=#{request.run_id} #{effect} NOT run: its intent could not be recorded: #{inspect(reason)}"
+    )
+
+    typed_error(request, :intent_not_recorded, %{effect: effect, reason: reason})
+  end
+
+  defp effect_result(result, _request, _effect), do: result
 
   defp matching_pr(request, state) do
     args = [
@@ -305,10 +360,11 @@ defmodule ForemanServer.Workflow.PhasePR do
   end
 
   defp run(request, executable, args) do
-    runner = request.command_runner || (&System.cmd/3)
     opts = [cd: request.cwd, stderr_to_stdout: true]
-    runner.(executable, args, opts)
+    runner(request).(executable, args, opts)
   end
+
+  defp runner(request), do: request.command_runner || (&System.cmd/3)
 
   defp typed_error(request, reason, details) do
     {:error,

@@ -38,6 +38,16 @@ config :foreman_server, :agent_runtime,
 # and flip run.status from awaiting_worker → in_progress. Test mode
 # overrides this to false in config/test.exs.
 config :foreman_server, ForemanServer.Overwatch, enabled: true
+# Effect reconcilers (TRD-011..013): the class of an ambiguous `effect:` key (the
+# `effect_class` its metadata carries) mapped to the module that asks the outside
+# world whether the effect happened. A class with no entry blocks the run
+# `effect_class_unregistered`. `task_provider` is registered by TRD-015.
+config :foreman_server, ForemanServer.Idempotency.Reconciler,
+  classes: %{
+    "branch_push" => ForemanServer.Idempotency.Reconcilers.BranchPush,
+    "pr_create" => ForemanServer.Idempotency.Reconcilers.PrCreate
+  }
+
 # foreman_server: task_provider subsystem (TRD-029)
 config :foreman_server, :br_runner, ForemanServer.TaskProviders.SystemBrRunner
 
