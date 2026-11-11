@@ -894,19 +894,18 @@ defmodule ForemanServer.Workflow.BootReconciliation do
 
     result =
       try do
-        _ =
-          CommandGateway.dispatch_system(%{
-            type: "run_slots.release",
-            command_id: "foreman:boot-slot-release:#{run_id}:#{ms}",
-            aggregate_id: "run_slots:global",
-            payload: %{
-              run_id: run_id,
-              released_at_ms: ms,
-              reason: reason
-            }
-          })
-
-        :ok
+        %{
+          type: "run_slots.release",
+          command_id: "foreman:boot-slot-release:#{run_id}:#{ms}",
+          aggregate_id: "run_slots:global",
+          payload: %{
+            run_id: run_id,
+            released_at_ms: ms,
+            reason: reason
+          }
+        }
+        |> dispatch_slot_command()
+        |> dispatch_outcome(run_id, reason, :slot_release)
       catch
         # The `run_slots:global` actor is shared across the application and
         # any process (test reset, operator intervention, runtime supervisor)
@@ -934,19 +933,18 @@ defmodule ForemanServer.Workflow.BootReconciliation do
 
     result =
       try do
-        _ =
-          CommandGateway.dispatch_system(%{
-            type: "run_slots.remove_waiter",
-            command_id: "foreman:boot-slot-remove-waiter:#{run_id}:#{ms}",
-            aggregate_id: "run_slots:global",
-            payload: %{
-              run_id: run_id,
-              removed_at_ms: ms,
-              reason: reason
-            }
-          })
-
-        :ok
+        %{
+          type: "run_slots.remove_waiter",
+          command_id: "foreman:boot-slot-remove-waiter:#{run_id}:#{ms}",
+          aggregate_id: "run_slots:global",
+          payload: %{
+            run_id: run_id,
+            removed_at_ms: ms,
+            reason: reason
+          }
+        }
+        |> dispatch_slot_command()
+        |> dispatch_outcome(run_id, reason, :waiter_remove)
       catch
         :exit, exit_reason ->
           handle_dispatch_failure(run_id, reason, :waiter_remove, exit_reason)
@@ -958,6 +956,24 @@ defmodule ForemanServer.Workflow.BootReconciliation do
     end
 
     :ok
+  end
+
+  # The test hook stands in for an answer `CommandGateway.dispatch_system/1`
+  # gives only under conditions a test cannot force (an append that errors).
+  defp dispatch_slot_command(command) do
+    case Application.get_env(:foreman_server, :boot_reconciliation_slot_dispatch_hook) do
+      hook when is_function(hook, 1) -> hook.(command)
+      _ -> CommandGateway.dispatch_system(command)
+    end
+  end
+
+  # An `{:error, _}` answer leaves the holder or waiter in place, so it is a
+  # failed dispatch exactly like an exit: it is counted, never cleared.
+  defp dispatch_outcome({:ok, _}, _run_id, _reason, _kind), do: :ok
+
+  defp dispatch_outcome({:error, error}, run_id, reason, kind) do
+    handle_dispatch_failure(run_id, reason, kind, error)
+    :failed
   end
 
   defp holder_orphan?(%BeadsDbLease.State{holder: nil}, _active_run_ids), do: false
@@ -1418,7 +1434,7 @@ defmodule ForemanServer.Workflow.BootReconciliation do
               inspect(error)
           )
 
-        _ ->
+        {:ok, _} ->
           :ok
       end
     catch

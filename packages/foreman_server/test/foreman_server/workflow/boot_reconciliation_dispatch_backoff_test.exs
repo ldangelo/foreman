@@ -304,6 +304,51 @@ defmodule ForemanServer.Workflow.BootReconciliationDispatchBackoffTest do
     end
   end
 
+  describe "a dispatch that answers {:error, _}" do
+    # The answer is forced through the module's dispatch hook: `CommandGateway.dispatch_system/1`
+    # gives an error here only when an append fails, which a test cannot cause on demand. The
+    # count read, the backoff decision and the durable append are the production ones.
+    setup do
+      Application.put_env(:foreman_server, :boot_reconciliation_slot_dispatch_hook, fn _command ->
+        {:error, :append_refused}
+      end)
+
+      on_exit(fn ->
+        Application.delete_env(:foreman_server, :boot_reconciliation_slot_dispatch_hook)
+      end)
+    end
+
+    test "a holder's release is counted as a failure and the recorded count is not cleared" do
+      run_id = unique_id("error-holder")
+      seed_terminal_run!(run_id)
+      append_run_slot_holder!(run_id)
+      capture_log(fn -> charge(run_id, :slot_release, 1) end)
+
+      capture_log(fn -> assert :ok = BootReconciliation.scan_run_slot_orphans() end)
+      _ = :sys.get_state(BootReconciliation)
+
+      assert recovery_outcomes(run_id) == [{"failed", 1}, {"failed", 2}]
+
+      assert recovery_entry(run_id) |> Map.take([:attempt, :outcome]) == %{
+               attempt: 2,
+               outcome: "failed"
+             }
+    end
+
+    test "a waiter's removal is counted as a failure and the recorded count is not cleared" do
+      run_id = unique_id("error-waiter")
+      seed_terminal_run!(run_id)
+      append_run_slot_holder!(unique_id("other-holder"))
+      append_run_slot_waiter!(run_id)
+      capture_log(fn -> charge(run_id, :waiter_remove, 1) end)
+
+      capture_log(fn -> assert :ok = BootReconciliation.scan_run_slot_orphans() end)
+      _ = :sys.get_state(BootReconciliation)
+
+      assert recovery_outcomes(run_id) == [{"failed", 1}, {"failed", 2}]
+    end
+  end
+
   describe "an append that exits" do
     test "is caught, logged and not counted; the reconciler stays up" do
       run_id = unique_id("append-exits")
