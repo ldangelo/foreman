@@ -986,6 +986,28 @@ defmodule ForemanServer.Workflow.Dispatcher do
   end
 
   defp resume_run(run_id, state) do
+    if resumable_run?(run_id) do
+      start_resumed_run(run_id, state)
+    else
+      # Boot replays every historical event: a RunResumed whose run has since been
+      # paused again, cancelled or otherwise ended is history, not a command. Acting
+      # on it would start an executor for a run that must not run.
+      Logger.info(
+        "ForemanServer.Workflow.Dispatcher: ignoring RunResumed for #{run_id}: the run is not resumable now"
+      )
+
+      {:noreply, state}
+    end
+  end
+
+  defp resumable_run?(run_id) do
+    match?(
+      %{terminal?: false, status: status} when status != "paused",
+      ProjectionStore.run(run_id)
+    )
+  end
+
+  defp start_resumed_run(run_id, state) do
     case ProjectionStore.tasks_by_run_id(run_id) do
       [] ->
         Logger.warning("handle_run_resumed: no task found for run #{run_id}")
