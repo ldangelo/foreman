@@ -138,7 +138,7 @@ defmodule ForemanServer.Idempotency.KeyStore do
 
   @doc """
   The store's durability: `:durable` only when a repo is configured AND answers
-  (probed through the same read as `list_records_checked/1`);
+  (probed by a one-row read of the same table);
   `{:not_durable, :no_repo}` for the ETS-only fallback (keys do not survive a
   restart); `{:not_durable, {:unreachable, reason}}` for a repo that is
   configured but does not answer (or a `KeyStore` that is not running).
@@ -351,8 +351,8 @@ defmodule ForemanServer.Idempotency.KeyStore do
     do: {:reply, {:not_durable, :no_repo}, state}
 
   def handle_call(:durability, _from, %{repo: repo} = state) do
-    case query_records(repo, :ambiguous) do
-      {:ok, _records} -> {:reply, :durable, state}
+    case probe_repo(repo) do
+      :ok -> {:reply, :durable, state}
       {:error, reason} -> {:reply, {:not_durable, {:unreachable, reason}}, state}
     end
   end
@@ -386,6 +386,17 @@ defmodule ForemanServer.Idempotency.KeyStore do
   end
 
   # --- internal helpers ---
+
+  # Does the repo answer? One key, never the rows: the probe runs at boot and on every doctor
+  # render, so it must not load every ambiguous record with its metadata.
+  defp probe_repo(repo) do
+    _ = repo.all(from(k in IdempotencyKey, limit: 1, select: k.key))
+    :ok
+  rescue
+    err -> {:error, err}
+  catch
+    :exit, reason -> {:error, {:exit, reason}}
+  end
 
   defp query_records(repo, status) do
     rows = repo.all(from(k in IdempotencyKey, where: k.status == ^status))

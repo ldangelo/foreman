@@ -53,6 +53,17 @@ defmodule ForemanServer.Idempotency.KeyStoreDurabilityTest do
         [{:mode, :exit}] ->
           exit({:noproc, {DBConnection.Holder, :checkout, []}})
 
+        _ when query.wheres == [] ->
+          # The durability probe: honour `limit` and record how many rows came back.
+          limit = if query.limit, do: query.limit.expr, else: :all
+
+          keys =
+            for({key, _status, _meta} <- :ets.tab2list(@rows), is_binary(key), do: key)
+            |> then(&if(limit == :all, do: &1, else: Enum.take(&1, limit)))
+
+          :ets.insert(@rows, {:probe_rows, length(keys)})
+          keys
+
         _ ->
           [%{params: [{status, _type}]}] = query.wheres
 
@@ -195,6 +206,18 @@ defmodule ForemanServer.Idempotency.KeyStoreDurabilityTest do
 
       assert %{"run_id" => "r1", "effect_class" => "pr_create", "reason" => "boot"} =
                record.metadata
+    end
+
+    test "the durability probe reads one row, not every ambiguous record" do
+      for n <- 1..3 do
+        :ok = KeyStore.mark_started("k-#{n}", %{run_id: "r#{n}"})
+        :ok = KeyStore.mark_ambiguous("k-#{n}", "boot")
+      end
+
+      assert KeyStore.durable?()
+      assert [{:probe_rows, 1}] = :ets.lookup(@rows, :probe_rows)
+      assert {:ok, records} = KeyStore.list_records_checked(:ambiguous)
+      assert length(records) == 3
     end
 
     test "a repo that raises is unreachable: an error, never the ETS copy" do
