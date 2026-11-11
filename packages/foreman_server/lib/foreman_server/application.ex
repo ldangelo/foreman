@@ -251,6 +251,10 @@ defmodule ForemanServer.Application do
 
     {:ok, pid} = Supervisor.start_link(children(), supervisor_opts())
 
+    # TRD-014: after the tree is up (a configured checkpoint repo has started), say loudly when
+    # the idempotency store is not durable: effect keys then do not survive a restart.
+    _ = ForemanServer.Idempotency.KeyStore.report_boot_durability()
+
     # TRD-004: register the Jido.Harness backend adapter with the
     # AgentRuntime.AdapterCatalog after the supervisor tree is alive.
     _ = register_jido_harness_adapter()

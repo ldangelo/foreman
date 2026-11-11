@@ -31,6 +31,7 @@ defmodule ForemanServer.Idempotency.KeyStore do
   @table :foreman_idempotency_keys
 
   import Ecto.Query
+  require Logger
   alias ForemanServer.Idempotency.IdempotencyKey
   alias ForemanServer.Agents.JidoCheckpointStore
 
@@ -111,6 +112,98 @@ defmodule ForemanServer.Idempotency.KeyStore do
   """
   def list_by_status(status) do
     GenServer.call(__MODULE__, {:list_by_status, status})
+  end
+
+  @typedoc "A stored key record as `list_records_checked/1` returns it."
+  @type stored_record :: %{key: String.t(), status: atom(), metadata: map()}
+
+  @doc """
+  List the full records (key, status, metadata) with a given status, reporting
+  a failed read instead of hiding it.
+
+  Returns `{:ok, [record]}` or `{:error, reason}`. With a repo configured it
+  queries the stored rows under a rescue and NEVER falls back to ETS (a
+  fallback would show an outage as an empty list); a repo that is down, or a
+  `KeyStore` that is not running, is `{:error, reason}`. Without a repo it
+  scans the ETS table. Metadata keys are strings when read from the repo
+  (JSON round trip) and as written when read from ETS. `list_by_status/1`
+  keeps its ETS fallback: boot reconciliation reads it and is not changed here.
+  """
+  @spec list_records_checked(atom()) :: {:ok, [stored_record()]} | {:error, term()}
+  def list_records_checked(status) do
+    GenServer.call(__MODULE__, {:list_records_checked, status})
+  catch
+    :exit, reason -> {:error, {:exit, reason}}
+  end
+
+  @doc """
+  The store's durability: `:durable` only when a repo is configured AND answers
+  (probed through the same read as `list_records_checked/1`);
+  `{:not_durable, :no_repo}` for the ETS-only fallback (keys do not survive a
+  restart); `{:not_durable, {:unreachable, reason}}` for a repo that is
+  configured but does not answer (or a `KeyStore` that is not running).
+  """
+  @spec durability() :: :durable | {:not_durable, :no_repo | {:unreachable, term()}}
+  def durability do
+    GenServer.call(__MODULE__, :durability)
+  catch
+    :exit, reason -> {:not_durable, {:unreachable, {:exit, reason}}}
+  end
+
+  @doc "True only when `durability/0` is `:durable`."
+  @spec durable?() :: boolean()
+  def durable?, do: durability() == :durable
+
+  @production_switches "FOREMAN_JIDO_ECTO_ENABLED=true (or `config :foreman_server, :jido_ecto, " <>
+                         "enabled: true`) and JIDO_CHECKPOINT_DATABASE_URL"
+
+  @doc """
+  The one-line statement of the store's durability, used by the boot log and the
+  doctor. `nil` when the store is durable.
+  """
+  @spec durability_note() :: String.t() | nil
+  def durability_note do
+    case durability() do
+      :durable ->
+        nil
+
+      {:not_durable, :no_repo} ->
+        "idempotency store is not durable: no repo is configured (ETS fallback), so effect keys " <>
+          "do not survive a restart and crash recovery cannot reconcile effects; set " <>
+          @production_switches
+
+      {:not_durable, {:unreachable, reason}} ->
+        "idempotency store is configured but unreachable (#{inspect(reason, limit: 5)}): " <>
+          "keys written now do not survive a restart and crash recovery cannot reconcile " <>
+          "effects; check " <> @production_switches
+    end
+  end
+
+  @doc """
+  Boot report: when the store is not durable, logs an error and emits
+  `[:foreman_server, :idempotency, :key_store, :not_durable]` (measurements
+  `%{count: 1}`, metadata `%{reason: :no_repo | :unreachable}`). Called once from
+  `ForemanServer.Application.start/2` after the supervision tree is up, so a
+  configured repo has started.
+  """
+  @spec report_boot_durability() :: :durable | {:not_durable, :no_repo | {:unreachable, term()}}
+  def report_boot_durability do
+    case durability() do
+      :durable ->
+        :durable
+
+      {:not_durable, detail} = result ->
+        reason = if detail == :no_repo, do: :no_repo, else: :unreachable
+        Logger.error(durability_note())
+
+        :telemetry.execute(
+          [:foreman_server, :idempotency, :key_store, :not_durable],
+          %{count: 1},
+          %{reason: reason}
+        )
+
+        result
+    end
   end
 
   # --- genserver callbacks ---
@@ -239,6 +332,31 @@ defmodule ForemanServer.Idempotency.KeyStore do
     {:reply, result, state}
   end
 
+  # Checked reads and the durability probe. A failed repo query is an error, never ETS.
+  @impl true
+  def handle_call({:list_records_checked, status}, _from, %{repo: repo} = state)
+      when repo != nil do
+    {:reply, query_records(repo, status), state}
+  end
+
+  def handle_call({:list_records_checked, status}, _from, %{repo: nil} = state) do
+    records =
+      for {key, ^status, meta} <- :ets.tab2list(@table),
+          do: %{key: key, status: status, metadata: meta}
+
+    {:reply, {:ok, records}, state}
+  end
+
+  def handle_call(:durability, _from, %{repo: nil} = state),
+    do: {:reply, {:not_durable, :no_repo}, state}
+
+  def handle_call(:durability, _from, %{repo: repo} = state) do
+    case query_records(repo, :ambiguous) do
+      {:ok, _records} -> {:reply, :durable, state}
+      {:error, reason} -> {:reply, {:not_durable, {:unreachable, reason}}, state}
+    end
+  end
+
   # Durable path: list by status
   @impl true
   def handle_call({:list_by_status, status}, _from, %{repo: repo} = state)
@@ -268,6 +386,16 @@ defmodule ForemanServer.Idempotency.KeyStore do
   end
 
   # --- internal helpers ---
+
+  defp query_records(repo, status) do
+    rows = repo.all(from(k in IdempotencyKey, where: k.status == ^status))
+
+    {:ok, Enum.map(rows, &%{key: &1.key, status: &1.status, metadata: &1.metadata || %{}})}
+  rescue
+    err -> {:error, err}
+  catch
+    :exit, reason -> {:error, {:exit, reason}}
+  end
 
   # After a restart ETS has no copy of the key (`init/1` creates the table
   # empty) but the stored row does. Merge the incoming fields into the stored
