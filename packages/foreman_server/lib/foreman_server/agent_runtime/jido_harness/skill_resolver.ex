@@ -82,7 +82,9 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.SkillResolver do
     * `:home` - the home directory (default `System.user_home!/0`).
     * `:agent_dir` - pi's agent directory (default: `PI_CODING_AGENT_DIR` from
       the environment, else `<home>/.pi/agent`). The environment is read in
-      `default_agent_dir/1` only.
+      `default_agent_dir/1` only. A value that is neither absolute nor
+      `~`-prefixed is resolved by pi against the launch cwd, which does not exist
+      at admission, so it makes the answer `:unverifiable`.
     * `:project_root` - the project's checkout (no worktree exists at admission).
       When omitted, project-scoped sources cannot be examined, so an absence can
       never be proven and the answer is `:unverifiable` unless the skill is found
@@ -93,7 +95,6 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.SkillResolver do
 
   @type verdict :: :available | :missing | :unverifiable
 
-  @skill_name ~r/\A[A-Za-z0-9][A-Za-z0-9._-]*\z/
   @ignore_files [".gitignore", ".ignore", ".fdignore"]
   @resource_fields ["extensions", "skills", "prompts", "themes"]
 
@@ -106,14 +107,11 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.SkillResolver do
     end
   end
 
-  defp resolve_on_host(:pi, skill, opts) do
-    if Regex.match?(@skill_name, skill) do
-      resolve_pi(skill, opts)
-    else
-      # Never reaches the filesystem: a name is one directory name.
-      :missing
-    end
-  end
+  # The requested name is only ever COMPARED with the identity of skills found
+  # under the declared sources (pi: frontmatter `name`, taken verbatim; the
+  # `/skill:<x>` command takes everything up to the first space). No path is
+  # built from it, so no shape check is needed to keep it inside the roots.
+  defp resolve_on_host(:pi, skill, opts), do: resolve_pi(skill, opts)
 
   defp resolve_on_host(_provider_without_repo_skill_dir, _skill, _opts), do: :unverifiable
 
@@ -123,13 +121,37 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.SkillResolver do
 
   defp resolve_pi(skill, opts) do
     home = Keyword.get_lazy(opts, :home, &System.user_home!/0)
-    agent_dir = Keyword.get_lazy(opts, :agent_dir, fn -> default_agent_dir(home) end)
     project_root = Keyword.get(opts, :project_root)
-    ctx = %{home: home, agent_dir: agent_dir, project_root: project_root}
 
-    case collect_sources(ctx) do
-      {:ok, acc} -> verdict(acc, skill)
+    with {:ok, agent_dir} <- agent_dir(opts, home),
+         ctx = %{home: home, agent_dir: agent_dir, project_root: project_root},
+         {:ok, acc} <- collect_sources(ctx) do
+      verdict(acc, skill)
+    else
       :error -> :unverifiable
+    end
+  end
+
+  # pi resolves the agent directory with `resolvePath(agentDir)`, whose base is
+  # the LAUNCH cwd. That cwd (a worktree) does not exist at admission, so a
+  # value that is neither absolute nor `~`-prefixed cannot be resolved here.
+  defp agent_dir(opts, home) do
+    raw =
+      case Keyword.fetch(opts, :agent_dir) do
+        {:ok, value} -> value
+        :error -> default_agent_dir(home)
+      end
+
+    case raw do
+      value when is_binary(value) ->
+        trimmed = String.trim(value)
+
+        if Path.type(trimmed) == :absolute or trimmed == "~" or String.starts_with?(trimmed, "~/"),
+          do: {:ok, expand(trimmed, "/", home)},
+          else: :error
+
+      _ ->
+        :error
     end
   end
 
@@ -137,7 +159,7 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.SkillResolver do
   defp default_agent_dir(home) do
     case System.get_env("PI_CODING_AGENT_DIR") do
       value when value in [nil, ""] -> Path.join(home, ".pi/agent")
-      value -> expand(value, "/", home)
+      value -> value
     end
   end
 
@@ -158,7 +180,12 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.SkillResolver do
       |> add_packages(ctx, project_settings, user_settings, project_base)
       |> add_settings_entries(user_settings, ctx.agent_dir, :user, ctx.home)
       |> add_settings_entries(project_settings, project_base, :project, ctx.home)
-      |> add_auto_dirs(ctx, project_base)
+      |> add_auto_dirs(
+        ctx,
+        project_base,
+        filter_flags(user_settings),
+        filter_flags(project_settings)
+      )
       |> then(&{:ok, &1})
     else
       :error -> :error
@@ -196,28 +223,44 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.SkillResolver do
 
   # -- auto-discovered directories (addAutoDiscoveredResources) ---------------
 
-  defp add_auto_dirs(acc, ctx, project_base) do
-    acc
-    |> add_scan(Path.join(ctx.agent_dir, "skills"), :pi, :user, [])
-    |> add_extension_dir(Path.join(ctx.agent_dir, "extensions"))
-    |> add_scan(Path.join(ctx.home, ".agents/skills"), :agents, :user, [])
-    |> add_project_dirs(ctx, project_base)
+  # Every auto-discovered skill is run through `isEnabledByOverrides` with the
+  # SAME scope's settings `skills` array (`userOverrides.skills`,
+  # `projectOverrides.skills`), and pi keeps only the enabled ones. A scope whose
+  # array holds any `!`, `+`, `-` or glob entry can therefore disable a skill in
+  # its auto-discovered directories: a find there is `:unverifiable`. (The
+  # overrides only remove skills, so absence is unaffected.)
+  defp filter_flags(settings) do
+    case Map.get(settings, "skills") do
+      list when is_list(list) ->
+        if Enum.any?(list, &(is_binary(&1) and pattern?(&1))), do: [:filtered], else: []
+
+      _ ->
+        []
+    end
   end
 
-  defp add_project_dirs(acc, %{project_root: nil}, _base), do: acc
+  defp add_auto_dirs(acc, ctx, project_base, user_flags, project_flags) do
+    acc
+    |> add_scan(Path.join(ctx.agent_dir, "skills"), :pi, :user, user_flags)
+    |> add_extension_dir(Path.join(ctx.agent_dir, "extensions"))
+    |> add_scan(Path.join(ctx.home, ".agents/skills"), :agents, :user, user_flags)
+    |> add_project_dirs(ctx, project_base, project_flags)
+  end
 
-  defp add_project_dirs(acc, ctx, project_base) do
+  defp add_project_dirs(acc, %{project_root: nil}, _base, _flags), do: acc
+
+  defp add_project_dirs(acc, ctx, project_base, flags) do
     user_agents = Path.join(ctx.home, ".agents/skills")
 
     acc =
       acc
-      |> add_scan(Path.join(project_base, "skills"), :pi, :project, [])
+      |> add_scan(Path.join(project_base, "skills"), :pi, :project, flags)
       |> add_extension_dir(Path.join(project_base, "extensions"))
 
     ctx.project_root
     |> ancestor_agents_skill_dirs()
     |> Enum.reject(&(&1 == user_agents))
-    |> Enum.reduce(acc, &add_scan(&2, &1, :agents, :project, []))
+    |> Enum.reduce(acc, &add_scan(&2, &1, :agents, :project, flags))
   end
 
   # `collectAncestorAgentsSkillDirs`: the start dir and every ancestor up to and
@@ -247,20 +290,83 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.SkillResolver do
     end
   end
 
+  # `collectAutoExtensionEntries`: the directory itself resolves an entry
+  # (`pi.extensions` or `index.ts`/`index.js`), or a non-dot child other than
+  # `node_modules` is a `.ts`/`.js` file or a directory that resolves one. Ignore
+  # files can only remove entries, so they are not consulted.
   defp add_extension_dir(acc, dir) do
     case File.ls(dir) do
-      {:ok, entries} ->
-        if Enum.any?(entries, &(not String.starts_with?(&1, ".") and &1 != "node_modules")),
-          do: %{acc | ext?: true},
-          else: acc
+      {:ok, names} ->
+        case extension_entries?(dir, names) do
+          true -> %{acc | ext?: true}
+          false -> acc
+          :error -> %{acc | unsure?: true}
+        end
 
-      {:error, :enoent} ->
+      {:error, code} when code in [:enoent, :enotdir] ->
         acc
 
       {:error, _} ->
         %{acc | unsure?: true}
     end
   end
+
+  defp extension_entries?(dir, names) do
+    case resolves_extension_entry(dir) do
+      :error ->
+        :error
+
+      true ->
+        true
+
+      false ->
+        names
+        |> Enum.reject(&(String.starts_with?(&1, ".") or &1 == "node_modules"))
+        |> Enum.reduce_while(false, fn name, false ->
+          path = Path.join(dir, name)
+
+          case File.stat(path) do
+            {:ok, %{type: :regular}} ->
+              if String.ends_with?(name, [".ts", ".js"]), do: {:halt, true}, else: {:cont, false}
+
+            {:ok, %{type: :directory}} ->
+              case resolves_extension_entry(path) do
+                :error -> {:halt, :error}
+                found -> if found, do: {:halt, true}, else: {:cont, false}
+              end
+
+            _ ->
+              {:cont, false}
+          end
+        end)
+    end
+  end
+
+  # `resolveExtensionEntries`: a `pi.extensions` path that exists, else an index
+  # file. A package.json this module cannot read is `:error`.
+  defp resolves_extension_entry(dir) do
+    manifest =
+      case read_manifest(dir) do
+        {:ok, nil} -> {:ok, []}
+        {:ok, %{"extensions" => list}} -> {:ok, list}
+        {:ok, _} -> {:ok, []}
+        :error -> :error
+      end
+
+    case manifest do
+      :error ->
+        :error
+
+      {:ok, declared} ->
+        Enum.any?(declared, &File.exists?(Path.expand(declared_path(dir, &1)))) or
+          File.exists?(Path.join(dir, "index.ts")) or File.exists?(Path.join(dir, "index.js"))
+    end
+  end
+
+  # Node's `resolve(root, entry)`: an absolute entry stands alone, anything else
+  # (including `~...`) is joined to the root. `~` is never expanded.
+  defp declared_path(root, entry),
+    do: if(Path.type(entry) == :absolute, do: entry, else: Path.join(root, entry))
 
   # -- settings.json `skills` / `extensions` arrays ---------------------------
 
@@ -539,7 +645,7 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.SkillResolver do
       if String.contains?(entry, ["*", "?"]) do
         add_glob(acc, root, entry, scope, flags)
       else
-        add_path(acc, Path.expand(entry, root), scope, flags)
+        add_path(acc, Path.expand(declared_path(root, entry)), scope, flags)
       end
     end)
   end
@@ -555,7 +661,14 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.SkillResolver do
       |> Path.join(pattern)
       |> Path.wildcard()
       |> Enum.reject(fn path ->
-        path |> Path.relative_to(root) |> Path.split() |> Enum.any?(&String.starts_with?(&1, "."))
+        # `Path.wildcard/1` keeps the pattern's literal prefix, so strip it to
+        # get the segments below the package root. (`Path.relative_to/2` would
+        # normalise a `..` match into an absolute path and put the root's own
+        # hidden ancestors into the check.)
+        path
+        |> String.replace_prefix(Path.join(root, ""), "")
+        |> Path.split()
+        |> Enum.any?(&(String.starts_with?(&1, ".") and &1 != ".."))
       end)
       |> Enum.reduce(acc, &add_path(&2, &1, scope, flags))
     end
@@ -685,13 +798,17 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.SkillResolver do
     with {:ok, content} <- File.read(path),
          {:ok, front} <- frontmatter(content) do
       case front.description do
-        :present -> {:ok, front.name || Path.basename(Path.dirname(path))}
+        :present -> {:ok, identity_name(front.name, path)}
         :absent -> {:ok, nil}
       end
     else
       _ -> :error
     end
   end
+
+  # An empty `name` is falsy in pi's `name || parentDirName`.
+  defp identity_name(name, path) when name in [nil, ""], do: Path.basename(Path.dirname(path))
+  defp identity_name(name, _path), do: name
 
   # Frontmatter, restricted to what decides loading: `name` (a string or
   # absent) and whether `description` is a non-empty string. Any construct this
@@ -796,8 +913,24 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.SkillResolver do
         :error
 
       # Not a YAML string: pi would ignore it.
+      # (null, booleans, and every number form: decimal, `.inf`, `.nan`,
+      # `0x17`, `0o17`). Anything starting like a number is not read.
       value in ["~", "null", "Null", "NULL", "true", "false", "True", "False"] or
-          Regex.match?(~r/^[-+]?[0-9][0-9_.eE+-]*$/, value) ->
+          String.starts_with?(value, [
+            "0",
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6",
+            "7",
+            "8",
+            "9",
+            "-",
+            "+",
+            "."
+          ]) ->
         :error
 
       true ->
