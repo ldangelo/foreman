@@ -130,6 +130,7 @@ defmodule ForemanServer.Workflow.AutoPR do
          {:ok, ahead} <- commits_ahead(context, base_branch, head_branch, cwd) do
       if ahead > 0 do
         with {:ok, pr_content} <- pr_content(context),
+             :ok <- preflight_open_pr(run_id, base_branch, head_branch),
              :ok <- push_head(context, run_id, head_branch, cwd) do
           open_pr(context, run_id, base_branch, head_branch, pr_content, cwd)
         end
@@ -229,6 +230,17 @@ defmodule ForemanServer.Workflow.AutoPR do
       {output, exit_code} ->
         {:error, {:rev_list_failed, exit_code, String.trim(output)}}
     end
+  end
+
+  # A PR-create key recovery left unresolved refuses the whole sequence BEFORE
+  # the push: a push that ran anyway could publish commits the remote lacks.
+  defp preflight_open_pr(run_id, base_branch, head_branch) do
+    Effect.preflight(
+      :pr_create,
+      PrCreateEffect.key(run_id, head_branch, base_branch),
+      %{"run_id" => run_id}
+    )
+    |> log_refusal(run_id, head_branch, "autopr.preflight", "git push and gh pr create")
   end
 
   # GitHub cannot open a PR from a branch it has never seen: `gh pr create`
@@ -350,12 +362,32 @@ defmodule ForemanServer.Workflow.AutoPR do
          what
        ) do
     Logger.error(
-      "AutoPR.run_id=#{run_id} #{what} NOT run: #{inspect(key)} is unresolved (see foreman_doctor, Unresolved effect keys); reset the run to retry",
+      "AutoPR.run_id=#{run_id} #{what} NOT run: #{inspect(key)} is unresolved (see foreman_doctor, Unresolved effect keys). " <>
+        "run.reset lifts this only for a failed, stuck, blocked or paused run; for any other run check GitHub and the doctor list",
       run_id: run_id,
       head_branch: head_branch,
       operation: operation,
       outcome: "refused",
       reason: "effect_unresolved"
+    )
+
+    result
+  end
+
+  defp log_refusal(
+         {:error, {:effect_check_failed, reason}} = result,
+         run_id,
+         head_branch,
+         operation,
+         what
+       ) do
+    Logger.error(
+      "AutoPR.run_id=#{run_id} #{what} NOT run: could not check whether its key is unresolved: #{inspect(reason)}",
+      run_id: run_id,
+      head_branch: head_branch,
+      operation: operation,
+      outcome: "refused",
+      reason: inspect(reason)
     )
 
     result

@@ -426,6 +426,59 @@ defmodule ForemanServer.Workflow.PhasePREffectsTest do
     end
   end
 
+  describe "a PR-create key recovery left unresolved" do
+    test "refuses before the push: nothing is pushed or created", ctx do
+      %{request: request, world: world, run_id: run_id, create_key: create_key} = ctx
+
+      :ok =
+        KeyStore.mark_started(create_key, %{
+          "run_id" => run_id,
+          "effect_class" => "pr_create"
+        })
+
+      :ok = KeyStore.mark_unresolved(create_key, 0, "effect_outcome_ambiguous")
+      {:ok, before_key} = KeyStore.get(create_key)
+
+      assert {:error,
+              %PhasePR.Error{
+                reason: :effect_unresolved,
+                details: %{effect: :pr_create, key: ^create_key}
+              }} = PhasePR.maybe_create(request)
+
+      assert EffectWorld.executed(world, :push) == 0
+      assert EffectWorld.executed(world, :create) == 0
+      assert {:ok, ^before_key} = KeyStore.get(create_key)
+    end
+
+    test "a check that cannot be made is its own typed error and nothing runs", ctx do
+      %{request: request, world: world, run_id: run_id, create_key: create_key} = ctx
+
+      :ok =
+        KeyStore.mark_started(create_key, %{"run_id" => run_id, "effect_class" => "pr_create"})
+
+      :ok = KeyStore.mark_unresolved(create_key, 0, "effect_outcome_ambiguous")
+      original = Application.get_env(:foreman_server, ForemanServer.Idempotency.Effect)
+
+      Application.put_env(:foreman_server, ForemanServer.Idempotency.Effect,
+        run_stream_reader: fn _stream, _from -> {:error, :boom} end
+      )
+
+      on_exit(fn ->
+        if original,
+          do: Application.put_env(:foreman_server, ForemanServer.Idempotency.Effect, original),
+          else: Application.delete_env(:foreman_server, ForemanServer.Idempotency.Effect)
+      end)
+
+      assert {:error,
+              %PhasePR.Error{
+                reason: :effect_check_failed,
+                details: %{effect: :pr_create, reason: :boom}
+              }} = PhasePR.maybe_create(request)
+
+      assert EffectWorld.executed(world, :push) == 0
+    end
+  end
+
   describe "a crash on either side of the push" do
     test "after the push reached the remote: blocked, and no second push",
          %{request: request, fx: fx, world: world, run_id: run_id, push_key: key} do

@@ -769,8 +769,14 @@ defmodule ForemanServerWeb.Workspace.Actions do
   def describe({:effect_unresolved, key}),
     do:
       "an earlier push or pull request attempt (#{key}) may already have happened and " <>
-        "could not be confirmed, so it is not repeated; see foreman_doctor, Unresolved effect keys, " <>
-        "and reset the run to retry"
+        "could not be confirmed, so it is not repeated. Check GitHub and foreman_doctor, " <>
+        "Unresolved effect keys. Resetting the run lifts this only for a failed, stuck, " <>
+        "blocked or paused run; for any other run the key stays unresolved"
+
+  def describe({:effect_check_failed, reason}),
+    do:
+      "could not check whether an earlier push or pull request attempt is unresolved " <>
+        "(#{inspect(reason, limit: 5)}); nothing was run, try again"
 
   def describe({:project_unresolved, id}), do: "project #{id} is not registered"
   def describe({:fix_in_flight, _url}), do: "a fix is already running for that pull request"

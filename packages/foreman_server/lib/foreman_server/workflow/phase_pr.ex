@@ -17,7 +17,8 @@ defmodule ForemanServer.Workflow.PhasePR do
   returns `%Error{reason: :intent_not_recorded}` (the effect and the recorder's
   reason in `details`). A key recovery left unresolved is not repeated: the result is
   `%Error{reason: :effect_unresolved}` (the effect and key in `details`) until the run
-  is reset.
+  is reset; a refusal check that cannot be made is `%Error{reason: :effect_check_failed}`.
+  The PR-create key is checked before the push, so a refusal stops the push too.
   """
 
   alias ForemanServer.Idempotency.Effect
@@ -179,7 +180,8 @@ defmodule ForemanServer.Workflow.PhasePR do
   end
 
   defp create_or_reuse(request) do
-    with :ok <- push_head(request),
+    with :ok <- preflight_open_pr(request),
+         :ok <- push_head(request),
          :none <- matching_pr(request, "open"),
          :none <- matching_pr(request, "closed") do
       open_pr(request)
@@ -193,6 +195,17 @@ defmodule ForemanServer.Workflow.PhasePR do
       {:error, %Error{} = error} ->
         {:error, error}
     end
+  end
+
+  # A PR-create key recovery left unresolved refuses the whole sequence BEFORE
+  # the push: a push that ran anyway could publish commits the remote lacks.
+  defp preflight_open_pr(request) do
+    Effect.preflight(
+      :pr_create,
+      PrCreateEffect.key(request.run_id, request.head_branch, request.base_branch),
+      %{"run_id" => request.run_id}
+    )
+    |> effect_result(request, :pr_create)
   end
 
   # The push is a keyed effect (`Idempotency.Effect`, TRD-013): the remote head
@@ -287,13 +300,24 @@ defmodule ForemanServer.Workflow.PhasePR do
   end
 
   # An unresolved key (recovery could not tell whether the effect happened) is
-  # never repeated until the run is reset: `%Error{reason: :effect_unresolved}`.
+  # never repeated until the run is reset (only a failed, stuck, blocked or paused
+  # run can be): `%Error{reason: :effect_unresolved}`. A check that could not be
+  # made is `%Error{reason: :effect_check_failed}`.
   defp effect_result({:error, {:effect_unresolved, key}}, request, effect) do
     Logger.error(
-      "PhasePR.run_id=#{request.run_id} #{effect} NOT run: #{inspect(key)} is unresolved (see foreman_doctor, Unresolved effect keys); reset the run to retry"
+      "PhasePR.run_id=#{request.run_id} #{effect} NOT run: #{inspect(key)} is unresolved (see foreman_doctor, Unresolved effect keys). " <>
+        "run.reset lifts this only for a failed, stuck, blocked or paused run; for any other run check GitHub and the doctor list"
     )
 
     typed_error(request, :effect_unresolved, %{effect: effect, key: key})
+  end
+
+  defp effect_result({:error, {:effect_check_failed, reason}}, request, effect) do
+    Logger.error(
+      "PhasePR.run_id=#{request.run_id} #{effect} NOT run: could not check whether its key is unresolved: #{inspect(reason)}"
+    )
+
+    typed_error(request, :effect_check_failed, %{effect: effect, reason: reason})
   end
 
   defp effect_result(result, _request, _effect), do: result
