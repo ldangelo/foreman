@@ -71,6 +71,9 @@ defmodule ForemanServer.Approvals.SweeperTest do
     await_projection("RunStarted", :run_id, run_id)
   end
 
+  defp maybe_pause!(run_id, true), do: pause!(run_id)
+  defp maybe_pause!(_run_id, false), do: :ok
+
   defp pause!(run_id) do
     {:ok, _} =
       CommandGateway.dispatch_system(%{
@@ -193,7 +196,6 @@ defmodule ForemanServer.Approvals.SweeperTest do
     for on_timeout <- [:surface, :deny], paused? <- [false, true] do
       test "is expired exactly once by the boot sweep, shown as waiting on you (on_timeout #{on_timeout}, paused #{paused?})" do
         on_timeout = unquote(on_timeout)
-        paused? = unquote(paused?)
         tag = System.unique_integer([:positive])
         project = "p-sw-#{tag}"
         run_id = "run-swq-#{tag}"
@@ -203,7 +205,7 @@ defmodule ForemanServer.Approvals.SweeperTest do
         gateway = ForemanServer.Approvals.SweeperTest.RecordingGateway
 
         start_run!(project, run_id)
-        if paused?, do: pause!(run_id)
+        maybe_pause!(run_id, unquote(paused?))
 
         {:ok, _} =
           CommandGateway.dispatch_system(%{
