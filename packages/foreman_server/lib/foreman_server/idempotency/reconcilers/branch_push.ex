@@ -34,8 +34,10 @@ defmodule ForemanServer.Idempotency.Reconcilers.BranchPush do
        metadata is incomplete): `:unknown`.
 
   `git` runs through a 3-arity runner (`opts[:command_runner]`, default
-  `System.cmd/3`) with `cd:` the key's `cwd`. The registry entry is in
-  `config/config.exs`; `ForemanServer.Idempotency.Reconciler` calls
+  `System.cmd/3`) with `cd:` the key's `cwd`. The remote read of `reconcile/2` is
+  bounded (`opts[:timeout_ms]`, default 30 s, see `Reconcilers.Command`) and runs
+  with `GIT_TERMINAL_PROMPT=0`, because the boot sweep waits on it. The registry
+  entry is in `config/config.exs`; `ForemanServer.Idempotency.Reconciler` calls
   `reconcile/1` from the boot sweep.
   """
 
@@ -43,6 +45,7 @@ defmodule ForemanServer.Idempotency.Reconcilers.BranchPush do
 
   alias ForemanServer.Idempotency.Effect
   alias ForemanServer.Idempotency.Reconciler
+  alias ForemanServer.Idempotency.Reconcilers.Command
 
   require Logger
 
@@ -82,7 +85,11 @@ defmodule ForemanServer.Idempotency.Reconcilers.BranchPush do
   @impl Reconciler
   def reconcile(metadata), do: reconcile(metadata, [])
 
-  @doc "`reconcile/1` with `command_runner: runner` to replace `System.cmd/3`."
+  @doc """
+  `reconcile/1` with `command_runner: runner` to replace `System.cmd/3` and
+  `timeout_ms: ms` to replace the bound on the remote read (default
+  `Command.default_timeout_ms/0`). A read that does not answer in time is `:unknown`.
+  """
   @spec reconcile(map(), keyword()) :: Reconciler.verdict()
   def reconcile(metadata, opts) when is_map(metadata) and is_list(opts) do
     case fields(metadata) do
@@ -91,7 +98,11 @@ defmodule ForemanServer.Idempotency.Reconcilers.BranchPush do
 
       {:ok, fields} ->
         runner = Keyword.get(opts, :command_runner) || (&System.cmd/3)
-        decide(fields, remote_head(runner, fields.head_branch, fields.cwd), metadata)
+        timeout_ms = Keyword.get(opts, :timeout_ms, Command.default_timeout_ms())
+
+        # The sweep waits on this call: bounded, and git is never to ask for credentials.
+        call_opts = [timeout_ms: timeout_ms, env: [{"GIT_TERMINAL_PROMPT", "0"}]]
+        decide(fields, remote_head(runner, fields.head_branch, fields.cwd, call_opts), metadata)
 
       {:error, reason} ->
         unknown(metadata, {:incomplete_metadata, reason})
@@ -169,10 +180,10 @@ defmodule ForemanServer.Idempotency.Reconcilers.BranchPush do
   end
 
   # `{:ok, sha}` for a branch the remote has, `{:ok, nil}` for one it does not.
-  defp remote_head(runner, head_branch, cwd) do
+  defp remote_head(runner, head_branch, cwd, call_opts \\ []) do
     ref = "refs/heads/" <> head_branch
 
-    case call(runner, "git", ["ls-remote", "origin", ref], cwd) do
+    case call(runner, "git", ["ls-remote", "origin", ref], cwd, call_opts) do
       {:ok, {output, 0}} -> parse_remote(output, ref)
       {:ok, {output, code}} -> {:error, {:remote_head_unreadable, {code, String.trim(output)}}}
       {:error, reason} -> {:error, {:remote_head_unreadable, reason}}
@@ -199,12 +210,6 @@ defmodule ForemanServer.Idempotency.Reconcilers.BranchPush do
     end)
   end
 
-  defp call(runner, executable, args, cwd) do
-    case runner.(executable, args, cd: cwd, stderr_to_stdout: true) do
-      {output, code} when is_binary(output) and is_integer(code) -> {:ok, {output, code}}
-      other -> {:error, {:unexpected_runner_result, other}}
-    end
-  rescue
-    error in ErlangError -> {:error, {:command_not_run, executable, error.original}}
-  end
+  defp call(runner, executable, args, cwd, call_opts \\ []),
+    do: Command.run(runner, executable, args, [cd: cwd] ++ call_opts)
 end

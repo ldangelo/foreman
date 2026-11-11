@@ -175,6 +175,31 @@ defmodule ForemanServer.Idempotency.Reconcilers.PrCreateTest do
     end
   end
 
+  describe "reconcile/2 never waits on gh for ever" do
+    # The boot sweep runs the reconcilers inside BootReconciliation, so a hung `gh pr list`
+    # would stop every later boot scan. `@tag timeout` fails the test instead of hanging it.
+    @tag timeout: 5_000
+    test "a gh that does not answer within timeout_ms is :unknown, and the call returns promptly",
+         %{cwd: cwd} do
+      test = self()
+
+      runner = fn _executable, _args, _opts ->
+        send(test, {:runner, self()})
+        Process.sleep(:infinity)
+      end
+
+      {elapsed_us, verdict} =
+        :timer.tc(fn ->
+          PrCreate.reconcile(metadata(cwd), command_runner: runner, timeout_ms: 50)
+        end)
+
+      assert verdict == :unknown
+      assert elapsed_us < 3_000_000
+      assert_received {:runner, runner_pid}
+      refute Process.alive?(runner_pid)
+    end
+  end
+
   describe "the boot sweep reaches it through the configured registry" do
     setup %{cwd: cwd} do
       bin = Path.join(cwd, "bin")

@@ -294,6 +294,54 @@ defmodule ForemanServer.Idempotency.Reconcilers.BranchPushTest do
     end
   end
 
+  describe "reconcile/2 never waits on git for ever" do
+    # The boot sweep runs the reconcilers inside BootReconciliation, so a hung `git ls-remote`
+    # would stop every later boot scan. `@tag timeout` fails the test instead of hanging it.
+    defp pending_metadata do
+      %{
+        "run_id" => "run-branch-push",
+        "head_branch" => "feature/hang",
+        "cwd" => "/work/tree",
+        "pre_push_remote_sha" => nil,
+        "pushed_local_sha" => "0123456789abcdef0123456789abcdef01234567"
+      }
+    end
+
+    @tag timeout: 5_000
+    test "a git that does not answer within timeout_ms is :unknown, and the call returns promptly" do
+      test = self()
+
+      runner = fn _executable, _args, _opts ->
+        send(test, {:runner, self()})
+        Process.sleep(:infinity)
+      end
+
+      {elapsed_us, verdict} =
+        :timer.tc(fn ->
+          BranchPush.reconcile(pending_metadata(), command_runner: runner, timeout_ms: 50)
+        end)
+
+      assert verdict == :unknown
+      assert elapsed_us < 3_000_000
+      assert_received {:runner, runner_pid}
+      refute Process.alive?(runner_pid)
+    end
+
+    test "the remote read is told never to prompt for credentials" do
+      test = self()
+
+      runner = fn executable, args, opts ->
+        send(test, {:ran, executable, args, opts})
+        {"", 0}
+      end
+
+      assert BranchPush.reconcile(pending_metadata(), command_runner: runner) == :not_done
+
+      assert_received {:ran, "git", ["ls-remote" | _], opts}
+      assert opts[:env] == [{"GIT_TERMINAL_PROMPT", "0"}]
+    end
+  end
+
   describe "the boot sweep reaches it through the configured registry" do
     setup do
       run_id = EffectWorld.start_run!(@project_id, "push-sweep")
