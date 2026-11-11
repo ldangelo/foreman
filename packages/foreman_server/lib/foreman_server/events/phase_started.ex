@@ -9,6 +9,12 @@ defmodule ForemanServer.Events.PhaseStarted do
   `input_artifacts` is optional: the artifact references the phase started from,
   `[%{index, source_phase, path, sha256}]`. Phase 1 carries `[]`; a stream
   recorded before the field existed carries none.
+
+  `execution_profile` is optional: what the launch's backend enforces, as
+  `Jobsite.ExecutionProfile.to_map/1` builds it (`backend` string and a
+  `%{state, reason}` map per property). Its nested keys keep the form their
+  writer used (atom or string); the projection normalises them. A stream
+  recorded before the field existed carries none.
   """
   @enforce_keys [:phase_id, :run_id, :index, :name, :attempt, :artifact_template]
   @type t :: %__MODULE__{
@@ -23,7 +29,8 @@ defmodule ForemanServer.Events.PhaseStarted do
           stall_threshold_ms: pos_integer() | nil,
           stall_policy: String.t() | nil,
           prior_worktree_discarded: %{name: String.t(), path: String.t() | nil} | nil,
-          input_artifacts: [map()] | nil
+          input_artifacts: [map()] | nil,
+          execution_profile: map() | nil
         }
   @derive Jason.Encoder
   defstruct [
@@ -38,6 +45,7 @@ defmodule ForemanServer.Events.PhaseStarted do
     :stall_threshold_ms,
     :stall_policy,
     :prior_worktree_discarded,
-    :input_artifacts
+    :input_artifacts,
+    :execution_profile
   ]
 end

@@ -42,7 +42,7 @@ defmodule ForemanServer.Jobsite.NetworkPolicy do
   """
 
   alias ForemanServer.Aggregate
-  alias ForemanServer.Jobsite.Error
+  alias ForemanServer.Jobsite.{Error, ExecutionProfile}
 
   @image "foreman-egress-proxy:1"
   @proxy_port 3128
@@ -80,7 +80,7 @@ defmodule ForemanServer.Jobsite.NetworkPolicy do
 
   @doc "Surfaces where `environment.network` is enforced."
   @spec network_enforced_on() :: [:docker_jobsite]
-  def network_enforced_on, do: [:docker_jobsite]
+  def network_enforced_on, do: [ExecutionProfile.docker_backend()]
 
   @doc """
   Apply `policy` (the project's `environment.network` map) to the sandbox

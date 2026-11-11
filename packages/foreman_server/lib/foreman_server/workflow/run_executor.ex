@@ -55,6 +55,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   alias ForemanServer.Workflow.PreflightFailure
   alias ForemanServer.Workflow.ModelResolution
   alias ForemanServer.Jobsite.Context, as: JobsiteContext
+  alias ForemanServer.Jobsite.ExecutionProfile
   alias ForemanServer.Jobsite.Engine, as: JobsiteEngine
   alias ForemanServer.Jobsite.Git, as: JobsiteGit
   alias ForemanServer.Jobsite.Error, as: JobsiteError
@@ -1519,7 +1520,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
         name: Map.get(phase_spec, :name),
         attempt: 1,
         artifact_template: Map.get(phase_spec, :artifact_template) || %{},
-        input_artifacts: phase_input_artifacts(state.run_id, phase_index)
+        input_artifacts: phase_input_artifacts(state.run_id, phase_index),
+        execution_profile: launch_execution_profile(state)
       }
       |> Map.merge(
         ForemanServer.Workflow.StallPolicy.payload_fields(Map.get(phase_spec, :stall_detection))
@@ -1533,6 +1535,28 @@ defmodule ForemanServer.Workflow.RunExecutor do
       phase_id,
       "phase:#{state.run_id}:#{phase_id}"
     )
+  end
+
+  # What this launch's backend enforces, recorded on `PhaseStarted`. Every
+  # RunExecutor launch is a host workflow launch; the backend value is
+  # `ExecutionProfile`'s, not named here. Cleanup follows the workflow's
+  # `worktree:` block (a run whose workflow disables it has no worktree).
+  defp launch_execution_profile(state) do
+    cleanup =
+      case state.worktree_spec do
+        %{enabled: false} ->
+          :none
+
+        spec ->
+          case worktree_cleanup(spec || %{}) do
+            {:ok, cleanup} -> cleanup
+            {:error, {:worktree_cleanup_invalid, other}} -> other
+          end
+      end
+
+    ExecutionProfile.host_backend()
+    |> ExecutionProfile.resolve(cleanup: cleanup)
+    |> ExecutionProfile.to_map()
   end
 
   # The artifact references a phase starts from. A phase reads one input at most:
