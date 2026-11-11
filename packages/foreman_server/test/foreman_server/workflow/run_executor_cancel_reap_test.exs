@@ -11,9 +11,17 @@ defmodule ForemanServer.Workflow.RunExecutorCancelReapTest do
   """
   use ExUnit.Case, async: false
 
+  alias ForemanServer.AgentRuntime.JidoHarness.Driver
+  alias ForemanServer.CommandGateway
+  alias ForemanServer.ProjectionStore
   alias ForemanServer.RunControl
+  alias ForemanServer.TestSupport.CoordinatorHelpers, as: H
+  alias ForemanServer.TestSupport.DispatcherRestart
+  alias ForemanServer.TestSupport.RunSlotsReset
   alias ForemanServer.TestSupport.StrayAgent
+  alias ForemanServer.Workflow.BootReconciliation
   alias ForemanServer.Workflow.RunExecutor
+  alias ForemanServer.Workflow.RunSupervisor
 
   @moduletag :tmp_dir
 
@@ -136,5 +144,166 @@ defmodule ForemanServer.Workflow.RunExecutorCancelReapTest do
     state = Map.delete(state, :run_worktree)
 
     assert {:stop, :normal, %{status: :cancelled}} = RunExecutor.__finish_phases_for_test__(state)
+  end
+
+  test "the cancel's escalation and the sweep after Driver.await_exit are observable",
+       %{tmp_dir: dir, run_id: run_id, state: state} do
+    # SIGINT is ignored by this agent and the harness's SIGTERM step is a second away; the sweep
+    # must not start before the agent has gone, and must then name the tool process it killed.
+    StrayAgent.tight_grace!(1_000)
+    %{run_id: harness_run_id, agent_os_pid: agent, stray_pid: stray} = StrayAgent.start!(dir)
+
+    operator_cancels(run_id, harness_run_id)
+
+    # Right after the cancel nothing is stopped: the agent is alive and its tool process still has
+    # a live parent, so nothing is an orphan for the reaper to find yet.
+    assert StrayAgent.alive?(agent)
+    assert StrayAgent.alive?(stray)
+    assert StrayAgent.ppid(stray) == agent
+
+    log =
+      ExUnit.CaptureLog.capture_log([level: :warning], fn ->
+        assert {:stop, :normal, %{status: :cancelled}} =
+                 RunExecutor.__finish_phases_for_test__(state)
+      end)
+
+    refute StrayAgent.alive?(agent)
+    refute StrayAgent.alive?(stray), "the cancelled run's tool process outlived it"
+    assert :ok = Driver.await_exit(harness_run_id, 1_000)
+
+    assert log =~ ~r/OrphanReaper: terminating \d+ [^:]*: .*\{#{stray},/s,
+           "the sweep did not name the tool process #{stray}: #{log}"
+  end
+
+  describe "a cancelled run across a server restart" do
+    setup do
+      # Restore the app-level Dispatcher (subscribed, projection reset) and free the global slots:
+      # a full slot would queue the run instead of admitting it.
+      DispatcherRestart.restart!()
+      RunSlotsReset.reset!()
+
+      {:ok, _} =
+        CommandGateway.dispatch_system(%{
+          type: "run_slots.acquire",
+          command_id: "test:cancel-restart-init:#{System.unique_integer([:positive])}",
+          aggregate_id: "run_slots:global",
+          payload: %{
+            run_id: "cancel-restart-init-#{System.unique_integer([:positive])}",
+            capacity: 100
+          }
+        })
+
+      # The run supervisor is the one seam mocked: a start here is the observable "a phase would be
+      # launched". Everything else (aggregates, projection, admission, Dispatcher) is real.
+      :meck.new(RunSupervisor, [:no_link])
+      test = self()
+
+      :meck.expect(RunSupervisor, :start_run, fn run_id, _task, opts ->
+        send(test, {:run_supervisor_start, run_id, opts})
+        {:ok, :child}
+      end)
+
+      on_exit(fn ->
+        if :meck.validate(RunSupervisor), do: :meck.unload(RunSupervisor)
+        DispatcherRestart.restart!()
+      end)
+
+      H.subscribe!()
+      project = H.register_project(System.tmp_dir!(), config: %{})
+      {:ok, project: project}
+    end
+
+    defp submit_task!(project) do
+      task_id = "task-#{System.unique_integer([:positive])}"
+
+      assert {:ok, %{"payload" => %{"run_id" => run_id}}} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: "c-#{System.unique_integer([:positive])}",
+                 aggregate_id: "task:#{task_id}",
+                 type: "task.create",
+                 payload: %{
+                   task_id: task_id,
+                   project_id: project,
+                   task_type: "implement",
+                   title: "t",
+                   prompt: "p",
+                   provider_tracked: false,
+                   auto_approve: true
+                 }
+               })
+
+      {task_id, run_id}
+    end
+
+    # A real restart of the Dispatcher WITHOUT resetting the projection: `init/1` replays the whole
+    # event log into the new process, which is what a server boot does. `DispatcherRestart.restart!/0`
+    # resets the projection first, so it cannot be used for the restart itself.
+    defp restart_dispatcher_keeping_log! do
+      app = ForemanServer.Application
+      dispatcher = ForemanServer.Workflow.Dispatcher
+      :ok = Supervisor.terminate_child(app, dispatcher)
+      {:ok, pid} = Supervisor.restart_child(app, dispatcher)
+      drain_dispatcher!(pid, 100)
+    end
+
+    # The replay is queued before `init/1` returns; a suspended Dispatcher handles nothing, so an
+    # empty mailbox seen while suspended (and a subscribed state) means the replay is done.
+    defp drain_dispatcher!(_pid, 0), do: flunk("the Dispatcher never finished its replay")
+
+    defp drain_dispatcher!(pid, tries) do
+      :ok = :sys.suspend(pid, 30_000)
+
+      {queued, state} =
+        try do
+          {:message_queue_len, queued} = Process.info(pid, :message_queue_len)
+          {queued, :sys.get_state(pid, 30_000)}
+        after
+          :ok = :sys.resume(pid, 30_000)
+        end
+
+      if queued == 0 and Map.get(state, :subscriber) != :retrying do
+        :ok
+      else
+        Process.sleep(20)
+        drain_dispatcher!(pid, tries - 1)
+      end
+    end
+
+    defp flush_starts(run_id) do
+      receive do
+        {:run_supervisor_start, ^run_id, _opts} -> flush_starts(run_id)
+      after
+        0 -> :ok
+      end
+    end
+
+    test "stays cancelled and no phase is launched by the replay or by boot reconciliation",
+         %{project: project} do
+      {_task_id, run_id} = submit_task!(project)
+      assert_receive {:run_supervisor_start, ^run_id, _opts}, 10_000
+
+      assert {:ok, _} =
+               CommandGateway.dispatch_operator(%{
+                 command_id: "cancel-#{System.unique_integer([:positive])}",
+                 aggregate_id: "run:#{run_id}",
+                 type: "run.cancel",
+                 payload: %{run_id: run_id}
+               })
+
+      assert %{status: "cancelled", terminal?: true} = before = ProjectionStore.run(run_id)
+
+      # Everything the live Dispatcher did before the restart (the run's own start, and any
+      # duplicate dispatch of its task) is behind us: only a start after the restart counts.
+      _ = :sys.get_state(ForemanServer.Workflow.Dispatcher)
+      flush_starts(run_id)
+
+      restart_dispatcher_keeping_log!()
+      assert :ok = BootReconciliation.reconcile()
+
+      refute_received {:run_supervisor_start, ^run_id, _opts}
+      assert %{status: "cancelled", terminal?: true} = after_restart = ProjectionStore.run(run_id)
+      assert after_restart.last_sequence == before.last_sequence
+      assert ProjectionStore.phases_for_run(run_id) == []
+    end
   end
 end
