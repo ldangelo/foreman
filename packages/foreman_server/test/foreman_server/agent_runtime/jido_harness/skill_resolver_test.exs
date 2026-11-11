@@ -346,12 +346,153 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.SkillResolverTest do
     end
   end
 
-  describe "names that could escape a skill directory" do
-    test "never resolve, and never reach the filesystem", ctx do
-      put_skill!(Path.join(ctx.agent, "skills"), "outside")
+  describe "the requested name is compared, never turned into a path" do
+    test "a name that is not a directory-shaped word is never available unless a skill bears it",
+         ctx do
+      # A real skill one level above the skill root: `..` would reach it if the
+      # name were joined into a path.
+      put_skill!(Path.join(ctx.agent, "skills"), "inside")
+      put_skill!(ctx.agent, "outside")
+      put_skill!(Path.join(ctx.project, ".pi"), "outside2")
 
-      for name <- ["../outside", "../../agent/skills/outside", "a/b", "/etc", "..", ".", ""] do
-        assert resolve(name, ctx.opts) == :missing, "#{inspect(name)} must not resolve"
+      for name <- ["../outside", "../../agent/skills/inside", "a/b", "/etc", "..", ".", ""] do
+        refute resolve(name, ctx.opts) == :available, "#{inspect(name)} must not resolve"
+      end
+    end
+
+    test "a skill whose frontmatter name has other punctuation is found by that name", ctx do
+      skills = Path.join(ctx.agent, "skills")
+      put_skill!(skills, "d1", name: "_draft")
+      put_skill!(skills, "d2", name: "a:b")
+      put_skill!(skills, "d3", name: "a/b")
+
+      for name <- ["_draft", "a:b", "a/b"] do
+        assert resolve(name, ctx.opts) == :available, name
+      end
+    end
+
+    test "an empty frontmatter name falls back to the directory name", ctx do
+      dir = Path.join(ctx.agent, "skills/fix-issue")
+      File.mkdir_p!(dir)
+      File.write!(Path.join(dir, "SKILL.md"), "---\nname: \"\"\ndescription: x\n---\n")
+
+      assert resolve("fix-issue", ctx.opts) == :available
+      assert resolve("", ctx.opts) == :missing
+    end
+  end
+
+  describe "settings filters apply to auto-discovered directories" do
+    test "a skills filter entry in the same scope makes a find unverifiable", ctx do
+      put_skill!(Path.join(ctx.agent, "skills"), "fix-issue")
+      put_skill!(Path.join(ctx.home, ".agents/skills"), "agents-skill")
+
+      for filter <- ["!fix-issue", "+other", "-fix-issue", "*issue"] do
+        write_json!(Path.join(ctx.agent, "settings.json"), %{"skills" => [filter]})
+        assert resolve("fix-issue", ctx.opts) == :unverifiable, filter
+        assert resolve("agents-skill", ctx.opts) == :unverifiable, filter
+      end
+    end
+
+    test "settings without filter entries keep the find available", ctx do
+      put_skill!(Path.join(ctx.agent, "skills"), "fix-issue")
+      write_json!(Path.join(ctx.agent, "settings.json"), %{"skills" => [], "theme" => "dark"})
+      assert resolve("fix-issue", ctx.opts) == :available
+    end
+
+    test "a project-scope filter does not touch a user-scope find", ctx do
+      put_skill!(Path.join(ctx.agent, "skills"), "fix-issue")
+      write_json!(Path.join(ctx.project, ".pi/settings.json"), %{"skills" => ["!fix-issue"]})
+      assert resolve("fix-issue", ctx.opts) == :available
+    end
+  end
+
+  describe "manifest and glob paths" do
+    test "a manifest entry starting with ~ is joined to the package root, never to $HOME", ctx do
+      pkg = Path.join(ctx.tmp_dir, "pkg-tilde")
+      put_skill!(Path.join(pkg, "~/shared"), "fix-issue")
+      write_json!(Path.join(pkg, "package.json"), %{"pi" => %{"skills" => ["~/shared"]}})
+      write_json!(Path.join(ctx.agent, "settings.json"), %{"packages" => [pkg]})
+
+      # Node's `resolve(root, "~/shared")` is `<root>/~/shared`. (`Path.expand`
+      # would have read `$HOME/shared` and found nothing.)
+      assert resolve("fix-issue", ctx.opts) == :available
+    end
+
+    test "a glob through .. is expanded, only hidden segments are dropped", ctx do
+      # The package root sits under a hidden directory of its own: only hidden
+      # segments BELOW the root count, and `..` is not hidden.
+      base = Path.join(ctx.tmp_dir, ".hidden-base")
+      pkg = Path.join(base, "pkg-dotdot")
+      File.mkdir_p!(pkg)
+      put_skill!(Path.join(base, "shared-skills"), "fix-issue")
+
+      write_json!(Path.join(pkg, "package.json"), %{
+        "pi" => %{"skills" => ["../shared-skills/*"]}
+      })
+
+      write_json!(Path.join(ctx.agent, "settings.json"), %{"packages" => [pkg]})
+      assert resolve("fix-issue", ctx.opts) == :available
+    end
+  end
+
+  describe "agent directory" do
+    test "a relative agent dir is resolved by pi against the launch cwd: unverifiable", ctx do
+      put_skill!(Path.join(ctx.agent, "skills"), "fix-issue")
+
+      for dir <- ["relative/agent", "./agent", "~other/agent"] do
+        assert resolve("fix-issue", Keyword.put(ctx.opts, :agent_dir, dir)) == :unverifiable,
+               dir
+      end
+    end
+
+    test "a ~ agent dir expands against the home", ctx do
+      put_skill!(Path.join(ctx.home, "my-agent/skills"), "fix-issue")
+
+      assert resolve("fix-issue", Keyword.put(ctx.opts, :agent_dir, "~/my-agent")) == :available
+    end
+  end
+
+  describe "which extensions make absence unprovable" do
+    test "a README, a stray notes directory or a .json file do not", ctx do
+      ext = Path.join(ctx.agent, "extensions")
+      File.mkdir_p!(Path.join(ext, "notes"))
+      File.write!(Path.join(ext, "README.md"), "docs\n")
+      File.write!(Path.join(ext, "data.json"), "{}")
+      File.write!(Path.join(ext, "notes/a.txt"), "x")
+
+      assert resolve("fix-issue", ctx.opts) == :missing
+    end
+
+    test "a subdirectory with an index file, or a pi.extensions entry that exists, does", ctx do
+      ext = Path.join(ctx.agent, "extensions")
+      File.mkdir_p!(Path.join(ext, "sub"))
+      File.write!(Path.join(ext, "sub/index.js"), "")
+      assert resolve("fix-issue", ctx.opts) == :unverifiable
+
+      File.rm_rf!(Path.join(ext, "sub"))
+      File.mkdir_p!(Path.join(ext, "pkg/dist"))
+      File.write!(Path.join(ext, "pkg/dist/main.js"), "")
+
+      write_json!(Path.join(ext, "pkg/package.json"), %{
+        "pi" => %{"extensions" => ["dist/main.js"]}
+      })
+
+      assert resolve("fix-issue", ctx.opts) == :unverifiable
+    end
+  end
+
+  describe "frontmatter scalars that are not strings" do
+    test "a numeric-looking description is not read as a string: unverifiable", ctx do
+      for value <- ["0x17", "0o17", ".inf", ".nan", "1e3", "+5"] do
+        dir = Path.join(ctx.agent, "skills/fix-issue")
+        File.mkdir_p!(dir)
+
+        File.write!(
+          Path.join(dir, "SKILL.md"),
+          "---\nname: fix-issue\ndescription: #{value}\n---\n"
+        )
+
+        assert resolve("fix-issue", ctx.opts) == :unverifiable, value
       end
     end
   end
