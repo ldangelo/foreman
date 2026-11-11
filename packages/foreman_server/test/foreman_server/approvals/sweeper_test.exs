@@ -14,7 +14,7 @@ defmodule ForemanServer.Approvals.SweeperTest do
   alias ForemanServer.Aggregates.{OperatorQuestion, ToolCall}
   alias ForemanServer.Approvals.{Requester, Sweeper}
   alias ForemanServer.{CommandGateway, EventStore, Overview, ProjectionStore}
-  alias ForemanServer.TestSupport.Eventually
+  alias ForemanServer.TestSupport.{Eventually, ProjectionStoreReset}
 
   @timeout 30 * 60 * 1000
 
@@ -48,6 +48,39 @@ defmodule ForemanServer.Approvals.SweeperTest do
     {:ok, ^id} = Requester.request(%{run_id: run_id}, "Write", "x", tool_call_id: id)
     await_projection("ToolCallRequested", :tool_call_id, id)
     ProjectionStore.tool_call(run_id, id)
+  end
+
+  defp start_run!(project_id, run_id) do
+    {:ok, _} =
+      ForemanServer.CommandRouter.dispatch(%{
+        aggregate_id: "project:#{project_id}",
+        command_id: "register:#{project_id}",
+        type: "project.register",
+        payload: %{project_id: project_id, name: project_id, path: System.tmp_dir!()}
+      })
+
+    {:ok, _} =
+      ForemanServer.CommandRouter.dispatch_run_start(project_id, %{
+        run_id: run_id,
+        task_id: "task-#{run_id}",
+        workflow_snapshot: %{phases: [%{id: "phase-1", kind: "command"}]},
+        phase_specs: [%{phase_id: "phase-1", kind: "command"}],
+        approval_id: "approval-#{run_id}"
+      })
+
+    await_projection("RunStarted", :run_id, run_id)
+  end
+
+  defp pause!(run_id) do
+    {:ok, _} =
+      CommandGateway.dispatch_system(%{
+        type: "run.pause",
+        command_id: "test-pause:#{run_id}",
+        aggregate_id: "run:#{run_id}",
+        payload: %{run_id: run_id, reason: "awaiting_answer"}
+      })
+
+    await_projection("RunPaused", :run_id, run_id)
   end
 
   defp sweeper(now_ms, opts \\ []) do
@@ -145,39 +178,32 @@ defmodule ForemanServer.Approvals.SweeperTest do
   end
 
   describe "a question that expires while the server is down" do
-    # Real path: the question is opened through the real CommandGateway/aggregate/event
-    # store/projection. The thread (RunStarted, RunPaused) is folded straight into the
-    # ProjectionStore, bypassing the run aggregate: this test is about the question, and
-    # the Overview reads thread status from the projection. The "restart" is a freshly
-    # started Sweeper whose boot sweep (`handle_continue(:recover)`) finds the question
-    # overdue; the server being down is modelled by the injected clock being past the
-    # deadline when the sweeper first runs, with no sweeper alive before.
-    for on_timeout <- [:surface, :deny] do
-      test "is expired exactly once by the boot sweep, shown as waiting on you (on_timeout #{on_timeout})" do
+    # Real path end to end: the project, run, optional pause and question are created
+    # through real commands (aggregates, event store). The restart is
+    # `ProjectionStoreReset.reset!(keep_subscribers: true)` + `ProjectionStore.rebuild([])`,
+    # so the read model holds only what the event log folds back. A freshly started
+    # Sweeper's boot sweep (`handle_continue(:recover)`) then has to find the question in
+    # that rebuilt projection. "Server down" is modelled by the injected clock being past
+    # the deadline when that sweeper starts; the earlier pre-deadline sweeper is stopped.
+    setup do
+      on_exit(&ProjectionStoreReset.reset!/0)
+      :ok
+    end
+
+    for on_timeout <- [:surface, :deny], paused? <- [false, true] do
+      test "is expired exactly once by the boot sweep, shown as waiting on you (on_timeout #{on_timeout}, paused #{paused?})" do
         on_timeout = unquote(on_timeout)
+        paused? = unquote(paused?)
         tag = System.unique_integer([:positive])
         project = "p-sw-#{tag}"
         run_id = "run-swq-#{tag}"
         qid = "q-swq-#{tag}"
         stream = OperatorQuestion.stream_id(run_id, qid)
         Process.register(self(), :sweeper_test_probe)
+        gateway = ForemanServer.Approvals.SweeperTest.RecordingGateway
 
-        :ok =
-          ProjectionStore.apply_events([
-            %{
-              event_type: "ProjectRegistered",
-              payload: %{
-                project_id: project,
-                path: "/tmp/#{project}",
-                task_provider: %{type: "beads"}
-              }
-            },
-            %{
-              event_type: "RunStarted",
-              payload: %{run_id: run_id, task_id: "t-#{tag}", project_id: project}
-            },
-            %{event_type: "RunPaused", payload: %{run_id: run_id}}
-          ])
+        start_run!(project, run_id)
+        if paused?, do: pause!(run_id)
 
         {:ok, _} =
           CommandGateway.dispatch_system(%{
@@ -194,24 +220,21 @@ defmodule ForemanServer.Approvals.SweeperTest do
           })
 
         await_projection("QuestionOpened", :question_id, qid)
-        deadline = ProjectionStore.question(run_id, qid).opened_at_ms + 1_000
 
-        # Still open one ms before the deadline: nothing is expired early.
-        Sweeper.sweep(
-          sweeper(deadline - 1,
-            on_timeout: on_timeout,
-            gateway: ForemanServer.Approvals.SweeperTest.RecordingGateway
-          )
-        )
+        # Restart: wipe the read model and rebuild it from the event log alone.
+        :ok = ProjectionStoreReset.reset!(keep_subscribers: true)
+        :ok = ProjectionStore.rebuild([])
+        assert %{status: "open"} = q = ProjectionStore.question(run_id, qid)
+        deadline = q.opened_at_ms + 1_000
 
+        # One ms before the deadline: nothing is expired early.
+        early = sweeper(deadline - 1, on_timeout: on_timeout, gateway: gateway)
+        Sweeper.sweep(early)
         assert events(stream) == ["QuestionOpened"]
+        stop_supervised!(early)
 
         # Boot sweep after the deadline: no explicit sweep call, only the startup sweep.
-        _boot =
-          sweeper(deadline,
-            on_timeout: on_timeout,
-            gateway: ForemanServer.Approvals.SweeperTest.RecordingGateway
-          )
+        _boot = sweeper(deadline, on_timeout: on_timeout, gateway: gateway)
 
         Eventually.await(fn -> events(stream) == ["QuestionOpened", "QuestionExpired"] end,
           message: "boot sweep expires the overdue question"
@@ -223,29 +246,25 @@ defmodule ForemanServer.Approvals.SweeperTest do
 
         assert command_id == "expire:question:#{run_id}:#{qid}"
 
-        # A second sweeper (another restart) and a manual sweep add nothing.
-        again =
-          sweeper(deadline,
-            on_timeout: on_timeout,
-            gateway: ForemanServer.Approvals.SweeperTest.RecordingGateway
-          )
-
+        # Another restart sweeper and manual sweeps add nothing.
+        again = sweeper(deadline, on_timeout: on_timeout, gateway: gateway)
         Sweeper.sweep(again)
         Sweeper.sweep(again)
         assert events(stream) == ["QuestionOpened", "QuestionExpired"]
-        assert %{status: "expired"} = ProjectionStore.question(run_id, qid)
 
-        # The thread waits on the operator with reason :question_expired.
         Eventually.await(fn ->
-          {:ok, overview} = Overview.build(project)
-
-          Enum.any?(
-            overview.groups.waiting_on_you,
-            &(&1.thread_id == "run:#{run_id}" and &1.reason == :question_expired)
-          )
+          match?(%{status: "expired"}, ProjectionStore.question(run_id, qid))
         end)
 
-        # Not asked again silently: no further question was opened for the run.
+        # The thread waits on the operator with reason :question_expired.
+        {:ok, overview} = Overview.build(project)
+
+        assert Enum.any?(
+                 overview.groups.waiting_on_you,
+                 &(&1.thread_id == "run:#{run_id}" and &1.reason == :question_expired)
+               )
+
+        # Not asked again silently: no question is open for the project.
         assert ProjectionStore.open_questions(project) == []
       end
     end
