@@ -1,9 +1,11 @@
 defmodule ForemanServer.Overview.Signals do
   @moduledoc """
   Per-thread "needs you" counts that do not come from the thread read model:
-  pending tool-call approvals (E8-S2), open operator questions (E8-S4) and, for a
-  paused thread, the expired requests, undelivered approvals and undelivered question
-  answers that explain why it is still waiting (E8-S5).
+  pending tool-call approvals (E8-S2), open operator questions (E8-S4) and the
+  expired requests, undelivered approvals and undelivered question answers that
+  explain why a thread is still waiting (E8-S5). All of those but an expired
+  question show only for a paused thread; an expired question shows on any
+  non-terminal thread, because nothing pauses a run for a question.
 
   All of them are read from `ForemanServer.ProjectionStore`, keyed by the thread's
   owning ids: a workflow thread's `run_ids`, or the jobsite id for a jobsite
