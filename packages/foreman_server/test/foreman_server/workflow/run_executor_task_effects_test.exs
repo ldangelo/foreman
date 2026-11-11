@@ -409,11 +409,24 @@ defmodule ForemanServer.Workflow.RunExecutorTaskEffectsTest do
       :ok = KeyStore.mark_ambiguous(key, "orphaned_started_key")
       :ok = KeyStore.mark_unresolved(key, 1_000_000, "effect_already_done")
 
-      start_executor!(w)
-      await_status(run_id, "failed")
+      log =
+        capture_log([level: :error], fn ->
+          start_executor!(w)
+          await_status(run_id, "failed")
+
+          await(fn ->
+            if RunExecutor.pid_for(run_id) == nil, do: {:ok, :stopped}, else: :waiting
+          end)
+        end)
 
       refute {:fail, task_id} in FakeTaskProvider.calls(db)
       assert {:ok, :ambiguous} = KeyStore.status(key)
+
+      # The log says the provider call was not attempted, not that `phase.fail` failed.
+      assert log =~ "task-provider fail"
+      assert log =~ "was not attempted"
+      assert log =~ "effect_unresolved"
+      refute log =~ "phase.fail dispatch"
     end
 
     test "a crash during attempt 1 after the provider call is :done and blocks the run" do
@@ -569,6 +582,49 @@ defmodule ForemanServer.Workflow.RunExecutorTaskEffectsTest do
 
       # The reopen is still needed, so the next boot scan issues it again.
       FakeTaskProvider.clear_crash(db, :reopen)
+      assert :ok = BootReconciliation.reconcile()
+
+      assert FakeTaskProvider.status(db, task_id) == "open"
+      assert {:ok, :completed} = KeyStore.status(key)
+    end
+
+    test "an :unknown verdict on a failed run leaves the reopen key repeatable: the next boot reopens" do
+      %{db: db, task_id: task_id, run_id: run_id} = world("reopen-unknown")
+      end_run!(run_id)
+      FakeTaskProvider.put_issue(db, task_id, "in_progress", @actor)
+      crash_in_reopen(db, :before)
+      FakeTaskProvider.get_mode(db, {:error, FakeTaskProvider.error("br down", true)})
+
+      key = TaskProviderEffect.key(run_id, :reopen, task_id)
+      sweep()
+
+      assert status(run_id) == "failed"
+      assert {:ok, %{status: :ambiguous, metadata: meta}} = KeyStore.get(key)
+      assert KeyStore.unresolved_version(stringify(meta)) == :none
+
+      FakeTaskProvider.get_mode(db, :ok)
+      FakeTaskProvider.clear_crash(db, :reopen)
+      assert :ok = BootReconciliation.reconcile()
+
+      assert FakeTaskProvider.status(db, task_id) == "open"
+      assert {:ok, :completed} = KeyStore.status(key)
+    end
+
+    test "a :done verdict on a failed run leaves the reopen key repeatable: the next boot reopens" do
+      %{db: db, task_id: task_id, run_id: run_id} = world("reopen-done-again")
+      end_run!(run_id)
+      FakeTaskProvider.put_issue(db, task_id, "in_progress", @actor)
+      crash_in_reopen(db, :after)
+
+      key = TaskProviderEffect.key(run_id, :reopen, task_id)
+      sweep()
+
+      assert {:ok, %{status: :ambiguous, metadata: meta}} = KeyStore.get(key)
+      assert KeyStore.unresolved_version(stringify(meta)) == :none
+
+      # The issue is orphaned again (another claim that died with the same run's id).
+      FakeTaskProvider.clear_crash(db, :reopen)
+      FakeTaskProvider.put_issue(db, task_id, "in_progress", @actor)
       assert :ok = BootReconciliation.reconcile()
 
       assert FakeTaskProvider.status(db, task_id) == "open"
