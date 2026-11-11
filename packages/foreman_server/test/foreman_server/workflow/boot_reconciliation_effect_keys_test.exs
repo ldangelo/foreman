@@ -41,7 +41,7 @@ defmodule ForemanServer.Workflow.BootReconciliationEffectKeysTest do
   @classes %{"branch_push" => Fake, "pr_create" => Fake}
 
   setup_all do
-    MeckScope.new_once!([Jido.Harness.Run, KeyStore])
+    MeckScope.new_once!([Jido.Harness.Run, KeyStore, CommandGateway])
 
     repo = Path.join(System.tmp_dir!(), "effect-keys-#{System.unique_integer([:positive])}")
     File.mkdir_p!(repo)
@@ -58,7 +58,7 @@ defmodule ForemanServer.Workflow.BootReconciliationEffectKeysTest do
   end
 
   setup do
-    MeckScope.restore_on_exit!([Jido.Harness.Run, KeyStore])
+    MeckScope.restore_on_exit!([Jido.Harness.Run, KeyStore, CommandGateway])
     KeyStoreReset.reset!()
 
     {handler_id, ref} =
@@ -293,10 +293,14 @@ defmodule ForemanServer.Workflow.BootReconciliationEffectKeysTest do
       assert {:ok, :ambiguous} = KeyStore.status(key)
     end
 
-    test "after an operator run.reset the next effect block records again", %{run_id: run_id} do
-      plant(run_id, "branch_push", "feature/reset", "done")
+    test "after an operator run.reset the key is not decided again: the reset lifts it", %{
+      run_id: run_id
+    } do
+      key = plant(run_id, "branch_push", "feature/reset", "done")
       sweep()
       assert status(run_id) == "blocked"
+      assert {:ok, %{metadata: marked}} = KeyStore.get(key)
+      assert {:ok, _version} = KeyStore.unresolved_version(marked)
 
       assert {:ok, _} =
                CommandGateway.dispatch_system(%{
@@ -309,9 +313,47 @@ defmodule ForemanServer.Workflow.BootReconciliationEffectKeysTest do
       start_run(run_id, 2)
       sweep()
 
-      assert status(run_id) == "blocked"
-      assert count(run_id, "RunBlocked") == 2
-      assert count(run_id, "RunRecoveryAttempted") == 2
+      # The marker stays and the run is not blocked again: `Effect.run/4` honours the
+      # reset when the run's next attempt reaches the effect.
+      assert count(run_id, "RunBlocked") == 1
+      assert count(run_id, "RunRecoveryAttempted") == 1
+      assert {:ok, %{status: :ambiguous, metadata: ^marked}} = KeyStore.get(key)
+    end
+
+    test "a failed block dispatch still leaves the key marked, so Effect.run refuses it",
+         %{run_id: run_id} do
+      key = plant(run_id, "branch_push", "feature/slow", "done")
+
+      :meck.expect(CommandGateway, :dispatch_system, fn
+        %{type: "run.block"} -> {:error, {:dispatch_exit, :timeout}}
+        command -> :meck.passthrough([command])
+      end)
+
+      sweep()
+
+      refute status(run_id) == "blocked"
+      assert count(run_id, "RunBlocked") == 0
+      assert {:ok, %{status: :ambiguous, metadata: marked}} = KeyStore.get(key)
+      assert {:ok, _version} = KeyStore.unresolved_version(marked)
+      assert marked["unresolved_reason"] == "effect_already_done"
+
+      meta = %{"run_id" => run_id, "head_branch" => "feature/slow", "cwd" => "/w"}
+
+      assert {:error, {:effect_unresolved, ^key}} =
+               Effect.run(:branch_push, key, fn -> flunk("repeated") end, meta)
+    end
+
+    test "a marker that cannot be written leaves the run unblocked and the verdict uncounted",
+         %{run_id: run_id, ref: ref} do
+      key = plant(run_id, "branch_push", "feature/nomark", "done")
+      :meck.expect(KeyStore, :mark_unresolved, fn _key, _version, _reason -> {:error, :down} end)
+
+      sweep()
+
+      refute status(run_id) == "blocked"
+      assert count(run_id, "RunBlocked") == 0
+      assert_receive {@effect_event, ^ref, %{blocked: 0, unresolved: 1}, _}
+      assert {:ok, %{status: :ambiguous}} = KeyStore.get(key)
     end
   end
 
@@ -352,7 +394,7 @@ defmodule ForemanServer.Workflow.BootReconciliationEffectKeysTest do
       assert {:ok, :ambiguous} = KeyStore.status(key)
     end
 
-    test "a run already blocked by the effect step is not blocked again but is still counted",
+    test "a run already blocked by the effect step is not decided again: its marked key is skipped",
          %{run_id: run_id, ref: ref} do
       plant(run_id, "branch_push", "feature/again", "done")
       sweep()
@@ -361,7 +403,8 @@ defmodule ForemanServer.Workflow.BootReconciliationEffectKeysTest do
       sweep()
 
       assert count(run_id, "RunBlocked") == 1
-      assert_receive {@terminal_event, ^ref, %{count: 1}, %{status: "blocked", run_id: ^run_id}}
+      refute_received {@terminal_event, ^ref, _, _}
+      assert_received {@effect_event, ^ref, %{skipped: 1, blocked: 0, on_terminal_run: 0}, _}
     end
 
     test "a run with no stream is counted like a terminal one", %{ref: ref} do

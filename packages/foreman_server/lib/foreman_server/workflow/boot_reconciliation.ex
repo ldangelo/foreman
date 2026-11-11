@@ -866,8 +866,18 @@ defmodule ForemanServer.Workflow.BootReconciliation do
         skip_effect_key(key, "is now #{status}")
 
       {:ok, %{run_id: run_id, class: class, metadata: metadata, status: status}} ->
-        {verdict, reason} = effect_verdict(status, class, metadata, opts)
-        handle_effect_verdict(key, run_id, class, verdict, reason)
+        case KeyStore.unresolved_version(metadata) do
+          :none ->
+            {verdict, reason} = effect_verdict(status, class, metadata, opts)
+            handle_effect_verdict(key, run_id, class, verdict, reason)
+
+          # The outcome was decided at an earlier boot (the key carries its marker):
+          # `Effect.run/4` refuses it until an operator `run.reset`, and honours the
+          # reset. Re-deciding it would block a run the operator just reset, or write
+          # a marker past the `RunReset` and refuse the key for good.
+          _marked ->
+            skip_effect_key(key, "is already unresolved (marked)")
+        end
 
       :gone ->
         skip_effect_key(key, "no longer exists")
@@ -971,6 +981,27 @@ defmodule ForemanServer.Workflow.BootReconciliation do
   defp handle_effect_verdict(key, run_id, class, verdict, reason) do
     fields = %{effect_class: class, effect_key: key, effect_verdict: verdict}
     {_state, version} = load_run_stream(run_id)
+
+    # The key is marked unresolved BEFORE anything is dispatched, at the stream
+    # version as it stands: from here on `Effect.run/4` refuses it, so no failed or
+    # slow dispatch below leaves an unmarked ambiguous key that a retry would
+    # repeat. A marker that cannot be written leaves the key unresolved and the run
+    # untouched (`:unresolved`), never counted as a block.
+    with :ok <- mark_effect_unresolved(key, version, reason) do
+      block_for_effect(key, run_id, class, verdict, reason, fields, version)
+    else
+      {:error, marker_error} ->
+        Logger.error(
+          "BootReconciliation: effect #{inspect(key)} of run #{run_id} has verdict #{verdict} but could not be marked unresolved (#{inspect(marker_error)}); run not blocked, key left ambiguous",
+          key: key,
+          run_id: run_id
+        )
+
+        :unresolved
+    end
+  end
+
+  defp block_for_effect(key, run_id, class, verdict, reason, fields, version) do
     # The ids carry the run stream's version, so a block after an operator
     # `run.reset` (the stream continues, the run restarts) is a new command and
     # is recorded again, while a repeat at the same version is deduplicated.
@@ -985,7 +1016,7 @@ defmodule ForemanServer.Workflow.BootReconciliation do
 
     with {:ok, _} <- dispatch_effect_command(record),
          {:ok, _} <- dispatch_effect_command(effect_block_command(run_id, reason, version)) do
-      mark_effect_unresolved(key, run_id, reason)
+      refresh_effect_marker(key, run_id, reason)
       RunControl.request(run_id, :cancel)
       _ = RunControl.cancel_agent(run_id)
 
@@ -1035,39 +1066,41 @@ defmodule ForemanServer.Workflow.BootReconciliation do
     )
 
     :telemetry.execute(@effect_on_terminal_run_event, %{count: 1}, metadata)
-    # `reason` is nil for the `:not_done` verdict: that retry is legitimate and
-    # stays unmarked even when the terminal run could not record it.
-    if reason, do: mark_effect_unresolved(key, run_id, reason)
     :on_terminal_run
   end
 
-  # An unresolved key (blocked run, or a terminal run that could not be blocked)
-  # records the run stream's version now. `Effect.run/4` refuses to repeat the
-  # effect, such as the operator's Create PR, until a `run.reset` follows that
-  # version. The `:not_done` verdict never gets here: that retry is legitimate.
-  # A marker that cannot be written is logged loudly; the key is ambiguous
-  # and `foreman_doctor` lists it either way.
-  defp mark_effect_unresolved(key, run_id, reason) do
+  # An unresolved key (a verdict that blocks, whether or not the block could be
+  # recorded) records the run stream's version. `Effect.run/4` refuses to repeat
+  # the effect, such as the operator's Create PR, until a `run.reset` follows
+  # that version. The `:not_done` verdict never gets here: that retry is
+  # legitimate. Returns `:ok` or `{:error, reason}`.
+  defp mark_effect_unresolved(key, version, reason) do
+    case KeyStore.mark_unresolved(key, version, reason) do
+      :ok -> :ok
+      {:error, _} = error -> error
+      other -> {:error, other}
+    end
+  catch
+    :exit, exit_reason -> {:error, {:key_store_unavailable, exit_reason}}
+  end
+
+  # After a successful block the marker moves to the post-block version. Best
+  # effort: the marker written before the block already refuses the effect, and
+  # the `RunReset` an operator appends lies after either version.
+  defp refresh_effect_marker(key, run_id, reason) do
     {_state, version} = load_run_stream(run_id)
 
-    case KeyStore.mark_unresolved(key, version, reason) do
+    case mark_effect_unresolved(key, version, reason) do
       :ok ->
         :ok
 
-      other ->
-        Logger.error(
-          "BootReconciliation: effect #{inspect(key)} of run #{run_id} left unresolved but the marker was not recorded: #{inspect(other)}",
+      {:error, error} ->
+        Logger.warning(
+          "BootReconciliation: effect #{inspect(key)} of run #{run_id}: marker not refreshed after the block (#{inspect(error)})",
           key: key,
           run_id: run_id
         )
     end
-  catch
-    :exit, exit_reason ->
-      Logger.error(
-        "BootReconciliation: effect #{inspect(key)} of run #{run_id} left unresolved but the marker was not recorded: #{inspect(exit_reason)}",
-        key: key,
-        run_id: run_id
-      )
   end
 
   defp effect_recovery_command(run_id, outcome, fields, reason, command_id) do
