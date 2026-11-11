@@ -759,8 +759,21 @@ defmodule ForemanServer.Workflow.Dispatcher do
     # try to provision a worktree that is already there; it must resume.
     case crash_resume_opts(run_payload.run_id, run_payload.phase_specs) do
       # An operator pause survives restarts: replay must not restart the run.
-      :paused -> {:noreply, state}
-      resume_opts -> admit_and_start_run(run_payload, task_proj, task_id, state, resume_opts)
+      :paused ->
+        {:noreply, state}
+
+      # An ended run is never launched again. What stops a replayed `run.start` otherwise is the
+      # run-slot gate its terminal event armed, and a release the dispatcher could not dispatch
+      # (`safe_dispatch_system` discards it) leaves that gate open.
+      :terminal ->
+        Logger.info(
+          "ForemanServer.Workflow.Dispatcher: not launching #{run_payload.run_id} for task #{task_id}: the run has ended"
+        )
+
+        {:noreply, state}
+
+      resume_opts ->
+        admit_and_start_run(run_payload, task_proj, task_id, state, resume_opts)
     end
   end
 
@@ -952,7 +965,16 @@ defmodule ForemanServer.Workflow.Dispatcher do
           phase_specs: phase_specs
         }
 
-        case safe_run_admission_start(project_id, payload) do
+        launch_opts = crash_resume_opts(run_id, phase_specs)
+
+        result =
+          if is_list(launch_opts) do
+            safe_run_admission_start(project_id, payload)
+          else
+            {:skipped, launch_opts}
+          end
+
+        case result do
           {:ok, :slot_queued} ->
             {:noreply, state}
 
@@ -960,7 +982,11 @@ defmodule ForemanServer.Workflow.Dispatcher do
             {:noreply, state}
 
           {:ok, _} ->
-            ForemanServer.Workflow.RunSupervisor.start_run(run_id, task)
+            start_promoted_run(run_id, task, launch_opts)
+            {:noreply, state}
+
+          {:skipped, why} ->
+            log_promotion_skipped(run_id, why)
             {:noreply, state}
 
           {:error, reason} ->
@@ -986,6 +1012,59 @@ defmodule ForemanServer.Workflow.Dispatcher do
   end
 
   defp resume_run(run_id, state) do
+    case resume_state(run_id) do
+      :resumable ->
+        start_resumed_run(run_id, state)
+
+      :unknown ->
+        # A RunResumed for a run the projection does not know: the event log and the read
+        # model disagree, which is never expected.
+        Logger.warning(
+          "ForemanServer.Workflow.Dispatcher: RunResumed for #{run_id}, which the projection does not know; not starting it"
+        )
+
+        {:noreply, state}
+
+      why when why in [:paused, :terminal] ->
+        # Boot replays every historical event: a RunResumed whose run has since been
+        # paused again, cancelled or otherwise ended is history, not a command. Acting
+        # on it would start an executor for a run that must not run.
+        Logger.info(
+          "ForemanServer.Workflow.Dispatcher: ignoring RunResumed for #{run_id}: the run is #{why}"
+        )
+
+        {:noreply, state}
+    end
+  end
+
+  defp resume_state(run_id) do
+    case ProjectionStore.run(run_id) do
+      nil -> :unknown
+      %{status: "paused"} -> :paused
+      %{terminal?: false} -> :resumable
+      %{terminal?: true} -> :terminal
+    end
+  end
+
+  # A second start for a run whose executor is already running is refused by the supervisor
+  # (`:already_started`, the registered name): the replayed log can resume a run twice, and
+  # that is harmless. Any other failure leaves a resumed run without an executor and is loud.
+  defp log_start_run_result(_run_id, {:ok, _pid}), do: :ok
+  defp log_start_run_result(_run_id, {:ok, _pid, _info}), do: :ok
+
+  defp log_start_run_result(run_id, {:error, {:already_started, _pid}}) do
+    Logger.info(
+      "ForemanServer.Workflow.Dispatcher: resumed run #{run_id} already has an executor"
+    )
+  end
+
+  defp log_start_run_result(run_id, other) do
+    Logger.warning(
+      "ForemanServer.Workflow.Dispatcher: could not start the executor of resumed run #{run_id}: #{inspect(other)}"
+    )
+  end
+
+  defp start_resumed_run(run_id, state) do
     case ProjectionStore.tasks_by_run_id(run_id) do
       [] ->
         Logger.warning("handle_run_resumed: no task found for run #{run_id}")
@@ -1018,7 +1097,11 @@ defmodule ForemanServer.Workflow.Dispatcher do
             {:noreply, state}
 
           {:ok, _} ->
-            RunSupervisor.start_run(run_id, task, resume_from: resume_from)
+            log_start_run_result(
+              run_id,
+              RunSupervisor.start_run(run_id, task, resume_from: resume_from)
+            )
+
             {:noreply, state}
 
           {:error, reason} ->
@@ -1031,13 +1114,18 @@ defmodule ForemanServer.Workflow.Dispatcher do
     end
   end
 
+  # How to launch a run the Dispatcher is about to hand to the supervisor: `:paused` and
+  # `:terminal` mean do not launch it at all (a pause survives a restart; a cancelled, failed or
+  # otherwise ended run is never relaunched), a keyword list is the resume option of a live run
+  # a previous server started, and `[]` is a run with no stream yet, which starts fresh.
   @doc false
-  @spec crash_resume_opts(String.t(), [map()]) :: keyword() | :paused
+  @spec crash_resume_opts(String.t(), [map()]) :: keyword() | :paused | :terminal
   def crash_resume_opts(run_id, phase_specs) do
     case ProjectionStore.run(run_id) do
       %{status: "paused"} -> :paused
+      %{terminal?: true} -> :terminal
       %{terminal?: false} -> [resume_from: resume_from_index(run_id, phase_specs)]
-      _absent_or_terminal -> []
+      _absent -> []
     end
   end
 
@@ -1079,6 +1167,22 @@ defmodule ForemanServer.Workflow.Dispatcher do
     end
   end
 
+  # A run promoted out of a queue (slot or Beads lease) is launched the way a dispatched one is:
+  # a run a previous server started and whose phases have been completed resumes at its first
+  # unfinished phase, a run with no stream yet starts fresh. The options are read BEFORE
+  # admission, whose `run.start` is what creates the run's stream.
+  defp start_promoted_run(run_id, task, []),
+    do: ForemanServer.Workflow.RunSupervisor.start_run(run_id, task)
+
+  defp start_promoted_run(run_id, task, resume_opts),
+    do: ForemanServer.Workflow.RunSupervisor.start_run(run_id, task, resume_opts)
+
+  defp log_promotion_skipped(run_id, why) do
+    Logger.info(
+      "ForemanServer.Workflow.Dispatcher: not launching promoted run #{run_id}: it is #{why}"
+    )
+  end
+
   @doc false
   def __resume_from_index_for_test__(run_id, phase_specs),
     do: resume_from_index(run_id, phase_specs)
@@ -1096,15 +1200,21 @@ defmodule ForemanServer.Workflow.Dispatcher do
         workflow_snapshot =
           Map.get(task, :workflow_snapshot) || Map.get(task, "workflow_snapshot") || %{}
 
+        launch_opts = crash_resume_opts(run_id, phase_specs)
+
         result =
-          safe_run_admission_start(project_id, %{
-            run_id: run_id,
-            task_id: task_id,
-            project_id: project_id,
-            approval_id: approval_id,
-            workflow_snapshot: workflow_snapshot,
-            phase_specs: phase_specs
-          })
+          if is_list(launch_opts) do
+            safe_run_admission_start(project_id, %{
+              run_id: run_id,
+              task_id: task_id,
+              project_id: project_id,
+              approval_id: approval_id,
+              workflow_snapshot: workflow_snapshot,
+              phase_specs: phase_specs
+            })
+          else
+            {:skipped, launch_opts}
+          end
 
         case result do
           {:ok, :slot_queued} ->
@@ -1114,13 +1224,17 @@ defmodule ForemanServer.Workflow.Dispatcher do
             {:noreply, state}
 
           {:ok, %{} = _run_started_event} ->
-            ForemanServer.Workflow.RunSupervisor.start_run(run_id, task)
+            start_promoted_run(run_id, task, launch_opts)
             {:noreply, state}
 
           {:ok, nil} ->
             # run.start was accepted but produced no new event (e.g. the
             # task was already started). Treat as admitted.
-            ForemanServer.Workflow.RunSupervisor.start_run(run_id, task)
+            start_promoted_run(run_id, task, launch_opts)
+            {:noreply, state}
+
+          {:skipped, why} ->
+            log_promotion_skipped(run_id, why)
             {:noreply, state}
 
           {:error, reason} ->

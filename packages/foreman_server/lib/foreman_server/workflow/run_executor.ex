@@ -876,14 +876,16 @@ defmodule ForemanServer.Workflow.RunExecutor do
     case find_resumable_worktree(state.run_id) do
       nil ->
         if worktree_expected?(state) do
-          Logger.warning(
-            "RunExecutor #{state.run_id} resume found no worktree entry for #{name}; provisioning a fresh worktree",
-            run_id: state.run_id,
-            task_id: task_id(state),
-            operation: "run_executor.resume"
-          )
+          with :ok <- assert_resume_base_resolvable(state) do
+            Logger.warning(
+              "RunExecutor #{state.run_id} resume found no worktree entry for #{name}; provisioning a fresh worktree",
+              run_id: state.run_id,
+              task_id: task_id(state),
+              operation: "run_executor.resume"
+            )
 
-          {:ok, Map.put(state, :prior_worktree_discarded, %{name: name, path: nil})}
+            {:ok, Map.put(state, :prior_worktree_discarded, %{name: name, path: nil})}
+          end
         else
           {:ok, state}
         end
@@ -940,12 +942,26 @@ defmodule ForemanServer.Workflow.RunExecutor do
       operation: "run_executor.resume"
     )
 
-    case System.cmd("git", ["-C", entry.repo_path, "worktree", "prune"], stderr_to_stdout: true) do
-      {_output, 0} ->
-        {:ok, Map.put(state, :prior_worktree_discarded, %{name: name, path: entry.worktree_path})}
-
-      {output, code} ->
+    with {_output, 0} <-
+           System.cmd("git", ["-C", entry.repo_path, "worktree", "prune"], stderr_to_stdout: true),
+         :ok <- assert_resume_base_resolvable(state) do
+      {:ok, Map.put(state, :prior_worktree_discarded, %{name: name, path: entry.worktree_path})}
+    else
+      {output, code} when is_integer(code) ->
         {:error, {:resume_worktree_prune_failed, entry.repo_path, code, output}}
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  # A worktree that is re-provisioned on resume is cut from the run's base. When
+  # that base cannot be resolved the run ends (`:resume_context_unresolvable`)
+  # before any phase starts: the run is never cut from a guessed base.
+  defp assert_resume_base_resolvable(state) do
+    case resolve_provisioned_base(state, state.worktree_spec || %{}) do
+      {:ok, _project_root, _base_ref, _implementation_key, _trd_scope} -> :ok
+      {:error, _} = error -> error
     end
   end
 
@@ -3261,8 +3277,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
          :ok <- assert_safe_path_identifier(worktree_task_id(state)),
          :ok <- assert_safe_path_identifier(state.run_id),
          {:ok, project_root, base_ref, implementation_key, trd_scope} <-
-           resolve_run_base(state, spec),
-         {:ok, base_ref} <- apply_source_branch(state, project_root, base_ref, implementation_key),
+           resolve_provisioned_base(state, spec),
          {:ok, cleanup} <- worktree_cleanup(spec),
          phase_id = Identity.phase_id(state.run_id, phase_index),
          operation_id = Worktree.operation_id(state.run_id, nil),
@@ -3565,6 +3580,18 @@ defmodule ForemanServer.Workflow.RunExecutor do
       cleanup: primary.cleanup,
       repo_id: entry.repo_id
     }
+  end
+
+  # The base a run's worktree is cut from, exactly as provisioning computes it: the resolved base
+  # (`resolve_run_base/2`), replaced by the tip of the task's `source_branch` when it has one
+  # (`apply_source_branch/4`). Provisioning and the resume pre-check both use this one function,
+  # so a base the pre-check accepts is a base provisioning can use.
+  defp resolve_provisioned_base(state, spec) do
+    with {:ok, project_root, base_ref, implementation_key, trd_scope} <-
+           resolve_run_base(state, spec),
+         {:ok, base_ref} <- apply_source_branch(state, project_root, base_ref, implementation_key) do
+      {:ok, project_root, base_ref, implementation_key, trd_scope}
+    end
   end
 
   # An ImplementationContext is detected by the presence of the values it
@@ -5059,6 +5086,12 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   @doc false
   def __resume_prelude_for_test__(state), do: resume_prelude(state)
+
+  # Runs `handle_kickoff_ready/1` (resume prelude, then the first phase on
+  # success) as the GenServer callback result; it skips only the provider and
+  # model preflight that precedes it in `kickoff_preflight/1`.
+  @doc false
+  def __handle_kickoff_ready_for_test__(state), do: handle_kickoff_ready(state)
 
   @doc false
   def __resolve_run_repo_set_for_test__(state), do: resolve_run_repo_set(state)
