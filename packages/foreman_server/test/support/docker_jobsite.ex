@@ -130,18 +130,20 @@ defmodule ForemanServer.TestSupport.DockerJobsite do
   container carries a test label unique to this call; returns `{jobsite_id, label}` for
   `containers/1`.
   """
-  @spec start_held_plain!(String.t(), pos_integer()) :: {String.t(), String.t()}
-  def start_held_plain!(repo, hold_secs \\ 300) do
+  @spec start_held_plain!(String.t(), pos_integer(), keyword()) :: {String.t(), String.t()}
+  def start_held_plain!(repo, hold_secs \\ 300, extra \\ []) do
     label = "foreman-docker-jobsite-test=plain-#{System.unique_integer([:positive])}"
     [key, value] = String.split(label, "=", parts: 2)
-    opts = jobsite_opts(repo, nil, held_env(hold_secs), %{key => value})
+    opts = repo |> jobsite_opts(nil, held_env(hold_secs), %{key => value}) |> Keyword.merge(extra)
     {start!(opts, fn _id -> label end), label}
   end
 
   defp held_env(hold_secs),
     do: %{
       "FAKE_AGENT_SLEEP_ON_RUN" => "1",
-      "FAKE_AGENT_SLEEP_SECS" => Integer.to_string(hold_secs)
+      "FAKE_AGENT_SLEEP_SECS" => Integer.to_string(hold_secs),
+      # The agent reports its session at once, so a jobsite killed mid-iteration is resumable.
+      "FAKE_AGENT_SESSION_FIRST" => "1"
     }
 
   defp start!(opts, label_for) do

@@ -237,5 +237,34 @@ defmodule ForemanServer.Jobsite.NetworkPolicyDockerTest do
 
       refute DockerJobsite.container?(container)
     end
+
+    # `release_all/3` (executor.ex) is the completion path of a RESUMED jobsite; a fresh run is
+    # released by the engine's release step. The crash leaves the first sandbox for the boot sweep;
+    # the sandbox the resume provisions must be closed when the resumed jobsite completes.
+    test "completion of a resumed jobsite", %{repo: repo} do
+      {id, label} = DockerJobsite.start_held_plain!(repo, 300, max_iterations: 3)
+      assert [first] = DockerJobsite.containers(label)
+
+      DockerJobsite.wait_until(fn -> is_binary(Jobsite.get(id)[:session_id]) end, 30_000)
+      pid = ForemanServer.Jobsite.Executor.pid_for(id)
+      ref = Process.monitor(pid)
+      Process.exit(pid, :kill)
+      assert_receive {:DOWN, ^ref, :process, ^pid, :killed}, 2_000
+      assert DockerJobsite.container?(first)
+
+      assert {:ok, _result} = Jobsite.resume(id)
+      assert Jobsite.get(id).status == "completed"
+
+      {:ok, events} = ForemanServer.EventStore.read_stream_forward("jobsite:" <> id, 0, 99_999)
+
+      provisioned =
+        for %{event_type: "JobsiteSandboxProvisioned", data: data} <- events,
+            do: Map.get(data, :container_id) || Map.get(data, "container_id")
+
+      assert [^first | _] = provisioned
+      resumed = List.last(provisioned)
+      assert resumed != first
+      refute DockerJobsite.container?(resumed)
+    end
   end
 end
