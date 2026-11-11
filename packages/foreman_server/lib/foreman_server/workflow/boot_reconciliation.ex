@@ -876,7 +876,12 @@ defmodule ForemanServer.Workflow.BootReconciliation do
           # reset. Re-deciding it would block a run the operator just reset, or write
           # a marker past the `RunReset` and refuse the key for good.
           _marked ->
-            skip_effect_key(key, "is already unresolved (marked)")
+            Logger.debug(
+              "BootReconciliation: effect key #{inspect(key)} is already unresolved (marked); not reconciled",
+              key: key
+            )
+
+            :skipped
         end
 
       :gone ->
@@ -1016,7 +1021,6 @@ defmodule ForemanServer.Workflow.BootReconciliation do
 
     with {:ok, _} <- dispatch_effect_command(record),
          {:ok, _} <- dispatch_effect_command(effect_block_command(run_id, reason, version)) do
-      refresh_effect_marker(key, run_id, reason)
       RunControl.request(run_id, :cancel)
       _ = RunControl.cancel_agent(run_id)
 
@@ -1059,11 +1063,19 @@ defmodule ForemanServer.Workflow.BootReconciliation do
       reason: reason
     }
 
-    Logger.warning(
-      "BootReconciliation: effect #{inspect(key)} (#{class}) of run #{run_id} has verdict #{verdict} " <>
-        "but the run is #{status} and cannot be blocked (reason #{inspect(reason)}); key stays ambiguous",
-      Map.to_list(metadata)
-    )
+    if reason do
+      Logger.warning(
+        "BootReconciliation: effect #{inspect(key)} (#{class}) of run #{run_id} has verdict #{verdict} " <>
+          "but the run is #{status} and cannot be blocked (reason #{inspect(reason)}); key stays ambiguous",
+        Map.to_list(metadata)
+      )
+    else
+      Logger.warning(
+        "BootReconciliation: effect #{inspect(key)} (#{class}) of run #{run_id} did not happen " <>
+          "but the run is #{status}, so the retry cannot be recorded; key stays ambiguous",
+        Map.to_list(metadata)
+      )
+    end
 
     :telemetry.execute(@effect_on_terminal_run_event, %{count: 1}, metadata)
     :on_terminal_run
@@ -1082,25 +1094,6 @@ defmodule ForemanServer.Workflow.BootReconciliation do
     end
   catch
     :exit, exit_reason -> {:error, {:key_store_unavailable, exit_reason}}
-  end
-
-  # After a successful block the marker moves to the post-block version. Best
-  # effort: the marker written before the block already refuses the effect, and
-  # the `RunReset` an operator appends lies after either version.
-  defp refresh_effect_marker(key, run_id, reason) do
-    {_state, version} = load_run_stream(run_id)
-
-    case mark_effect_unresolved(key, version, reason) do
-      :ok ->
-        :ok
-
-      {:error, error} ->
-        Logger.warning(
-          "BootReconciliation: effect #{inspect(key)} of run #{run_id}: marker not refreshed after the block (#{inspect(error)})",
-          key: key,
-          run_id: run_id
-        )
-    end
   end
 
   defp effect_recovery_command(run_id, outcome, fields, reason, command_id) do

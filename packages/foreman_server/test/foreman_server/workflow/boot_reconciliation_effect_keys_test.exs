@@ -293,7 +293,7 @@ defmodule ForemanServer.Workflow.BootReconciliationEffectKeysTest do
       assert {:ok, :ambiguous} = KeyStore.status(key)
     end
 
-    test "after an operator run.reset the key is not decided again: the reset lifts it", %{
+    test "after a reset the sweep does not re-decide the key", %{
       run_id: run_id
     } do
       key = plant(run_id, "branch_push", "feature/reset", "done")
@@ -318,6 +318,36 @@ defmodule ForemanServer.Workflow.BootReconciliationEffectKeysTest do
       assert count(run_id, "RunBlocked") == 1
       assert count(run_id, "RunRecoveryAttempted") == 1
       assert {:ok, %{status: :ambiguous, metadata: ^marked}} = KeyStore.get(key)
+    end
+
+    test "a reset that lands right after the block still lifts the key", %{run_id: run_id} do
+      key = plant(run_id, "branch_push", "feature/race", "done")
+
+      :meck.expect(CommandGateway, :dispatch_system, fn
+        %{type: "run.block"} = command ->
+          result = :meck.passthrough([command])
+
+          {:ok, _} =
+            :meck.passthrough([
+              %{
+                type: "run.reset",
+                command_id: "reset-race-#{run_id}",
+                aggregate_id: "run:#{run_id}",
+                payload: %{"run_id" => run_id}
+              }
+            ])
+
+          result
+
+        command ->
+          :meck.passthrough([command])
+      end)
+
+      sweep()
+
+      assert count(run_id, "RunReset") == 1
+      meta = %{"run_id" => run_id, "head_branch" => "feature/race", "cwd" => "/w"}
+      assert :ran == Effect.run(:branch_push, key, fn -> :ran end, meta)
     end
 
     test "a failed block dispatch still leaves the key marked, so Effect.run refuses it",
