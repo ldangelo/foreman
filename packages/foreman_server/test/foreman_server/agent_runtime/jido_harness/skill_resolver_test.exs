@@ -399,6 +399,34 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.SkillResolverTest do
       assert resolve("fix-issue", ctx.opts) == :available
     end
 
+    test "the legacy object form of skills is treated as filtered, in either scope", ctx do
+      put_skill!(Path.join(ctx.agent, "skills"), "fix-issue")
+
+      for value <- [
+            %{"customDirectories" => ["!fix-issue"]},
+            %{"customDirectories" => []},
+            %{"enableSkillCommands" => true},
+            %{}
+          ] do
+        write_json!(Path.join(ctx.agent, "settings.json"), %{"skills" => value})
+        assert resolve("fix-issue", ctx.opts) == :unverifiable, inspect(value)
+      end
+
+      File.rm!(Path.join(ctx.agent, "settings.json"))
+      put_skill!(Path.join(ctx.home, ".agents/skills"), "agents-skill")
+
+      write_json!(Path.join(ctx.project, ".pi/settings.json"), %{
+        "skills" => %{"customDirectories" => ["!x"]}
+      })
+
+      # Project scope filters project dirs only; the user-scope finds stand.
+      assert resolve("fix-issue", ctx.opts) == :available
+      assert resolve("agents-skill", ctx.opts) == :available
+
+      put_skill!(Path.join(ctx.project, ".pi/skills"), "proj-skill")
+      assert resolve("proj-skill", ctx.opts) == :unverifiable
+    end
+
     test "a project-scope filter does not touch a user-scope find", ctx do
       put_skill!(Path.join(ctx.agent, "skills"), "fix-issue")
       write_json!(Path.join(ctx.project, ".pi/settings.json"), %{"skills" => ["!fix-issue"]})
@@ -443,6 +471,23 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.SkillResolverTest do
         assert resolve("fix-issue", Keyword.put(ctx.opts, :agent_dir, dir)) == :unverifiable,
                dir
       end
+    end
+
+    test "the agent dir is used untrimmed", ctx do
+      put_skill!(Path.join(ctx.agent, "skills"), "fix-issue")
+
+      # Leading space: not absolute, resolved by pi against the launch cwd.
+      assert resolve("fix-issue", Keyword.put(ctx.opts, :agent_dir, " " <> ctx.agent)) ==
+               :unverifiable
+
+      # Trailing space: a different directory, where nothing is found.
+      assert resolve("fix-issue", Keyword.put(ctx.opts, :agent_dir, ctx.agent <> " ")) ==
+               :missing
+    end
+
+    test "a relative home is unverifiable even with an absolute agent dir", ctx do
+      put_skill!(Path.join(ctx.agent, "skills"), "fix-issue")
+      assert resolve("fix-issue", Keyword.put(ctx.opts, :home, "relative-home")) == :unverifiable
     end
 
     test "a ~ agent dir expands against the home", ctx do
