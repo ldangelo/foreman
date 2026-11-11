@@ -1196,16 +1196,15 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
   end
 
-  # The project's environment as the launch will build it, or the CLASS of why it
-  # cannot be (never the error itself, never a raise out of the preflight).
+  # The project's environment as the launch will build it, or the CLASS of the
+  # tagged error `project_env/1` returned (never the error's content). An
+  # exception is not handled here: it propagates, as it would in the launch.
   defp project_launch_env(state) do
     case project_env(state) do
       {:ok, %{env: env}} -> {:ok, env}
       {:error, error} when is_tuple(error) and tuple_size(error) > 0 -> {:error, elem(error, 0)}
       {:error, _other} -> {:error, :unknown}
     end
-  rescue
-    _error -> {:error, :raised}
   end
 
   defp unresolved_reason({:unverifiable, class}), do: class
