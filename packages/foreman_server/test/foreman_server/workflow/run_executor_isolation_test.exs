@@ -23,7 +23,7 @@ defmodule ForemanServer.Workflow.RunExecutorIsolationTest do
   alias ForemanServer.Workflow.{RunExecutor, RunWorktreeLayout}
 
   @actor "foreman-runner"
-  @refusal "{:isolation_unsupported, :network, :host_workflow}"
+  @refusal_tuple "{:isolation_unsupported, :network, :host_workflow}"
 
   defmodule Worker do
     @moduledoc false
@@ -251,16 +251,29 @@ defmodule ForemanServer.Workflow.RunExecutorIsolationTest do
   # What a refused run looks like: failed and terminal on the run and task read
   # models with the typed reason, no claim, no worktree, not one phase.
   defp assert_refused!(w) do
+    # Bounded wait that fails FAST and by name if a phase starts: a refusal that
+    # let the run through must read as a started phase, not as a timeout.
     run =
-      await(fn ->
-        case ProjectionStore.run(w.run_id) do
-          %{status: "failed", terminal?: true} = run -> {:ok, run}
-          _ -> :waiting
-        end
-      end)
+      await(
+        fn ->
+          case ProjectionStore.phases_for_run(w.run_id) do
+            [] -> :ok
+            phases -> flunk("the run was not refused: a phase started #{inspect(phases)}")
+          end
 
-    assert run.failure_reason == @refusal
-    assert ProjectionStore.task_projection(w.task_id).failure_reason == @refusal
+          case ProjectionStore.run(w.run_id) do
+            %{status: "failed", terminal?: true} = run -> {:ok, run}
+            _ -> :waiting
+          end
+        end,
+        5_000
+      )
+
+    for reason <- [run.failure_reason, ProjectionStore.task_projection(w.task_id).failure_reason] do
+      assert reason =~ @refusal_tuple
+      assert reason =~ "environment.network"
+      assert reason =~ "docker jobsite"
+    end
 
     assert FakeTaskProvider.calls(w.db) == []
     assert FakeTaskProvider.status(w.db, w.task_id) == "open"
