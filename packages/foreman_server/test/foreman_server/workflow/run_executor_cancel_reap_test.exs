@@ -17,6 +17,7 @@ defmodule ForemanServer.Workflow.RunExecutorCancelReapTest do
   alias ForemanServer.RunControl
   alias ForemanServer.TestSupport.CoordinatorHelpers, as: H
   alias ForemanServer.TestSupport.DispatcherRestart
+  alias ForemanServer.TestSupport.MeckScope
   alias ForemanServer.TestSupport.RunSlotsReset
   alias ForemanServer.TestSupport.StrayAgent
   alias ForemanServer.Workflow.BootReconciliation
@@ -24,6 +25,12 @@ defmodule ForemanServer.Workflow.RunExecutorCancelReapTest do
   alias ForemanServer.Workflow.RunSupervisor
 
   @moduletag :tmp_dir
+
+  # A passthrough mock: no expectation means the real `RunSupervisor`. Only the restart tests
+  # below give it expectations, and `restore_on_exit!` takes them away again.
+  setup_all do
+    MeckScope.new_once!([RunSupervisor])
+  end
 
   setup %{tmp_dir: dir} do
     run_id = "run-cancel-reap-#{System.unique_integer([:positive])}"
@@ -148,9 +155,12 @@ defmodule ForemanServer.Workflow.RunExecutorCancelReapTest do
 
   test "the cancel's escalation and the sweep after Driver.await_exit are observable",
        %{tmp_dir: dir, run_id: run_id, state: state} do
-    # SIGINT is ignored by this agent and the harness's SIGTERM step is a second away; the sweep
-    # must not start before the agent has gone, and must then name the tool process it killed.
-    StrayAgent.tight_grace!(1_000)
+    # The agent ignores SIGINT. The harness's own SIGTERM escalation is parked far out of reach, so
+    # "the agent is alive right after the cancel" is not a wall-clock race against the `ps` calls
+    # below under a loaded host; the test ends the window itself, signalling the agent once it has
+    # looked at it. The sweep must not start before the agent has gone, and must then name the
+    # tool process it killed.
+    StrayAgent.tight_grace!(60_000)
     %{run_id: harness_run_id, agent_os_pid: agent, stray_pid: stray} = StrayAgent.start!(dir)
 
     operator_cancels(run_id, harness_run_id)
@@ -160,6 +170,11 @@ defmodule ForemanServer.Workflow.RunExecutorCancelReapTest do
     assert StrayAgent.alive?(agent)
     assert StrayAgent.alive?(stray)
     assert StrayAgent.ppid(stray) == agent
+
+    Task.start_link(fn ->
+      Process.sleep(200)
+      StrayAgent.terminate!(agent)
+    end)
 
     log =
       ExUnit.CaptureLog.capture_log([level: :warning], fn ->
@@ -177,25 +192,26 @@ defmodule ForemanServer.Workflow.RunExecutorCancelReapTest do
 
   describe "a cancelled run across a server restart" do
     setup do
-      # Restore the app-level Dispatcher (subscribed, projection reset) and free the global slots:
-      # a full slot would queue the run instead of admitting it.
+      # The test's own capacity: a full slot would queue the run instead of admitting it. It is
+      # set before the slot stream is reset, so the aggregate derives it afresh.
+      previous = Application.fetch_env(:foreman_server, :max_concurrent_runs)
+      Application.put_env(:foreman_server, :max_concurrent_runs, 50)
+
+      on_exit(fn ->
+        case previous do
+          {:ok, value} -> Application.put_env(:foreman_server, :max_concurrent_runs, value)
+          :error -> Application.delete_env(:foreman_server, :max_concurrent_runs)
+        end
+      end)
+
+      # Restore the app-level Dispatcher (subscribed, projection reset).
       DispatcherRestart.restart!()
       RunSlotsReset.reset!()
 
-      {:ok, _} =
-        CommandGateway.dispatch_system(%{
-          type: "run_slots.acquire",
-          command_id: "test:cancel-restart-init:#{System.unique_integer([:positive])}",
-          aggregate_id: "run_slots:global",
-          payload: %{
-            run_id: "cancel-restart-init-#{System.unique_integer([:positive])}",
-            capacity: 100
-          }
-        })
-
       # The run supervisor is the one seam mocked: a start here is the observable "a phase would be
-      # launched". Everything else (aggregates, projection, admission, Dispatcher) is real.
-      :meck.new(RunSupervisor, [:no_link])
+      # launched". Everything else (aggregates, projection, admission, Dispatcher) is real. Both
+      # arities are recorded: the Dispatcher calls `start_run/2` for a run it promotes from a queue.
+      MeckScope.restore_on_exit!([RunSupervisor])
       test = self()
 
       :meck.expect(RunSupervisor, :start_run, fn run_id, _task, opts ->
@@ -203,10 +219,12 @@ defmodule ForemanServer.Workflow.RunExecutorCancelReapTest do
         {:ok, :child}
       end)
 
-      on_exit(fn ->
-        if :meck.validate(RunSupervisor), do: :meck.unload(RunSupervisor)
-        DispatcherRestart.restart!()
+      :meck.expect(RunSupervisor, :start_run, fn run_id, _task ->
+        send(test, {:run_supervisor_start, run_id, []})
+        {:ok, :child}
       end)
+
+      on_exit(&DispatcherRestart.restart!/0)
 
       H.subscribe!()
       project = H.register_project(System.tmp_dir!(), config: %{})
@@ -297,8 +315,21 @@ defmodule ForemanServer.Workflow.RunExecutorCancelReapTest do
       _ = :sys.get_state(ForemanServer.Workflow.Dispatcher)
       flush_starts(run_id)
 
+      # The cancel released the run's slot, and that release is what makes a replayed `run.start`
+      # refuse the run (the slot stream holds a release for it). Hold the slot again under a fresh
+      # command id, so the slot gate cannot be what stops the relaunch: the Dispatcher itself must
+      # refuse a terminal run.
+      assert {:ok, _} =
+               CommandGateway.dispatch_system(%{
+                 type: "run_slots.acquire",
+                 command_id: "test:cancel-restart-rehold:#{System.unique_integer([:positive])}",
+                 aggregate_id: "run_slots:global",
+                 payload: %{run_id: run_id, capacity: 50}
+               })
+
       restart_dispatcher_keeping_log!()
       assert :ok = BootReconciliation.reconcile()
+      drain_dispatcher!(Process.whereis(ForemanServer.Workflow.Dispatcher), 100)
 
       refute_received {:run_supervisor_start, ^run_id, _opts}
       assert %{status: "cancelled", terminal?: true} = after_restart = ProjectionStore.run(run_id)

@@ -759,8 +759,21 @@ defmodule ForemanServer.Workflow.Dispatcher do
     # try to provision a worktree that is already there; it must resume.
     case crash_resume_opts(run_payload.run_id, run_payload.phase_specs) do
       # An operator pause survives restarts: replay must not restart the run.
-      :paused -> {:noreply, state}
-      resume_opts -> admit_and_start_run(run_payload, task_proj, task_id, state, resume_opts)
+      :paused ->
+        {:noreply, state}
+
+      # An ended run is never launched again. What stops a replayed `run.start` otherwise is the
+      # run-slot gate its terminal event armed, and a release the dispatcher could not dispatch
+      # (`safe_dispatch_system` discards it) leaves that gate open.
+      :terminal ->
+        Logger.info(
+          "ForemanServer.Workflow.Dispatcher: not launching #{run_payload.run_id} for task #{task_id}: the run has ended"
+        )
+
+        {:noreply, state}
+
+      resume_opts ->
+        admit_and_start_run(run_payload, task_proj, task_id, state, resume_opts)
     end
   end
 
@@ -1053,13 +1066,18 @@ defmodule ForemanServer.Workflow.Dispatcher do
     end
   end
 
+  # How to launch a run the Dispatcher is about to hand to the supervisor: `:paused` and
+  # `:terminal` mean do not launch it at all (a pause survives a restart; a cancelled, failed or
+  # otherwise ended run is never relaunched), a keyword list is the resume option of a live run
+  # a previous server started, and `[]` is a run with no stream yet, which starts fresh.
   @doc false
-  @spec crash_resume_opts(String.t(), [map()]) :: keyword() | :paused
+  @spec crash_resume_opts(String.t(), [map()]) :: keyword() | :paused | :terminal
   def crash_resume_opts(run_id, phase_specs) do
     case ProjectionStore.run(run_id) do
       %{status: "paused"} -> :paused
+      %{terminal?: true} -> :terminal
       %{terminal?: false} -> [resume_from: resume_from_index(run_id, phase_specs)]
-      _absent_or_terminal -> []
+      _absent -> []
     end
   end
 
