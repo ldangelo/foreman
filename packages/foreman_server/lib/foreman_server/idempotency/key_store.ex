@@ -80,6 +80,16 @@ defmodule ForemanServer.Idempotency.KeyStore do
   end
 
   @doc """
+  True exactly for effect keys (`effect:<class>:<run_id>:<identity>`, written by
+  `ForemanServer.Idempotency.Effect`). Agent-phase keys are
+  `"phase:<run_id>:<phase_id>"`, so the two families cannot collide. Recovery
+  and the doctor partition keys with this predicate rather than the prefix.
+  """
+  @spec effect_key?(term()) :: boolean()
+  def effect_key?("effect:" <> _), do: true
+  def effect_key?(_), do: false
+
+  @doc """
   Return the current status of an idempotency key.
   Returns `{:ok, status}` when found, `:not_found` otherwise.
   """
@@ -117,13 +127,11 @@ defmodule ForemanServer.Idempotency.KeyStore do
   @impl true
   def handle_call({:record, key, status, meta}, _from, %{repo: repo} = state)
       when repo != nil do
-    existing_meta =
+    merged =
       case :ets.lookup(@table, key) do
-        [{^key, _status, existing}] -> existing
-        [] -> %{}
+        [{^key, _status, existing}] -> Map.merge(existing, meta)
+        [] -> merge_stored(repo, key, meta)
       end
-
-    merged = Map.merge(existing_meta, meta)
 
     changeset =
       IdempotencyKey.upsert_changeset(%IdempotencyKey{key: key}, %{
@@ -260,6 +268,23 @@ defmodule ForemanServer.Idempotency.KeyStore do
   end
 
   # --- internal helpers ---
+
+  # After a restart ETS has no copy of the key (`init/1` creates the table
+  # empty) but the stored row does. Merge the incoming fields into the stored
+  # metadata so a status change never drops a field it did not name. The stored
+  # map has string keys (JSON round trip), so the incoming keys are converted
+  # to strings to line up with it. No stored row: the incoming fields as given.
+  defp merge_stored(repo, key, meta) do
+    case repo.get(IdempotencyKey, key) do
+      %IdempotencyKey{metadata: stored} when is_map(stored) ->
+        Map.merge(stringify_keys(stored), stringify_keys(meta))
+
+      _none ->
+        meta
+    end
+  end
+
+  defp stringify_keys(map), do: Map.new(map, fn {k, v} -> {to_string(k), v} end)
 
   defp repo_from_config do
     Application.get_env(:foreman_server, JidoCheckpointStore, [])[:repo]
