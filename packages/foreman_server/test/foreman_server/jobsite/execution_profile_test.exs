@@ -74,12 +74,35 @@ defmodule ForemanServer.Jobsite.ExecutionProfileTest do
   end
 
   describe "cleanup follows the worktree spec" do
-    test "always is enforced; every other policy is unenforced with a reason" do
-      assert ExecutionProfile.resolve(:host_workflow, cleanup: :always).cleanup == :enforced
+    test "the host profile's cleanup is unenforced for EVERY spec value, :always included" do
+      for spec <- [:always, :on_success, :never, :none, :bogus, nil, "always"] do
+        assert {:unenforced, reason} =
+                 ExecutionProfile.resolve(:host_workflow, cleanup: spec).cleanup
+
+        assert reason != ""
+
+        assert %{state: "unenforced"} =
+                 :host_workflow
+                 |> ExecutionProfile.resolve(cleanup: spec)
+                 |> ExecutionProfile.to_map()
+                 |> Map.fetch!(:cleanup)
+      end
+    end
+
+    test "the host reason for :always names the crash and boot-reclaim limits" do
+      assert {:unenforced, reason} =
+               ExecutionProfile.resolve(:host_workflow, cleanup: :always).cleanup
+
+      assert reason =~ "server crash leaves the worktree"
+      assert reason =~ "terminal run with a clean worktree"
+    end
+
+    test "the docker profile maps the spec directly: always enforced, the rest not" do
+      assert ExecutionProfile.resolve(:docker_jobsite, cleanup: :always).cleanup == :enforced
 
       for spec <- [:on_success, :never, :none, :bogus] do
         assert {:unenforced, reason} =
-                 ExecutionProfile.resolve(:host_workflow, cleanup: spec).cleanup
+                 ExecutionProfile.resolve(:docker_jobsite, cleanup: spec).cleanup
 
         assert reason != ""
       end
