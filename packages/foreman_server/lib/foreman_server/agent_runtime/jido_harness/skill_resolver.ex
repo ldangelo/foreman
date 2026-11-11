@@ -123,12 +123,15 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.SkillResolver do
     home = Keyword.get_lazy(opts, :home, &System.user_home!/0)
     project_root = Keyword.get(opts, :project_root)
 
-    with {:ok, agent_dir} <- agent_dir(opts, home),
+    # `~/.agents/skills` and every `~` expansion need an absolute home: a
+    # relative one would resolve against the server's cwd, not pi's.
+    with :absolute <- Path.type(home),
+         {:ok, agent_dir} <- agent_dir(opts, home),
          ctx = %{home: home, agent_dir: agent_dir, project_root: project_root},
          {:ok, acc} <- collect_sources(ctx) do
       verdict(acc, skill)
     else
-      :error -> :unverifiable
+      _ -> :unverifiable
     end
   end
 
@@ -143,11 +146,12 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.SkillResolver do
       end
 
     case raw do
+      # `getAgentDir` is `expandTildePath(env)` and `resolvePath` does not trim,
+      # so the value is used untrimmed: a leading space is a relative path, a
+      # trailing space names a different directory.
       value when is_binary(value) ->
-        trimmed = String.trim(value)
-
-        if Path.type(trimmed) == :absolute or trimmed == "~" or String.starts_with?(trimmed, "~/"),
-          do: {:ok, expand(trimmed, "/", home)},
+        if Path.type(value) == :absolute or value == "~" or String.starts_with?(value, "~/"),
+          do: {:ok, expand_raw(value, "/", home)},
           else: :error
 
       _ ->
@@ -229,13 +233,26 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.SkillResolver do
   # array holds any `!`, `+`, `-` or glob entry can therefore disable a skill in
   # its auto-discovered directories: a find there is `:unverifiable`. (The
   # overrides only remove skills, so absence is unaffected.)
+  #
+  # `pattern?/1` also counts plain `*`/`?` entries, which pi's
+  # `getOverridePatterns` ignores (it keeps only `!`/`+`/`-`): a deliberate
+  # over-approximation that can only downgrade `:available` to `:unverifiable`.
+  #
+  # A non-list `skills` is the legacy object form. `migrateSettings` (run on
+  # every settings load) turns `skills.customDirectories`, when a non-empty
+  # array, into `settings.skills` (and deletes `skills` otherwise), so the
+  # object form can carry the same `!` entries. Any non-nil, non-list value is
+  # therefore treated as filtered.
   defp filter_flags(settings) do
     case Map.get(settings, "skills") do
-      list when is_list(list) ->
-        if Enum.any?(list, &(is_binary(&1) and pattern?(&1))), do: [:filtered], else: []
-
-      _ ->
+      nil ->
         []
+
+      list when is_list(list) ->
+        if Enum.any?(list, &(not is_binary(&1) or pattern?(&1))), do: [:filtered], else: []
+
+      _object_or_scalar ->
+        [:filtered]
     end
   end
 
@@ -950,9 +967,10 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.SkillResolver do
   # paths (`resolvePath` in pi: trim, expand a leading `~`, resolve from base)
   # ---------------------------------------------------------------------------
 
-  defp expand(input, base, home) do
-    trimmed = String.trim(input)
+  defp expand(input, base, home), do: expand_raw(String.trim(input), base, home)
 
+  # Without the trim: `getAgentDir` does not trim, settings/package paths do.
+  defp expand_raw(trimmed, base, home) do
     path =
       case trimmed do
         "~" -> home
