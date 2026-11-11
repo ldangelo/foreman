@@ -259,8 +259,16 @@ defmodule ForemanServer.Workflow.RunExecutorProjectContextTest do
       register("ctx-m3", %{}, dir)
       :ok = write_topic("ctx-m3", "style", "Use mix format.")
 
+      {:ok, bundle} = ProjectContext.build("ctx-m3")
+
       assigns =
-        RunExecutor.prompt_template_assigns(state("ctx-m3"), %{name: "implement"}, 0, %{})
+        RunExecutor.prompt_template_assigns(
+          state("ctx-m3"),
+          %{name: "implement"},
+          0,
+          %{},
+          bundle
+        )
 
       assert assigns["project_memory"] =~ "about style"
       refute assigns["project_memory"] =~ "Use mix format."
@@ -271,7 +279,10 @@ defmodule ForemanServer.Workflow.RunExecutorProjectContextTest do
     test "expose project_context, project_instructions and project_memory" do
       register("ctx-4", %{instructions: "Rule one"})
 
-      assigns = RunExecutor.prompt_template_assigns(state("ctx-4"), %{name: "implement"}, 0, %{})
+      {:ok, bundle} = ProjectContext.build("ctx-4")
+
+      assigns =
+        RunExecutor.prompt_template_assigns(state("ctx-4"), %{name: "implement"}, 0, %{}, bundle)
 
       assert assigns["project_instructions"] =~ "Rule one"
       assert assigns["project_context"] =~ "Rule one"
@@ -280,7 +291,7 @@ defmodule ForemanServer.Workflow.RunExecutorProjectContextTest do
 
     test "default to empty strings for a project with no context" do
       assigns =
-        RunExecutor.prompt_template_assigns(state("missing"), %{name: "implement"}, 0, %{})
+        RunExecutor.prompt_template_assigns(state("missing"), %{name: "implement"}, 0, %{}, nil)
 
       assert %{"project_context" => "", "project_instructions" => "", "project_memory" => ""} =
                assigns
@@ -441,21 +452,81 @@ defmodule ForemanServer.Workflow.RunExecutorProjectContextTest do
       refute Map.has_key?(phase, :context)
     end
 
-    test "repeating one delivery records it once; a changed delivery is recorded, not swallowed" do
+    test "repeating one delivery records it once" do
       register_truncating_redacting("rec-6")
       run_state = state("rec-6")
 
       _ = launch(run_state, %{})
       _ = launch(run_state, %{})
+
       assert [_one] = recorded_events(run_state)
+    end
 
-      register("rec-6", %{instructions: "Always use tabs"})
+    test "A, B, A in one boot leaves the entry on A: an earlier hash is recorded again" do
+      register_truncating_redacting("rec-8")
+      run_state = state("rec-8")
+
+      a = launch(run_state, %{})
+      sha_a = context_of(run_state).sha256
+
+      register("rec-8", %{instructions: "Always use tabs"})
       _ = launch(run_state, %{})
+      sha_b = context_of(run_state).sha256
+      refute sha_b == sha_a
 
-      assert [_, _] = recorded_events(run_state)
+      register("rec-8", %{instructions: "connect with #{@db_url}, not the replica"})
+      third = launch(run_state, %{})
 
-      assert context_of(run_state).sha256 ==
-               ProjectContext.build("rec-6") |> elem(1) |> Map.fetch!(:sha256)
+      assert [_, _, _] = recorded_events(run_state)
+      assert context_of(run_state).sha256 == sha_a
+      assert third.phase.phase_id == a.phase.phase_id
+    end
+
+    test "the same record command replayed appends once" do
+      register_truncating_redacting("rec-9")
+      run_state = state("rec-9")
+      phase_id = start_phase(run_state, 1)
+      {:ok, bundle} = ProjectContext.build("rec-9")
+
+      command = %{
+        type: "phase.context",
+        command_id: "test:replay:#{phase_id}",
+        aggregate_id: "phase:#{run_state.run_id}:#{phase_id}",
+        payload: %{
+          run_id: run_state.run_id,
+          phase_id: phase_id,
+          sections:
+            Enum.map(bundle.sections, &%{id: to_string(&1.id), bytes: byte_size(&1.body)}),
+          sha256: bundle.sha256,
+          bytes: bundle.bytes,
+          truncated: Enum.map(bundle.truncated, &%{&1 | section: to_string(&1.section)}),
+          redactions: bundle.redactions,
+          redaction_scope: "project_context_sections"
+        }
+      }
+
+      assert {:ok, _} = CommandGateway.dispatch_system(command)
+      assert {:ok, _} = CommandGateway.dispatch_system(command)
+      assert [_one] = recorded_events(run_state)
+    end
+
+    test "on a covered command phase the identity is the context text, not the addendum" do
+      register_truncating_redacting("rec-10")
+      run_state = state("rec-10", "prd")
+
+      phase =
+        ForemanServer.Workflow.PhaseSpec.normalize(%{
+          "name" => "create-prd",
+          "command" => "/skill:create-prd {{input.prompt}}"
+        })
+
+      request = request_for(launch(run_state, phase))
+      inbox = RunExecutor.__command_phase_inbox_progress_system_prompt_for_test__()
+      {:ok, bundle} = ProjectContext.build("rec-10")
+
+      assert request.system_prompt == bundle.system_text <> "\n\n" <> inbox
+      assert context_of(run_state).sha256 == Identity.sha256(bundle.system_text)
+      refute context_of(run_state).sha256 == Identity.sha256(request.system_prompt)
     end
 
     test "a launch whose record cannot be appended fails instead of starting the agent" do
