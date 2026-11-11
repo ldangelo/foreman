@@ -31,6 +31,7 @@ defmodule ForemanServer.Workflow.RunResumeBoundariesTest do
   @dispatcher Dispatcher
   @app_supervisor ForemanServer.Application
   @barrier_timeout_ms 30_000
+  @unbounded_capacity 1_000_000
 
   setup_all do
     MeckScope.new_once!([RunSupervisor])
@@ -38,9 +39,15 @@ defmodule ForemanServer.Workflow.RunResumeBoundariesTest do
 
   setup context do
     previous = Application.fetch_env(:foreman_server, :max_concurrent_runs)
-    # The tests start several runs and the restarts re-admit all of them: a free slot is the
-    # test's own to guarantee, not the default capacity's (`@tag capacity: n` narrows it).
-    Application.put_env(:foreman_server, :max_concurrent_runs, Map.get(context, :capacity, 50))
+    # A restart replays the WHOLE event log, not just this test's runs: every run an earlier
+    # module left live in the log is re-admitted through the same global slot stream, ahead of
+    # or behind this test's own. Only a capacity no suite can fill guarantees this test's
+    # resumed run a free slot (`@tag capacity: n` narrows it for the test that wants a full one).
+    Application.put_env(
+      :foreman_server,
+      :max_concurrent_runs,
+      Map.get(context, :capacity, @unbounded_capacity)
+    )
 
     on_exit(fn ->
       case previous do
@@ -69,6 +76,25 @@ defmodule ForemanServer.Workflow.RunResumeBoundariesTest do
       send(test, {:run_supervisor_start, run_id, []})
       {:ok, :child}
     end)
+
+    # `@tag leak: true`: the log already holds more live runs than the old capacity of 50, as it
+    # does mid-suite after other modules' runs (a restart replays and re-admits all of them).
+    if context[:leak] do
+      leak_project = H.register_project(System.tmp_dir!(), config: %{})
+
+      {:ok, _} =
+        CommandGateway.dispatch_operator(%{
+          type: "project.update",
+          aggregate_id: "project:#{leak_project}",
+          command_id: "u-#{System.unique_integer([:positive])}",
+          payload: %{project_id: leak_project, max_concurrent_runs: 500}
+        })
+
+      H.subscribe!()
+      leaked = for _ <- 1..60, do: submit!(leak_project).run_id
+      RunSlotsReset.reset!()
+      on_exit(fn -> end_leaked_runs!(leaked) end)
+    end
 
     H.subscribe!()
     project = H.register_project(System.tmp_dir!(), config: %{})
@@ -150,6 +176,7 @@ defmodule ForemanServer.Workflow.RunResumeBoundariesTest do
   end
 
   describe "boundary 4: waiting on a human" do
+    @tag leak: true
     test "a paused run is not restarted, and answering resumes only that run", %{
       project: project
     } do
@@ -310,6 +337,38 @@ defmodule ForemanServer.Workflow.RunResumeBoundariesTest do
     # answered only after every message ahead of it, and each handler works inline.
     for _ <- 1..2, do: :sys.get_state(dispatcher, @barrier_timeout_ms)
     :ok
+  end
+
+  # The leaked runs live in the shared event log for the rest of the suite and would starve the
+  # slot gate of any later module with a finite capacity. End each through the real command,
+  # let the Dispatcher and executors settle, and leave the slot stream empty.
+  defp end_leaked_runs!(run_ids) do
+    :ok = ProjectionStore.rebuild([])
+
+    for run_id <- run_ids do
+      case ProjectionStore.run(run_id) do
+        %{terminal?: true} ->
+          :ok
+
+        _live ->
+          {:ok, _} =
+            CommandGateway.dispatch_system(%{
+              type: "run.cancel",
+              command_id: "test:leak-cancel:#{run_id}",
+              aggregate_id: "run:#{run_id}",
+              payload: %{run_id: run_id, reason: "test_cleanup"}
+            })
+      end
+    end
+
+    RunDrain.drain!()
+
+    for run_id <- run_ids do
+      assert %{terminal?: true} = ProjectionStore.run(run_id),
+             "leaked run #{run_id} is still live after cleanup"
+    end
+
+    RunSlotsReset.reset!()
   end
 
   defp flush_starts() do
