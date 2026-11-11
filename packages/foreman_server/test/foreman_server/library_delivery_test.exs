@@ -185,7 +185,7 @@ defmodule ForemanServer.LibraryDeliveryTest do
   describe "workflow door" do
     defp launch_env(project_id) do
       state = %{
-        run_id: "run-lib",
+        run_id: "run-lib-#{project_id}",
         plan_context: %{},
         task: %{task_id: "t1", project_id: project_id},
         completed: [],
