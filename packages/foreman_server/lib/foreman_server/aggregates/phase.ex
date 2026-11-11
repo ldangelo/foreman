@@ -87,7 +87,9 @@ defmodule ForemanServer.Aggregates.Phase do
   # The project context a launch delivered. Only a started, non-terminal phase
   # records one, and every field is checked here: the event is decoded strictly
   # and the projection folds it, so a malformed payload must never reach the stream
-  # (AGENTS.md 5.3). `sha256` is the hash of the delivered `system_text`.
+  # (AGENTS.md 5.3). `sha256` is the hash of the project-context `system_text` only,
+  # not of later additions to the system prompt (operator progress addendum,
+  # steering); "recorded" means the launch built the context, not that the agent started.
   def handle_command(state, %{type: "phase.context", payload: payload}) do
     with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
          {:ok, phase_id} <-

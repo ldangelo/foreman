@@ -2941,6 +2941,10 @@ defmodule ForemanServer.ProjectionStore do
       phase
       |> Map.put(:context, phase_context(event))
       |> Map.put(:last_sequence, event.sequence)
+      # How many records this phase has taken. Internal (the status DTO does not carry
+      # it): `RunExecutor` keys the next `phase.context` command id on it, and it
+      # outlives the resumed retry that clears `:context`.
+      |> Map.update(:context_records, 1, &(&1 + 1))
     end)
   end
 
@@ -5798,6 +5802,11 @@ defmodule ForemanServer.ProjectionStore do
   # atom-keyed from a live dispatch and string-keyed from a replayed JSON event;
   # `normalise_fields/2` makes them one atom-keyed shape. An absent field stays
   # absent (an old stream); an entry that is not a map is dropped.
+  #
+  # Not validated by the aggregate at `phase.start` / `phase.retry` (unlike
+  # `phase.context`): a partial entry is kept as it came and a non-map entry is
+  # dropped here. Latent: the only producer, `RunExecutor.phase_input_artifacts/2`,
+  # builds well-formed lists.
   @input_artifact_fields [
     {:index, "index"},
     {:source_phase, "source_phase"},

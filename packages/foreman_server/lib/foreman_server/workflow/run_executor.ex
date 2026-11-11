@@ -2673,10 +2673,11 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # on the Phase aggregate (never an append from here). A launch with no context
   # (no project, no sections: `system_text` nil) records nothing.
   #
-  # The command id carries the boot incarnation and the delivered hash: repeating
-  # the same delivery within one boot appends nothing, a restart's resume records
-  # its own delivery, and a delivery that differs from the earlier one is recorded
-  # rather than swallowed by it. A rejected or failed dispatch is returned, never
+  # A delivery the phase entry already records (same `sha256`) is not dispatched
+  # again: one record per delivery, decided by the entry's state. A delivery that
+  # differs, or follows a resumed retry that cleared the entry, is recorded under an
+  # id that cannot collide with an earlier delivery of the same hash (see
+  # `dispatch_project_context/4`). A rejected or failed dispatch is returned, never
   # dropped (AGENTS.md 5.2).
   defp record_project_context(state, phase_index, %{system_text: text} = bundle)
        when is_binary(text) and text != "" do
@@ -2696,19 +2697,47 @@ defmodule ForemanServer.Workflow.RunExecutor do
       redaction_scope: "project_context_sections"
     }
 
+    case current_context_sha256(state.run_id, phase_id) do
+      sha when sha == bundle.sha256 ->
+        :ok
+
+      _differs_or_absent ->
+        dispatch_project_context(state, phase_id, payload, bundle.sha256)
+    end
+  end
+
+  defp record_project_context(_state, _phase_index, _bundle), do: :ok
+
+  defp current_context_sha256(run_id, phase_id) do
+    case phase_entry(run_id, phase_id) do
+      %{context: %{sha256: sha}} -> sha
+      _ -> nil
+    end
+  end
+
+  defp phase_entry(run_id, phase_id),
+    do: run_id |> ProjectionStore.phases_for_run() |> Enum.find(&(&1.phase_id == phase_id))
+
+  # The id carries how many context records the phase has taken (0 before the
+  # first), which grows with every record and survives the resumed retry that clears
+  # the entry's `context`. So two deliveries of the same hash that are not adjacent
+  # (A, B, A) never share an id, while the SAME command replayed (a crash between the
+  # append and its acknowledgement) still does and appends once. Adjacent identical
+  # deliveries never reach here: the entry already says what the record would.
+  defp dispatch_project_context(state, phase_id, payload, sha256) do
+    prior = (phase_entry(state.run_id, phase_id) || %{}) |> Map.get(:context_records, 0)
+
     case dispatch_system(
            "phase.context",
            payload,
            state.run_id,
-           "#{phase_id}:#{Incarnation.id()}:#{bundle.sha256}",
+           "#{phase_id}:#{Incarnation.id()}:#{prior}:#{sha256}",
            "phase:#{state.run_id}:#{phase_id}"
          ) do
       {:ok, _} -> :ok
       {:error, reason} -> {:error, {:project_context_record_failed, reason}}
     end
   end
-
-  defp record_project_context(_state, _phase_index, _bundle), do: :ok
 
   # The evidence AC-005-2 / AC-006-1 ask for, log-only (TRD OTD-2): the model THIS
   # phase's driver is handed, the rule that chose it, and the workflow manifest
@@ -2871,18 +2900,6 @@ defmodule ForemanServer.Workflow.RunExecutor do
         _ -> inner
       end
     end)
-  end
-
-  # Builds the project context itself: for a caller outside a launch. A launch passes
-  # the one bundle it built to `prompt_template_assigns/5`.
-  def prompt_template_assigns(state, phase_spec, index, context) do
-    prompt_template_assigns(
-      state,
-      phase_spec,
-      index,
-      context,
-      project_context_bundle(state, :debug)
-    )
   end
 
   def prompt_template_assigns(state, phase_spec, index, context, context_bundle) do
@@ -5177,14 +5194,14 @@ defmodule ForemanServer.Workflow.RunExecutor do
       )
 
   @doc false
-  def __render_command_template_for_test__(command, state, phase_spec, index),
+  def __render_command_template_for_test__(command, state, phase_spec, index, context_bundle),
     do:
       render_command_template(
         command,
         state,
         PhaseSpec.normalize(phase_spec),
         index,
-        project_context_bundle(state, :debug)
+        context_bundle
       )
 
   @doc false
