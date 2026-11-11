@@ -365,13 +365,13 @@ defmodule ForemanServer.ProjectionStoreTest do
       assert folded == @profile
     end
 
-    test "the skill entry TRD-022 adds is kept; a malformed property is dropped, not guessed" do
+    test "the skill verdict TRD-022 adds is kept; a malformed property is dropped, not guessed" do
       run_id = "run-profile-#{System.unique_integer([:positive])}"
       seed_run!(run_id)
 
       profile =
         @profile
-        |> Map.put(:skill, %{"state" => "unenforced", "reason" => "not isolated"})
+        |> Map.put(:skill, %{"state" => "unverifiable", "reason" => "claude has no skill dir"})
         |> Map.put(:network, "unenforced")
         |> Map.put(:cleanup, %{state: "maybe", reason: nil})
 
@@ -385,7 +385,33 @@ defmodule ForemanServer.ProjectionStoreTest do
       assert folded ==
                @profile
                |> Map.drop([:network, :cleanup])
-               |> Map.put(:skill, %{state: "unenforced", reason: "not isolated"})
+               |> Map.put(:skill, %{state: "unverifiable", reason: "claude has no skill dir"})
+    end
+
+    for {state, kept?} <- [
+          {"available", true},
+          {"unverifiable", true},
+          {"missing", false},
+          {"enforced", false}
+        ] do
+      test "a skill entry in state #{state} is #{if kept?, do: "kept", else: "dropped"}" do
+        run_id = "run-profile-#{System.unique_integer([:positive])}"
+        seed_run!(run_id)
+        profile = Map.put(@profile, :skill, %{state: unquote(state), reason: nil})
+
+        assert :ok =
+                 ProjectionStore.apply_events([
+                   %{event_type: "PhaseStarted", payload: profile_payload(run_id, :atom, profile)}
+                 ])
+
+        assert [%{execution_profile: folded}] = ProjectionStore.phases_for_run(run_id)
+
+        if unquote(kept?) do
+          assert folded.skill == %{state: unquote(state), reason: nil}
+        else
+          refute Map.has_key?(folded, :skill)
+        end
+      end
     end
 
     test "a PhaseStarted with no profile (an old stream) leaves the entry without one" do

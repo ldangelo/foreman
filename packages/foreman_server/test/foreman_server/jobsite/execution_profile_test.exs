@@ -142,5 +142,28 @@ defmodule ForemanServer.Jobsite.ExecutionProfileTest do
       assert map.backend == Atom.to_string(ExecutionProfile.host_backend())
       assert map.backend == "host_workflow"
     end
+
+    test "a skill verdict is recorded as the skill entry; a profile with none has no entry" do
+      host = ExecutionProfile.host_backend()
+
+      refute host
+             |> ExecutionProfile.resolve()
+             |> ExecutionProfile.to_map()
+             |> Map.has_key?(:skill)
+
+      assert %{state: "unverifiable", reason: reason} =
+               host
+               |> ExecutionProfile.resolve(skill: :unverifiable)
+               |> ExecutionProfile.to_map()
+               |> Map.fetch!(:skill)
+
+      assert is_binary(reason) and reason != ""
+
+      assert %{state: "available", reason: nil} =
+               host
+               |> ExecutionProfile.resolve(skill: :available)
+               |> ExecutionProfile.to_map()
+               |> Map.fetch!(:skill)
+    end
   end
 end
