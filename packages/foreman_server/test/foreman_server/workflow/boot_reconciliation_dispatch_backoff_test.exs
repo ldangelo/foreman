@@ -111,8 +111,10 @@ defmodule ForemanServer.Workflow.BootReconciliationDispatchBackoffTest do
                recovery_outcomes(run_id)
 
       assert Enum.all?(recovery_events(run_id), &(field(&1, :kind) == "slot_release"))
-      # The run is terminal: nothing is blocked, and its stream is untouched.
+      # The run is terminal: nothing is blocked, and its stream is untouched. No command was
+      # sent to the run either (a rejected one would still start the run's aggregate actor).
       assert stream_event_types("run:#{run_id}") == run_stream_events
+      assert Registry.lookup(ForemanServer.AggregateRegistry, "run:#{run_id}") == []
 
       assert recovery_entry(run_id) |> Map.take([:attempt, :outcome]) == %{
                attempt: 6,
