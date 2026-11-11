@@ -536,7 +536,26 @@ defmodule ForemanServer.Workflow.RunExecutor do
         _ = dispatch_task_execution_fail(state, {:capability_preflight_failed, failures})
         finalize_terminal_and_stop(state, {:capability_preflight_failed, failures})
 
-      {:ok, verdicts} ->
+      {:ok, verdicts, unverifiable} ->
+        # An unverifiable skill never blocks, but the run proceeds on a promise
+        # nobody checked: say so, once per phase (AGENTS.md: warn where the
+        # consequence is merely invisible).
+        for %{phase: phase, skill: skill, provider: provider} <- unverifiable do
+          Logger.warning(
+            "RunExecutor skill preflight for #{state.run_id} could not verify skill " <>
+              "#{inspect(skill)} of phase #{inspect(phase)} for provider #{inspect(provider)} " <>
+              "on the #{inspect(ExecutionProfile.host_backend())} backend; the run proceeds",
+            run_id: state.run_id,
+            task_id: task_id(state),
+            operation: "run_executor.skill_preflight",
+            outcome: "unverifiable",
+            phase: inspect(phase),
+            skill: skill,
+            provider: inspect(provider),
+            backend: inspect(ExecutionProfile.host_backend())
+          )
+        end
+
         handle_kickoff_ready(Map.put(state, :skill_verdicts, verdicts))
     end
   end
@@ -1123,58 +1142,104 @@ defmodule ForemanServer.Workflow.RunExecutor do
     JidoHarness.request_provider(%{context: %{"provider" => Map.get(phase_spec, :provider)}})
   end
 
-  # The directories searched: the project's checkout and the home that holds
-  # `.pi/agent/skills`. `config :foreman_server, :skill_home` names that home when
-  # the server's user is not the one the harness runs as; unset, it is the server
-  # user's home (`SkillResolver`'s default).
+  # What pi will read at launch. The harness inherits the server's environment
+  # overlaid with the project's environment record and secrets
+  # (`jido_harness_worker.ex` `put_env/2`, `env_mode: :overlay`); Foreman sets no
+  # `HOME` or `PI_CODING_AGENT_DIR` of its own. So the resolver's defaults (the
+  # server's `PI_CODING_AGENT_DIR`, else `~/.pi/agent`) are right unless the
+  # project's environment sets either one, and then the project's value is the
+  # one the launch sees. `config :foreman_server, :skill_home` names a home to
+  # read instead of the server user's: `home` is that directory and the agent
+  # directory is `<home>/.pi/agent`, whatever the ambient environment says.
+  # The project root is the registered checkout: no worktree exists at
+  # admission, and a project-scoped find is only ever `:unverifiable`.
   defp skill_resolve_opts(state) do
-    project = if root = project_path(state), do: [project_root: root], else: []
+    launch_env =
+      case project_env(state) do
+        {:ok, %{env: env}} -> env
+        _unresolved -> %{}
+      end
 
-    case Application.get_env(:foreman_server, :skill_home) do
-      home when is_binary(home) and home != "" -> [home: home] ++ project
-      _unset -> project
-    end
+    configured_home =
+      case Application.get_env(:foreman_server, :skill_home) do
+        home when is_binary(home) and home != "" -> home
+        _unset -> nil
+      end
+
+    home = Map.get(launch_env, "HOME") || configured_home
+
+    agent_dir =
+      case Map.get(launch_env, "PI_CODING_AGENT_DIR") do
+        dir when is_binary(dir) and dir != "" ->
+          expand_agent_dir(dir, home)
+
+        _unset when is_binary(home) and not is_nil(configured_home) ->
+          Path.join(home, ".pi/agent")
+
+        _unset ->
+          nil
+      end
+
+    [home: home, agent_dir: agent_dir, project_root: project_path(state)]
+    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
   end
+
+  # pi expands a leading `~` against the home directory and resolves anything
+  # else against `/`, as `SkillResolver` does for the ambient variable.
+  defp expand_agent_dir("~", home), do: home || System.user_home!()
+  defp expand_agent_dir("~/" <> rest, home), do: Path.join(home || System.user_home!(), rest)
+  defp expand_agent_dir(dir, _home), do: Path.expand(dir, "/")
 
   # Resolves the skill each still-to-run `command:` phase names, against that
   # phase's launching provider and the project's checkout (no worktree exists at
-  # admission). `{:ok, %{phase_number => :available | :unverifiable}}` or the
-  # `:skill_not_found` failures of every phase whose skill is missing. A resumed
-  # run skips the phases it already completed: they never launch again.
+  # admission). `{:ok, verdicts, unverifiable}` (`verdicts` is `%{phase_number =>
+  # :available | :unverifiable}`, `unverifiable` the phases whose skill could not
+  # be checked, for the log) or the `:skill_not_found` failures of every phase
+  # whose skill is missing. A resumed run skips the phases it already completed:
+  # they never launch again.
   defp preflight_skills(state) do
     backend = ExecutionProfile.host_backend()
     resolve_opts = skill_resolve_opts(state)
 
-    {failures, verdicts} =
+    {failures, verdicts, unverifiable} =
       state.phase_specs
       |> Enum.with_index()
       |> Enum.drop(state.resume_from)
-      |> Enum.reduce({[], %{}}, fn {phase_spec, index}, {failures, verdicts} ->
+      |> Enum.reduce({[], %{}, []}, fn {phase_spec, index}, {failures, verdicts, unverifiable} ->
         with skill when is_binary(skill) <-
                Validator.skill_from_command(Map.get(phase_spec, :command)),
              provider = phase_launch_provider(phase_spec),
              verdict = SkillResolver.resolve(provider, skill, backend, resolve_opts) do
+          name = phase_spec_name(phase_spec)
+          verdicts = Map.put(verdicts, phase_number(phase_spec, index), verdict)
+
           case verdict do
             :missing ->
               failure = %PreflightFailure{
-                phase: phase_spec_name(phase_spec),
+                phase: name,
                 provider: provider,
                 class: :skill_not_found,
                 backend: backend,
                 skill: skill
               }
 
-              {[failure | failures], verdicts}
+              {[failure | failures], verdicts, unverifiable}
 
-            verdict ->
-              {failures, Map.put(verdicts, phase_number(phase_spec, index), verdict)}
+            :unverifiable ->
+              {failures, verdicts,
+               [%{phase: name, skill: skill, provider: provider} | unverifiable]}
+
+            :available ->
+              {failures, verdicts, unverifiable}
           end
         else
-          _no_skill -> {failures, verdicts}
+          _no_skill -> {failures, verdicts, unverifiable}
         end
       end)
 
-    if failures == [], do: {:ok, verdicts}, else: {:error, Enum.reverse(failures)}
+    if failures == [],
+      do: {:ok, verdicts, Enum.reverse(unverifiable)},
+      else: {:error, Enum.reverse(failures)}
   end
 
   defp phase_provider_and_model_check(phase_spec, state, cache) do
