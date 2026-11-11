@@ -2842,6 +2842,7 @@ defmodule ForemanServer.ProjectionStore do
             discarded_worktree(event.prior_worktree_discarded)
           )
           |> maybe_put(:input_artifacts, input_artifacts(event.input_artifacts))
+          |> maybe_put(:execution_profile, execution_profile(event.execution_profile))
 
         state
         |> touch_run_for_payload(payload)
@@ -5821,6 +5822,53 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   defp input_artifacts(_other), do: nil
+
+  # What the launch's backend enforces (`Jobsite.ExecutionProfile.to_map/1`): the
+  # `backend` string and one `%{state, reason}` map per property. `EventCodec`
+  # normalises only top-level keys, so the nested maps arrive atom-keyed from a
+  # live dispatch and string-keyed from a replayed JSON event; this makes them
+  # one atom-keyed shape from a fixed table (AGENTS.md 5.4, 5.4b: no atom is
+  # built from input, a key outside the table is dropped). `skill` is the entry
+  # TRD-022 adds. A property that is not a map with a known `state` is dropped,
+  # never guessed; an absent profile stays absent (an old stream).
+  @execution_profile_fields [
+    {:backend, "backend"},
+    {:filesystem, "filesystem"},
+    {:network, "network"},
+    {:credentials, "credentials"},
+    {:cleanup, "cleanup"},
+    {:skill, "skill"}
+  ]
+  @execution_property_fields [{:state, "state"}, {:reason, "reason"}]
+
+  defp execution_profile(%{} = profile) do
+    for {key, value} <- normalise_fields(profile, @execution_profile_fields),
+        {:ok, folded} <- [execution_profile_entry(key, value)],
+        into: %{},
+        do: {key, folded}
+  end
+
+  defp execution_profile(_other), do: nil
+
+  defp execution_profile_entry(:backend, backend) when is_binary(backend), do: {:ok, backend}
+  defp execution_profile_entry(:backend, _other), do: :error
+
+  defp execution_profile_entry(_property, %{} = property) do
+    folded = normalise_fields(property, @execution_property_fields)
+
+    with {:ok, state} <- execution_state(Map.get(folded, :state)),
+         {:ok, reason} <- execution_reason(Map.get(folded, :reason)) do
+      {:ok, %{state: state, reason: reason}}
+    end
+  end
+
+  defp execution_profile_entry(_property, _other), do: :error
+
+  defp execution_state(state) when state in ["enforced", "unenforced"], do: {:ok, state}
+  defp execution_state(_other), do: :error
+
+  defp execution_reason(reason) when is_binary(reason) or is_nil(reason), do: {:ok, reason}
+  defp execution_reason(_other), do: :error
 
   # What a launch delivered, as the phase entry and the status DTO carry it. The
   # nested maps arrive atom-keyed from a live dispatch and string-keyed from a replayed

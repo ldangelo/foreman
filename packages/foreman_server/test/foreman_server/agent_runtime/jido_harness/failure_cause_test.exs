@@ -82,4 +82,26 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.FailureCauseTest do
     assert FailureCause.render({:other, :execution}) == "{:other, :execution}"
     assert FailureCause.render(:worker_timeout) == ":worker_timeout"
   end
+
+  describe "an unsupported isolation property" do
+    test "the host workflow door's network refusal is readable and still carries the typed tuple" do
+      rendered = FailureCause.render({:isolation_unsupported, :network, :host_workflow})
+
+      assert rendered =~ "{:isolation_unsupported, :network, :host_workflow}"
+      assert rendered =~ "environment.network"
+      assert rendered =~ "docker jobsite"
+      assert rendered =~ "default"
+      refute rendered == "{:isolation_unsupported, :network, :host_workflow}"
+    end
+
+    test "any other kind or backend gets a readable generic text, not the inspect fallback" do
+      reason = {:isolation_unsupported, :filesystem, :some_backend}
+      rendered = FailureCause.render(reason)
+
+      assert rendered =~ inspect(reason)
+      assert rendered =~ "some_backend"
+      assert rendered =~ "filesystem"
+      refute rendered == inspect(reason)
+    end
+  end
 end

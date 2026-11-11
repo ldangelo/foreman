@@ -141,6 +141,29 @@ defmodule ForemanServer.MCP.RunStatusTest do
       assert %{input_artifacts: []} = phase_entry(run_id, 2)
     end
 
+    test "a host launch records its execution profile, and the status DTO carries it", ctx do
+      %{run_id: run_id, state: state} = ctx
+
+      assert {:ok, _state, _} = RunExecutor.phase_begin(state, Enum.at(state.phase_specs, 0), 0)
+
+      assert %{execution_profile: profile} = phase_entry(run_id, 1)
+      assert profile.backend == "host_workflow"
+      assert %{state: "unenforced", reason: fs_reason} = profile.filesystem
+      assert %{state: "unenforced", reason: net_reason} = profile.network
+      assert fs_reason != net_reason
+      assert %{state: "unenforced"} = profile.credentials
+      # The workflow disabled its worktree: nothing to clean up.
+      assert %{state: "unenforced", reason: cleanup_reason} = profile.cleanup
+      assert cleanup_reason =~ "no worktree"
+
+      assert %{current_phase: %{execution_profile: ^profile}} = status!(run_id)
+      assert {:ok, _json} = Jason.encode(status!(run_id))
+
+      assert {:ok, events} = Store.read_all_streams_forward(0, 99_999_999)
+      assert :ok = ProjectionStore.rebuild(events)
+      assert [%{execution_profile: ^profile}] = ProjectionStore.phases_for_run(run_id)
+    end
+
     test "a resumed retry records the inputs too", ctx do
       %{run_id: run_id, state: state, first: first} = ctx
       sha = String.duplicate("b", 64)
