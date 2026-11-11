@@ -8,6 +8,9 @@ defmodule ForemanServer.Events.PhaseRetried do
 
   `prior_worktree_discarded` is optional: it carries the record of uncommitted
   work lost when a worktree was recreated before the retry.
+
+  `input_artifacts` is optional: the artifact references the retried phase
+  reads, `[%{index, source_phase, path, sha256}]` (see `PhaseStarted`).
   """
   @enforce_keys [:phase_id, :run_id, :index, :attempt, :reason]
   @type t :: %__MODULE__{
@@ -17,7 +20,8 @@ defmodule ForemanServer.Events.PhaseRetried do
           index: pos_integer(),
           attempt: pos_integer(),
           reason: String.t(),
-          prior_worktree_discarded: %{name: String.t(), path: String.t() | nil} | nil
+          prior_worktree_discarded: %{name: String.t(), path: String.t() | nil} | nil,
+          input_artifacts: [map()] | nil
         }
   @derive Jason.Encoder
   defstruct [
@@ -27,6 +31,7 @@ defmodule ForemanServer.Events.PhaseRetried do
     :index,
     :attempt,
     :reason,
-    :prior_worktree_discarded
+    :prior_worktree_discarded,
+    :input_artifacts
   ]
 end

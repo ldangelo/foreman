@@ -70,6 +70,9 @@ defmodule ForemanServer.MCP.Tools do
     @enforce_keys [:phase_id, :status]
     @type t :: %__MODULE__{
             phase_id: String.t(),
+            run_id: String.t() | nil,
+            task_id: String.t() | nil,
+            input_artifacts: [map()] | nil,
             index: integer() | nil,
             name: String.t() | nil,
             status: String.t(),
@@ -83,6 +86,9 @@ defmodule ForemanServer.MCP.Tools do
     @derive Jason.Encoder
     defstruct [
       :phase_id,
+      :run_id,
+      :task_id,
+      :input_artifacts,
       :index,
       :name,
       :status,
@@ -3522,7 +3528,7 @@ defmodule ForemanServer.MCP.Tools do
       project_id: Map.get(run, :project_id),
       task_id: Map.get(run, :task_id),
       workflow_name: Map.get(run, :workflow_name),
-      current_phase: current_phase(phases),
+      current_phase: current_phase(phases, Map.get(run, :task_id)),
       started_at_ms: Map.get(run, :started_at_ms),
       last_event_at_ms: Map.get(run, :last_event_at_ms),
       failure_reason: Map.get(run, :failure_reason),
@@ -3542,9 +3548,9 @@ defmodule ForemanServer.MCP.Tools do
     end
   end
 
-  defp current_phase([]), do: nil
+  defp current_phase([], _task_id), do: nil
 
-  defp current_phase(phases) do
+  defp current_phase(phases, task_id) do
     phases
     |> Enum.filter(&(Map.get(&1, :status) == "in_progress"))
     |> latest_phase()
@@ -3552,7 +3558,7 @@ defmodule ForemanServer.MCP.Tools do
       nil -> latest_phase(phases)
       phase -> phase
     end
-    |> phase_status_dto()
+    |> phase_status_dto(task_id)
   end
 
   defp latest_phase([]), do: nil
@@ -3570,7 +3576,7 @@ defmodule ForemanServer.MCP.Tools do
     end)
   end
 
-  defp phase_status_dto(phase) when is_map(phase) do
+  defp phase_status_dto(phase, task_id) when is_map(phase) do
     phase_id = Map.get(phase, :phase_id)
     status = Map.get(phase, :status)
 
@@ -3582,6 +3588,9 @@ defmodule ForemanServer.MCP.Tools do
 
     %PhaseStatus{
       phase_id: phase_id,
+      run_id: Map.get(phase, :run_id),
+      task_id: task_id,
+      input_artifacts: Map.get(phase, :input_artifacts),
       index: Map.get(phase, :index),
       name: Map.get(phase, :name),
       status: status,

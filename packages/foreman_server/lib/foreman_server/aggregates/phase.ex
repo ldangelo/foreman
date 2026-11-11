@@ -134,7 +134,7 @@ defmodule ForemanServer.Aggregates.Phase do
   # `PhaseRetried` is decoded strictly, so only its declared fields reach the
   # stream (AGENTS.md 5.4b); an absent optional field stays absent.
   defp event_payload("phase.retry", payload, run_id, phase_id) do
-    for key <- [:index, :reason, :prior_worktree_discarded],
+    for key <- [:index, :reason, :prior_worktree_discarded, :input_artifacts],
         value = Aggregate.get(payload, key),
         value != nil,
         into: %{run_id: run_id, phase_id: phase_id},

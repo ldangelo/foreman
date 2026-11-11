@@ -2841,6 +2841,7 @@ defmodule ForemanServer.ProjectionStore do
             :prior_worktree_discarded,
             discarded_worktree(event.prior_worktree_discarded)
           )
+          |> maybe_put(:input_artifacts, input_artifacts(event.input_artifacts))
 
         state
         |> touch_run_for_payload(payload)
@@ -2919,6 +2920,7 @@ defmodule ForemanServer.ProjectionStore do
           :prior_worktree_discarded,
           discarded_worktree(event.prior_worktree_discarded)
         )
+        |> maybe_put(:input_artifacts, input_artifacts(event.input_artifacts))
       end)
     else
       touch_run_for_payload(state, payload)
@@ -5772,6 +5774,44 @@ defmodule ForemanServer.ProjectionStore do
   defp discarded_worktree(%{} = discard) do
     %{name: name, path: path} = WorktreeDiscard.from_event(discard)
     %{name: name, path: path}
+  end
+
+  # The inputs a phase started from, `[%{index, source_phase, path, sha256}]`.
+  # `EventCodec` normalises only an event's top-level keys, so the entries arrive
+  # atom-keyed from a live dispatch and string-keyed from a replayed JSON event;
+  # `normalise_fields/2` makes them one atom-keyed shape. An absent field stays
+  # absent (an old stream); an entry that is not a map is dropped.
+  @input_artifact_fields [
+    {:index, "index"},
+    {:source_phase, "source_phase"},
+    {:path, "path"},
+    {:sha256, "sha256"}
+  ]
+
+  defp input_artifacts(nil), do: nil
+
+  defp input_artifacts(entries) when is_list(entries) do
+    for %{} = entry <- entries, do: normalise_fields(entry, @input_artifact_fields)
+  end
+
+  defp input_artifacts(_other), do: nil
+
+  # Keeps only the fields of `table` (`[{atom_key, string_key}]`), reading either
+  # key form and writing the atom key from the table, never from the input
+  # (AGENTS.md 5.4, 5.4b). A field absent in both forms is left out. The shared
+  # step for every per-field normaliser of a nested map.
+  defp normalise_fields(%{} = map, table) do
+    for {atom_key, string_key} <- table,
+        {:ok, value} <- [fetch_either(map, atom_key, string_key)],
+        into: %{},
+        do: {atom_key, value}
+  end
+
+  defp fetch_either(map, atom_key, string_key) do
+    case Map.fetch(map, atom_key) do
+      {:ok, _value} = found -> found
+      :error -> Map.fetch(map, string_key)
+    end
   end
 
   # -- usage ledger (E14) ------------------------------------------------------

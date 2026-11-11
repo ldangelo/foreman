@@ -567,7 +567,13 @@ defmodule ForemanServer.Workflow.RunExecutor do
   defp dispatch_resume_retry(state, phase_id, number) do
     payload =
       maybe_put_discard(
-        %{run_id: state.run_id, phase_id: phase_id, index: number, reason: "resumed"},
+        %{
+          run_id: state.run_id,
+          phase_id: phase_id,
+          index: number,
+          reason: "resumed",
+          input_artifacts: phase_input_artifacts(state.run_id, number)
+        },
         state
       )
 
@@ -1512,7 +1518,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
         index: phase_index,
         name: Map.get(phase_spec, :name),
         attempt: 1,
-        artifact_template: Map.get(phase_spec, :artifact_template) || %{}
+        artifact_template: Map.get(phase_spec, :artifact_template) || %{},
+        input_artifacts: phase_input_artifacts(state.run_id, phase_index)
       }
       |> Map.merge(
         ForemanServer.Workflow.StallPolicy.payload_fields(Map.get(phase_spec, :stall_detection))
@@ -1526,6 +1533,28 @@ defmodule ForemanServer.Workflow.RunExecutor do
       phase_id,
       "phase:#{state.run_id}:#{phase_id}"
     )
+  end
+
+  # The artifact references a phase starts from. A phase reads one input at most:
+  # the artifact the PREVIOUS phase (`number - 1`) recorded on `PhaseCompleted`,
+  # which `CommandRouter.dispatch/2` has already folded into the projection when
+  # the next phase starts. Phase 1, and a phase whose predecessor recorded no
+  # artifact, has none: `[]`. `index` is the position in the list, from 0.
+  defp phase_input_artifacts(_run_id, number) when number <= 1, do: []
+
+  defp phase_input_artifacts(run_id, number) do
+    source_phase = Identity.phase_id(run_id, number - 1)
+
+    run_id
+    |> ProjectionStore.phases_for_run()
+    |> Enum.find(&(&1.phase_id == source_phase))
+    |> case do
+      %{artifact: %{path: path, sha256: sha256}} when is_binary(path) and is_binary(sha256) ->
+        [%{index: 0, source_phase: source_phase, path: path, sha256: sha256}]
+
+      _ ->
+        []
+    end
   end
 
   @default_activation_timeout_ms 30_000
