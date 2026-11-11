@@ -129,16 +129,22 @@ defmodule ForemanServer.Idempotency.KeyStore do
 
   @doc """
   Atomically move an unresolved key to `started` (an operator `run.reset` has
-  lifted the refusal): only when the key is `ambiguous` and still carries its
-  marker, so of two concurrent callers that both saw the reset only one wins.
-  `meta` is merged like any record call; it must clear the marker fields.
+  lifted the refusal): only when the key is `ambiguous` and its marker is still
+  `observed_version`, the version the caller read before deciding the reset
+  lifts it. So of two concurrent callers that both saw the reset only one wins,
+  and a marker rewritten after the check is not lifted on the earlier decision.
+  `meta` is merged like any record call; it must clear the marker fields. A
+  malformed marker is never lifted (`unresolved_version/1` is an error): it is
+  operator-repair only.
 
-  Returns `:lifted`, `:not_unresolved` (the key no longer carries a marker: a
-  concurrent caller already lifted it) or `{:error, reason}`.
+  Returns `:lifted`, `:not_unresolved` (the key no longer carries that marker) or
+  `{:error, reason}`.
   """
-  @spec lift_unresolved(String.t(), map()) :: :lifted | :not_unresolved | {:error, term()}
-  def lift_unresolved(key, meta) when is_map(meta) do
-    GenServer.call(__MODULE__, {:lift_unresolved, key, meta})
+  @spec lift_unresolved(String.t(), non_neg_integer(), map()) ::
+          :lifted | :not_unresolved | {:error, term()}
+  def lift_unresolved(key, observed_version, meta)
+      when is_integer(observed_version) and is_map(meta) do
+    GenServer.call(__MODULE__, {:lift_unresolved, key, observed_version, meta})
   end
 
   @doc """
@@ -317,10 +323,10 @@ defmodule ForemanServer.Idempotency.KeyStore do
   # Compare-and-set for `lift_unresolved/2`: runs inside the server, so the
   # marker check and the `started` write cannot interleave with another caller.
   @impl true
-  def handle_call({:lift_unresolved, key, meta}, from, state) do
+  def handle_call({:lift_unresolved, key, observed_version, meta}, from, state) do
     case current_record(state, key) do
       {:ok, :ambiguous, stored} when is_map(stored) ->
-        if match?({:ok, _}, unresolved_version(stored)) do
+        if unresolved_version(stored) == {:ok, observed_version} do
           case handle_call({:record, key, :started, meta}, from, state) do
             {:reply, :ok, state} -> {:reply, :lifted, state}
             other -> other

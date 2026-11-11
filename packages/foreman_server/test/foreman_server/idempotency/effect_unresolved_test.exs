@@ -133,7 +133,9 @@ defmodule ForemanServer.Idempotency.EffectUnresolvedTest do
 
       assert EffectWorld.status(t.run_id) == "blocked"
       assert {:ok, %{status: :ambiguous, metadata: metadata} = before_key} = KeyStore.get(key)
-      assert KeyStore.unresolved_version(metadata) == {:ok, version(t.run_id)}
+      # Marked before the block: the two events the block appended (RunRecoveryAttempted,
+      # RunBlocked) come after the marker version.
+      assert KeyStore.unresolved_version(metadata) == {:ok, version(t.run_id) - 2}
       assert metadata["unresolved_reason"] == "effect_already_done"
       assert EffectWorld.executed(world, :create) == 1
       pushes = EffectWorld.executed(world, :push)
@@ -308,7 +310,7 @@ defmodule ForemanServer.Idempotency.EffectUnresolvedTest do
       # While this caller checks the stream, the competitor lifts the key first.
       stream_reader!(fn _stream, _from ->
         :lifted =
-          KeyStore.lift_unresolved(key, %{
+          KeyStore.lift_unresolved(key, 1, %{
             "unresolved_at_run_version" => nil,
             "unresolved_reason" => nil
           })
@@ -338,6 +340,50 @@ defmodule ForemanServer.Idempotency.EffectUnresolvedTest do
         assert [%{"url" => ^url}] = EffectWorld.prs(world)
         assert {:ok, :completed} = KeyStore.status(key)
       end
+    end
+  end
+
+  describe "the lift compares the marker it observed" do
+    test "a marker rewritten between the check and the lift is not lifted on the earlier decision" do
+      key = Effect.key(:pr_create, "run-rewritten", "h:main")
+
+      meta = %{
+        "run_id" => "run-rewritten",
+        "effect_class" => "pr_create",
+        "head_branch" => "h",
+        "base_branch" => "main",
+        "cwd" => "/w"
+      }
+
+      :ok = KeyStore.mark_started(key, meta)
+      :ok = KeyStore.mark_unresolved(key, 1, "effect_outcome_ambiguous")
+
+      stream_reader!(fn _stream, _from ->
+        :ok = KeyStore.mark_unresolved(key, 9, "effect_already_done")
+        {:ok, [%{event_type: "RunReset"}]}
+      end)
+
+      assert {:error, {:effect_unresolved, ^key}} = run_effect(key, meta)
+
+      assert {:ok, %{status: :ambiguous, metadata: %{"unresolved_at_run_version" => 9}}} =
+               KeyStore.get(key)
+    end
+  end
+
+  describe "operator wording" do
+    test "an unrecorded intent is worded, not a raw tuple" do
+      assert Actions.describe({:intent_not_recorded, :cwd_missing}) =~ "no checkout directory"
+
+      message = Actions.describe({:intent_not_recorded, {:remote_head_unreadable, {2, ""}}})
+      assert message =~ "nothing was pushed or opened"
+      assert message =~ "remote_head_unreadable"
+    end
+
+    test "an unresolved key says a reset must be followed by the run resuming" do
+      message = Actions.describe({:effect_unresolved, "effect:pr_create:r:h:main"})
+      assert message =~ "reset the run and let it resume"
+      assert message =~ "failed, stuck, blocked or paused"
+      assert message =~ "Check GitHub"
     end
   end
 
@@ -378,7 +424,9 @@ defmodule ForemanServer.Idempotency.EffectUnresolvedTest do
         {ctx.key, :ambiguous, Map.put(ctx.before_key.metadata, "unresolved_at_run_version", "3")}
       )
 
-      assert {:error, {:effect_unresolved, _}} = run_effect(ctx.key, ctx.meta)
+      key = ctx.key
+      assert {:error, {:effect_marker_malformed, ^key}} = run_effect(ctx.key, ctx.meta)
+      assert Actions.describe({:effect_marker_malformed, key}) =~ "does not clear it"
     end
 
     test "an ambiguous record whose metadata is not a map refuses", ctx do

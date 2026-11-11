@@ -43,6 +43,7 @@ defmodule ForemanServer.Idempotency.Effect do
   @type refusal ::
           {:error, {:intent_not_recorded, intent_error()}}
           | {:error, {:effect_unresolved, String.t()}}
+          | {:error, {:effect_marker_malformed, String.t()}}
           | {:error, {:effect_check_failed, term()}}
 
   @max_events 99_999_999
@@ -68,7 +69,9 @@ defmodule ForemanServer.Idempotency.Effect do
   metadata is incomplete or the `started` key cannot be written;
   `{:error, {:effect_unresolved, key}}` (also without calling `fun`, key and
   metadata untouched) when recovery left the key unresolved and the run has not
-  been reset since; and `{:error, {:effect_check_failed, reason}}` when that
+  been reset since; `{:error, {:effect_marker_malformed, key}}` when the key's
+  unresolved marker is present but not a version (no reset clears it: an operator
+  must repair the stored key); and `{:error, {:effect_check_failed, reason}}` when that
   could not be established (an unreadable run stream, a stored record that cannot
   be read): not repeating is the safe side. The key is marked `failed` when
   `fun` returns `:error`/`{:error, _}` or raises/throws/exits (the exception is
@@ -111,6 +114,7 @@ defmodule ForemanServer.Idempotency.Effect do
   end
 
   defp refusal_error({:unresolved, key}), do: {:error, {:effect_unresolved, key}}
+  defp refusal_error({:malformed, key}), do: {:error, {:effect_marker_malformed, key}}
   defp refusal_error({:check_failed, reason}), do: {:error, {:effect_check_failed, reason}}
 
   defp class_name(class) when is_atom(class) and class not in [nil, true, false],
@@ -161,7 +165,7 @@ defmodule ForemanServer.Idempotency.Effect do
         case KeyStore.unresolved_version(metadata) do
           :none -> {:ok, :clear}
           {:ok, version} -> lift_if_reset(key, run_id, version)
-          {:error, :malformed} -> {:unresolved, key}
+          {:error, :malformed} -> {:malformed, key}
         end
 
       {:ok, %{status: :ambiguous, metadata: other}} ->
@@ -180,7 +184,7 @@ defmodule ForemanServer.Idempotency.Effect do
   defp lift_if_reset(key, run_id, version) do
     case reset_after?(run_id, version) do
       true ->
-        {:ok, :lifted}
+        {:ok, {:lifted, version}}
 
       false ->
         {:unresolved, key}
@@ -235,12 +239,13 @@ defmodule ForemanServer.Idempotency.Effect do
   end
 
   # A lifted key is re-marked `started` with its marker cleared, atomically in the
-  # store: of two callers that both saw the reset, only the one whose write finds the
-  # marker still present runs the effect; the other is refused.
-  defp record_intent(key, typed, :lifted) do
+  # store: the write succeeds only while the key still carries the marker version this
+  # caller observed, so of two callers that both saw the reset only one runs the effect,
+  # and a marker rewritten after the check is not lifted on the earlier decision.
+  defp record_intent(key, typed, {:lifted, observed_version}) do
     cleared = Map.merge(typed, %{"unresolved_at_run_version" => nil, "unresolved_reason" => nil})
 
-    case KeyStore.lift_unresolved(key, cleared) do
+    case KeyStore.lift_unresolved(key, observed_version, cleared) do
       :lifted -> :ok
       :not_unresolved -> {:unresolved, key}
       other -> intent_result(other)
