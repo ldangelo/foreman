@@ -121,7 +121,20 @@ defmodule ForemanServer.Idempotency.ResumptionTimeTest do
   describe "AC-002-4: boot-to-resumed time is recorded for every resumed run" do
     @interrupted_runs 5
 
+    # The default cap is 3 runs. Admitting more queues the extras, and a queued run has no
+    # run stream yet, so `run.recovery_attempt` would be `:not_found` for it. The capacity is
+    # the test's own, set before the slot stream is reset so the aggregate derives it afresh.
     setup do
+      previous = Application.fetch_env(:foreman_server, :max_concurrent_runs)
+      Application.put_env(:foreman_server, :max_concurrent_runs, @interrupted_runs)
+
+      on_exit(fn ->
+        case previous do
+          {:ok, value} -> Application.put_env(:foreman_server, :max_concurrent_runs, value)
+          :error -> Application.delete_env(:foreman_server, :max_concurrent_runs)
+        end
+      end)
+
       :ok = ForemanServer.DispatcherQuiesce.suspend!()
       RunSlotsReset.reset!()
       :ok
@@ -144,13 +157,16 @@ defmodule ForemanServer.Idempotency.ResumptionTimeTest do
         for _ <- 1..@interrupted_runs do
           run_id = UniqueIds.unique_run_id("nfr-resume")
 
-          {:ok, _} =
+          admitted =
             RunAdmission.start(project_id, %{
               run_id: run_id,
               task_id: "task-#{run_id}",
               workflow_snapshot: %{phases: []},
               phase_specs: []
             })
+
+          assert {:ok, started} = admitted
+          refute started in [:queued, :slot_queued], "run #{run_id} was queued, not started"
 
           run_id
         end

@@ -476,15 +476,18 @@ defmodule ForemanServer.Workflow.RunExecutorResumeAttemptTest do
   # The run's own stream, through the production admission path: the
   # `run.recovery_attempt` command needs a run that exists.
   defp admit_run!(project_id, run_id) do
-    {:ok, _} =
-      ForemanServer.RunAdmission.start(project_id, %{
-        run_id: run_id,
-        task_id: "task-#{run_id}",
-        workflow_snapshot: %{phases: []},
-        phase_specs: []
-      })
+    case ForemanServer.RunAdmission.start(project_id, %{
+           run_id: run_id,
+           task_id: "task-#{run_id}",
+           workflow_snapshot: %{phases: []},
+           phase_specs: []
+         }) do
+      {:ok, queued} when queued in [:queued, :slot_queued] ->
+        flunk("run #{run_id} was queued, not started: it has no run stream to record on")
 
-    :ok
+      {:ok, _started} ->
+        :ok
+    end
   end
 
   defp aggregate_id(ctx), do: "phase:#{ctx.run_id}:#{ctx.phase_id}"
