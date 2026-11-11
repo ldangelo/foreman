@@ -205,4 +205,37 @@ defmodule ForemanServer.Jobsite.NetworkPolicyDockerTest do
       DockerJobsite.assert_gone!(live)
     end
   end
+
+  # With no network policy a jobsite has only its sandbox container, so nothing but the sandbox's own
+  # `close` removes it: a network teardown (which also removes the jobsite's labelled containers)
+  # cannot mask a missing `close` on these two routes.
+  describe "cleanup on every exit route: the sandbox container alone (no network policy)" do
+    setup do
+      ProjectionStoreReset.reset!()
+      on_exit(&ProjectionStoreReset.reset!/0)
+      {:ok, repo: DockerJobsite.tmp_repo!()}
+    end
+
+    test "normal completion", %{repo: repo} do
+      {id, label} = DockerJobsite.start_held_plain!(repo, 4)
+      assert [container] = DockerJobsite.containers(label)
+      assert DockerJobsite.container?(container)
+
+      DockerJobsite.wait_until(fn -> Jobsite.get(id).status == "completed" end, 60_000)
+      DockerJobsite.wait_until(fn -> DockerJobsite.containers(label) == [] end)
+
+      refute DockerJobsite.container?(container)
+    end
+
+    test "operator cancel", %{repo: repo} do
+      {id, label} = DockerJobsite.start_held_plain!(repo)
+      assert [container] = DockerJobsite.containers(label)
+
+      assert :ok = Jobsite.cancel(id, "docker cleanup test")
+      DockerJobsite.wait_until(fn -> Jobsite.get(id).status == "cancelled" end, 60_000)
+      DockerJobsite.wait_until(fn -> DockerJobsite.containers(label) == [] end)
+
+      refute DockerJobsite.container?(container)
+    end
+  end
 end

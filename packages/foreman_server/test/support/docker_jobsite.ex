@@ -98,46 +98,72 @@ defmodule ForemanServer.TestSupport.DockerJobsite do
   the support directory is mounted read-only at the same path, so the shim's `docker exec` finds it.
   `agent_env` drives the fake agent (`FAKE_AGENT_SLEEP_ON_RUN` holds the iteration open).
   """
-  @spec jobsite_opts(String.t(), String.t(), map()) :: keyword()
-  def jobsite_opts(repo, project_id, agent_env) do
-    [
+  @spec jobsite_opts(String.t(), String.t() | nil, map(), map()) :: keyword()
+  def jobsite_opts(repo, project_id, agent_env, labels \\ %{}) do
+    base = [
       repo_path: repo,
       strategy: :merge_to_head,
       sandbox:
         Sandboxes.docker(
           image: ensure_image!(),
+          labels: labels,
           mounts: [%{host_path: @support, sandbox_path: @support, readonly?: true}]
         ),
       agent: Agents.pi("x", binary: @fake_agent, env: agent_env),
       prompt: "go",
       max_iterations: 1,
-      completion_signal: "NEVER",
-      project_id: project_id
+      completion_signal: "NEVER"
     ]
+
+    if project_id, do: base ++ [project_id: project_id], else: base
   end
 
   @doc "Starts a jobsite whose agent holds its first iteration open for `hold_secs`, and waits until it is in it."
   @spec start_held!(String.t(), String.t(), pos_integer()) :: String.t()
   def start_held!(repo, project_id, hold_secs \\ 300) do
-    opts =
-      jobsite_opts(repo, project_id, %{
-        "FAKE_AGENT_SLEEP_ON_RUN" => "1",
-        "FAKE_AGENT_SLEEP_SECS" => Integer.to_string(hold_secs)
-      })
+    start!(jobsite_opts(repo, project_id, held_env(hold_secs)), &"foreman.jobsite=#{&1}")
+  end
 
+  @doc """
+  Like `start_held!/3` on a project with NO network policy: the jobsite has only its sandbox
+  container, so nothing but the sandbox's own `close` removes it (a network teardown cannot). The
+  container carries a test label unique to this call; returns `{jobsite_id, label}` for
+  `containers/1`.
+  """
+  @spec start_held_plain!(String.t(), pos_integer()) :: {String.t(), String.t()}
+  def start_held_plain!(repo, hold_secs \\ 300) do
+    label = "foreman-docker-jobsite-test=plain-#{System.unique_integer([:positive])}"
+    [key, value] = String.split(label, "=", parts: 2)
+    opts = jobsite_opts(repo, nil, held_env(hold_secs), %{key => value})
+    {start!(opts, fn _id -> label end), label}
+  end
+
+  defp held_env(hold_secs),
+    do: %{
+      "FAKE_AGENT_SLEEP_ON_RUN" => "1",
+      "FAKE_AGENT_SLEEP_SECS" => Integer.to_string(hold_secs)
+    }
+
+  defp start!(opts, label_for) do
     assert {:ok, id} = Jobsite.run_async(opts)
-    safety_net(id)
+    safety_net(label_for.(id))
     wait_until(fn -> (Jobsite.get(id) || %{})[:iteration_index] == 1 end, 60_000)
     id
   end
+
+  @doc "Container ids (running or not) carrying `label` (`key=value`)."
+  @spec containers(String.t()) :: [String.t()]
+  def containers(label), do: resources_by_label(label).containers
 
   @doc """
   What docker holds for the jobsite right now, by its `foreman.jobsite=<id>` label:
   `%{containers: [id], networks: [id]}` (containers include stopped ones).
   """
   @spec resources(String.t()) :: %{containers: [String.t()], networks: [String.t()]}
-  def resources(jobsite_id) do
-    filter = "label=foreman.jobsite=#{jobsite_id}"
+  def resources(jobsite_id), do: resources_by_label("foreman.jobsite=#{jobsite_id}")
+
+  defp resources_by_label(label) do
+    filter = "label=" <> label
 
     %{
       containers: lines(docker(["ps", "-aq", "--no-trunc", "--filter", filter])),
@@ -207,10 +233,10 @@ defmodule ForemanServer.TestSupport.DockerJobsite do
     end
   end
 
-  # A failing test must not leave docker objects behind: remove exactly this jobsite's, by label.
-  defp safety_net(jobsite_id) do
+  # A failing test must not leave docker objects behind: remove exactly what carries this label.
+  defp safety_net(label) do
     on_exit(fn ->
-      found = resources(jobsite_id)
+      found = resources_by_label(label)
 
       for id <- found.containers,
           do: System.cmd("docker", ["rm", "-f", id], stderr_to_stdout: true)
