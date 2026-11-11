@@ -2913,6 +2913,7 @@ defmodule ForemanServer.ProjectionStore do
       |> update_existing(:phases, phase_id, "PhaseRetried", fn phase ->
         phase
         |> Map.put(:status, "in_progress")
+        |> Map.delete(:context)
         |> Map.put(:attempt, event.attempt)
         |> Map.put(:last_sequence, event.sequence)
         |> Map.put(:last_event_at_ms, payload_event_at_ms(payload))
@@ -2925,6 +2926,22 @@ defmodule ForemanServer.ProjectionStore do
     else
       touch_run_for_payload(state, payload)
     end
+  end
+
+  # The context a phase launch delivered. The phase entry holds the LATEST launch's
+  # record: a resumed retry clears the previous attempt's (see `PhaseRetried`), so a
+  # launch that delivered no context leaves none.
+  defp apply_event_by_type(state, "PhaseContextRecorded", payload) do
+    %ForemanServer.Events.PhaseContextRecorded{phase_id: phase_id} =
+      event = decode_for_projection("PhaseContextRecorded", payload)
+
+    state
+    |> touch_run_for_payload(payload)
+    |> update_existing(:phases, phase_id, "PhaseContextRecorded", fn phase ->
+      phase
+      |> Map.put(:context, phase_context(event))
+      |> Map.put(:last_sequence, event.sequence)
+    end)
   end
 
   defp apply_event_by_type(state, "TaskCreated", payload) do
@@ -5795,6 +5812,33 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   defp input_artifacts(_other), do: nil
+
+  # What a launch delivered, as the phase entry and the status DTO carry it. The
+  # nested maps arrive atom-keyed from a live dispatch and string-keyed from a replayed
+  # event, so each is normalised to one atom-keyed shape (AGENTS.md 5.4, 5.4b); an
+  # entry that is not a map is dropped.
+  @context_section_fields [{:id, "id"}, {:bytes, "bytes"}]
+  @context_truncation_fields [
+    {:section, "section"},
+    {:omitted_bytes, "omitted_bytes"},
+    {:omitted_lines, "omitted_lines"}
+  ]
+
+  defp phase_context(%ForemanServer.Events.PhaseContextRecorded{} = event) do
+    %{
+      sections: normalise_entries(event.sections, @context_section_fields),
+      sha256: event.sha256,
+      bytes: event.bytes,
+      truncated: normalise_entries(event.truncated, @context_truncation_fields),
+      redactions: event.redactions,
+      redaction_scope: event.redaction_scope
+    }
+  end
+
+  defp normalise_entries(entries, table) when is_list(entries),
+    do: for(%{} = entry <- entries, do: normalise_fields(entry, table))
+
+  defp normalise_entries(_other, _table), do: []
 
   # Keeps only the fields of `table` (`[{atom_key, string_key}]`), reading either
   # key form and writing the atom key from the table, never from the input

@@ -81,7 +81,8 @@ defmodule ForemanServer.MCP.Tools do
             last_event_at_ms: integer() | nil,
             failure_reason: String.t() | nil,
             latest_stall: map() | nil,
-            prior_worktree_discarded: %{name: String.t(), path: String.t() | nil} | nil
+            prior_worktree_discarded: %{name: String.t(), path: String.t() | nil} | nil,
+            context: map() | nil
           }
     @derive Jason.Encoder
     defstruct [
@@ -97,7 +98,8 @@ defmodule ForemanServer.MCP.Tools do
       :last_event_at_ms,
       :failure_reason,
       :latest_stall,
-      :prior_worktree_discarded
+      :prior_worktree_discarded,
+      :context
     ]
   end
 
@@ -3599,7 +3601,8 @@ defmodule ForemanServer.MCP.Tools do
       last_event_at_ms: Map.get(phase, :last_event_at_ms),
       failure_reason: Map.get(phase, :failure_reason),
       latest_stall: Map.get(phase, :latest_stall),
-      prior_worktree_discarded: Map.get(phase, :prior_worktree_discarded)
+      prior_worktree_discarded: Map.get(phase, :prior_worktree_discarded),
+      context: Map.get(phase, :context)
     }
   end
 

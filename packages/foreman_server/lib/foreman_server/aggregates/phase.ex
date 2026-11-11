@@ -84,6 +84,40 @@ defmodule ForemanServer.Aggregates.Phase do
     end
   end
 
+  # The project context a launch delivered. Only a started, non-terminal phase
+  # records one, and every field is checked here: the event is decoded strictly
+  # and the projection folds it, so a malformed payload must never reach the stream
+  # (AGENTS.md 5.3). `sha256` is the hash of the delivered `system_text`.
+  def handle_command(state, %{type: "phase.context", payload: payload}) do
+    with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
+         {:ok, phase_id} <-
+           Aggregate.required_binary(Aggregate.get(payload, :phase_id), :phase_id),
+         :ok <- require_started(state, "phase.context"),
+         :ok <- reject_terminal(state),
+         {:ok, sha256} <- Aggregate.required_binary(Aggregate.get(payload, :sha256), :sha256),
+         {:ok, bytes} <- non_neg_integer(Aggregate.get(payload, :bytes), :bytes),
+         {:ok, redactions} <- non_neg_integer(Aggregate.get(payload, :redactions), :redactions),
+         {:ok, sections} <- sections(Aggregate.get(payload, :sections)),
+         {:ok, truncated} <- truncations(Aggregate.get(payload, :truncated)),
+         :ok <- redaction_scope(Aggregate.get(payload, :redaction_scope)) do
+      {:ok,
+       %{
+         stream_id: "phase:#{run_id}:#{phase_id}",
+         event_type: "PhaseContextRecorded",
+         payload: %{
+           run_id: run_id,
+           phase_id: phase_id,
+           sections: sections,
+           sha256: sha256,
+           bytes: bytes,
+           truncated: truncated,
+           redactions: redactions,
+           redaction_scope: "project_context_sections"
+         }
+       }}
+    end
+  end
+
   def handle_command(state, %{type: type, payload: payload})
       when type in [
              "phase.complete",
@@ -130,6 +164,56 @@ defmodule ForemanServer.Aggregates.Phase do
 
   defp reject_terminal(%State{terminal?: true}), do: {:error, :phase_terminal}
   defp reject_terminal(_state), do: :ok
+
+  defp non_neg_integer(value, _key) when is_integer(value) and value >= 0, do: {:ok, value}
+  defp non_neg_integer(_value, key), do: {:error, {:missing_or_invalid, key}}
+
+  defp redaction_scope("project_context_sections"), do: :ok
+  defp redaction_scope(_other), do: {:error, {:missing_or_invalid, :redaction_scope}}
+
+  defp sections(entries) when is_list(entries) do
+    collect(entries, :sections, fn entry ->
+      with {:ok, id} <- Aggregate.required_binary(Aggregate.get(entry, :id), :sections),
+           {:ok, bytes} <- non_neg_integer(Aggregate.get(entry, :bytes), :sections) do
+        {:ok, %{id: id, bytes: bytes}}
+      end
+    end)
+  end
+
+  defp sections(_other), do: {:error, {:missing_or_invalid, :sections}}
+
+  defp truncations(entries) when is_list(entries) do
+    collect(entries, :truncated, fn entry ->
+      with {:ok, section} <- Aggregate.required_binary(Aggregate.get(entry, :section), :truncated),
+           {:ok, omitted_bytes} <-
+             non_neg_integer(Aggregate.get(entry, :omitted_bytes), :truncated),
+           {:ok, omitted_lines} <-
+             non_neg_integer(Aggregate.get(entry, :omitted_lines), :truncated) do
+        {:ok, %{section: section, omitted_bytes: omitted_bytes, omitted_lines: omitted_lines}}
+      end
+    end)
+  end
+
+  defp truncations(_other), do: {:error, {:missing_or_invalid, :truncated}}
+
+  # Maps `fun` over a list of maps; the first malformed entry fails the whole list.
+  defp collect(entries, key, fun) do
+    entries
+    |> Enum.reduce_while({:ok, []}, fn
+      %{} = entry, {:ok, acc} ->
+        case fun.(entry) do
+          {:ok, value} -> {:cont, {:ok, [value | acc]}}
+          {:error, _} -> {:halt, {:error, {:missing_or_invalid, key}}}
+        end
+
+      _other, _acc ->
+        {:halt, {:error, {:missing_or_invalid, key}}}
+    end)
+    |> case do
+      {:ok, reversed} -> {:ok, Enum.reverse(reversed)}
+      error -> error
+    end
+  end
 
   # `PhaseRetried` is decoded strictly, so only its declared fields reach the
   # stream (AGENTS.md 5.4b); an absent optional field stays absent.
