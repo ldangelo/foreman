@@ -567,7 +567,13 @@ defmodule ForemanServer.Workflow.RunExecutor do
   defp dispatch_resume_retry(state, phase_id, number) do
     payload =
       maybe_put_discard(
-        %{run_id: state.run_id, phase_id: phase_id, index: number, reason: "resumed"},
+        %{
+          run_id: state.run_id,
+          phase_id: phase_id,
+          index: number,
+          reason: "resumed",
+          input_artifacts: phase_input_artifacts(state.run_id, number)
+        },
         state
       )
 
@@ -1512,7 +1518,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
         index: phase_index,
         name: Map.get(phase_spec, :name),
         attempt: 1,
-        artifact_template: Map.get(phase_spec, :artifact_template) || %{}
+        artifact_template: Map.get(phase_spec, :artifact_template) || %{},
+        input_artifacts: phase_input_artifacts(state.run_id, phase_index)
       }
       |> Map.merge(
         ForemanServer.Workflow.StallPolicy.payload_fields(Map.get(phase_spec, :stall_detection))
@@ -1526,6 +1533,28 @@ defmodule ForemanServer.Workflow.RunExecutor do
       phase_id,
       "phase:#{state.run_id}:#{phase_id}"
     )
+  end
+
+  # The artifact references a phase starts from. A phase reads one input at most:
+  # the artifact the PREVIOUS phase (`number - 1`) recorded on `PhaseCompleted`,
+  # which `CommandRouter.dispatch/2` has already folded into the projection when
+  # the next phase starts. Phase 1, and a phase whose predecessor recorded no
+  # artifact, has none: `[]`. `index` is the position in the list, from 0.
+  defp phase_input_artifacts(_run_id, number) when number <= 1, do: []
+
+  defp phase_input_artifacts(run_id, number) do
+    source_phase = Identity.phase_id(run_id, number - 1)
+
+    run_id
+    |> ProjectionStore.phases_for_run()
+    |> Enum.find(&(&1.phase_id == source_phase))
+    |> case do
+      %{artifact: %{path: path, sha256: sha256}} when is_binary(path) and is_binary(sha256) ->
+        [%{index: 0, source_phase: source_phase, path: path, sha256: sha256}]
+
+      _ ->
+        []
+    end
   end
 
   @default_activation_timeout_ms 30_000
@@ -1660,11 +1689,22 @@ defmodule ForemanServer.Workflow.RunExecutor do
          steering
        ) do
     state = with_run_worktrees(state, worktree_record)
-    request = build_request(state, phase_spec, phase_index, worktree_record)
+
+    # The launch's ONE `ProjectContext.build/1`: the prompt template variables, the
+    # command template, `ProjectContext.deliver/3` and the `PhaseContextRecorded`
+    # record all take this value, so the recorded hash describes the text the prompt
+    # used and the agent received.
+    context_bundle = project_context_bundle(state, :warning)
+    request = build_request(state, phase_spec, phase_index, worktree_record, context_bundle)
 
     # Decided before anything is recorded or written for the launch: a fork that cannot be honoured
     # fails the phase here, it never starts a blank agent (`fork_for_launch/3`).
-    with {:ok, fork} <- fork_for_launch(state, index, JidoHarness.request_provider(request)) do
+    #
+    # The record is dispatched before the agent starts. A record that cannot be
+    # appended fails the launch (the error reaches the phase as any launch failure):
+    # a phase must not run on context nobody can later inspect.
+    with {:ok, fork} <- fork_for_launch(state, index, JidoHarness.request_provider(request)),
+         :ok <- record_project_context(state, phase_index, context_bundle) do
       build_agent_launch(
         state,
         phase_spec,
@@ -1674,7 +1714,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
         resolved,
         steering,
         request,
-        fork
+        fork,
+        context_bundle
       )
     end
   end
@@ -1688,7 +1729,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
          resolved,
          steering,
          request,
-         fork
+         fork,
+         context_bundle
        ) do
     prompt_steering = if phase_action(phase_spec) == :command, do: [], else: steering
     request = %{request | prompt: append_steering_block(request.prompt, prompt_steering)}
@@ -1696,16 +1738,21 @@ defmodule ForemanServer.Workflow.RunExecutor do
     prompt =
       case phase_action(phase_spec) do
         :command ->
-          render_command_template(phase_value(phase_spec, :command), state, phase_spec, index) ||
+          render_command_template(
+            phase_value(phase_spec, :command),
+            state,
+            phase_spec,
+            index,
+            context_bundle
+          ) ||
             request.prompt
 
         _ ->
           request.prompt
       end
 
-    # One context build per launch. `ProjectContext.deliver/3` picks system
-    # prompt vs prompt prefix by provider capability.
-    context_bundle = project_context_bundle(state, :warning)
+    # `ProjectContext.deliver/3` picks system prompt vs prompt prefix by provider
+    # capability.
 
     {context_system_text, prompt} =
       ProjectContext.deliver(
@@ -2556,16 +2603,16 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
   end
 
-  defp build_request(state, phase_spec, index, worktree_record) do
+  defp build_request(state, phase_spec, index, worktree_record, context_bundle) do
     context = base_context(state, phase_spec, index, worktree_record)
 
     %{
       context: context,
-      prompt: read_phase_prompt(state, phase_spec, index, context)
+      prompt: read_phase_prompt(state, phase_spec, index, context, context_bundle)
     }
   end
 
-  defp read_phase_prompt(state, phase_spec, index, context) do
+  defp read_phase_prompt(state, phase_spec, index, context, context_bundle) do
     content =
       case Map.get(phase_spec, :prompt_path) do
         nil ->
@@ -2584,11 +2631,11 @@ defmodule ForemanServer.Workflow.RunExecutor do
           end
       end
 
-    render_prompt_template(content, state, phase_spec, index, context)
+    render_prompt_template(content, state, phase_spec, index, context, context_bundle)
   end
 
-  defp render_prompt_template(content, state, phase_spec, index, context) do
-    assigns = prompt_template_assigns(state, phase_spec, index, context)
+  defp render_prompt_template(content, state, phase_spec, index, context, context_bundle) do
+    assigns = prompt_template_assigns(state, phase_spec, index, context, context_bundle)
 
     result =
       content
@@ -2621,6 +2668,76 @@ defmodule ForemanServer.Workflow.RunExecutor do
   end
 
   defp log_project_context(_state, _bundle), do: :ok
+
+  # Records what the launch's bundle delivered, through the `phase.context` command
+  # on the Phase aggregate (never an append from here). A launch with no context
+  # (no project, no sections: `system_text` nil) records nothing.
+  #
+  # A delivery the phase entry already records (same `sha256`) is not dispatched
+  # again: one record per delivery, decided by the entry's state. A delivery that
+  # differs, or follows a resumed retry that cleared the entry, is recorded under an
+  # id that cannot collide with an earlier delivery of the same hash (see
+  # `dispatch_project_context/4`). A rejected or failed dispatch is returned, never
+  # dropped (AGENTS.md 5.2).
+  defp record_project_context(state, phase_index, %{system_text: text} = bundle)
+       when is_binary(text) and text != "" do
+    phase_id = Identity.phase_id(state.run_id, phase_index)
+
+    payload = %{
+      run_id: state.run_id,
+      phase_id: phase_id,
+      sections: Enum.map(bundle.sections, &%{id: to_string(&1.id), bytes: byte_size(&1.body)}),
+      sha256: bundle.sha256,
+      bytes: bundle.bytes,
+      truncated:
+        Enum.map(bundle.truncated, fn cut ->
+          %{cut | section: to_string(cut.section)}
+        end),
+      redactions: bundle.redactions,
+      redaction_scope: "project_context_sections"
+    }
+
+    case current_context_sha256(state.run_id, phase_id) do
+      sha when sha == bundle.sha256 ->
+        :ok
+
+      _differs_or_absent ->
+        dispatch_project_context(state, phase_id, payload, bundle.sha256)
+    end
+  end
+
+  defp record_project_context(_state, _phase_index, _bundle), do: :ok
+
+  defp current_context_sha256(run_id, phase_id) do
+    case phase_entry(run_id, phase_id) do
+      %{context: %{sha256: sha}} -> sha
+      _ -> nil
+    end
+  end
+
+  defp phase_entry(run_id, phase_id),
+    do: run_id |> ProjectionStore.phases_for_run() |> Enum.find(&(&1.phase_id == phase_id))
+
+  # The id carries how many context records the phase has taken (0 before the
+  # first), which grows with every record and survives the resumed retry that clears
+  # the entry's `context`. So two deliveries of the same hash that are not adjacent
+  # (A, B, A) never share an id, while the SAME command replayed (a crash between the
+  # append and its acknowledgement) still does and appends once. Adjacent identical
+  # deliveries never reach here: the entry already says what the record would.
+  defp dispatch_project_context(state, phase_id, payload, sha256) do
+    prior = (phase_entry(state.run_id, phase_id) || %{}) |> Map.get(:context_records, 0)
+
+    case dispatch_system(
+           "phase.context",
+           payload,
+           state.run_id,
+           "#{phase_id}:#{Incarnation.id()}:#{prior}:#{sha256}",
+           "phase:#{state.run_id}:#{phase_id}"
+         ) do
+      {:ok, _} -> :ok
+      {:error, reason} -> {:error, {:project_context_record_failed, reason}}
+    end
+  end
 
   # The evidence AC-005-2 / AC-006-1 ask for, log-only (TRD OTD-2): the model THIS
   # phase's driver is handed, the rule that chose it, and the workflow manifest
@@ -2748,11 +2865,11 @@ defmodule ForemanServer.Workflow.RunExecutor do
     String.trim(@command_phase_inbox_progress_system_prompt)
   end
 
-  defp render_command_template(nil, _state, _phase_spec, _index), do: nil
+  defp render_command_template(nil, _state, _phase_spec, _index, _context_bundle), do: nil
 
-  defp render_command_template(command, state, phase_spec, index)
+  defp render_command_template(command, state, phase_spec, index, context_bundle)
        when is_binary(command) do
-    assigns = prompt_template_assigns(state, phase_spec, index, %{})
+    assigns = prompt_template_assigns(state, phase_spec, index, %{}, context_bundle)
 
     Regex.replace(~r/\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}/, command, fn _match, key ->
       case Map.get(assigns, key) do
@@ -2785,7 +2902,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end)
   end
 
-  def prompt_template_assigns(state, phase_spec, index, context) do
+  def prompt_template_assigns(state, phase_spec, index, context, context_bundle) do
     phase_index = prompt_phase_index(phase_spec, index)
     artifact_path = __MODULE__.ArtifactTemplate.path(state, phase_spec, phase_index)
 
@@ -2797,7 +2914,6 @@ defmodule ForemanServer.Workflow.RunExecutor do
       |> Enum.map(fn {key, value} -> {to_string(key), render_template_value(value)} end)
       |> Map.new()
 
-    context_bundle = project_context_bundle(state, :debug)
     repositories = prompt_repositories(state)
 
     Map.merge(base, %{
@@ -5078,8 +5194,15 @@ defmodule ForemanServer.Workflow.RunExecutor do
       )
 
   @doc false
-  def __render_command_template_for_test__(command, state, phase_spec, index),
-    do: render_command_template(command, state, PhaseSpec.normalize(phase_spec), index)
+  def __render_command_template_for_test__(command, state, phase_spec, index, context_bundle),
+    do:
+      render_command_template(
+        command,
+        state,
+        PhaseSpec.normalize(phase_spec),
+        index,
+        context_bundle
+      )
 
   @doc false
   def __worktree_task_id_for_test__(task, run_id),

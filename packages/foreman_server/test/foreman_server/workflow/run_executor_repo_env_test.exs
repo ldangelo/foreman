@@ -247,7 +247,7 @@ defmodule ForemanServer.Workflow.RunExecutorRepoEnvTest do
   describe "prompt assigns" do
     test "repositories and repositories_count for a multi-repo run", ctx do
       state = multi_state(ctx)
-      assigns = RunExecutor.prompt_template_assigns(state, %{name: "implement"}, 1, %{})
+      assigns = RunExecutor.prompt_template_assigns(state, %{name: "implement"}, 1, %{}, nil)
 
       assert assigns["repositories_count"] == "3"
 
@@ -259,11 +259,11 @@ defmodule ForemanServer.Workflow.RunExecutorRepoEnvTest do
     end
 
     test "a single-repo run has one entry; no worktree has none", ctx do
-      assigns = RunExecutor.prompt_template_assigns(single_state(ctx), %{name: "x"}, 1, %{})
+      assigns = RunExecutor.prompt_template_assigns(single_state(ctx), %{name: "x"}, 1, %{}, nil)
       assert assigns["repositories_count"] == "1"
       assert [%{"id" => "main", "primary" => true}] = Jason.decode!(assigns["repositories"])
 
-      none = RunExecutor.prompt_template_assigns(base_state(ctx, %{}), %{name: "x"}, 1, %{})
+      none = RunExecutor.prompt_template_assigns(base_state(ctx, %{}), %{name: "x"}, 1, %{}, nil)
       assert none["repositories_count"] == "0"
       assert none["repositories"] == "[]"
     end

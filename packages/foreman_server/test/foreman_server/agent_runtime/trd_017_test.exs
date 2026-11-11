@@ -23,7 +23,7 @@ defmodule ForemanServer.AgentRuntime.TRD017Test do
     test "{{input.prompt}} resolves to submitted prompt" do
       state = make_state(%{"input" => %{"prompt" => "hello world"}})
 
-      assigns = RunExecutor.prompt_template_assigns(state, phase_spec(), 1, %{})
+      assigns = RunExecutor.prompt_template_assigns(state, phase_spec(), 1, %{}, nil)
 
       assert assigns["input.prompt"] == "hello world"
     end
@@ -31,7 +31,7 @@ defmodule ForemanServer.AgentRuntime.TRD017Test do
     test "absent input block yields \"\"" do
       state = make_state(%{})
 
-      assigns = RunExecutor.prompt_template_assigns(state, phase_spec(), 1, %{})
+      assigns = RunExecutor.prompt_template_assigns(state, phase_spec(), 1, %{}, nil)
 
       assert assigns["input.prompt"] == ""
       assert assigns["input.prompt_argument"] == ""
@@ -40,7 +40,7 @@ defmodule ForemanServer.AgentRuntime.TRD017Test do
     test "unknown token is left intact" do
       state = make_state(%{"input" => %{"prompt" => "hello"}})
 
-      assigns = RunExecutor.prompt_template_assigns(state, phase_spec(), 1, %{})
+      assigns = RunExecutor.prompt_template_assigns(state, phase_spec(), 1, %{}, nil)
 
       assert Map.get(assigns, "unknown.token", "{{unknown.token}}") == "{{unknown.token}}"
     end
@@ -48,7 +48,7 @@ defmodule ForemanServer.AgentRuntime.TRD017Test do
     test "prompt containing literal {{run_id}} is not recursively expanded" do
       state = make_state(%{"input" => %{"prompt" => "literal {{run_id}}"}})
 
-      assigns = RunExecutor.prompt_template_assigns(state, phase_spec(), 1, %{})
+      assigns = RunExecutor.prompt_template_assigns(state, phase_spec(), 1, %{}, nil)
 
       assert assigns["input.prompt"] == "literal {{run_id}}"
       assert assigns["input.prompt_argument"] == Jason.encode!("literal {{run_id}}")

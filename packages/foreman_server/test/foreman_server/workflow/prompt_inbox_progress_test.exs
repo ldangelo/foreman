@@ -81,7 +81,8 @@ defmodule ForemanServer.Workflow.PromptInboxProgressTest do
         "/skill:ensemble-create-prd {{input.prompt}} --foreman",
         state,
         phase,
-        0
+        0,
+        nil
       )
 
     assert is_binary(rendered)

@@ -511,4 +511,75 @@ defmodule ForemanServer.Aggregates.PhaseTest do
                })
     end
   end
+
+  # ---------------------------------------------------------------------------
+  # phase.context (TRD-017)
+  # ---------------------------------------------------------------------------
+
+  describe "handle_command/2 - phase.context" do
+    defp context_payload(started, overrides \\ %{}) do
+      Map.merge(
+        %{
+          run_id: started.run_id,
+          phase_id: started.phase_id,
+          sections: [%{id: "instructions", bytes: 12}],
+          sha256: String.duplicate("a", 64),
+          bytes: 40,
+          truncated: [%{section: "memory", omitted_bytes: 5, omitted_lines: 1}],
+          redactions: 1,
+          redaction_scope: "project_context_sections"
+        },
+        overrides
+      )
+    end
+
+    defp record_context(state, payload),
+      do: Phase.handle_command(state, %{type: "phase.context", payload: payload})
+
+    test "a started phase records the context as PhaseContextRecorded on its own stream" do
+      started = started_state()
+
+      assert {:ok, %{event_type: "PhaseContextRecorded", stream_id: stream_id, payload: event}} =
+               record_context(started, context_payload(started))
+
+      assert stream_id == "phase:#{started.run_id}:#{started.phase_id}"
+      assert event.sections == [%{id: "instructions", bytes: 12}]
+      assert event.redaction_scope == "project_context_sections"
+    end
+
+    test "a phase that never started, or already ended, cannot record one" do
+      started = started_state()
+
+      assert {:error, :phase_not_started} =
+               record_context(start_state(), context_payload(started))
+
+      done =
+        fold(started, "PhaseCompleted", %{run_id: started.run_id, phase_id: started.phase_id})
+
+      assert {:error, :phase_terminal} = record_context(done, context_payload(started))
+    end
+
+    test "a malformed payload is rejected by the aggregate" do
+      started = started_state()
+
+      for {field, bad} <- [
+            {:sha256, nil},
+            {:sha256, ""},
+            {:bytes, -1},
+            {:bytes, "40"},
+            {:redactions, nil},
+            {:sections, %{id: "x", bytes: 1}},
+            {:sections, [%{id: "x"}]},
+            {:sections, ["x"]},
+            {:truncated, [%{section: "memory"}]},
+            {:truncated, nil},
+            {:redaction_scope, "none"},
+            {:redaction_scope, nil}
+          ] do
+        assert {:error, {:missing_or_invalid, _}} =
+                 record_context(started, context_payload(started, %{field => bad})),
+               "#{field}: #{inspect(bad)} must be rejected"
+      end
+    end
+  end
 end

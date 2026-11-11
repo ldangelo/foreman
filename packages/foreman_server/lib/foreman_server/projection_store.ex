@@ -2841,6 +2841,7 @@ defmodule ForemanServer.ProjectionStore do
             :prior_worktree_discarded,
             discarded_worktree(event.prior_worktree_discarded)
           )
+          |> maybe_put(:input_artifacts, input_artifacts(event.input_artifacts))
 
         state
         |> touch_run_for_payload(payload)
@@ -2912,6 +2913,7 @@ defmodule ForemanServer.ProjectionStore do
       |> update_existing(:phases, phase_id, "PhaseRetried", fn phase ->
         phase
         |> Map.put(:status, "in_progress")
+        |> Map.delete(:context)
         |> Map.put(:attempt, event.attempt)
         |> Map.put(:last_sequence, event.sequence)
         |> Map.put(:last_event_at_ms, payload_event_at_ms(payload))
@@ -2919,10 +2921,31 @@ defmodule ForemanServer.ProjectionStore do
           :prior_worktree_discarded,
           discarded_worktree(event.prior_worktree_discarded)
         )
+        |> maybe_put(:input_artifacts, input_artifacts(event.input_artifacts))
       end)
     else
       touch_run_for_payload(state, payload)
     end
+  end
+
+  # The context a phase launch delivered. The phase entry holds the LATEST launch's
+  # record: a resumed retry clears the previous attempt's (see `PhaseRetried`), so a
+  # launch that delivered no context leaves none.
+  defp apply_event_by_type(state, "PhaseContextRecorded", payload) do
+    %ForemanServer.Events.PhaseContextRecorded{phase_id: phase_id} =
+      event = decode_for_projection("PhaseContextRecorded", payload)
+
+    state
+    |> touch_run_for_payload(payload)
+    |> update_existing(:phases, phase_id, "PhaseContextRecorded", fn phase ->
+      phase
+      |> Map.put(:context, phase_context(event))
+      |> Map.put(:last_sequence, event.sequence)
+      # How many records this phase has taken. Internal (the status DTO does not carry
+      # it): `RunExecutor` keys the next `phase.context` command id on it, and it
+      # outlives the resumed retry that clears `:context`.
+      |> Map.update(:context_records, 1, &(&1 + 1))
+    end)
   end
 
   defp apply_event_by_type(state, "TaskCreated", payload) do
@@ -5772,6 +5795,76 @@ defmodule ForemanServer.ProjectionStore do
   defp discarded_worktree(%{} = discard) do
     %{name: name, path: path} = WorktreeDiscard.from_event(discard)
     %{name: name, path: path}
+  end
+
+  # The inputs a phase started from, `[%{index, source_phase, path, sha256}]`.
+  # `EventCodec` normalises only an event's top-level keys, so the entries arrive
+  # atom-keyed from a live dispatch and string-keyed from a replayed JSON event;
+  # `normalise_fields/2` makes them one atom-keyed shape. An absent field stays
+  # absent (an old stream); an entry that is not a map is dropped.
+  #
+  # Not validated by the aggregate at `phase.start` / `phase.retry` (unlike
+  # `phase.context`): a partial entry is kept as it came and a non-map entry is
+  # dropped here. Latent: the only producer, `RunExecutor.phase_input_artifacts/2`,
+  # builds well-formed lists.
+  @input_artifact_fields [
+    {:index, "index"},
+    {:source_phase, "source_phase"},
+    {:path, "path"},
+    {:sha256, "sha256"}
+  ]
+
+  defp input_artifacts(nil), do: nil
+
+  defp input_artifacts(entries) when is_list(entries) do
+    for %{} = entry <- entries, do: normalise_fields(entry, @input_artifact_fields)
+  end
+
+  defp input_artifacts(_other), do: nil
+
+  # What a launch delivered, as the phase entry and the status DTO carry it. The
+  # nested maps arrive atom-keyed from a live dispatch and string-keyed from a replayed
+  # event, so each is normalised to one atom-keyed shape (AGENTS.md 5.4, 5.4b); an
+  # entry that is not a map is dropped.
+  @context_section_fields [{:id, "id"}, {:bytes, "bytes"}]
+  @context_truncation_fields [
+    {:section, "section"},
+    {:omitted_bytes, "omitted_bytes"},
+    {:omitted_lines, "omitted_lines"}
+  ]
+
+  defp phase_context(%ForemanServer.Events.PhaseContextRecorded{} = event) do
+    %{
+      sections: normalise_entries(event.sections, @context_section_fields),
+      sha256: event.sha256,
+      bytes: event.bytes,
+      truncated: normalise_entries(event.truncated, @context_truncation_fields),
+      redactions: event.redactions,
+      redaction_scope: event.redaction_scope
+    }
+  end
+
+  defp normalise_entries(entries, table) when is_list(entries),
+    do: for(%{} = entry <- entries, do: normalise_fields(entry, table))
+
+  defp normalise_entries(_other, _table), do: []
+
+  # Keeps only the fields of `table` (`[{atom_key, string_key}]`), reading either
+  # key form and writing the atom key from the table, never from the input
+  # (AGENTS.md 5.4, 5.4b). A field absent in both forms is left out. The shared
+  # step for every per-field normaliser of a nested map.
+  defp normalise_fields(%{} = map, table) do
+    for {atom_key, string_key} <- table,
+        {:ok, value} <- [fetch_either(map, atom_key, string_key)],
+        into: %{},
+        do: {atom_key, value}
+  end
+
+  defp fetch_either(map, atom_key, string_key) do
+    case Map.fetch(map, atom_key) do
+      {:ok, _value} = found -> found
+      :error -> Map.fetch(map, string_key)
+    end
   end
 
   # -- usage ledger (E14) ------------------------------------------------------
