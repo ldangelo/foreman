@@ -11,7 +11,7 @@ defmodule ForemanServer.Idempotency.EffectUnresolvedTest do
 
   @moduletag :capture_log
 
-  alias ForemanServer.{Aggregate, CommandGateway, CommandRouter, PrCreate, ProjectionStore}
+  alias ForemanServer.{Aggregate, CommandGateway, PrCreate, ProjectionStore}
   alias ForemanServer.Aggregates.Run
   alias ForemanServer.Idempotency.{Effect, KeyStore}
   alias ForemanServer.Idempotency.Reconcilers.PrCreate, as: CreateEffect
@@ -25,14 +25,23 @@ defmodule ForemanServer.Idempotency.EffectUnresolvedTest do
 
   setup do
     KeyStoreReset.reset!()
+    original = Application.get_env(:foreman_server, Effect)
 
     on_exit(fn ->
+      if original,
+        do: Application.put_env(:foreman_server, Effect, original),
+        else: Application.delete_env(:foreman_server, Effect)
+
       PrCreate.clear_command_runner()
       KeyStoreReset.reset!()
     end)
 
     :ok
   end
+
+  # Make the run stream unreadable (or scripted) for `Effect`'s refusal check only.
+  defp stream_reader!(fun),
+    do: Application.put_env(:foreman_server, Effect, run_stream_reader: fun)
 
   # A thread whose project checkout is a real repository with a bare origin and the run
   # branch, behind the scripted GitHub. `complete: false` leaves the run blockable.
@@ -127,11 +136,13 @@ defmodule ForemanServer.Idempotency.EffectUnresolvedTest do
       assert KeyStore.unresolved_version(metadata) == {:ok, version(t.run_id)}
       assert metadata["unresolved_reason"] == "effect_already_done"
       assert EffectWorld.executed(world, :create) == 1
+      pushes = EffectWorld.executed(world, :push)
 
       assert {:error, {:effect_unresolved, ^key}} = PrCreate.execute(t.run_id)
 
       assert {:ok, ^before_key} = KeyStore.get(key)
       assert EffectWorld.executed(world, :create) == 1
+      assert EffectWorld.executed(world, :push) == pushes
       assert length(EffectWorld.prs(world)) == 1
     end
 
@@ -146,7 +157,8 @@ defmodule ForemanServer.Idempotency.EffectUnresolvedTest do
 
       message = Actions.describe({:effect_unresolved, key})
       assert message =~ "foreman_doctor"
-      assert message =~ "reset the run"
+      assert message =~ "failed, stuck, blocked or paused"
+      assert message =~ "Check GitHub"
       refute "PrCreated" in Support.run_event_types(t.run_id)
     end
 
@@ -164,7 +176,7 @@ defmodule ForemanServer.Idempotency.EffectUnresolvedTest do
 
       # No reset exists for a completed run (`run.reset` is accepted from failed, stuck,
       # blocked and paused only), so the refusal stands.
-      assert {:error, _not_resettable} = reset_attempt(t.run_id)
+      assert {:error, {:run_not_resettable, "completed"}} = reset_attempt(t.run_id)
       assert {:error, {:effect_unresolved, ^key}} = PrCreate.execute(t.run_id)
       assert {:ok, ^before_key} = KeyStore.get(key)
       assert EffectWorld.executed(world, :create) == 1
@@ -219,37 +231,92 @@ defmodule ForemanServer.Idempotency.EffectUnresolvedTest do
 
       assert_received {:inside, {:ok, %{status: :started, metadata: started}}}
       assert KeyStore.unresolved_version(started) == :none
+      assert started["unresolved_reason"] == nil
       assert started["run_id"] == t.run_id
       assert {:ok, %{status: :completed}} = KeyStore.get(key)
     end
 
-    test "a block after the reset is a new marker: an earlier reset in the stream does not lift it" do
+    test "a sweep between the reset and the re-admission leaves the key liftable" do
       world = EffectWorld.start()
       {t, _fx} = thread!(world, false)
       key = key_of(t)
       crash_and_sweep!(world, t)
+      {:ok, %{metadata: marked}} = KeyStore.get(key)
       reset_run!(t.run_id)
 
-      {:ok, _} =
-        CommandRouter.dispatch(%{
-          type: "project.register",
-          payload: %{project_id: t.project_id, path: t.repo},
-          aggregate_id: "project:#{t.project_id}"
-        })
-
-      {:ok, _} =
-        CommandRouter.dispatch_run_start(t.project_id, %{
-          run_id: t.run_id,
-          task_id: t.task_id,
-          workflow_snapshot: %{phases: [], attempt: 2}
-        })
-
+      # The reset run is absent now; the sweep must not decide the key again (it would
+      # write a marker past the RunReset and refuse the key for good).
       EffectWorld.sweep(world)
 
-      assert EffectWorld.status(t.run_id) == "blocked"
-      {:ok, %{metadata: stored}} = KeyStore.get(key)
-      assert KeyStore.unresolved_version(stored) == {:ok, version(t.run_id)}
-      assert {:error, {:effect_unresolved, ^key}} = run_effect(key, stored)
+      assert {:ok, %{status: :ambiguous, metadata: ^marked}} = KeyStore.get(key)
+      test_pid = self()
+
+      assert :ran ==
+               Effect.run(
+                 :pr_create,
+                 key,
+                 fn ->
+                   send(test_pid, :ran)
+                   :ran
+                 end,
+                 marked
+               )
+
+      assert_received :ran
+    end
+
+    test "only events after the marker count: an earlier reset does not lift it" do
+      key = Effect.key(:pr_create, "run-stale", "h:main")
+
+      meta = %{
+        "run_id" => "run-stale",
+        "effect_class" => "pr_create",
+        "head_branch" => "h",
+        "base_branch" => "main",
+        "cwd" => "/w"
+      }
+
+      stream = ["RunStarted", "RunReset", "RunBlocked"]
+
+      stream_reader!(fn "run:run-stale", from ->
+        {:ok, stream |> Enum.drop(from - 1) |> Enum.map(&%{event_type: &1})}
+      end)
+
+      :ok = KeyStore.mark_started(key, meta)
+      :ok = KeyStore.mark_unresolved(key, 3, "effect_outcome_ambiguous")
+      assert {:error, {:effect_unresolved, ^key}} = run_effect(key, meta)
+
+      # The same key marked at version 1: the reset after it lifts the refusal.
+      :ok = KeyStore.mark_unresolved(key, 1, "effect_outcome_ambiguous")
+      assert :ran == Effect.run(:pr_create, key, fn -> :ran end, meta)
+    end
+
+    test "two callers that both saw the reset: only the one that wins the lift runs" do
+      key = Effect.key(:pr_create, "run-race", "h:main")
+
+      meta = %{
+        "run_id" => "run-race",
+        "effect_class" => "pr_create",
+        "head_branch" => "h",
+        "base_branch" => "main",
+        "cwd" => "/w"
+      }
+
+      :ok = KeyStore.mark_started(key, meta)
+      :ok = KeyStore.mark_unresolved(key, 1, "effect_outcome_ambiguous")
+
+      # While this caller checks the stream, the competitor lifts the key first.
+      stream_reader!(fn _stream, _from ->
+        :lifted =
+          KeyStore.lift_unresolved(key, %{
+            "unresolved_at_run_version" => nil,
+            "unresolved_reason" => nil
+          })
+
+        {:ok, [%{event_type: "RunReset"}]}
+      end)
+
+      assert {:error, {:effect_unresolved, ^key}} = run_effect(key, meta)
     end
   end
 
@@ -274,8 +341,8 @@ defmodule ForemanServer.Idempotency.EffectUnresolvedTest do
     end
   end
 
-  describe "the run stream cannot be read" do
-    test "the effect is refused, never repeated" do
+  describe "the refusal check cannot be made" do
+    setup do
       key = Effect.key(:pr_create, "run-unreadable", "h:main")
 
       meta = %{
@@ -289,17 +356,36 @@ defmodule ForemanServer.Idempotency.EffectUnresolvedTest do
       :ok = KeyStore.mark_started(key, meta)
       :ok = KeyStore.mark_unresolved(key, 3, "effect_outcome_ambiguous")
       {:ok, before_key} = KeyStore.get(key)
+      %{key: key, meta: meta, before_key: before_key}
+    end
 
-      :meck.new(FEventStoreMod, [:passthrough, :no_link])
-      on_exit(fn -> :meck.unload(FEventStoreMod) end)
-      :meck.expect(FEventStoreMod, :read_stream_forward, fn _, _, _ -> {:error, :boom} end)
+    test "an unreadable run stream is its own refusal, never a repeat", ctx do
+      stream_reader!(fn _, _ -> {:error, :boom} end)
+      assert {:error, {:effect_check_failed, :boom}} = run_effect(ctx.key, ctx.meta)
 
-      assert {:error, {:effect_unresolved, ^key}} = run_effect(key, meta)
+      assert {:error, {:effect_check_failed, :boom}} =
+               Effect.preflight(:pr_create, ctx.key, ctx.meta)
 
-      :meck.expect(FEventStoreMod, :read_stream_forward, fn _, _, _ -> raise "store down" end)
-      assert {:error, {:effect_unresolved, ^key}} = run_effect(key, meta)
+      stream_reader!(fn _, _ -> raise "store down" end)
+      assert {:error, {:effect_check_failed, %RuntimeError{}}} = run_effect(ctx.key, ctx.meta)
 
-      assert {:ok, ^before_key} = KeyStore.get(key)
+      assert {:ok, ctx.before_key} == KeyStore.get(ctx.key)
+    end
+
+    test "a malformed marker refuses", ctx do
+      :ets.insert(
+        :foreman_idempotency_keys,
+        {ctx.key, :ambiguous, Map.put(ctx.before_key.metadata, "unresolved_at_run_version", "3")}
+      )
+
+      assert {:error, {:effect_unresolved, _}} = run_effect(ctx.key, ctx.meta)
+    end
+
+    test "an ambiguous record whose metadata is not a map refuses", ctx do
+      :ets.insert(:foreman_idempotency_keys, {ctx.key, :ambiguous, "garbage"})
+
+      assert {:error, {:effect_check_failed, {:metadata_not_a_map, "garbage"}}} =
+               run_effect(ctx.key, ctx.meta)
     end
   end
 

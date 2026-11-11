@@ -40,6 +40,11 @@ defmodule ForemanServer.Idempotency.Effect do
           | :cwd_missing
           | term()
 
+  @type refusal ::
+          {:error, {:intent_not_recorded, intent_error()}}
+          | {:error, {:effect_unresolved, String.t()}}
+          | {:error, {:effect_check_failed, term()}}
+
   @max_events 99_999_999
 
   @required %{
@@ -60,29 +65,53 @@ defmodule ForemanServer.Idempotency.Effect do
 
   Returns `fun`'s own result unchanged. Returns
   `{:error, {:intent_not_recorded, reason}}` without calling `fun` when the
-  metadata is incomplete or the `started` key cannot be written, and
+  metadata is incomplete or the `started` key cannot be written;
   `{:error, {:effect_unresolved, key}}` (also without calling `fun`, key and
   metadata untouched) when recovery left the key unresolved and the run has not
-  been reset since. The key is
-  marked `failed` when `fun` returns `:error`/`{:error, _}` or raises/throws/exits
-  (the exception is re-raised), otherwise `completed`.
+  been reset since; and `{:error, {:effect_check_failed, reason}}` when that
+  could not be established (an unreadable run stream, a stored record that cannot
+  be read): not repeating is the safe side. The key is marked `failed` when
+  `fun` returns `:error`/`{:error, _}` or raises/throws/exits (the exception is
+  re-raised), otherwise `completed`.
   """
-  @spec run(class(), String.t(), (-> result), map()) ::
-          result
-          | {:error, {:intent_not_recorded, intent_error()} | {:effect_unresolved, String.t()}}
+  @spec run(class(), String.t(), (-> result), map()) :: result | refusal()
         when result: term()
   def run(class, key, fun, meta) when is_function(fun, 0) and is_map(meta) do
     with {:ok, class_name} <- class_name(class),
          :ok <- check_key(key, class_name),
          {:ok, typed} <- typed_meta(class_name, meta),
-         {:ok, typed} <- check_unresolved(key, typed),
-         :ok <- record_intent(key, typed) do
+         {:ok, mode} <- check_unresolved(key, typed["run_id"]),
+         :ok <- record_intent(key, typed, mode) do
       execute(key, fun)
     else
-      {:unresolved, key} -> {:error, {:effect_unresolved, key}}
       {:error, reason} -> {:error, {:intent_not_recorded, reason}}
+      refusal -> refusal_error(refusal)
     end
   end
+
+  @doc """
+  The refusal check `run/4` makes, without writing anything: `:ok` when an
+  effect of `class` under `key` may be attempted for `meta["run_id"]`, otherwise
+  the same refusal `run/4` would return. Callers that run a cheaper effect
+  before the keyed one (the push before the PR create) call this on the later
+  key first, so a refusal stops the earlier effect too.
+  """
+  @spec preflight(class(), String.t(), map()) :: :ok | refusal()
+  def preflight(class, key, meta) when is_map(meta) do
+    with {:ok, class_name} <- class_name(class),
+         :ok <- check_key(key, class_name),
+         run_id = meta |> Map.new(fn {k, v} -> {to_string(k), v} end) |> Map.get("run_id"),
+         true <- present?(run_id) || {:error, {:missing_metadata, "run_id"}},
+         {:ok, _mode} <- check_unresolved(key, run_id) do
+      :ok
+    else
+      {:error, reason} -> {:error, {:intent_not_recorded, reason}}
+      refusal -> refusal_error(refusal)
+    end
+  end
+
+  defp refusal_error({:unresolved, key}), do: {:error, {:effect_unresolved, key}}
+  defp refusal_error({:check_failed, reason}), do: {:error, {:effect_check_failed, reason}}
 
   defp class_name(class) when is_atom(class) and class not in [nil, true, false],
     do: {:ok, Atom.to_string(class)}
@@ -119,28 +148,39 @@ defmodule ForemanServer.Idempotency.Effect do
   # `started` would also overwrite the SHAs its reconciler needs. The only exit
   # is an operator `run.reset`, which appends `RunReset` to the run's stream
   # after the version the marker recorded. Any other event (a terminal run still
-  # takes PR events) leaves the refusal in place. A stream that cannot be read
-  # refuses too: not repeating is the safe side. A lifted key is re-marked
-  # `started` with the marker cleared.
-  defp check_unresolved(key, typed) do
+  # takes PR events) leaves the refusal in place. A marker that is malformed, a
+  # record that cannot be read and a stream that cannot be read all refuse: not
+  # repeating is the safe side. Returns `{:ok, :clear}` (no marker to honour),
+  # `{:ok, :lifted}` (a reset followed the marker) or a refusal.
+  defp check_unresolved(key, run_id) do
     case KeyStore.get(key) do
+      :not_found ->
+        {:ok, :clear}
+
       {:ok, %{status: :ambiguous, metadata: metadata}} when is_map(metadata) ->
         case KeyStore.unresolved_version(metadata) do
-          {:ok, version} -> lift_if_reset(key, typed, version)
-          :none -> {:ok, typed}
+          :none -> {:ok, :clear}
+          {:ok, version} -> lift_if_reset(key, run_id, version)
+          {:error, :malformed} -> {:unresolved, key}
         end
 
-      _no_marker_to_honour ->
-        {:ok, typed}
+      {:ok, %{status: :ambiguous, metadata: other}} ->
+        {:check_failed, {:metadata_not_a_map, other}}
+
+      {:ok, %{status: _not_ambiguous}} ->
+        {:ok, :clear}
+
+      other ->
+        {:check_failed, {:unreadable_key, other}}
     end
   catch
     :exit, reason -> {:error, {:key_store_unavailable, reason}}
   end
 
-  defp lift_if_reset(key, typed, version) do
-    case reset_after?(typed["run_id"], version) do
+  defp lift_if_reset(key, run_id, version) do
+    case reset_after?(run_id, version) do
       true ->
-        {:ok, Map.put(typed, "unresolved_at_run_version", nil)}
+        {:ok, :lifted}
 
       false ->
         {:unresolved, key}
@@ -151,16 +191,29 @@ defmodule ForemanServer.Idempotency.Effect do
           key: key
         )
 
-        {:unresolved, key}
+        {:check_failed, reason}
     end
   end
 
   defp reset_after?(run_id, version) do
-    case EventStore.read_stream_forward("run:#{run_id}", version + 1, @max_events) do
+    case read_run_stream(run_id, version + 1) do
       {:ok, events} -> Enum.any?(events, &(Aggregate.event_type(&1) == "RunReset"))
       {:error, :stream_not_found} -> false
       {:error, reason} -> {:error, reason}
       other -> {:error, {:unexpected, other}}
+    end
+  end
+
+  # The run stream's events from `from`. The reader is `EventStore` unless the
+  # `:run_stream_reader` setting (a 2-arity function, `(stream_id, from)`) says
+  # otherwise: the seam tests use to make the stream unreadable for this check only.
+  defp read_run_stream(run_id, from) do
+    case Application.get_env(:foreman_server, __MODULE__, [])[:run_stream_reader] do
+      reader when is_function(reader, 2) ->
+        reader.("run:#{run_id}", from)
+
+      nil ->
+        EventStore.read_stream_forward("run:#{run_id}", from, @max_events)
     end
   rescue
     err -> {:error, err}
@@ -175,15 +228,30 @@ defmodule ForemanServer.Idempotency.Effect do
   defp present?(nil), do: false
   defp present?(_v), do: true
 
-  defp record_intent(key, typed) do
-    case KeyStore.mark_started(key, typed) do
-      :ok -> :ok
-      {:error, reason} -> {:error, reason}
-      other -> {:error, other}
+  defp record_intent(key, typed, :clear) do
+    key |> KeyStore.mark_started(typed) |> intent_result()
+  catch
+    :exit, reason -> {:error, {:key_store_unavailable, reason}}
+  end
+
+  # A lifted key is re-marked `started` with its marker cleared, atomically in the
+  # store: of two callers that both saw the reset, only the one whose write finds the
+  # marker still present runs the effect; the other is refused.
+  defp record_intent(key, typed, :lifted) do
+    cleared = Map.merge(typed, %{"unresolved_at_run_version" => nil, "unresolved_reason" => nil})
+
+    case KeyStore.lift_unresolved(key, cleared) do
+      :lifted -> :ok
+      :not_unresolved -> {:unresolved, key}
+      other -> intent_result(other)
     end
   catch
     :exit, reason -> {:error, {:key_store_unavailable, reason}}
   end
+
+  defp intent_result(:ok), do: :ok
+  defp intent_result({:error, reason}), do: {:error, reason}
+  defp intent_result(other), do: {:error, other}
 
   defp execute(key, fun) do
     result = fun.()

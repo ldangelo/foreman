@@ -112,18 +112,34 @@ defmodule ForemanServer.Idempotency.KeyStore do
 
   @doc """
   The run-stream version recorded by `mark_unresolved/3` in a key's metadata
-  (string or atom keys), or `:none` when the key carries no marker.
+  (string key), `:none` when the key carries no marker (absent or nil), and
+  `{:error, :malformed}` when a marker is present but is not a non-negative
+  integer: the caller must treat that as unresolved, never as no marker.
   """
-  @spec unresolved_version(map()) :: {:ok, non_neg_integer()} | :none
+  @spec unresolved_version(term()) :: {:ok, non_neg_integer()} | :none | {:error, :malformed}
   def unresolved_version(metadata) when is_map(metadata) do
-    case Map.get(metadata, @unresolved_version_field) ||
-           Map.get(metadata, :unresolved_at_run_version) do
+    case Map.get(metadata, @unresolved_version_field) do
+      nil -> :none
       version when is_integer(version) and version >= 0 -> {:ok, version}
-      _ -> :none
+      _other -> {:error, :malformed}
     end
   end
 
   def unresolved_version(_metadata), do: :none
+
+  @doc """
+  Atomically move an unresolved key to `started` (an operator `run.reset` has
+  lifted the refusal): only when the key is `ambiguous` and still carries its
+  marker, so of two concurrent callers that both saw the reset only one wins.
+  `meta` is merged like any record call; it must clear the marker fields.
+
+  Returns `:lifted`, `:not_unresolved` (the key no longer carries a marker: a
+  concurrent caller already lifted it) or `{:error, reason}`.
+  """
+  @spec lift_unresolved(String.t(), map()) :: :lifted | :not_unresolved | {:error, term()}
+  def lift_unresolved(key, meta) when is_map(meta) do
+    GenServer.call(__MODULE__, {:lift_unresolved, key, meta})
+  end
 
   @doc """
   Return the current status of an idempotency key.
@@ -298,6 +314,28 @@ defmodule ForemanServer.Idempotency.KeyStore do
     {:reply, :ok, state}
   end
 
+  # Compare-and-set for `lift_unresolved/2`: runs inside the server, so the
+  # marker check and the `started` write cannot interleave with another caller.
+  @impl true
+  def handle_call({:lift_unresolved, key, meta}, from, state) do
+    case current_record(state, key) do
+      {:ok, :ambiguous, stored} when is_map(stored) ->
+        if match?({:ok, _}, unresolved_version(stored)) do
+          case handle_call({:record, key, :started, meta}, from, state) do
+            {:reply, :ok, state} -> {:reply, :lifted, state}
+            other -> other
+          end
+        else
+          {:reply, :not_unresolved, state}
+        end
+
+      _no_marker ->
+        {:reply, :not_unresolved, state}
+    end
+  rescue
+    err -> {:reply, {:error, err}, state}
+  end
+
   # Durable path: status lookup
   @impl true
   def handle_call({:status, key}, _from, %{repo: repo} = state)
@@ -441,6 +479,22 @@ defmodule ForemanServer.Idempotency.KeyStore do
     err -> {:error, err}
   catch
     :exit, reason -> {:error, {:exit, reason}}
+  end
+
+  defp current_record(%{repo: repo}, key) do
+    case :ets.lookup(@table, key) do
+      [{^key, status, meta}] ->
+        {:ok, status, meta}
+
+      [] when repo == nil ->
+        :not_found
+
+      [] ->
+        case repo.get(IdempotencyKey, key) do
+          %IdempotencyKey{status: status, metadata: meta} -> {:ok, status, meta}
+          nil -> :not_found
+        end
+    end
   end
 
   # After a restart ETS has no copy of the key (`init/1` creates the table

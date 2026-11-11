@@ -200,8 +200,36 @@ defmodule ForemanServer.Idempotency.KeyStoreTest do
     test "unresolved_version/1 is :none without a usable marker" do
       assert KeyStore.unresolved_version(%{}) == :none
       assert KeyStore.unresolved_version(%{"unresolved_at_run_version" => nil}) == :none
-      assert KeyStore.unresolved_version(%{"unresolved_at_run_version" => "4"}) == :none
       assert KeyStore.unresolved_version(nil) == :none
+    end
+
+    test "unresolved_version/1 fails closed on a marker that is present but malformed" do
+      assert KeyStore.unresolved_version(%{"unresolved_at_run_version" => "4"}) ==
+               {:error, :malformed}
+
+      assert KeyStore.unresolved_version(%{"unresolved_at_run_version" => -1}) ==
+               {:error, :malformed}
+
+      # string key only: an atom-keyed marker is not one
+      assert KeyStore.unresolved_version(%{unresolved_at_run_version: 4}) == :none
+    end
+
+    test "lift_unresolved/2 moves a marked key to started once; the second caller loses" do
+      key = "effect:branch_push:r2:feature/y"
+      :ok = KeyStore.mark_started(key, %{"run_id" => "r2"})
+      assert :not_unresolved = KeyStore.lift_unresolved(key, %{})
+
+      :ok = KeyStore.mark_unresolved(key, 2, "effect_already_done")
+      clear = %{"unresolved_at_run_version" => nil, "unresolved_reason" => nil}
+
+      assert :lifted = KeyStore.lift_unresolved(key, clear)
+
+      assert {:ok, %{status: :started, metadata: %{"run_id" => "r2"} = metadata}} =
+               KeyStore.get(key)
+
+      assert KeyStore.unresolved_version(metadata) == :none
+      assert :not_unresolved = KeyStore.lift_unresolved(key, clear)
+      assert :not_unresolved = KeyStore.lift_unresolved("effect:branch_push:r2:absent", clear)
     end
   end
 end
