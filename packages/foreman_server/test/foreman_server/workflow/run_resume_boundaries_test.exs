@@ -91,8 +91,9 @@ defmodule ForemanServer.Workflow.RunResumeBoundariesTest do
         })
 
       H.subscribe!()
-      for _ <- 1..60, do: submit!(leak_project)
+      leaked = for _ <- 1..60, do: submit!(leak_project).run_id
       RunSlotsReset.reset!()
+      on_exit(fn -> end_leaked_runs!(leaked) end)
     end
 
     H.subscribe!()
@@ -336,6 +337,38 @@ defmodule ForemanServer.Workflow.RunResumeBoundariesTest do
     # answered only after every message ahead of it, and each handler works inline.
     for _ <- 1..2, do: :sys.get_state(dispatcher, @barrier_timeout_ms)
     :ok
+  end
+
+  # The leaked runs live in the shared event log for the rest of the suite and would starve the
+  # slot gate of any later module with a finite capacity. End each through the real command,
+  # let the Dispatcher and executors settle, and leave the slot stream empty.
+  defp end_leaked_runs!(run_ids) do
+    :ok = ProjectionStore.rebuild([])
+
+    for run_id <- run_ids do
+      case ProjectionStore.run(run_id) do
+        %{terminal?: true} ->
+          :ok
+
+        _live ->
+          {:ok, _} =
+            CommandGateway.dispatch_system(%{
+              type: "run.cancel",
+              command_id: "test:leak-cancel:#{run_id}",
+              aggregate_id: "run:#{run_id}",
+              payload: %{run_id: run_id, reason: "test_cleanup"}
+            })
+      end
+    end
+
+    RunDrain.drain!()
+
+    for run_id <- run_ids do
+      assert %{terminal?: true} = ProjectionStore.run(run_id),
+             "leaked run #{run_id} is still live after cleanup"
+    end
+
+    RunSlotsReset.reset!()
   end
 
   defp flush_starts() do
