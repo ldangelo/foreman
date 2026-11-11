@@ -875,14 +875,18 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
     case find_resumable_worktree(state.run_id) do
       nil ->
-        Logger.warning(
-          "RunExecutor #{state.run_id} resume found no worktree entry for #{name}; provisioning a fresh worktree",
-          run_id: state.run_id,
-          task_id: task_id(state),
-          operation: "run_executor.resume"
-        )
+        if worktree_expected?(state) do
+          Logger.warning(
+            "RunExecutor #{state.run_id} resume found no worktree entry for #{name}; provisioning a fresh worktree",
+            run_id: state.run_id,
+            task_id: task_id(state),
+            operation: "run_executor.resume"
+          )
 
-        {:ok, Map.put(state, :prior_worktree_discarded, %{name: name, path: nil})}
+          {:ok, Map.put(state, :prior_worktree_discarded, %{name: name, path: nil})}
+        else
+          {:ok, state}
+        end
 
       %{worktree_path: path} = entry when is_binary(path) and path != "" ->
         if File.dir?(path) do
@@ -894,6 +898,14 @@ defmodule ForemanServer.Workflow.RunExecutor do
       entry ->
         rehydrate_worktree_entry(state, entry)
     end
+  end
+
+  # A missing entry only means lost work when a worktree was ever provisioned: a
+  # run whose workflow disables worktrees has none, and a run resumed before its
+  # first phase began never reached provisioning.
+  defp worktree_expected?(state) do
+    match?(%{enabled: false}, state.worktree_spec) == false and
+      ProjectionStore.phases_for_run(state.run_id) != []
   end
 
   defp rehydrate_worktree_entry(state, entry) do

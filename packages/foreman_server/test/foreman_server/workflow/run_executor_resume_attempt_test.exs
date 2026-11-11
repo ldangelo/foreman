@@ -413,15 +413,28 @@ defmodule ForemanServer.Workflow.RunExecutorResumeAttemptTest do
 
     test "with no phase in flight the discard rides the PhaseStarted of the resume phase", ctx do
       ctx = real_repo!(ctx)
-      # Phase 1 never started: undo the in-flight phase by using a second run.
-      run_id = UniqueIds.unique_run_id("resume-attempt")
-      ctx = %{ctx | run_id: run_id, phase_id: Identity.phase_id(run_id, 1)}
-      admit_run!(ctx.admission_project_id, run_id)
-      seed_run!(ctx)
-      name = "wt-" <> run_id
+      name = "wt-" <> ctx.run_id
+
+      # Phase 1 finished before the restart, so the resume phase is phase 2, which never started.
+      {:ok, _} =
+        CommandGateway.dispatch_system(%{
+          type: "phase.complete",
+          command_id: "test:phase.complete:#{ctx.run_id}",
+          aggregate_id: aggregate_id(ctx),
+          payload: %{
+            run_id: ctx.run_id,
+            phase_id: ctx.phase_id,
+            index: 1,
+            artifact_path: "artifacts/only.md",
+            artifact_sha256: String.duplicate("0", 64),
+            artifact_bytes: 1
+          }
+        })
+
+      resume = %{real_state(ctx) | resume_from: 1}
 
       capture_log(fn ->
-        assert {:ok, state} = RunExecutor.__resume_prelude_for_test__(real_state(ctx))
+        assert {:ok, state} = RunExecutor.__resume_prelude_for_test__(resume)
         assert state.prior_worktree_discarded == %{name: name, path: nil}
         send(self(), {:state, state})
       end)
@@ -429,11 +442,58 @@ defmodule ForemanServer.Workflow.RunExecutorResumeAttemptTest do
       assert_received {:state, state}
       assert retried_count(ctx) == 0
 
-      assert {:ok, state, _record} = RunExecutor.phase_begin(state, hd(state.phase_specs), 0)
+      assert {:ok, state, _record} =
+               RunExecutor.phase_begin(state, Enum.at(state.phase_specs, 1), 1)
+
       refute Map.has_key?(state, :prior_worktree_discarded)
 
+      second = Enum.find(ProjectionStore.phases_for_run(ctx.run_id), &(&1.index == 2))
+
       assert %{status: "in_progress", attempt: 1, prior_worktree_discarded: %{name: ^name}} =
-               phase(run_id)
+               second
+    end
+
+    test "a run resumed before its first phase began has no worktree to lose: no discard", ctx do
+      ctx = real_repo!(ctx)
+      # `real_repo!/1` leaves phase 1 in flight; a second run never reached its first phase.
+      run_id = UniqueIds.unique_run_id("resume-attempt")
+      ctx = %{ctx | run_id: run_id, phase_id: Identity.phase_id(run_id, 1)}
+      admit_run!(ctx.admission_project_id, run_id)
+      seed_run!(ctx)
+
+      log =
+        capture_log(fn ->
+          assert {:ok, state} = RunExecutor.__resume_prelude_for_test__(real_state(ctx))
+          refute Map.has_key?(state, :prior_worktree_discarded)
+          send(self(), {:state, state})
+        end)
+
+      refute log =~ "no worktree entry"
+      assert_received {:state, state}
+      assert {:ok, _state, _record} = RunExecutor.phase_begin(state, hd(state.phase_specs), 0)
+
+      assert %{status: "in_progress", attempt: 1} = started = phase(run_id)
+      refute Map.has_key?(started, :prior_worktree_discarded)
+      assert %{current_phase: %{index: 1, prior_worktree_discarded: nil}} = run_status!(run_id)
+    end
+
+    test "a run whose worktrees are disabled has none to lose: no discard", ctx do
+      ctx = real_repo!(ctx)
+      disabled = %{real_state(ctx) | worktree_spec: %{enabled: false}}
+
+      log =
+        capture_log(fn ->
+          assert {:ok, state} = RunExecutor.__resume_prelude_for_test__(disabled)
+          refute Map.has_key?(state, :prior_worktree_discarded)
+        end)
+
+      refute log =~ "no worktree entry"
+      # The phase in flight is still a resumed attempt, and records no discard.
+      assert_attempt(ctx.run_id, 2)
+      refute Map.has_key?(phase(ctx.run_id), :prior_worktree_discarded)
+
+      assert %{current_phase: %{index: 1, prior_worktree_discarded: nil}} =
+               run_status!(ctx.run_id)
     end
   end
 
