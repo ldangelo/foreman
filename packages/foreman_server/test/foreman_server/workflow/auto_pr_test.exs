@@ -5,6 +5,8 @@ defmodule ForemanServer.Workflow.AutoPRTest do
 
   alias ForemanServer.Workflow.AutoPR
 
+  @sha "0123456789abcdef0123456789abcdef01234567"
+
   # AutoPR previously had no test coverage at all, which is why nobody noticed
   # that it required a `FOREMAN_COMPLETE` marker no skill ever emitted — so a
   # PR could not land from any workflow, and the failure was invisible because
@@ -97,11 +99,12 @@ defmodule ForemanServer.Workflow.AutoPRTest do
       }
 
       # Commits exist, so AutoPR publishes the branch and then runs
-      # `gh pr create`. This temp repo has no remote, so the push fails first.
-      # The contract under test is that it got past the decision and surfaced
-      # an error rather than silently no-opping, which is what used to happen.
+      # `gh pr create`. This temp repo has no remote, so the push's intent cannot
+      # read the remote head and the push does not run. The contract under test is
+      # that it got past the decision and surfaced an error rather than silently
+      # no-opping, which is what used to happen.
       assert {:error, reason} = AutoPR.maybe_create_pr(context)
-      assert elem(reason, 0) in [:git_push_failed, :gh_pr_create_failed]
+      assert {:intent_not_recorded, {:remote_head_unreadable, _}} = reason
     end
 
     test "a missing artifact does not prevent a PR", ctx do
@@ -153,6 +156,12 @@ defmodule ForemanServer.Workflow.AutoPRTest do
         "git", ["push", "-u", "origin", "foreman/run-10/implement"], _opts ->
           {"", 0}
 
+        "git", ["rev-parse", "--verify", _ref], _opts ->
+          {@sha <> "\n", 0}
+
+        "git", ["ls-remote", "origin", _ref], _opts ->
+          {"", 0}
+
         "gh", args, _opts ->
           send(parent, {:gh_args, args})
           {"https://github.com/acme/repo/pull/10\n", 0}
@@ -166,6 +175,7 @@ defmodule ForemanServer.Workflow.AutoPRTest do
                  run_id: "run-10",
                  base_branch: "main",
                  head_branch: "foreman/run-10/implement",
+                 cwd: "/work/tree",
                  task_title: title,
                  task_description: body,
                  command_runner: runner
@@ -186,6 +196,12 @@ defmodule ForemanServer.Workflow.AutoPRTest do
         "git", ["push", "-u", "origin", "foreman/run-title-only/implement"], _opts ->
           {"", 0}
 
+        "git", ["rev-parse", "--verify", _ref], _opts ->
+          {@sha <> "\n", 0}
+
+        "git", ["ls-remote", "origin", _ref], _opts ->
+          {"", 0}
+
         "gh", args, _opts ->
           send(parent, {:gh_args, args})
           {"https://github.com/acme/repo/pull/13\n", 0}
@@ -198,6 +214,7 @@ defmodule ForemanServer.Workflow.AutoPRTest do
                  run_id: "run-title-only",
                  base_branch: "main",
                  head_branch: "foreman/run-title-only/implement",
+                 cwd: "/work/tree",
                  task_title: "Only a title",
                  command_runner: runner
                })
@@ -284,6 +301,12 @@ defmodule ForemanServer.Workflow.AutoPRTest do
         "git", ["push", "-u", "origin", "foreman/run-12/implement"], _opts ->
           {"", 0}
 
+        "git", ["rev-parse", "--verify", _ref], _opts ->
+          {@sha <> "\n", 0}
+
+        "git", ["ls-remote", "origin", _ref], _opts ->
+          {"", 0}
+
         "gh", args, _opts ->
           send(parent, {:gh_args, args})
           {"https://github.com/acme/repo/pull/12\n", 0}
@@ -294,6 +317,7 @@ defmodule ForemanServer.Workflow.AutoPRTest do
                  run_id: "run-12",
                  base_branch: "main",
                  head_branch: "foreman/run-12/implement",
+                 cwd: "/work/tree",
                  artifact_path: artifact,
                  command_runner: runner
                })
@@ -339,7 +363,7 @@ defmodule ForemanServer.Workflow.AutoPRTest do
                  cwd: repo
                })
 
-      assert elem(reason, 0) in [:git_push_failed, :gh_pr_create_failed]
+      assert {:intent_not_recorded, {:remote_head_unreadable, _}} = reason
     end
 
     test "a head with a commit beyond its feature-branch base proceeds", ctx do
@@ -361,7 +385,7 @@ defmodule ForemanServer.Workflow.AutoPRTest do
                  cwd: repo
                })
 
-      assert elem(reason, 0) in [:git_push_failed, :gh_pr_create_failed]
+      assert {:intent_not_recorded, {:remote_head_unreadable, _}} = reason
     end
   end
 
@@ -404,6 +428,12 @@ defmodule ForemanServer.Workflow.AutoPRTest do
         "git", ["push", "-u", "origin", _], _opts ->
           {"", 0}
 
+        "git", ["rev-parse", "--verify", _ref], _opts ->
+          {@sha <> "\n", 0}
+
+        "git", ["ls-remote", "origin", _ref], _opts ->
+          {"", 0}
+
         "gh", args, _opts ->
           send(parent, {:gh_args, args})
           {"https://github.com/acme/repo/pull/13\n", 0}
@@ -416,6 +446,7 @@ defmodule ForemanServer.Workflow.AutoPRTest do
                      run_id: "run-log-safety",
                      base_branch: "main",
                      head_branch: "foreman/run-log-safety/implement",
+                     cwd: "/work/tree",
                      task_title: "Task title",
                      task_description: sentinel,
                      command_runner: runner
@@ -425,6 +456,345 @@ defmodule ForemanServer.Workflow.AutoPRTest do
       assert_receive {:gh_args, args}
       assert Enum.at(args, Enum.find_index(args, &(&1 == "--body")) + 1) == sentinel
       refute log =~ sentinel
+    end
+  end
+end
+
+defmodule ForemanServer.Workflow.AutoPREffectsTest do
+  @moduledoc """
+  The push and the PR create of `AutoPR.maybe_create_pr/1` are keyed effects
+  (TRD-013): the intent is recorded before each, a crash on either side of one is
+  reconciled by the boot sweep (a push against the remote branch, a PR create against
+  GitHub) and no second `git push` or `gh pr create` is issued for an effect that
+  already happened. Real git with a bare `origin`; `gh` is scripted
+  (`ForemanServer.TestSupport.EffectWorld`).
+  """
+
+  use ExUnit.Case, async: false
+
+  @moduletag :capture_log
+
+  alias ForemanServer.Idempotency.KeyStore
+  alias ForemanServer.Idempotency.Reconcilers.{BranchPush, PrCreate}
+  alias ForemanServer.TestSupport.{EffectWorld, KeyStoreReset}
+  alias ForemanServer.Workflow.AutoPR
+
+  @project_id "project-autopr-effects"
+
+  setup_all do
+    path =
+      Path.join(System.tmp_dir!(), "autopr-effects-project-#{System.unique_integer([:positive])}")
+
+    File.mkdir_p!(path)
+    on_exit(fn -> File.rm_rf(path) end)
+    :ok = EffectWorld.register_project!(@project_id, path)
+  end
+
+  setup do
+    KeyStoreReset.reset!()
+    on_exit(&KeyStoreReset.reset!/0)
+
+    run_id = EffectWorld.start_run!(@project_id, "autopr-effects")
+    fx = EffectWorld.fixture!("foreman/#{run_id}/implement")
+    world = EffectWorld.start()
+
+    ctx = %{
+      run_id: run_id,
+      base_branch: fx.base,
+      head_branch: fx.head,
+      cwd: fx.repo,
+      command_runner: EffectWorld.runner(world)
+    }
+
+    {:ok,
+     run_id: run_id,
+     fx: fx,
+     world: world,
+     ctx: ctx,
+     push_key: BranchPush.key(run_id, fx.head),
+     create_key: PrCreate.key(run_id, fx.head, fx.base)}
+  end
+
+  # What the run's executor does on resumption. A blocked run is cancelled by the
+  # sweep and never gets here.
+  defp resume_unless_blocked(run_id, ctx),
+    do: if(EffectWorld.status(run_id) != "blocked", do: AutoPR.maybe_create_pr(ctx))
+
+  # The commands the reconcilers issued: `git ls-remote` and `gh pr list` are asked only
+  # for the intent (before the push) and by the reconcilers.
+  defp calls(world, "git", subcommand),
+    do: for({"git", [^subcommand | _] = args, opts} <- EffectWorld.calls(world), do: {args, opts})
+
+  defp pr_list_calls(world),
+    do: for({"gh", ["pr", "list" | _] = args, opts} <- EffectWorld.calls(world), do: {args, opts})
+
+  describe "the effects run through Effect.run" do
+    test "the push intent holds both SHAs and the cwd before the push, and the key completes",
+         %{ctx: ctx, fx: fx, run_id: run_id, push_key: key} do
+      test = self()
+      world_runner = ctx.command_runner
+
+      runner = fn
+        "git", ["push" | _] = args, opts ->
+          send(test, {:key_during_push, KeyStore.get(key)})
+          world_runner.("git", args, opts)
+
+        executable, args, opts ->
+          world_runner.(executable, args, opts)
+      end
+
+      assert {:ok, _url} = AutoPR.maybe_create_pr(%{ctx | command_runner: runner})
+
+      assert_received {:key_during_push, {:ok, %{status: :started, metadata: meta}}}
+
+      assert %{
+               "run_id" => ^run_id,
+               "effect_class" => "branch_push",
+               "head_branch" => head,
+               "cwd" => cwd,
+               "pre_push_remote_sha" => nil,
+               "pushed_local_sha" => pushed
+             } = meta
+
+      assert head == fx.head
+      assert cwd == fx.repo
+      assert pushed == EffectWorld.local_tip(fx)
+      assert {:ok, %{status: :completed}} = KeyStore.get(key)
+    end
+
+    test "the push intent records the remote head as it stands", %{
+      ctx: ctx,
+      fx: fx,
+      push_key: key
+    } do
+      EffectWorld.publish!(fx)
+      old_tip = EffectWorld.local_tip(fx)
+      new_tip = EffectWorld.commit_on_head!(fx, "more.txt")
+      test = self()
+      world_runner = ctx.command_runner
+
+      runner = fn
+        "git", ["push" | _] = args, opts ->
+          send(test, {:key_during_push, KeyStore.get(key)})
+          world_runner.("git", args, opts)
+
+        executable, args, opts ->
+          world_runner.(executable, args, opts)
+      end
+
+      assert {:ok, _url} = AutoPR.maybe_create_pr(%{ctx | command_runner: runner})
+
+      assert_received {:key_during_push, {:ok, %{metadata: meta}}}
+      assert meta["pre_push_remote_sha"] == old_tip
+      assert meta["pushed_local_sha"] == new_tip
+    end
+
+    test "the PR-create intent holds the cwd, head and base before gh pr create, and the key completes",
+         %{ctx: ctx, fx: fx, run_id: run_id, create_key: key} do
+      test = self()
+      world_runner = ctx.command_runner
+
+      runner = fn
+        "gh", ["pr", "create" | _] = args, opts ->
+          send(test, {:key_during_create, KeyStore.get(key)})
+          world_runner.("gh", args, opts)
+
+        executable, args, opts ->
+          world_runner.(executable, args, opts)
+      end
+
+      assert {:ok, _url} = AutoPR.maybe_create_pr(%{ctx | command_runner: runner})
+
+      assert_received {:key_during_create, {:ok, %{status: :started, metadata: meta}}}
+
+      assert %{
+               "run_id" => ^run_id,
+               "effect_class" => "pr_create",
+               "head_branch" => head,
+               "base_branch" => base,
+               "cwd" => cwd
+             } = meta
+
+      assert {head, base, cwd} == {fx.head, fx.base, fx.repo}
+      assert {:ok, %{status: :completed}} = KeyStore.get(key)
+    end
+
+    test "a push that runs and fails keeps its error, marks its key failed and opens no PR",
+         %{ctx: ctx, world: world, push_key: push_key} do
+      world_runner = ctx.command_runner
+
+      runner = fn
+        "git", ["push" | _], _opts -> {"rejected", 1}
+        executable, args, opts -> world_runner.(executable, args, opts)
+      end
+
+      assert {:error, {:git_push_failed, 1, "rejected"}} =
+               AutoPR.maybe_create_pr(%{ctx | command_runner: runner})
+
+      assert {:ok, %{status: :failed}} = KeyStore.get(push_key)
+      assert EffectWorld.executed(world, :create) == 0
+    end
+
+    test "a PR create that runs and fails keeps its error and marks its key failed",
+         %{ctx: ctx, push_key: push_key, create_key: create_key} do
+      world_runner = ctx.command_runner
+
+      runner = fn
+        "gh", ["pr", "create" | _], _opts -> {"boom", 1}
+        executable, args, opts -> world_runner.(executable, args, opts)
+      end
+
+      assert {:error, {:gh_pr_create_failed, 1, "boom"}} =
+               AutoPR.maybe_create_pr(%{ctx | command_runner: runner})
+
+      assert {:ok, %{status: :completed}} = KeyStore.get(push_key)
+      assert {:ok, %{status: :failed}} = KeyStore.get(create_key)
+    end
+
+    test "a context with no cwd pushes nothing and opens no PR: the intent cannot be recorded",
+         %{ctx: ctx, push_key: push_key, create_key: create_key} do
+      test = self()
+
+      runner = fn executable, args, opts ->
+        send(test, {:ran, executable, args, opts})
+
+        case {executable, args} do
+          {"git", ["rev-list" | _]} -> {"1\n", 0}
+          other -> flunk("unexpected command #{inspect(other)}")
+        end
+      end
+
+      assert {:error, {:intent_not_recorded, :cwd_missing}} =
+               AutoPR.maybe_create_pr(%{Map.delete(ctx, :cwd) | command_runner: runner})
+
+      assert_received {:ran, "git", ["rev-list" | _], _}
+      refute_received {:ran, _, _, _}
+      assert :not_found = KeyStore.get(push_key)
+      assert :not_found = KeyStore.get(create_key)
+    end
+
+    test "a remote head that cannot be read means the push does not run",
+         %{ctx: ctx, fx: fx, world: world, push_key: push_key} do
+      EffectWorld.break_origin!(fx)
+
+      assert {:error, {:intent_not_recorded, {:remote_head_unreadable, _}}} =
+               AutoPR.maybe_create_pr(ctx)
+
+      assert EffectWorld.executed(world, :push) == 0
+      assert EffectWorld.executed(world, :create) == 0
+      assert :not_found = KeyStore.get(push_key)
+    end
+  end
+
+  describe "a crash on either side of the push" do
+    test "after the push reached the remote: blocked, and no second push",
+         %{ctx: ctx, fx: fx, world: world, run_id: run_id, push_key: key} do
+      EffectWorld.crash!(world, :push, :after, fn -> AutoPR.maybe_create_pr(ctx) end)
+      assert {:ok, :started} = KeyStore.status(key)
+      assert EffectWorld.remote_tip(fx) == EffectWorld.local_tip(fx)
+
+      EffectWorld.sweep(world)
+      resume_unless_blocked(run_id, ctx)
+
+      assert EffectWorld.executed(world, :push) == 1
+      assert EffectWorld.executed(world, :create) == 0
+      assert EffectWorld.status(run_id) == "blocked"
+      assert EffectWorld.block_reason(run_id) == "effect_already_done"
+      assert {:ok, :ambiguous} = KeyStore.status(key)
+
+      # The reconciler read the remote in the key's cwd.
+      assert [{_, intent_opts}, {_, reconciler_opts}] = calls(world, "git", "ls-remote")
+      assert intent_opts[:cd] == fx.repo
+      assert reconciler_opts[:cd] == fx.repo
+    end
+
+    test "before the push reached the remote: retried, and the push runs once",
+         %{ctx: ctx, fx: fx, world: world, run_id: run_id, push_key: key} do
+      EffectWorld.crash!(world, :push, :before, fn -> AutoPR.maybe_create_pr(ctx) end)
+      assert EffectWorld.remote_tip(fx) == nil
+
+      EffectWorld.sweep(world)
+
+      assert EffectWorld.status(run_id) != "blocked"
+      assert EffectWorld.recovery_outcomes(run_id) == ["effect_retried"]
+      assert {:ok, :ambiguous} = KeyStore.status(key)
+
+      assert {:ok, _url} = resume_unless_blocked(run_id, ctx)
+
+      assert EffectWorld.executed(world, :push) == 1
+      assert EffectWorld.executed(world, :create) == 1
+      assert EffectWorld.remote_tip(fx) == EffectWorld.local_tip(fx)
+      assert {:ok, :completed} = KeyStore.status(key)
+    end
+  end
+
+  describe "a crash on either side of gh pr create" do
+    test "after GitHub made the PR: blocked, and no second PR",
+         %{ctx: ctx, fx: fx, world: world, run_id: run_id, create_key: key} do
+      EffectWorld.crash!(world, :create, :after, fn -> AutoPR.maybe_create_pr(ctx) end)
+      assert {:ok, :started} = KeyStore.status(key)
+      assert EffectWorld.executed(world, :create) == 1
+
+      EffectWorld.sweep(world)
+      resume_unless_blocked(run_id, ctx)
+
+      assert EffectWorld.executed(world, :create) == 1
+      assert EffectWorld.status(run_id) == "blocked"
+      assert EffectWorld.block_reason(run_id) == "effect_already_done"
+      assert length(EffectWorld.prs(world)) == 1
+      assert {:ok, :ambiguous} = KeyStore.status(key)
+
+      # The query names the head and base, covers every state and runs in the key's cwd.
+      assert [{args, opts}] = pr_list_calls(world)
+      assert Enum.chunk_every(args, 2, 1, :discard) |> Enum.member?(["--state", "all"])
+      assert Enum.chunk_every(args, 2, 1, :discard) |> Enum.member?(["--head", fx.head])
+      assert Enum.chunk_every(args, 2, 1, :discard) |> Enum.member?(["--base", fx.base])
+      assert opts[:cd] == fx.repo
+    end
+
+    test "after GitHub made the PR and it was merged before recovery ran: still blocked, no second PR",
+         %{ctx: ctx, world: world, run_id: run_id} do
+      EffectWorld.crash!(world, :create, :after, fn -> AutoPR.maybe_create_pr(ctx) end)
+      EffectWorld.merge_prs!(world)
+
+      EffectWorld.sweep(world)
+      resume_unless_blocked(run_id, ctx)
+
+      assert EffectWorld.executed(world, :create) == 1
+      assert EffectWorld.status(run_id) == "blocked"
+      assert EffectWorld.block_reason(run_id) == "effect_already_done"
+    end
+
+    test "before gh pr create ran: retried, and the PR is created once",
+         %{ctx: ctx, world: world, run_id: run_id, create_key: key} do
+      EffectWorld.crash!(world, :create, :before, fn -> AutoPR.maybe_create_pr(ctx) end)
+      assert EffectWorld.executed(world, :create) == 0
+      assert EffectWorld.prs(world) == []
+
+      EffectWorld.sweep(world)
+
+      assert EffectWorld.status(run_id) != "blocked"
+      assert EffectWorld.recovery_outcomes(run_id) == ["effect_retried"]
+
+      assert {:ok, url} = resume_unless_blocked(run_id, ctx)
+
+      assert [%{"url" => ^url}] = EffectWorld.prs(world)
+      assert EffectWorld.executed(world, :create) == 1
+      assert {:ok, :completed} = KeyStore.status(key)
+    end
+
+    test "a GitHub that cannot be queried blocks the run as ambiguous and creates nothing more",
+         %{ctx: ctx, world: world, run_id: run_id, create_key: key} do
+      EffectWorld.crash!(world, :create, :after, fn -> AutoPR.maybe_create_pr(ctx) end)
+      EffectWorld.fail_gh_list!(world)
+
+      EffectWorld.sweep(world)
+      resume_unless_blocked(run_id, ctx)
+
+      assert EffectWorld.executed(world, :create) == 1
+      assert EffectWorld.status(run_id) == "blocked"
+      assert EffectWorld.block_reason(run_id) == "effect_outcome_ambiguous"
+      assert {:ok, :ambiguous} = KeyStore.status(key)
     end
   end
 end

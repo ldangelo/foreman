@@ -163,8 +163,12 @@ defmodule ForemanServer.Workflow.RunExecutorMultiRepoPrTest do
       touch!(ctx, "b")
       git!(ctx.repos["b"], ["remote", "set-url", "origin", "/nonexistent/origin.git"])
 
-      assert [{"main", {:ok, a_url}}, {"b", {:error, {:git_push_failed, _, _}}}] =
+      # An origin that cannot be read means the push's intent (the remote head, TRD-013) cannot
+      # be recorded: the push does not run, and the error says why.
+      assert [{"main", {:ok, a_url}}, {"b", {:error, {:intent_not_recorded, reason}}}] =
                RunExecutor.__finalize_repo_prs_for_test__(ctx.state)
+
+      assert {:remote_head_unreadable, _} = reason
 
       assert [%{repo_id: "main", pr_url: ^a_url}] =
                ProjectionStore.pr_associations_for_run(ctx.run_id)
