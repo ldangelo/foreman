@@ -21,19 +21,26 @@ defmodule ForemanServer.Workflow.RunResumeBoundariesTest do
   use ExUnit.Case, async: false
 
   alias ForemanServer.{CommandGateway, Identity, ProjectionStore}
+  import ExUnit.CaptureLog
+
   alias ForemanServer.TestSupport.CoordinatorHelpers, as: H
   alias ForemanServer.TestSupport.{DispatcherRestart, RunDrain, RunSlotsReset, UniqueIds}
-  alias ForemanServer.Workflow.Dispatcher
+  alias ForemanServer.TestSupport.MeckScope
+  alias ForemanServer.Workflow.{Dispatcher, RunSupervisor}
 
   @dispatcher Dispatcher
   @app_supervisor ForemanServer.Application
   @barrier_timeout_ms 30_000
 
-  setup do
+  setup_all do
+    MeckScope.new_once!([RunSupervisor])
+  end
+
+  setup context do
     previous = Application.fetch_env(:foreman_server, :max_concurrent_runs)
     # The tests start several runs and the restarts re-admit all of them: a free slot is the
-    # test's own to guarantee, not the default capacity's.
-    Application.put_env(:foreman_server, :max_concurrent_runs, 50)
+    # test's own to guarantee, not the default capacity's (`@tag capacity: n` narrows it).
+    Application.put_env(:foreman_server, :max_concurrent_runs, Map.get(context, :capacity, 50))
 
     on_exit(fn ->
       case previous do
@@ -48,17 +55,19 @@ defmodule ForemanServer.Workflow.RunResumeBoundariesTest do
     on_exit(&DispatcherRestart.restart!/0)
     RunSlotsReset.reset!()
 
-    :meck.new(ForemanServer.Workflow.RunSupervisor, [:no_link])
+    # Both arities are recorded: a run promoted from the slot queue is started with
+    # `start_run/2`, a dispatched or resumed one with `start_run/3`.
+    MeckScope.restore_on_exit!([RunSupervisor])
     test = self()
 
-    :meck.expect(ForemanServer.Workflow.RunSupervisor, :start_run, fn run_id, _task, opts ->
+    :meck.expect(RunSupervisor, :start_run, fn run_id, _task, opts ->
       send(test, {:run_supervisor_start, run_id, opts})
       {:ok, :child}
     end)
 
-    on_exit(fn ->
-      if :meck.validate(ForemanServer.Workflow.RunSupervisor),
-        do: :meck.unload(ForemanServer.Workflow.RunSupervisor)
+    :meck.expect(RunSupervisor, :start_run, fn run_id, _task ->
+      send(test, {:run_supervisor_start, run_id, []})
+      {:ok, :child}
     end)
 
     H.subscribe!()
@@ -89,7 +98,8 @@ defmodule ForemanServer.Workflow.RunResumeBoundariesTest do
   end
 
   describe "boundary 2: after PhaseStarted, before PhaseCompleted" do
-    test "the in-flight phase restarts and no earlier phase does", %{project: project} do
+    test "the in-flight phase restarts at its own index and its rebuilt record keeps attempt 2",
+         %{project: project} do
       %{run_id: run_id} = submit!(project)
       complete_phase!(run_id, 1)
       start_phase!(run_id, 2)
@@ -225,6 +235,65 @@ defmodule ForemanServer.Workflow.RunResumeBoundariesTest do
     end
   end
 
+  describe "a resumed run that waits for a run slot" do
+    # One slot: the second run holds it while the first, resumed after its pause, waits.
+    @tag capacity: 1
+    test "is started from its first unfinished phase when the slot frees", %{project: project} do
+      %{run_id: waiting_id} = submit!(project)
+      complete_phase!(waiting_id, 1)
+      pause!(waiting_id)
+      %{run_id: holder_id} = submit!(project)
+
+      resume!(waiting_id)
+      _ = :sys.get_state(@dispatcher, @barrier_timeout_ms)
+      refute_receive {:run_supervisor_start, ^waiting_id, _}, 300
+
+      cancel!(holder_id)
+
+      assert_receive {:run_supervisor_start, ^waiting_id, opts}, 10_000
+      assert opts == [resume_from: 1]
+    end
+  end
+
+  describe "the resume path does not fail quietly" do
+    test "a RunResumed for a run the projection does not know starts nothing and warns" do
+      run_id = UniqueIds.unique_run_id("unknown")
+      envelope = %{event_type: "RunResumed", data: %{run_id: run_id}}
+
+      log =
+        capture_log([level: :warning], fn ->
+          assert {:noreply, %{}} =
+                   Dispatcher.handle_info({:projection_event, envelope}, %{})
+        end)
+
+      assert log =~ "#{run_id}, which the projection does not know"
+      refute_received {:run_supervisor_start, ^run_id, _}
+    end
+
+    test "an executor that cannot be started for a resumed run is logged", %{project: project} do
+      %{run_id: run_id} = submit!(project)
+      complete_phase!(run_id, 1)
+      pause!(run_id)
+
+      test = self()
+
+      :meck.expect(RunSupervisor, :start_run, fn run_id, _task, opts ->
+        send(test, {:run_supervisor_start, run_id, opts})
+        {:error, :max_children}
+      end)
+
+      log =
+        capture_log([level: :warning], fn ->
+          resume!(run_id)
+          assert_receive {:run_supervisor_start, ^run_id, [resume_from: 1]}, 10_000
+          _ = :sys.get_state(@dispatcher, @barrier_timeout_ms)
+        end)
+
+      assert log =~ "could not start the executor of resumed run #{run_id}"
+      assert log =~ ":max_children"
+    end
+  end
+
   # -- service restart ----------------------------------------------------------------------
 
   # Stop the executors and the Dispatcher, rebuild the read model from the event log as boot
@@ -251,11 +320,10 @@ defmodule ForemanServer.Workflow.RunResumeBoundariesTest do
     end
   end
 
-  # Every `RunSupervisor.start_run/3` option list recorded for `run_id` since the restart.
-  defp starts(run_id) do
-    Process.sleep(200)
-    collect_starts(run_id, [])
-  end
+  # Every `RunSupervisor` start option list recorded for `run_id` since the restart. Handlers run
+  # inline in the Dispatcher and `restart_service!/0` returns only after it has handled the whole
+  # replay, so every start is already in the mailbox.
+  defp starts(run_id), do: collect_starts(run_id, [])
 
   defp collect_starts(run_id, acc) do
     receive do
