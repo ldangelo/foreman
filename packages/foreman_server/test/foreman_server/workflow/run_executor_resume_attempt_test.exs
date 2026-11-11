@@ -124,6 +124,23 @@ defmodule ForemanServer.Workflow.RunExecutorResumeAttemptTest do
     end
   end
 
+  describe "a worktree record git cannot prune" do
+    test "is its own error, not :resume_context_unresolvable, and keeps its payload", ctx do
+      start_phase!(ctx)
+      seed_worktree!(ctx)
+      # The directory is gone and `ctx.repo` is not a git repository, so `git worktree prune`
+      # fails there.
+      File.rm_rf!(worktree_dir(ctx))
+
+      assert {:error, {:resume_worktree_prune_failed, repo_path, code, output}} =
+               RunExecutor.__resume_prelude_for_test__(state(ctx))
+
+      assert repo_path == ctx.repo
+      assert is_integer(code) and code != 0
+      assert output =~ "not a git repository"
+    end
+  end
+
   describe "resume of a phase that is not in flight" do
     test "dispatches no phase.retry when the phase never started", ctx do
       seed_run!(ctx)

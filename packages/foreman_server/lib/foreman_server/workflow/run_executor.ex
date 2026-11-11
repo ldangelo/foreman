@@ -468,6 +468,19 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
         finalize_terminal_and_stop(state, {:resume_context_unresolvable, reason})
 
+      {:error, {:resume_worktree_prune_failed, repo_path, code, output} = reason} ->
+        Logger.error(
+          "RunExecutor #{state.run_id} could not prune the worktree record in #{repo_path} " <>
+            "(exit #{code}): #{output}",
+          run_id: state.run_id,
+          task_id: task_id(state),
+          operation: "run_executor.resume",
+          outcome: "error",
+          reason: inspect(reason)
+        )
+
+        finalize_terminal_and_stop(state, reason)
+
       {:error, {:resume_attempt_not_recorded, reason}} ->
         Logger.error(
           "RunExecutor #{state.run_id} could not record the resumed attempt: #{inspect(reason)}",
@@ -496,6 +509,9 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
   end
 
+  # A prune failure has its own tag: `:resume_context_unresolvable` means the
+  # run's base could not be resolved (AC-002-3).
+  defp tag_error({:error, {:resume_worktree_prune_failed, _, _, _}} = error, _tag), do: error
   defp tag_error({:error, reason}, tag), do: {:error, {tag, reason}}
   defp tag_error(other, _tag), do: other
 
@@ -917,7 +933,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
         {:ok, Map.put(state, :prior_worktree_discarded, %{name: name, path: entry.worktree_path})}
 
       {output, code} ->
-        {:error, {:worktree_prune_failed, entry.repo_path, code, output}}
+        {:error, {:resume_worktree_prune_failed, entry.repo_path, code, output}}
     end
   end
 
