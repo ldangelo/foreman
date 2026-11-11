@@ -56,6 +56,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
   alias ForemanServer.Workflow.ModelResolution
   alias ForemanServer.Jobsite.Context, as: JobsiteContext
   alias ForemanServer.Jobsite.ExecutionProfile
+  alias ForemanServer.Jobsite.NetworkPolicy
+  alias ForemanServer.ProjectEnvironment
   alias ForemanServer.Jobsite.Engine, as: JobsiteEngine
   alias ForemanServer.Jobsite.Git, as: JobsiteGit
   alias ForemanServer.Jobsite.Error, as: JobsiteError
@@ -437,6 +439,44 @@ defmodule ForemanServer.Workflow.RunExecutor do
   end
 
   defp kickoff_preflight(state) do
+    case preflight_network_isolation(state) do
+      {:error, reason} ->
+        # The host workflow door cannot enforce `environment.network`. The
+        # run ends here, before the task claim, the worktree and any phase.
+        Logger.warning(
+          "RunExecutor #{state.run_id} refused: #{inspect(reason)}",
+          run_id: state.run_id,
+          task_id: task_id(state),
+          operation: "run_executor.network_isolation_preflight",
+          outcome: "error",
+          reason: inspect(reason)
+        )
+
+        _ = dispatch_task_execution_fail(state, reason)
+        finalize_terminal_and_stop(state, reason)
+
+      :ok ->
+        kickoff_provider_preflight(state)
+    end
+  end
+
+  # Every RunExecutor launch is a host workflow launch
+  # (`ExecutionProfile.host_backend/0`). A project with no `environment.network`
+  # policy reads as the default policy and proceeds. Applies to a resumed run
+  # too: a policy that cannot be honoured is refused whenever the run starts
+  # executing, not only on its first start.
+  defp preflight_network_isolation(state) do
+    case project_id(state) do
+      id when is_binary(id) and id != "" ->
+        policy = id |> ProjectEnvironment.environment() |> Map.fetch!("network")
+        NetworkPolicy.check_backend(policy, ExecutionProfile.host_backend())
+
+      _no_project ->
+        :ok
+    end
+  end
+
+  defp kickoff_provider_preflight(state) do
     case preflight_providers_and_models(state) do
       {:error, failures} ->
         # `PreflightFailure.summarize/1` renders one clause per refusal as

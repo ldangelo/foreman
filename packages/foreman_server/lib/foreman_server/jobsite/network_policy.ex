@@ -83,6 +83,25 @@ defmodule ForemanServer.Jobsite.NetworkPolicy do
   def network_enforced_on, do: [ExecutionProfile.docker_backend()]
 
   @doc """
+  Whether `backend` can honour the project's `environment.network` `policy`:
+  `:ok` for the default (or absent) policy on any backend, and for any policy on
+  a backend in `network_enforced_on/0`. A non-default policy on a backend that
+  cannot enforce it (the host workflow door) is refused as
+  `{:isolation_unsupported, :network, backend}`: a policy that silently does
+  nothing is worse than an error. A mode this module does not know is
+  non-default, so it is refused, never waved through.
+  """
+  @spec check_backend(policy(), ExecutionProfile.backend()) ::
+          :ok | {:error, {:isolation_unsupported, :network, ExecutionProfile.backend()}}
+  def check_backend(policy, backend) do
+    if mode(policy) == "default" or backend in network_enforced_on() do
+      :ok
+    else
+      {:error, {:isolation_unsupported, :network, backend}}
+    end
+  end
+
+  @doc """
   Apply `policy` (the project's `environment.network` map) to the sandbox
   `provider`/`config` of jobsite `jobsite_id`. Returns the config to create the
   sandbox with (`:network`, the proxy variables in `:env` for an allowlist, and
