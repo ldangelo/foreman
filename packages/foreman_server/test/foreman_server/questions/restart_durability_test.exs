@@ -5,7 +5,9 @@ defmodule ForemanServer.Questions.RestartDurabilityTest do
   A "restart" here is what a server restart does to the question state, with nothing mocked:
   every aggregate actor involved is killed (the next command rehydrates it from the event
   stream), the read model is wiped and rebuilt from the committed event log
-  (`ProjectionStore.rebuild/1`), and the answer deliverer is replaced by a fresh process.
+  (`ProjectionStore.rebuild/1`). No `Questions.Deliverer` runs by default in the test
+  environment (`start_children` is false), so the tests that need one start a fresh one after
+  the restart.
   What it does not do is restart the BEAM or the Postgres event store: the event log is the one
   thing that is carried over, as it is in production.
 
@@ -69,20 +71,26 @@ defmodule ForemanServer.Questions.RestartDurabilityTest do
 
     assert {:ok, again} = answer(run_id, question_id, "use postgres", command_id)
     assert Actor.replayed?(again)
-    assert field(again, :event_type) == "QuestionAnswered"
-    assert field(field(again, :payload), :text) == "use postgres"
-    assert field(field(again, :payload), :at) == field(field(first, :payload), :at)
+    # Actor replies are event specs with string keys.
+    assert again["event_type"] == "QuestionAnswered"
+    assert again["payload"]["text"] == "use postgres"
+    assert again["payload"]["at"] == first["payload"]["at"]
 
     assert ["QuestionOpened", "QuestionAnswered"] = event_types(stream)
   end
 
   test "a different command_id on an answered question is refused as not open, and records nothing" do
     {project_id, run_id} = start_run!()
+    pause!(run_id)
     question_id = open_question!(run_id, project_id)
     stream = question_stream(run_id, question_id)
 
+    deliverer = start_deliverer!()
     assert {:ok, _} = answer(run_id, question_id, "use postgres", "answer:" <> question_id)
+    await("RunResumed", run_id, &(field(&1, :reason) == "question_answered"))
 
+    # The delivery has returned (the run actor is no longer mid-call) before the restart.
+    _ = :sys.get_state(deliverer)
     restart!([stream, "run:" <> run_id])
 
     assert {:error, {:question_not_open, "answered"}} =
@@ -90,6 +98,9 @@ defmodule ForemanServer.Questions.RestartDurabilityTest do
 
     assert ["QuestionOpened", "QuestionAnswered"] = event_types(stream)
     assert [%{text: "use postgres"}] = answered_events(stream)
+
+    # The run resumed once, for the first answer; the refused one resumed nothing more.
+    assert [_once] = resumed_by_answer(run_id)
   end
 
   test "of two runs holding an open question across a restart, answering one resumes only that run, once" do
@@ -107,14 +118,14 @@ defmodule ForemanServer.Questions.RestartDurabilityTest do
       "run:" <> run_b
     ])
 
-    start_supervised!(
-      {Deliverer, name: :"restart_durability_deliverer_#{System.unique_integer([:positive])}"}
-    )
+    deliverer = start_deliverer!()
 
     assert {:ok, _} = answer(run_a, question_a, "use postgres", "answer:" <> question_a)
     await("RunResumed", run_a, &(field(&1, :reason) == "question_answered"))
 
-    # The delivery is complete and nothing else was resumed.
+    # The projection message was queued to the deliverer before `answer/4` returned, so this
+    # drains it: nothing the deliverer would do for run_b can still be pending.
+    _ = :sys.get_state(deliverer)
     assert [_once] = resumed_by_answer(run_a)
     assert [] = run_events(run_b, "RunResumed")
     assert [] = run_events(run_b, "RunSteerQueued")
@@ -131,8 +142,8 @@ defmodule ForemanServer.Questions.RestartDurabilityTest do
   # die (the next command replays them from the event log), the read model is wiped and then
   # rebuilt from the committed log, exactly as `ProjectionStore.init/1` does at boot.
   defp restart!(streams) do
-    for stream <- streams,
-        [{pid, _}] <- [Registry.lookup(ForemanServer.AggregateRegistry, stream)] do
+    for stream <- streams do
+      [{pid, _}] = Registry.lookup(ForemanServer.AggregateRegistry, stream)
       ref = Process.monitor(pid)
       Process.exit(pid, :kill)
       assert_receive {:DOWN, ^ref, :process, ^pid, _}, 5_000
@@ -140,6 +151,11 @@ defmodule ForemanServer.Questions.RestartDurabilityTest do
 
     :ok = ProjectionStoreReset.reset!(keep_subscribers: true)
     :ok = ProjectionStore.rebuild([])
+  end
+
+  defp start_deliverer! do
+    name = :"restart_durability_deliverer_#{System.unique_integer([:positive])}"
+    start_supervised!({Deliverer, name: name})
   end
 
   defp start_run! do
@@ -230,9 +246,10 @@ defmodule ForemanServer.Questions.RestartDurabilityTest do
     do:
       Enum.filter(run_events(run_id, "RunResumed"), &(field(&1, :reason) == "question_answered"))
 
+  # Stored and projected event data is atom-keyed (possibly a struct).
   defp field(data, key) do
     data = if is_struct(data), do: Map.from_struct(data), else: data
-    Map.get(data, key, Map.get(data, to_string(key)))
+    Map.fetch!(data, key)
   end
 
   defp await(type, run_id, match \\ fn _data -> true end) do
