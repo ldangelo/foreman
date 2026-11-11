@@ -348,6 +348,42 @@ defmodule ForemanServer.Aggregates.RunSlotsTest do
     end
   end
 
+  describe "replayed events (Aggregate.load/2's RecordedEvent shape) take the run's recovery entry" do
+    setup do
+      base =
+        RunSlots.initial_state()
+        |> apply_acquired("run-1", 1, 100)
+        |> apply_queued("run-2", 1, 200)
+        |> apply_queued("run-3", 2, 201)
+        |> apply_recovery("run-1", "failed", 1, "slot_release", nil, 1)
+        |> apply_recovery("run-2", "failed", 2, "waiter_remove", nil, 2)
+        |> apply_recovery("run-3", "failed", 3, "waiter_remove", nil, 3)
+
+      %{base: base}
+    end
+
+    test "RunSlotReleased", %{base: base} do
+      next = replay(base, "RunSlotReleased", %{"run_id" => "run-1"})
+      assert Map.keys(next.recovery) |> Enum.sort() == ["run-2", "run-3"]
+    end
+
+    test "RunSlotWaiterRemoved", %{base: base} do
+      next = replay(base, "RunSlotWaiterRemoved", %{"run_id" => "run-3"})
+      assert Map.keys(next.recovery) |> Enum.sort() == ["run-1", "run-2"]
+    end
+
+    test "RunSlotTransferred takes both the released and the acquired run's entry", %{base: base} do
+      next =
+        replay(base, "RunSlotTransferred", %{
+          "released_run_id" => "run-1",
+          "acquired_run_id" => "run-2",
+          "acquired_at_ms" => 300
+        })
+
+      assert Map.keys(next.recovery) == ["run-3"]
+    end
+  end
+
   describe "handle_command — run_slots.recovery_attempt" do
     setup do
       %{
@@ -413,6 +449,10 @@ defmodule ForemanServer.Aggregates.RunSlotsTest do
   # ---------------------------------------------------------------------------
   # Helpers
   # ---------------------------------------------------------------------------
+
+  defp replay(state, event_type, data) do
+    RunSlots.apply_event(state, %EventStore.RecordedEvent{event_type: event_type, data: data})
+  end
 
   defp recovery_command(state, overrides) do
     payload =
