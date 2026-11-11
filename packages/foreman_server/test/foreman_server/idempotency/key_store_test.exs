@@ -139,4 +139,39 @@ defmodule ForemanServer.Idempotency.KeyStoreTest do
       assert {:ok, :started} = KeyStore.status(key)
     end
   end
+
+  describe "effect_key?/1 (TRD-011)" do
+    test "is true for an effect key" do
+      assert KeyStore.effect_key?("effect:branch_push:run-1:feature/x")
+      assert KeyStore.effect_key?("effect:task_provider:run-1:claim:issue-9")
+    end
+
+    test "is false for an agent-phase key, an empty string and a mid-string effect:" do
+      refute KeyStore.effect_key?("phase:run-1:implement")
+      refute KeyStore.effect_key?("")
+      refute KeyStore.effect_key?("phase:effect:run-1")
+      refute KeyStore.effect_key?("x-effect:branch_push:run-1:y")
+      refute KeyStore.effect_key?("Effect:branch_push:run-1:y")
+    end
+
+    test "is false for a non-binary" do
+      refute KeyStore.effect_key?(nil)
+      refute KeyStore.effect_key?(:"effect:x")
+    end
+  end
+
+  describe "fallback merge keeps its current shape" do
+    setup do
+      Application.put_env(:foreman_server, ForemanServer.Agents.JidoCheckpointStore, [])
+      ForemanServer.TestSupport.KeyStoreReset.reset!()
+    end
+
+    test "a status change merges the new fields into the ETS copy" do
+      :ok = KeyStore.mark_started("phase:r9:p1", %{run_id: "r9", cwd: "/w"})
+      :ok = KeyStore.mark_ambiguous("phase:r9:p1", "timeout")
+
+      assert {:ok, %{status: :ambiguous, metadata: %{run_id: "r9", cwd: "/w", reason: "timeout"}}} =
+               KeyStore.get("phase:r9:p1")
+    end
+  end
 end
