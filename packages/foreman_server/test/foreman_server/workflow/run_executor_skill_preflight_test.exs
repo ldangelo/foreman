@@ -308,13 +308,14 @@ defmodule ForemanServer.Workflow.RunExecutorSkillPreflightTest do
                ProjectionStore.phases_for_run(w.run_id)
     end
 
-    test "in the project's checkout alone: the run proceeds" do
-      w = world("available-project", [command_phase(:write_prd, "/skill:project-skill")], false)
-      install_skill!(w.repo, "project-skill")
+    test "under the project's .pi/agent/skills is not where pi looks: the skill is missing" do
+      # pi's project skill directory is `<project>/.pi/skills`; `.pi/agent/skills`
+      # is the USER agent directory's layout and only counts under the home.
+      w = world("wrong-project-dir", [command_phase(:write_prd, "/skill:wrong-dir-skill")])
+      install_skill!(w.repo, "wrong-dir-skill")
       start_executor!(w)
 
-      await_completed!(w)
-      assert {:claim, w.task_id} in FakeTaskProvider.calls(w.db)
+      assert_refused!(w)
     end
 
     test "a phase naming no skill is not touched by the skill preflight" do
@@ -352,6 +353,100 @@ defmodule ForemanServer.Workflow.RunExecutorSkillPreflightTest do
       assert is_binary(reason) and reason != ""
       assert by_name["skill_phase"].execution_profile.backend == "host_workflow"
       refute Map.has_key?(by_name["plain_phase"].execution_profile, :skill)
+    end
+
+    test "a skill found only in the project's own skill directory is unverifiable, not available" do
+      w = world("project-only", [command_phase(:write_prd, "/skill:project-only-skill")], false)
+      install_project_skill!(w.repo, "project-only-skill")
+      start_executor!(w)
+
+      # pi decides project trust at run time, for a worktree that does not exist
+      # at admission: the preflight can neither refuse nor promise the skill.
+      await_completed!(w)
+      assert {:claim, w.task_id} in FakeTaskProvider.calls(w.db)
+
+      assert [%{execution_profile: %{skill: %{state: "unverifiable"}}}] =
+               ProjectionStore.phases_for_run(w.run_id)
+    end
+
+    test "is logged once per unverifiable phase, with the run, phase, skill, provider and backend" do
+      w =
+        world(
+          "unverifiable-log",
+          [
+            command_phase(:first, "/skill:claude-one", provider: :claude),
+            command_phase(:second, "/skill:claude-two", provider: :claude),
+            command_phase(:third, "echo plain")
+          ],
+          false
+        )
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          start_executor!(w)
+          await_completed!(w)
+        end)
+
+      warnings = for line <- String.split(log, "\n"), line =~ "could not verify skill", do: line
+      assert length(warnings) == 2
+
+      for {phase, skill} <- [{":first", "claude-one"}, {":second", "claude-two"}] do
+        assert Enum.any?(warnings, fn line ->
+                 line =~ w.run_id and line =~ ~s(skill "#{skill}") and
+                   line =~ "phase #{phase}" and line =~ "provider :claude" and
+                   line =~ ":host_workflow"
+               end),
+               "no warning for #{phase}/#{skill} in #{inspect(warnings)}"
+      end
+    end
+  end
+
+  describe "the agent directory the launch will use" do
+    test "a project environment that sets PI_CODING_AGENT_DIR decides where the skill is looked up",
+         %{skill_home: home} do
+      # The skill is in the server user's agent dir but not in the one the
+      # project's environment points pi at: the launch cannot load it.
+      install_skill!(home, "launch-dir-skill")
+
+      launch_dir =
+        Path.join(System.tmp_dir!(), "launch-agent-dir-#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(launch_dir)
+      on_exit(fn -> File.rm_rf(launch_dir) end)
+
+      w =
+        world("launch-dir-missing", [command_phase(:write_prd, "/skill:launch-dir-skill")], true,
+          vars: %{"PI_CODING_AGENT_DIR" => launch_dir}
+        )
+
+      start_executor!(w)
+      run = assert_refused!(w)
+
+      assert_failure!(run.failure_reason, :skill_not_found,
+        skill: "launch-dir-skill",
+        backend: ExecutionProfile.host_backend()
+      )
+    end
+
+    test "a skill in the agent dir the project's environment names is available", %{
+      skill_home: _home
+    } do
+      launch_dir =
+        Path.join(System.tmp_dir!(), "launch-agent-dir-#{System.unique_integer([:positive])}")
+
+      install_agent_dir_skill!(launch_dir, "only-in-launch-dir")
+      on_exit(fn -> File.rm_rf(launch_dir) end)
+
+      w =
+        world("launch-dir-found", [command_phase(:write_prd, "/skill:only-in-launch-dir")], false,
+          vars: %{"PI_CODING_AGENT_DIR" => launch_dir}
+        )
+
+      start_executor!(w)
+      await_completed!(w)
+
+      assert [%{execution_profile: %{skill: %{state: "available"}}}] =
+               ProjectionStore.phases_for_run(w.run_id)
     end
   end
 
@@ -478,10 +573,25 @@ defmodule ForemanServer.Workflow.RunExecutorSkillPreflightTest do
     Application.put_env(:foreman_server, :skill_preflight_test_installed, Map.new(installed))
   end
 
+  # A skill pi loads: it needs a frontmatter `description`. `root` is a pi agent
+  # directory's home (`<root>/.pi/agent/skills/<name>`).
   defp install_skill!(root, name) do
-    dir = Path.join([root, ".pi", "agent", "skills", name])
+    write_skill!(Path.join([root, ".pi", "agent", "skills", name]), name)
+  end
+
+  # The same skill in a pi agent directory itself (`<agent_dir>/skills/<name>`).
+  defp install_agent_dir_skill!(agent_dir, name) do
+    write_skill!(Path.join([agent_dir, "skills", name]), name)
+  end
+
+  # A project-scoped skill: pi's project directory is `<project>/.pi/skills`.
+  defp install_project_skill!(project_root, name) do
+    write_skill!(Path.join([project_root, ".pi", "skills", name]), name)
+  end
+
+  defp write_skill!(dir, name) do
     File.mkdir_p!(dir)
-    File.write!(Path.join(dir, "SKILL.md"), "# #{name}\n")
+    File.write!(Path.join(dir, "SKILL.md"), "---\nname: #{name}\ndescription: test skill\n---\n")
   end
 
   defp await_completed!(w) do
@@ -498,11 +608,27 @@ defmodule ForemanServer.Workflow.RunExecutorSkillPreflightTest do
   # admitted run whose phases are `phases`. `worktree?: false` lets the
   # proceeding runs skip the checkout; the refused ones keep the default-on
   # worktree, so "no worktree" is a real absence.
-  defp world(label, phases, worktree? \\ true) do
+  defp world(label, phases, worktree? \\ true, opts \\ []) do
     project_id = "project-skill-#{label}-#{System.unique_integer([:positive])}"
     db = "/abs/skill-preflight/#{project_id}.db"
     repo = init_repo!(project_id)
     register_project!(project_id, db, repo)
+
+    # The project's environment record: what the launch's environment gets
+    # overlaid with (`vars` such as `PI_CODING_AGENT_DIR`).
+    if vars = opts[:vars] do
+      dispatch_system!("project.environment.set", "project:#{project_id}", %{
+        project_id: project_id,
+        vars: vars
+      })
+
+      await(fn ->
+        case ForemanServer.ProjectEnvironment.environment(project_id)["vars"] do
+          ^vars -> {:ok, vars}
+          other -> {:waiting, other}
+        end
+      end)
+    end
 
     task_id = "task-skill-#{label}-#{System.unique_integer([:positive])}"
     run_id = UniqueIds.unique_run_id("skill-#{label}")

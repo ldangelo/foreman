@@ -1301,6 +1301,21 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
     head_sha = run_git!(["-C", repo_dir, "rev-parse", "HEAD"]) |> String.trim()
     on_exit(fn -> File.rm_rf(repo_dir) end)
 
+    # The project is registered at the tmp dir, so pi's project skill directory
+    # for it is `<tmp>/.pi/skills`. The name is built at run time so the suite's
+    # skill seeding (which scans test sources for `/skill:<name>`) does not also
+    # put it in the default home, where it would be `:available`.
+    resume_skill = "resume-project-only-#{System.unique_integer([:positive])}"
+    resume_skill_dir = Path.join([System.tmp_dir!(), ".pi", "skills", resume_skill])
+    File.mkdir_p!(resume_skill_dir)
+
+    File.write!(
+      Path.join(resume_skill_dir, "SKILL.md"),
+      "---\nname: #{resume_skill}\ndescription: test skill\n---\n"
+    )
+
+    on_exit(fn -> File.rm_rf(resume_skill_dir) end)
+
     phase = fn index, command ->
       %{
         name: String.to_atom("resume_phase_#{index}"),
@@ -1327,7 +1342,7 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
       worktree: %{enabled: true, path: "implement-trd-beads", cleanup: "always"},
       phases: [
         phase.(1, "/skill:resume-phase-one --foreman"),
-        phase.(2, "/skill:resume-phase-two --foreman")
+        phase.(2, "/skill:#{resume_skill} --foreman")
       ]
     }
 
@@ -1362,7 +1377,7 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
     assert is_pid(run_pid)
 
     assert_receive {:adapter_execute, prompt, context}, @poll_timeout_ms
-    assert prompt =~ "resume-phase-two"
+    assert prompt =~ resume_skill
     assert context["script_key"] == "#{script_key}-2"
 
     assert {:ok, %{status: "completed"}} =
@@ -1375,6 +1390,13 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
                end,
                "resumed phase 2 completed"
              )
+
+    # The skill preflight runs again at the resumed kickoff for the phases still
+    # to run, so the phase it launches carries the verdict: the skill is only in
+    # the project's own skill directory (project-scoped), which pi trusts at run
+    # time, so it is unverifiable.
+    assert %{execution_profile: %{skill: %{state: "unverifiable"}}} =
+             ProjectionStore.phase_projection(Identity.phase_id(run_id, 2))
 
     # Phase 1 belongs to the attempt before the resume: this run never started it.
     assert ProjectionStore.phase_projection(Identity.phase_id(run_id, 1)) == nil
