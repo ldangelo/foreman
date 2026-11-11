@@ -12,6 +12,9 @@ defmodule ForemanServer.Idempotency.Reconciler do
     * `:unknown` - it could not be established (unreachable provider, an answer
       that is neither of the two).
 
+  The metadata handed to `reconcile/1` is string-keyed: `BootReconciliation`
+  normalises what `KeyStore.get/1` returns once, before the registry sees it.
+
   `verdict/3` is fail-closed: a class with no reconciler, a reconciler that
   returns anything but the three atoms, and one that raises, throws or exits all
   produce `:unknown` / `:unregistered`, never `:not_done`.
@@ -61,20 +64,20 @@ defmodule ForemanServer.Idempotency.Reconciler do
     end
   end
 
-  @doc "The class name stored in a key's metadata, or `nil`."
+  @doc "The class name in a key's string-keyed metadata, or `nil`."
   @spec class_of(map()) :: String.t() | nil
-  def class_of(metadata), do: binary_field(metadata, "effect_class", :effect_class)
+  def class_of(metadata), do: binary_field(metadata, "effect_class")
 
-  @doc "The run id stored in a key's metadata, or `nil`."
+  @doc "The run id in a key's string-keyed metadata, or `nil`."
   @spec run_id_of(map()) :: String.t() | nil
-  def run_id_of(metadata), do: binary_field(metadata, "run_id", :run_id)
+  def run_id_of(metadata), do: binary_field(metadata, "run_id")
 
-  defp binary_field(metadata, name, atom_name) when is_map(metadata) do
-    value = Map.get(metadata, name) || Map.get(metadata, atom_name)
+  defp binary_field(metadata, name) when is_map(metadata) do
+    value = Map.get(metadata, name)
     if is_binary(value) and value != "", do: value, else: nil
   end
 
-  defp binary_field(_metadata, _name, _atom_name), do: nil
+  defp binary_field(_metadata, _name), do: nil
 
   defp run(module, class, metadata) do
     case module.reconcile(metadata) do

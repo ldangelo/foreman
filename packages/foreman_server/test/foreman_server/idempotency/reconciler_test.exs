@@ -84,11 +84,11 @@ defmodule ForemanServer.Idempotency.ReconcilerTest do
   end
 
   describe "metadata accessors" do
-    test "read the string keys a restart leaves and the atom keys the ETS path can hold" do
+    test "read string keys only: normalising is the caller's single step" do
       assert Reconciler.class_of(%{"effect_class" => "pr_create"}) == "pr_create"
-      assert Reconciler.class_of(%{effect_class: "pr_create"}) == "pr_create"
       assert Reconciler.run_id_of(%{"run_id" => "run-1"}) == "run-1"
-      assert Reconciler.run_id_of(%{run_id: "run-1"}) == "run-1"
+      assert Reconciler.class_of(%{effect_class: "pr_create"}) == nil
+      assert Reconciler.run_id_of(%{run_id: "run-1"}) == nil
     end
 
     test "a missing or empty field is nil" do

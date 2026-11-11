@@ -745,19 +745,20 @@ defmodule ForemanServer.Workflow.BootReconciliation do
     emit_ambiguous_reconciled(skipped, retried)
   end
 
-  # A `started` key is only ever written by `HeartbeatLease.acquire/5`, whose
-  # expiry timer lives inside the HeartbeatLease GenServer and dies with the
-  # app. After a restart nothing resolves such a key, so it stays `started`
-  # forever. Turn the orphans into `ambiguous` so the reconcile path below
-  # inspects them.
+  # A `started` key is written by `HeartbeatLease.acquire/5` (agent phase) and by
+  # `Effect.run/4` (effect keys). The expiry timer of a lease lives inside the
+  # HeartbeatLease GenServer and dies with the app, so after a restart nothing
+  # resolves such a key and it stays `started` forever. Turn the orphans into
+  # `ambiguous` so the reconcile path below inspects them.
   #
   # A key is an orphan only when its owning run has no executor alive in this
-  # node: `RunExecutorLiveness` is an in-memory table owned by the supervised
-  # app, so an entry (active or expired) means a live executor process in the
-  # current boot is still blocked on the phase. The scan can be re-armed
-  # after a new run has already taken a lease, so `started` alone is not
-  # evidence of orphanhood. Keys without a run_id cannot be attributed to a
-  # run, so they are left untouched and logged.
+  # node. `RunExecutorLiveness` (in-memory, written by the jobsite runner only)
+  # has an entry for a live jobsite executor; a workflow-door `RunExecutor` has
+  # none, but is registered in `RunExecutorRegistry`, which an effect key also
+  # consults (agent-phase keys keep the liveness check alone). The scan can be
+  # re-armed while a run is mid-effect, so `started` alone is not evidence of
+  # orphanhood. Keys without a run_id cannot be attributed to a run, so they are
+  # left untouched and logged.
   defp mark_orphaned_started_keys do
     :started
     |> KeyStore.list_by_status()
@@ -766,8 +767,8 @@ defmodule ForemanServer.Workflow.BootReconciliation do
 
   defp orphaned_started_key?(key) do
     case KeyStore.get(key) do
-      {:ok, %{status: :started, metadata: metadata}} ->
-        case started_key_run_id(metadata) do
+      {:ok, %{status: :started, metadata: metadata}} when is_map(metadata) ->
+        case started_key_run_id(string_keys(metadata)) do
           {:ok, run_id} -> mark_if_run_not_live(key, run_id)
           :none -> skip_unattributable_started_key(key)
         end
@@ -777,26 +778,26 @@ defmodule ForemanServer.Workflow.BootReconciliation do
     end
   end
 
-  defp started_key_run_id(%{run_id: run_id}) when is_binary(run_id) and run_id != "",
-    do: {:ok, run_id}
-
   defp started_key_run_id(%{"run_id" => run_id}) when is_binary(run_id) and run_id != "",
     do: {:ok, run_id}
 
   defp started_key_run_id(_metadata), do: :none
 
   defp mark_if_run_not_live(key, run_id) do
-    case RunExecutorLiveness.lookup(run_id, System.system_time(:millisecond)) do
-      :none ->
-        :ok = KeyStore.mark_ambiguous(key, "orphaned_started_key")
-        true
-
-      {:active, _owner, _deadline} ->
-        false
-
-      {:expired, _owner, _deadline} ->
-        false
+    if run_executor_alive?(key, run_id) do
+      false
+    else
+      :ok = KeyStore.mark_ambiguous(key, "orphaned_started_key")
+      true
     end
+  end
+
+  defp run_executor_alive?(key, run_id) do
+    liveness? =
+      RunExecutorLiveness.lookup(run_id, System.system_time(:millisecond)) != :none
+
+    liveness? or
+      (KeyStore.effect_key?(key) and ForemanServer.Workflow.RunExecutor.pid_for(run_id) != nil)
   end
 
   defp skip_unattributable_started_key(key) do
@@ -849,7 +850,7 @@ defmodule ForemanServer.Workflow.BootReconciliation do
     counts =
       Enum.reduce(
         keys,
-        %{blocked: 0, retried: 0, on_terminal_run: 0, unresolved: 0},
+        %{blocked: 0, retried: 0, on_terminal_run: 0, unresolved: 0, skipped: 0},
         fn key, counts -> Map.update!(counts, reconcile_effect_key(key, opts), &(&1 + 1)) end
       )
 
@@ -858,9 +859,18 @@ defmodule ForemanServer.Workflow.BootReconciliation do
 
   defp reconcile_effect_key(key, opts) do
     case read_effect_key(key) do
+      {:ok, %{status: status}} when status in [:started, :completed, :failed] ->
+        # The sweep listed this key `ambiguous`. A retried run re-marks it `started`
+        # (`Effect.run`) and an effect that finished settles it, so a status that is
+        # no longer `ambiguous` is the key moving on, not evidence of a verdict.
+        skip_effect_key(key, "is now #{status}")
+
       {:ok, %{run_id: run_id, class: class, metadata: metadata, status: status}} ->
         {verdict, reason} = effect_verdict(status, class, metadata, opts)
         handle_effect_verdict(key, run_id, class, verdict, reason)
+
+      :gone ->
+        skip_effect_key(key, "no longer exists")
 
       {:error, reason} ->
         Logger.warning(
@@ -872,9 +882,22 @@ defmodule ForemanServer.Workflow.BootReconciliation do
     end
   end
 
+  defp skip_effect_key(key, what) do
+    Logger.info("BootReconciliation: effect key #{inspect(key)} #{what}; not reconciled",
+      key: key
+    )
+
+    :skipped
+  end
+
+  # The one place stored metadata is normalised: `Effect` writes string keys while
+  # `KeyStore.mark_ambiguous/2` and `mark_failed/2` add an atom-keyed `reason` on the
+  # ETS path. Past this point the effect step and the reconcilers read string keys only.
   defp read_effect_key(key) do
     case KeyStore.get(key) do
       {:ok, %{status: status, metadata: metadata}} when is_map(metadata) ->
+        metadata = string_keys(metadata)
+
         case Reconciler.run_id_of(metadata) do
           nil ->
             {:error, :no_run_id}
@@ -889,6 +912,9 @@ defmodule ForemanServer.Workflow.BootReconciliation do
              }}
         end
 
+      :not_found ->
+        :gone
+
       other ->
         {:error, {:unreadable, other}}
     end
@@ -896,9 +922,13 @@ defmodule ForemanServer.Workflow.BootReconciliation do
     :exit, exit_reason -> {:error, {:key_store_unavailable, exit_reason}}
   end
 
-  # An effect key is read only after the sweep listed it `ambiguous`; any other
-  # status means the store changed underneath the step, which is not evidence of
-  # a verdict.
+  defp string_keys(metadata) do
+    Map.new(metadata, fn {k, v} -> {if(is_atom(k), do: Atom.to_string(k), else: k), v} end)
+  end
+
+  # `:ambiguous` is the status the sweep listed. Any other status reaching here is
+  # not one of the four the store writes (started, completed, failed, ambiguous), so
+  # the outcome cannot be read from the store: the run blocks (TRD-012).
   defp effect_verdict(:ambiguous, class, metadata, opts) do
     case Reconciler.verdict(class, metadata, Keyword.take(opts, [:classes])) do
       :not_done -> {"not_done", nil}

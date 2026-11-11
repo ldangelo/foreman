@@ -16,7 +16,7 @@ defmodule ForemanServer.Workflow.BootReconciliationEffectKeysTest do
   alias ForemanServer.{CommandGateway, CommandRouter, EventStore, RunControl}
   alias ForemanServer.Idempotency.{Effect, KeyStore}
   alias ForemanServer.TelemetryTest.Handler
-  alias ForemanServer.TestSupport.{KeyStoreReset, MeckScope, UniqueIds}
+  alias ForemanServer.TestSupport.{Eventually, KeyStoreReset, MeckScope, UniqueIds}
   alias ForemanServer.Workflow.BootReconciliation
 
   @terminal_event [:foreman_server, :workflow, :boot_reconciliation, :effect_on_terminal_run]
@@ -29,6 +29,11 @@ defmodule ForemanServer.Workflow.BootReconciliationEffectKeysTest do
 
     @impl true
     def reconcile(%{"fake_verdict" => "raise"}), do: raise("provider down")
+
+    def reconcile(%{"fake_verdict" => "needs_reason", "reason" => "orphaned_started_key"}),
+      do: :done
+
+    def reconcile(%{"fake_verdict" => "needs_reason"}), do: :unknown
     def reconcile(%{"fake_verdict" => verdict}), do: String.to_existing_atom(verdict)
   end
 
@@ -125,9 +130,14 @@ defmodule ForemanServer.Workflow.BootReconciliationEffectKeysTest do
       assert {:ok, :ambiguous} = KeyStore.status(key)
     end
 
-    test "an unexpected store status blocks `effect_outcome_ambiguous`", %{run_id: run_id} do
-      key = plant(run_id, "branch_push", "feature/s", "not_done")
-      :ok = KeyStore.mark_completed(key, %{})
+    test "a status that is not one the store writes blocks `effect_outcome_ambiguous`",
+         %{run_id: run_id} do
+      key = Effect.key("branch_push", run_id, "feature/s")
+
+      :ets.insert(
+        :foreman_idempotency_keys,
+        {key, :weird, %{"run_id" => run_id, "effect_class" => "branch_push"}}
+      )
 
       :meck.expect(KeyStore, :list_by_status, fn status ->
         if status == :ambiguous, do: [key], else: []
@@ -137,7 +147,76 @@ defmodule ForemanServer.Workflow.BootReconciliationEffectKeysTest do
 
       assert status(run_id) == "blocked"
       assert get(List.last(events(run_id)).payload, :reason) == "effect_outcome_ambiguous"
-      assert {:ok, :completed} = KeyStore.status(key)
+    end
+
+    for moved_on <- [:started, :completed, :failed] do
+      test "a key re-marked #{moved_on} between the listing and the read is skipped, not blocked",
+           %{run_id: run_id, ref: ref} do
+        key = plant(run_id, "branch_push", "feature/moved", "done")
+        :ets.insert(:foreman_idempotency_keys, {key, unquote(moved_on), meta(run_id)})
+
+        :meck.expect(KeyStore, :list_by_status, fn status ->
+          if status == :ambiguous, do: [key], else: []
+        end)
+
+        before_events = events(run_id)
+
+        sweep()
+
+        assert events(run_id) == before_events
+        assert RunControl.intent(run_id) == nil
+
+        assert_receive {@effect_event, ^ref, %{skipped: 1, blocked: 0, retried: 0, unresolved: 0},
+                        _}
+
+        refute_received {@terminal_event, ^ref, _, _}
+        assert {:ok, unquote(moved_on)} = KeyStore.status(key)
+      end
+    end
+
+    test "a listed key that no longer exists is skipped", %{run_id: run_id, ref: ref} do
+      key = Effect.key("branch_push", run_id, "feature/gone")
+
+      :meck.expect(KeyStore, :list_by_status, fn status ->
+        if status == :ambiguous, do: [key], else: []
+      end)
+
+      before_events = events(run_id)
+
+      sweep()
+
+      assert events(run_id) == before_events
+      assert_receive {@effect_event, ^ref, %{skipped: 1, blocked: 0}, _}
+    end
+
+    test "metadata reaches the reconciler string-keyed whether the reason was written atom-keyed (ETS) or string-keyed (repo)" do
+      ets_run = UniqueIds.unique_run_id("effect-ets")
+      repo_run = UniqueIds.unique_run_id("effect-repo")
+      for run <- [ets_run, repo_run], do: start_run(run)
+      on_exit(fn -> Enum.each([ets_run, repo_run], &RunControl.clear/1) end)
+
+      # ETS path: `mark_ambiguous/2` merges an atom-keyed `reason` into the stored map.
+      plant(ets_run, "branch_push", "feature/ets", "needs_reason")
+
+      # Repo path: the row comes back from a JSON round trip, every key a string.
+      repo_key = Effect.key("branch_push", repo_run, "feature/repo")
+
+      :ets.insert(
+        :foreman_idempotency_keys,
+        {repo_key, :ambiguous,
+         %{
+           "run_id" => repo_run,
+           "effect_class" => "branch_push",
+           "fake_verdict" => "needs_reason",
+           "reason" => "orphaned_started_key"
+         }}
+      )
+
+      sweep()
+
+      for run <- [ets_run, repo_run] do
+        assert get(List.last(events(run)).payload, :reason) == "effect_already_done"
+      end
     end
 
     test "a :not_done effect records `effect_retried`, blocks nothing and the key stays ambiguous so the next Effect.run re-marks it",
@@ -295,6 +374,65 @@ defmodule ForemanServer.Workflow.BootReconciliationEffectKeysTest do
     end
   end
 
+  describe "a started key of a live run" do
+    # A workflow-door RunExecutor has no RunExecutorLiveness entry; it is registered in
+    # RunExecutorRegistry under its run id, which is what `RunExecutor.pid_for/1` reads.
+    defp live_executor(run_id) do
+      parent = self()
+
+      pid =
+        spawn_link(fn ->
+          {:ok, _} = Registry.register(ForemanServer.RunExecutorRegistry, run_id, nil)
+          send(parent, :registered)
+
+          receive do
+            :stop -> :ok
+          end
+        end)
+
+      assert_receive :registered
+      pid
+    end
+
+    defp start_effect(run_id) do
+      key = Effect.key("branch_push", run_id, "feature/live")
+      :ok = KeyStore.mark_started(key, meta(run_id))
+      key
+    end
+
+    test "an effect key is not marked ambiguous or blocked while its RunExecutor is registered, and is once it is gone",
+         %{run_id: run_id} do
+      key = start_effect(run_id)
+      pid = live_executor(run_id)
+
+      sweep()
+
+      assert {:ok, :started} = KeyStore.status(key)
+      assert status(run_id) == "awaiting_worker"
+      assert RunControl.intent(run_id) == nil
+
+      ref = Process.monitor(pid)
+      send(pid, :stop)
+      assert_receive {:DOWN, ^ref, :process, ^pid, _}
+      Eventually.await(fn -> ForemanServer.Workflow.RunExecutor.pid_for(run_id) == nil end)
+
+      sweep()
+
+      assert {:ok, :ambiguous} = KeyStore.status(key)
+      assert status(run_id) == "blocked"
+    end
+
+    test "an agent-phase key keeps the old liveness rule: a registered RunExecutor does not protect it",
+         %{run_id: run_id} do
+      :ok = KeyStore.mark_started("agent-live-key", %{run_id: run_id})
+      live_executor(run_id)
+
+      BootReconciliation.do_reconcile_ambiguous_keys(fn _key -> true end, classes: @classes)
+
+      assert {:ok, :ambiguous} = KeyStore.status("agent-live-key")
+    end
+  end
+
   describe "the partition in do_reconcile_ambiguous_keys" do
     test "an agent-phase key still goes through CrashRecovery.reconcile/2 and the effect key never does",
          %{run_id: run_id, ref: ref} do
@@ -354,6 +492,8 @@ defmodule ForemanServer.Workflow.BootReconciliationEffectKeysTest do
   end
 
   # --- helpers ---
+
+  defp meta(run_id), do: %{"run_id" => run_id, "effect_class" => "branch_push"}
 
   defp sweep,
     do: BootReconciliation.do_reconcile_ambiguous_keys(fn _key -> true end, classes: @classes)
