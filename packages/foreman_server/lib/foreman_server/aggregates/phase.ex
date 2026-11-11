@@ -113,8 +113,8 @@ defmodule ForemanServer.Aggregates.Phase do
          stream_id: "phase:#{run_id}:#{phase_id}",
          event_type: event_type,
          payload:
-           payload
-           |> Map.merge(%{run_id: run_id, phase_id: phase_id})
+           type
+           |> event_payload(payload, run_id, phase_id)
            |> stamp_attempt(type, state)
        }}
     end
@@ -130,6 +130,19 @@ defmodule ForemanServer.Aggregates.Phase do
 
   defp reject_terminal(%State{terminal?: true}), do: {:error, :phase_terminal}
   defp reject_terminal(_state), do: :ok
+
+  # `PhaseRetried` is decoded strictly, so only its declared fields reach the
+  # stream (AGENTS.md 5.4b); an absent optional field stays absent.
+  defp event_payload("phase.retry", payload, run_id, phase_id) do
+    for key <- [:index, :reason, :prior_worktree_discarded],
+        value = Aggregate.get(payload, key),
+        value != nil,
+        into: %{run_id: run_id, phase_id: phase_id},
+        do: {key, value}
+  end
+
+  defp event_payload(_type, payload, run_id, phase_id),
+    do: Map.merge(payload, %{run_id: run_id, phase_id: phase_id})
 
   # The attempt comes from the stream, never from the caller.
   defp stamp_attempt(payload, "phase.retry", %State{attempt: attempt}),

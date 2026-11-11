@@ -368,6 +368,49 @@ defmodule ForemanServer.Aggregates.PhaseTest do
       end
     end
 
+    test "stores only the declared PhaseRetried fields, so the event decodes strictly" do
+      started = fold(started_state(), "PhaseStarted", %{run_id: "r", phase_id: "p", attempt: 1})
+
+      {:ok, spec} =
+        Phase.handle_command(started, %{
+          type: "phase.retry",
+          payload: %{
+            run_id: "r",
+            phase_id: "p",
+            index: 1,
+            reason: "resumed",
+            prior_worktree_discarded: nil,
+            surprise: "x",
+            command_id: "c"
+          }
+        })
+
+      assert spec.payload == %{
+               run_id: "r",
+               phase_id: "p",
+               index: 1,
+               reason: "resumed",
+               attempt: 2
+             }
+
+      assert %ForemanServer.Events.PhaseRetried{attempt: 2, reason: "resumed"} =
+               ForemanServer.EventCodec.decode!("PhaseRetried", spec.payload)
+
+      {:ok, with_discard} =
+        Phase.handle_command(started, %{
+          type: "phase.retry",
+          payload: %{
+            run_id: "r",
+            phase_id: "p",
+            index: 1,
+            reason: "resumed",
+            prior_worktree_discarded: %{name: "wt", path: nil}
+          }
+        })
+
+      assert with_discard.payload.prior_worktree_discarded == %{name: "wt", path: nil}
+    end
+
     test "a resumed retry keeps in_progress and advances attempt on each restart" do
       started = fold(started_state(), "PhaseStarted", %{run_id: "r", phase_id: "p", attempt: 1})
       command = %{type: "phase.retry", payload: %{run_id: "r", phase_id: "p", reason: "resumed"}}
