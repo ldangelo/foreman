@@ -27,6 +27,7 @@ defmodule ForemanServer.Workflow.RunExecutorResumeAttemptTest do
   alias ForemanServer.Workflow.{OrphanReaper, RunExecutor}
 
   @incarnation_key {Incarnation, :id}
+  @started_at_key {Incarnation, :started_at_ms}
 
   setup_all do
     MeckScope.new_once!(OrphanReaper)
@@ -37,9 +38,11 @@ defmodule ForemanServer.Workflow.RunExecutorResumeAttemptTest do
     MeckScope.restore_on_exit!(OrphanReaper)
 
     original = :persistent_term.get(@incarnation_key, nil)
+    original_started_at = :persistent_term.get(@started_at_key, nil)
 
     on_exit(fn ->
       if original, do: :persistent_term.put(@incarnation_key, original)
+      if original_started_at, do: :persistent_term.put(@started_at_key, original_started_at)
     end)
 
     run_id = UniqueIds.unique_run_id("resume-attempt")
