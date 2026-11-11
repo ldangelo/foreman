@@ -56,6 +56,90 @@ defmodule ForemanServerWeb.DoctorControllerTest do
     assert Enum.all?(checks, &(&1["status"] in ["ok", "warn", "fail"]))
   end
 
+  describe "effect_keys check" do
+    alias ForemanServer.Idempotency.{Effect, KeyStore}
+    alias ForemanServer.TestSupport.{KeyStoreReset, UniqueIds}
+
+    @config ForemanServer.Agents.JidoCheckpointStore
+
+    defmodule DownRepo do
+      @moduledoc false
+      def all(_query), do: raise(DBConnection.ConnectionError, "connection refused")
+    end
+
+    setup do
+      original = Application.get_env(:foreman_server, @config, [])
+
+      on_exit(fn ->
+        Application.put_env(:foreman_server, @config, original)
+        restart_key_store()
+        KeyStoreReset.reset!()
+      end)
+
+      Application.put_env(:foreman_server, @config, [])
+      restart_key_store()
+      KeyStoreReset.reset!()
+      :ok
+    end
+
+    defp restart_key_store do
+      Supervisor.terminate_child(ForemanServer.Application, KeyStore)
+      {:ok, _pid} = Supervisor.restart_child(ForemanServer.Application, KeyStore)
+      :ok
+    end
+
+    defp effect_check(checks), do: Enum.find(checks, &(&1["id"] == "effect_keys"))
+
+    test "no ambiguous effect key: ok, with the store line in the detail" do
+      %{"checks" => checks} = get_json("/api/doctor", 200)
+
+      assert %{"status" => "ok", "title" => "Unresolved effect keys: 0", "detail" => detail} =
+               effect_check(checks)
+
+      assert detail =~ "idempotency store is not durable"
+      assert detail =~ "none in this process"
+    end
+
+    test "an ambiguous effect key of a terminal run is listed in detail and stays ok" do
+      run_id = UniqueIds.unique_run_id("doctor-ctl")
+
+      :ok =
+        ProjectionStore.apply_events([
+          %{event_type: "RunStarted", payload: %{run_id: run_id, project_id: "p-doctor-ctl"}},
+          %{
+            event_type: "RunFailed",
+            payload: %{run_id: run_id, project_id: "p-doctor-ctl", reason: "x"}
+          }
+        ])
+
+      key = Effect.key("pr_create", run_id, "feature/ctl")
+      :ok = KeyStore.mark_started(key, %{"run_id" => run_id, "effect_class" => "pr_create"})
+      :ok = KeyStore.mark_ambiguous(key, "boot_orphan")
+      :ok = KeyStore.mark_started("phase:#{run_id}:p1", %{"run_id" => run_id})
+      :ok = KeyStore.mark_ambiguous("phase:#{run_id}:p1", "expired")
+
+      %{"checks" => checks} = get_json("/api/doctor", 200)
+
+      assert %{"status" => "ok", "title" => "Unresolved effect keys: 1", "detail" => detail} =
+               effect_check(checks)
+
+      assert detail =~ "pr_create run=#{run_id} status=failed key=#{key}"
+      refute detail =~ "phase:#{run_id}"
+    end
+
+    test "keys that cannot be read are a warn, never an empty list" do
+      Application.put_env(:foreman_server, @config, repo: DownRepo)
+      restart_key_store()
+
+      %{"checks" => checks} = get_json("/api/doctor", 200)
+
+      assert %{"status" => "warn", "title" => "Unresolved effect keys could not be read"} =
+               effect_check(checks)
+
+      assert Enum.any?(checks, &String.starts_with?(&1["id"], "provider."))
+    end
+  end
+
   test "?project= adds a recommendations summary; unknown project is 404", %{tmp_dir: repo} do
     id = "doctor-#{System.unique_integer([:positive])}"
 
