@@ -36,8 +36,16 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   alias ForemanServer.AgentRuntime
   alias ForemanServer.AgentRuntime.JidoHarness
-  alias ForemanServer.AgentRuntime.JidoHarness.{ForkSession, ModelCatalog, ReadinessCheck}
+
+  alias ForemanServer.AgentRuntime.JidoHarness.{
+    ForkSession,
+    ModelCatalog,
+    ReadinessCheck,
+    SkillResolver
+  }
+
   alias ForemanServer.CommandGateway
+  alias ForemanServer.Workflow.Validator
   alias ForemanServer.Workflow.BeadsTreeCompletion
   alias ForemanServer.Workflow.CheckoutGuard
   alias ForemanServer.Workflow.Catalog
@@ -104,7 +112,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
           plan_context: map() | nil,
           resume_from: non_neg_integer(),
           resuming?: boolean(),
-          project_settings: ForemanServer.ProjectSettings.t() | nil
+          project_settings: ForemanServer.ProjectSettings.t() | nil,
+          skill_verdicts: %{pos_integer() => SkillResolver.verdict()}
         }
   @spec start_link(String.t(), map(), keyword()) :: GenServer.on_start()
   def start_link(run_id, task_projection, opts \\ []) do
@@ -349,7 +358,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
       plan_context: plan_context,
       resume_from: resume_from,
       resuming?: Keyword.get(opts, :resume_from) != nil,
-      project_settings: latch_project_settings(task_projection)
+      project_settings: latch_project_settings(task_projection),
+      skill_verdicts: %{}
     }
 
     Process.send_after(self(), :kickoff, 0)
@@ -499,7 +509,35 @@ defmodule ForemanServer.Workflow.RunExecutor do
         finalize_terminal_and_stop(state, {:provider_model_preflight_failed, failures})
 
       :ok ->
-        handle_kickoff_ready(state)
+        kickoff_skill_preflight(state)
+    end
+  end
+
+  # TRD-022 / AC-007-2: every `command:` phase that names a skill is resolved
+  # against the provider that will launch it, after the provider/model check and
+  # before the claim, the worktree and the first phase. `:missing` refuses the
+  # run; `:unverifiable` never blocks and rides on that phase's execution
+  # profile. The terminal reason is its own tuple, never
+  # `:provider_model_preflight_failed`, so neither names the other's contents.
+  defp kickoff_skill_preflight(state) do
+    case preflight_skills(state) do
+      {:error, failures} ->
+        summaries = Enum.map_join(failures, "; ", &PreflightFailure.summarize/1)
+
+        Logger.warning(
+          "RunExecutor skill preflight for #{state.run_id} rejected: #{summaries}",
+          run_id: state.run_id,
+          task_id: task_id(state),
+          operation: "run_executor.skill_preflight",
+          outcome: "error",
+          reason: inspect(failures)
+        )
+
+        _ = dispatch_task_execution_fail(state, {:capability_preflight_failed, failures})
+        finalize_terminal_and_stop(state, {:capability_preflight_failed, failures})
+
+      {:ok, verdicts} ->
+        handle_kickoff_ready(Map.put(state, :skill_verdicts, verdicts))
     end
   end
 
@@ -1051,13 +1089,13 @@ defmodule ForemanServer.Workflow.RunExecutor do
     Enum.find(ProjectionStore.worktrees_for_run(run_id), &(&1.operation_id == operation_id))
   end
 
-  # Skips entirely when a phase declares neither `provider:` nor `models:` —
-  # unmodified phases keep today's behavior exactly (readiness is still
-  # checked later, per-phase, by JidoHarnessAdapter.execute/2 as it always
-  # has been). Only phases that opt into an explicit provider or model pay
-  # for the upfront check, and a run with ANY invalid phase fails once,
-  # before phase 1, naming every bad phase — not one at a time, deep into
-  # the run.
+  # Skips entirely when a phase declares neither `provider:` nor `models:` and
+  # has no `command:` — a phase the harness launches by command needs its harness
+  # installed even on the default provider (TRD-022), so it is checked too.
+  # Unmodified non-command phases keep today's behavior exactly (readiness is
+  # still checked later, per-phase, by JidoHarnessAdapter.execute/2). A run with
+  # ANY invalid phase fails once, before phase 1, naming every bad phase — not
+  # one at a time, deep into the run.
   #
   # This runs before `handle_kickoff_ready/1`, so before any worktree, branch,
   # or phase exists: a refused run executes zero phases by construction (see
@@ -1075,11 +1113,75 @@ defmodule ForemanServer.Workflow.RunExecutor do
     if failures == [], do: :ok, else: {:error, failures}
   end
 
+  # A phase launched by a `command:` needs its harness whether or not the phase
+  # declares a provider: the default provider (`request_provider/1`) is a
+  # harness too.
+  defp command_phase?(phase_spec), do: is_binary(Map.get(phase_spec, :command))
+
+  # The provider that launches `phase_spec`: its declared one, else the default.
+  defp phase_launch_provider(phase_spec) do
+    JidoHarness.request_provider(%{context: %{"provider" => Map.get(phase_spec, :provider)}})
+  end
+
+  # The directories searched: the project's checkout and the home that holds
+  # `.pi/agent/skills`. `config :foreman_server, :skill_home` names that home when
+  # the server's user is not the one the harness runs as; unset, it is the server
+  # user's home (`SkillResolver`'s default).
+  defp skill_resolve_opts(state) do
+    project = if root = project_path(state), do: [project_root: root], else: []
+
+    case Application.get_env(:foreman_server, :skill_home) do
+      home when is_binary(home) and home != "" -> [home: home] ++ project
+      _unset -> project
+    end
+  end
+
+  # Resolves the skill each still-to-run `command:` phase names, against that
+  # phase's launching provider and the project's checkout (no worktree exists at
+  # admission). `{:ok, %{phase_number => :available | :unverifiable}}` or the
+  # `:skill_not_found` failures of every phase whose skill is missing. A resumed
+  # run skips the phases it already completed: they never launch again.
+  defp preflight_skills(state) do
+    backend = ExecutionProfile.host_backend()
+    resolve_opts = skill_resolve_opts(state)
+
+    {failures, verdicts} =
+      state.phase_specs
+      |> Enum.with_index()
+      |> Enum.drop(state.resume_from)
+      |> Enum.reduce({[], %{}}, fn {phase_spec, index}, {failures, verdicts} ->
+        with skill when is_binary(skill) <-
+               Validator.skill_from_command(Map.get(phase_spec, :command)),
+             provider = phase_launch_provider(phase_spec),
+             verdict = SkillResolver.resolve(provider, skill, backend, resolve_opts) do
+          case verdict do
+            :missing ->
+              failure = %PreflightFailure{
+                phase: phase_spec_name(phase_spec),
+                provider: provider,
+                class: :skill_not_found,
+                backend: backend,
+                skill: skill
+              }
+
+              {[failure | failures], verdicts}
+
+            verdict ->
+              {failures, Map.put(verdicts, phase_number(phase_spec, index), verdict)}
+          end
+        else
+          _no_skill -> {failures, verdicts}
+        end
+      end)
+
+    if failures == [], do: {:ok, verdicts}, else: {:error, Enum.reverse(failures)}
+  end
+
   defp phase_provider_and_model_check(phase_spec, state, cache) do
     declared_provider = Map.get(phase_spec, :provider)
     %ModelResolution{model: model, source: model_source} = resolve_phase_model(phase_spec, state)
 
-    if is_nil(declared_provider) and is_nil(model) do
+    if is_nil(declared_provider) and is_nil(model) and not command_phase?(phase_spec) do
       {:ok, cache}
     else
       name = phase_spec_name(phase_spec)
@@ -1104,7 +1206,9 @@ defmodule ForemanServer.Workflow.RunExecutor do
               model: model,
               model_source: model_source,
               class: :provider_not_installed,
-              detail: ReadinessCheck.install_hint(provider)
+              detail: ReadinessCheck.install_hint(provider),
+              backend: ExecutionProfile.host_backend(),
+              skill: Validator.skill_from_command(Map.get(phase_spec, :command))
             }}, cache}
 
         true ->
@@ -1561,7 +1665,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
         attempt: 1,
         artifact_template: Map.get(phase_spec, :artifact_template) || %{},
         input_artifacts: phase_input_artifacts(state.run_id, phase_index),
-        execution_profile: launch_execution_profile(state)
+        execution_profile: launch_execution_profile(state, phase_index)
       }
       |> Map.merge(
         ForemanServer.Workflow.StallPolicy.payload_fields(Map.get(phase_spec, :stall_detection))
@@ -1581,7 +1685,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # RunExecutor launch is a host workflow launch; the backend value is
   # `ExecutionProfile`'s, not named here. Cleanup follows the workflow's
   # `worktree:` block (a run whose workflow disables it has no worktree).
-  defp launch_execution_profile(state) do
+  defp launch_execution_profile(state, phase_index) do
     cleanup =
       case state.worktree_spec do
         %{enabled: false} ->
@@ -1595,7 +1699,10 @@ defmodule ForemanServer.Workflow.RunExecutor do
       end
 
     ExecutionProfile.host_backend()
-    |> ExecutionProfile.resolve(cleanup: cleanup)
+    |> ExecutionProfile.resolve(
+      cleanup: cleanup,
+      skill: state |> Map.get(:skill_verdicts, %{}) |> Map.get(phase_index)
+    )
     |> ExecutionProfile.to_map()
   end
 

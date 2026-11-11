@@ -5853,6 +5853,20 @@ defmodule ForemanServer.ProjectionStore do
   defp execution_profile_entry(:backend, backend) when is_binary(backend), do: {:ok, backend}
   defp execution_profile_entry(:backend, _other), do: :error
 
+  # The `skill` entry is a preflight verdict, not an enforcement property: its
+  # states are `available` and `unverifiable` (a `missing` skill ends the run
+  # before any phase), so the enforced/unenforced table does not apply to it.
+  defp execution_profile_entry(:skill, %{} = property) do
+    folded = normalise_fields(property, @execution_property_fields)
+
+    with state when state in ["available", "unverifiable"] <- Map.get(folded, :state),
+         {:ok, reason} <- execution_reason(Map.get(folded, :reason)) do
+      {:ok, %{state: state, reason: reason}}
+    else
+      _ -> :error
+    end
+  end
+
   defp execution_profile_entry(_property, %{} = property) do
     folded = normalise_fields(property, @execution_property_fields)
 

@@ -57,4 +57,23 @@ ExUnit.configure(
 # the module that left it. The formatter half is registered by the `test` alias in mix.exs.
 ForemanServer.TestSupport.ProjectionLeakGuard.install!()
 
+# The kickoff skill preflight (TRD-022) refuses a run whose `command:` names a skill the harness
+# cannot find. The suite's workflows invent skill names, and the developer's real ~/.pi must not
+# decide whether they pass, so `:skill_home` points the preflight at a private home holding one
+# SKILL.md per skill any test source, fixture or stock workflow names. A test that needs a skill
+# to be absent (or present only somewhere else) overrides `:skill_home` itself.
+skill_home = Path.join(vm_tmp, "skill-home")
+
+skill_sources =
+  Path.wildcard("test/**/*.{exs,yaml}") ++ Path.wildcard("priv/defaults/workflows/*.yaml")
+
+for path <- skill_sources,
+    [_, name] <- Regex.scan(~r{/skill:([A-Za-z0-9][A-Za-z0-9._-]*)}, File.read!(path)) do
+  dir = Path.join([skill_home, ".pi", "agent", "skills", name])
+  File.mkdir_p!(dir)
+  File.write!(Path.join(dir, "SKILL.md"), "# #{name}\n")
+end
+
+Application.put_env(:foreman_server, :skill_home, skill_home)
+
 ExUnit.start()

@@ -53,11 +53,12 @@ defmodule ForemanServer.Jobsite.ExecutionProfile do
           network: property(),
           credentials: property(),
           cleanup: property(),
-          mounts: [String.t()]
+          mounts: [String.t()],
+          skill: :available | :unverifiable | nil
         }
 
   @enforce_keys [:backend, :filesystem, :network, :credentials, :cleanup]
-  defstruct [:backend, :filesystem, :network, :credentials, :cleanup, mounts: []]
+  defstruct [:backend, :filesystem, :network, :credentials, :cleanup, mounts: [], skill: nil]
 
   @properties [:filesystem, :network, :credentials, :cleanup]
 
@@ -75,7 +76,11 @@ defmodule ForemanServer.Jobsite.ExecutionProfile do
   Options: `:cleanup`, the worktree spec's cleanup (`:always`, `:on_success`,
   `:never`, or `:none` for a run with no worktree; default `:never`), and, for
   the docker jobsite only, `:mounts`, the host paths bind-mounted into the
-  sandbox.
+  sandbox. `:skill` (TRD-022), the preflight verdict for the skill the launched
+  phase's `command:` names (`:available` or `:unverifiable`; a `:missing` skill
+  refuses the run before any launch): recorded as the `skill` entry, absent when
+  the phase names no skill. It is not an enforcement property: it says what the
+  preflight could verify, so its `state` is `"available"` or `"unverifiable"`.
   """
   @spec resolve(backend(), keyword()) :: t()
   def resolve(backend, opts \\ [])
@@ -88,7 +93,8 @@ defmodule ForemanServer.Jobsite.ExecutionProfile do
          "the agent runs on the server host; the VfsIsolation registry is not an enforcement point"},
       network: network(@host_backend),
       credentials: credentials(),
-      cleanup: host_cleanup(Keyword.get(opts, :cleanup, :never))
+      cleanup: host_cleanup(Keyword.get(opts, :cleanup, :never)),
+      skill: Keyword.get(opts, :skill)
     }
   end
 
@@ -101,6 +107,7 @@ defmodule ForemanServer.Jobsite.ExecutionProfile do
       network: network(@docker_backend),
       credentials: credentials(),
       cleanup: cleanup(Keyword.get(opts, :cleanup, :never)),
+      skill: Keyword.get(opts, :skill),
       mounts: mounts
     }
   end
@@ -111,9 +118,23 @@ defmodule ForemanServer.Jobsite.ExecutionProfile do
   """
   @spec to_map(t()) :: map()
   def to_map(%__MODULE__{} = profile) do
-    Map.new(@properties, fn key -> {key, property_map(Map.fetch!(profile, key))} end)
-    |> Map.put(:backend, Atom.to_string(profile.backend))
+    map =
+      Map.new(@properties, fn key -> {key, property_map(Map.fetch!(profile, key))} end)
+      |> Map.put(:backend, Atom.to_string(profile.backend))
+
+    case profile.skill do
+      nil -> map
+      verdict -> Map.put(map, :skill, skill_map(verdict))
+    end
   end
+
+  defp skill_map(:available), do: %{state: "available", reason: nil}
+
+  defp skill_map(:unverifiable),
+    do: %{
+      state: "unverifiable",
+      reason: "the harness's skill directories cannot be read from this backend or provider"
+    }
 
   defp property_map(:enforced), do: %{state: "enforced", reason: nil}
   defp property_map({:unenforced, reason}), do: %{state: "unenforced", reason: reason}
