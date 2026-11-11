@@ -124,6 +124,36 @@ defmodule ForemanServer.Workflow.RunExecutorResumeContextTest do
     end
   end
 
+  # Provisioning replaces the base with the tip of the task's `source_branch`
+  # (`adopt --continue --from-source-branch`), and fails when that branch is not
+  # there. The pre-check must judge the base provisioning will use, or a run that
+  # can only fail at provisioning is recovered first (attempt and recovery
+  # recorded) and then ends with a different reason.
+  describe "a task whose source branch is missing" do
+    test "recovery fails with :resume_context_unresolvable and records nothing", %{ctx: ctx} do
+      repo = ctx.repo
+
+      assert {:error,
+              {:resume_context_unresolvable, {:source_branch_not_found, "no-such-branch", ^repo}}} =
+               RunExecutor.__resume_prelude_for_test__(
+                 state(ctx, %{base: "main"}, %{source_branch: "no-such-branch"})
+               )
+
+      assert_nothing_recorded(ctx)
+    end
+
+    test "the same task with its source branch present recovers", %{ctx: ctx} do
+      git!(ctx.repo, ["branch", "adopted"])
+
+      assert {:ok, _state} =
+               RunExecutor.__resume_prelude_for_test__(
+                 state(ctx, %{base: "main"}, %{source_branch: "adopted"})
+               )
+
+      assert retried_count(ctx) == 1
+    end
+  end
+
   # Nothing downstream of the base resolution ran: no worktree was provisioned,
   # no resumed attempt and no recovery were recorded.
   defp assert_nothing_recorded(ctx) do
@@ -135,10 +165,10 @@ defmodule ForemanServer.Workflow.RunExecutorResumeContextTest do
     assert Map.get(ProjectionStore.run(ctx.run_id), :recovery) == nil
   end
 
-  defp state(ctx, worktree_spec) do
+  defp state(ctx, worktree_spec, task_extra \\ %{}) do
     %{
       run_id: ctx.run_id,
-      task: %{task_id: "task-#{ctx.run_id}", project_id: ctx.project_id},
+      task: Map.merge(%{task_id: "task-#{ctx.run_id}", project_id: ctx.project_id}, task_extra),
       status: :running,
       resuming?: true,
       resume_from: 0,

@@ -959,7 +959,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # that base cannot be resolved the run ends (`:resume_context_unresolvable`)
   # before any phase starts: the run is never cut from a guessed base.
   defp assert_resume_base_resolvable(state) do
-    case resolve_run_base(state, state.worktree_spec || %{}) do
+    case resolve_provisioned_base(state, state.worktree_spec || %{}) do
       {:ok, _project_root, _base_ref, _implementation_key, _trd_scope} -> :ok
       {:error, _} = error -> error
     end
@@ -3277,8 +3277,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
          :ok <- assert_safe_path_identifier(worktree_task_id(state)),
          :ok <- assert_safe_path_identifier(state.run_id),
          {:ok, project_root, base_ref, implementation_key, trd_scope} <-
-           resolve_run_base(state, spec),
-         {:ok, base_ref} <- apply_source_branch(state, project_root, base_ref, implementation_key),
+           resolve_provisioned_base(state, spec),
          {:ok, cleanup} <- worktree_cleanup(spec),
          phase_id = Identity.phase_id(state.run_id, phase_index),
          operation_id = Worktree.operation_id(state.run_id, nil),
@@ -3581,6 +3580,18 @@ defmodule ForemanServer.Workflow.RunExecutor do
       cleanup: primary.cleanup,
       repo_id: entry.repo_id
     }
+  end
+
+  # The base a run's worktree is cut from, exactly as provisioning computes it: the resolved base
+  # (`resolve_run_base/2`), replaced by the tip of the task's `source_branch` when it has one
+  # (`apply_source_branch/4`). Provisioning and the resume pre-check both use this one function,
+  # so a base the pre-check accepts is a base provisioning can use.
+  defp resolve_provisioned_base(state, spec) do
+    with {:ok, project_root, base_ref, implementation_key, trd_scope} <-
+           resolve_run_base(state, spec),
+         {:ok, base_ref} <- apply_source_branch(state, project_root, base_ref, implementation_key) do
+      {:ok, project_root, base_ref, implementation_key, trd_scope}
+    end
   end
 
   # An ImplementationContext is detected by the presence of the values it
