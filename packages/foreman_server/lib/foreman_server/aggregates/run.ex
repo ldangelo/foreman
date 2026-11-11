@@ -767,11 +767,7 @@ defmodule ForemanServer.Aggregates.Run do
        %{
          stream_id: "run:#{run_id}",
          event_type: "RunRecoveryAttempted",
-         payload:
-           payload
-           |> Map.put(:run_id, run_id)
-           |> Map.put(:outcome, outcome)
-           |> Map.put(:elapsed_since_boot_ms, elapsed)
+         payload: recovery_attempt_payload(payload, run_id, outcome, elapsed)
        }}
     end
   end
@@ -1348,6 +1344,20 @@ defmodule ForemanServer.Aggregates.Run do
       value when is_binary(value) -> :ok
       value -> {:error, {:missing_or_invalid, key, value}}
     end
+  end
+
+  # Only the declared `RunRecoveryAttempted` fields reach the stream (AGENTS.md
+  # 5.4b): an undeclared key would make `EventCodec.decode!` raise on replay.
+  # An absent optional field stays absent.
+  defp recovery_attempt_payload(payload, run_id, outcome, elapsed) do
+    optional =
+      for key <- [:reason | @effect_recovery_fields],
+          value = Aggregate.get(payload, key),
+          value != nil,
+          into: %{},
+          do: {key, value}
+
+    Map.merge(optional, %{run_id: run_id, outcome: outcome, elapsed_since_boot_ms: elapsed})
   end
 
   # The effect fields name the effect a verdict was reached for, so the two

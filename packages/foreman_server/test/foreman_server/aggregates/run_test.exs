@@ -107,6 +107,33 @@ defmodule ForemanServer.Aggregates.RunTest do
                state
     end
 
+    test "the event payload carries only the declared RunRecoveryAttempted fields" do
+      state = started_run("run-rec")
+
+      assert {:ok, spec} =
+               Run.handle_command(
+                 state,
+                 recovery_command("run-rec", %{outcome: "resumed", surprise: "x", command_id: "c"})
+               )
+
+      assert spec.payload == %{
+               run_id: "run-rec",
+               outcome: "resumed",
+               elapsed_since_boot_ms: 1_200
+             }
+
+      assert %ForemanServer.Events.RunRecoveryAttempted{run_id: "run-rec"} =
+               ForemanServer.EventCodec.decode!("RunRecoveryAttempted", spec.payload)
+
+      assert {:ok, with_reason} =
+               Run.handle_command(
+                 state,
+                 recovery_command("run-rec", %{"outcome" => "resumed", "reason" => "why"})
+               )
+
+      assert with_reason.payload.reason == "why"
+    end
+
     test "records the two effect outcomes with their effect fields" do
       state = started_run("run-rec")
 
