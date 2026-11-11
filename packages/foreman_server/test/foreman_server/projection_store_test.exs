@@ -165,6 +165,129 @@ defmodule ForemanServer.ProjectionStoreTest do
            }
   end
 
+  describe "PhaseStarted input_artifacts" do
+    @sha String.duplicate("e", 64)
+
+    defp started_payload(run_id, key_form, entries) do
+      base = %{
+        run_id: run_id,
+        phase_id: run_id <> "-p002",
+        index: 2,
+        name: "second",
+        attempt: 1,
+        artifact_template: %{},
+        input_artifacts: entries
+      }
+
+      case key_form do
+        :atom -> base
+        :string -> base |> Jason.encode!() |> Jason.decode!()
+      end
+    end
+
+    defp seed_run!(run_id) do
+      assert :ok =
+               ProjectionStore.apply_events([
+                 %{
+                   event_type: "RunStarted",
+                   payload: %{
+                     run_id: run_id,
+                     project_id: "p",
+                     task_id: "t",
+                     workflow_snapshot: %{}
+                   }
+                 }
+               ])
+    end
+
+    for {form, unknown_key} <- [atom: :bytes, string: "bytes"] do
+      test "#{form}-keyed entries decode and fold to the same four atom-keyed fields" do
+        run_id = "run-inputs-#{System.unique_integer([:positive])}"
+        seed_run!(run_id)
+
+        entry = %{
+          index: 0,
+          source_phase: run_id <> "-p001",
+          path: "artifacts/one.md",
+          sha256: @sha
+        }
+
+        # `bytes` is a key outside the four: the codec keeps it, the fold drops it.
+        payload = started_payload(run_id, unquote(form), [Map.put(entry, :bytes, 12)])
+
+        assert %ForemanServer.Events.PhaseStarted{input_artifacts: [decoded]} =
+                 ForemanServer.EventCodec.decode!("PhaseStarted", payload)
+
+        assert Map.has_key?(decoded, unquote(unknown_key))
+
+        assert :ok =
+                 ProjectionStore.apply_events([%{event_type: "PhaseStarted", payload: payload}])
+
+        assert [%{input_artifacts: [folded]}] = ProjectionStore.phases_for_run(run_id)
+        assert folded == entry
+      end
+    end
+
+    test "an entry key outside the four never becomes an atom" do
+      run_id = "run-inputs-#{System.unique_integer([:positive])}"
+      seed_run!(run_id)
+      unknown = "novel_key_#{System.unique_integer([:positive])}"
+
+      payload =
+        started_payload(run_id, :string, [
+          %{"index" => 0, "source_phase" => "s", "path" => "p", "sha256" => @sha}
+        ])
+
+      payload = put_in(payload, ["input_artifacts", Access.at(0), unknown], "x")
+
+      assert_raise ArgumentError, fn -> String.to_existing_atom(unknown) end
+      assert :ok = ProjectionStore.apply_events([%{event_type: "PhaseStarted", payload: payload}])
+      assert_raise ArgumentError, fn -> String.to_existing_atom(unknown) end
+
+      assert [%{input_artifacts: [%{index: 0, source_phase: "s", path: "p", sha256: @sha} = f]}] =
+               ProjectionStore.phases_for_run(run_id)
+
+      assert map_size(f) == 4
+    end
+
+    test "an empty list is kept, and a non-map entry is dropped" do
+      run_id = "run-inputs-#{System.unique_integer([:positive])}"
+      seed_run!(run_id)
+
+      assert :ok =
+               ProjectionStore.apply_events([
+                 %{event_type: "PhaseStarted", payload: started_payload(run_id, :atom, [])}
+               ])
+
+      assert [%{input_artifacts: []}] = ProjectionStore.phases_for_run(run_id)
+
+      assert :ok =
+               ProjectionStore.apply_events([
+                 %{
+                   event_type: "PhaseStarted",
+                   payload: started_payload(run_id, :atom, ["junk", 7])
+                 }
+               ])
+
+      assert [%{input_artifacts: []}] = ProjectionStore.phases_for_run(run_id)
+    end
+
+    test "a PhaseStarted recorded before the field existed decodes and folds with no inputs" do
+      run_id = "run-inputs-#{System.unique_integer([:positive])}"
+      seed_run!(run_id)
+
+      old =
+        started_payload(run_id, :atom, nil) |> Map.delete(:input_artifacts)
+
+      assert %ForemanServer.Events.PhaseStarted{input_artifacts: nil} =
+               ForemanServer.EventCodec.decode!("PhaseStarted", old)
+
+      assert :ok = ProjectionStore.apply_events([%{event_type: "PhaseStarted", payload: old}])
+      assert [entry] = ProjectionStore.phases_for_run(run_id)
+      refute Map.has_key?(entry, :input_artifacts)
+    end
+  end
+
   test "projects are registered and updated from state.projects" do
     project_id = "project-1"
 
