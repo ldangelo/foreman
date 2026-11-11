@@ -765,6 +765,34 @@ defmodule ForemanServerWeb.Workspace.Actions do
   def describe(:no_base_branch), do: "the run has no base branch"
   def describe(:no_commits_to_propose), do: "the branch has no commits to propose"
   def describe({:pr_already_associated, url}), do: "a pull request already exists (#{url})"
+
+  def describe({:effect_unresolved, key}),
+    do:
+      "an earlier push or pull request attempt (#{key}) may already have happened and " <>
+        "could not be confirmed, so it is not repeated. Check GitHub and foreman_doctor, " <>
+        "Unresolved effect keys. For a failed, stuck, blocked or paused run, reset the run " <>
+        "and let it resume: the key is lifted when the restarted run reaches that step again. " <>
+        "For any other run the key stays unresolved"
+
+  def describe({:effect_marker_malformed, key}),
+    do:
+      "the unresolved marker of #{key} is malformed, so the earlier push or pull request " <>
+        "attempt is not repeated and resetting the run does not clear it; the stored key needs " <>
+        "an operator's repair (see foreman_doctor, Unresolved effect keys)"
+
+  def describe({:intent_not_recorded, :cwd_missing}),
+    do: "nothing was pushed or opened: the run has no checkout directory to run git and gh in"
+
+  def describe({:intent_not_recorded, reason}),
+    do:
+      "nothing was pushed or opened: the intent of the push or pull request could not be " <>
+        "recorded (#{inspect(reason, limit: 5)})"
+
+  def describe({:effect_check_failed, reason}),
+    do:
+      "could not check whether an earlier push or pull request attempt is unresolved " <>
+        "(#{inspect(reason, limit: 5)}); nothing was run, try again"
+
   def describe({:project_unresolved, id}), do: "project #{id} is not registered"
   def describe({:fix_in_flight, _url}), do: "a fix is already running for that pull request"
   def describe({:pr_not_open, status}), do: "the pull request is #{status}"

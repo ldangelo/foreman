@@ -139,4 +139,101 @@ defmodule ForemanServer.Idempotency.KeyStoreTest do
       assert {:ok, :started} = KeyStore.status(key)
     end
   end
+
+  describe "effect_key?/1 (TRD-011)" do
+    test "is true for an effect key" do
+      assert KeyStore.effect_key?("effect:branch_push:run-1:feature/x")
+      assert KeyStore.effect_key?("effect:task_provider:run-1:claim:issue-9")
+    end
+
+    test "is false for an agent-phase key, an empty string and a mid-string effect:" do
+      refute KeyStore.effect_key?("phase:run-1:implement")
+      refute KeyStore.effect_key?("")
+      refute KeyStore.effect_key?("phase:effect:run-1")
+      refute KeyStore.effect_key?("x-effect:branch_push:run-1:y")
+      refute KeyStore.effect_key?("Effect:branch_push:run-1:y")
+    end
+
+    test "is false for a non-binary" do
+      refute KeyStore.effect_key?(nil)
+      refute KeyStore.effect_key?(:"effect:x")
+    end
+  end
+
+  describe "fallback merge keeps its current shape" do
+    setup do
+      Application.put_env(:foreman_server, ForemanServer.Agents.JidoCheckpointStore, [])
+      ForemanServer.TestSupport.KeyStoreReset.reset!()
+    end
+
+    test "a status change merges the new fields into the ETS copy" do
+      :ok = KeyStore.mark_started("phase:r9:p1", %{run_id: "r9", cwd: "/w"})
+      :ok = KeyStore.mark_ambiguous("phase:r9:p1", "timeout")
+
+      assert {:ok, %{status: :ambiguous, metadata: %{run_id: "r9", cwd: "/w", reason: "timeout"}}} =
+               KeyStore.get("phase:r9:p1")
+    end
+  end
+
+  describe "mark_unresolved/3 (fallback)" do
+    setup do
+      Application.put_env(:foreman_server, ForemanServer.Agents.JidoCheckpointStore, [])
+      ForemanServer.TestSupport.KeyStoreReset.reset!()
+    end
+
+    test "keeps the key ambiguous, merges into its metadata and is read back as a version" do
+      key = "effect:branch_push:r1:feature/x"
+      :ok = KeyStore.mark_started(key, %{"run_id" => "r1", "pushed_local_sha" => "abc"})
+      :ok = KeyStore.mark_unresolved(key, 4, "effect_already_done")
+
+      assert {:ok, %{status: :ambiguous, metadata: metadata}} = KeyStore.get(key)
+
+      assert %{
+               "run_id" => "r1",
+               "pushed_local_sha" => "abc",
+               "unresolved_reason" => "effect_already_done"
+             } = metadata
+
+      assert KeyStore.unresolved_version(metadata) == {:ok, 4}
+    end
+
+    test "unresolved_version/1 is :none without a usable marker" do
+      assert KeyStore.unresolved_version(%{}) == :none
+      assert KeyStore.unresolved_version(%{"unresolved_at_run_version" => nil}) == :none
+      assert KeyStore.unresolved_version(nil) == :none
+    end
+
+    test "unresolved_version/1 fails closed on a marker that is present but malformed" do
+      assert KeyStore.unresolved_version(%{"unresolved_at_run_version" => "4"}) ==
+               {:error, :malformed}
+
+      assert KeyStore.unresolved_version(%{"unresolved_at_run_version" => -1}) ==
+               {:error, :malformed}
+
+      # string key only: an atom-keyed marker is not one
+      assert KeyStore.unresolved_version(%{unresolved_at_run_version: 4}) == :none
+    end
+
+    test "lift_unresolved/3 moves a key to started only at the observed marker; the second caller loses" do
+      key = "effect:branch_push:r2:feature/y"
+      :ok = KeyStore.mark_started(key, %{"run_id" => "r2"})
+      assert :not_unresolved = KeyStore.lift_unresolved(key, 2, %{})
+
+      :ok = KeyStore.mark_unresolved(key, 2, "effect_already_done")
+      clear = %{"unresolved_at_run_version" => nil, "unresolved_reason" => nil}
+
+      # a marker at another version than the one observed is not lifted
+      assert :not_unresolved = KeyStore.lift_unresolved(key, 1, clear)
+      assert {:ok, %{status: :ambiguous}} = KeyStore.get(key)
+
+      assert :lifted = KeyStore.lift_unresolved(key, 2, clear)
+
+      assert {:ok, %{status: :started, metadata: %{"run_id" => "r2"} = metadata}} =
+               KeyStore.get(key)
+
+      assert KeyStore.unresolved_version(metadata) == :none
+      assert :not_unresolved = KeyStore.lift_unresolved(key, 2, clear)
+      assert :not_unresolved = KeyStore.lift_unresolved("effect:branch_push:r2:absent", 2, clear)
+    end
+  end
 end

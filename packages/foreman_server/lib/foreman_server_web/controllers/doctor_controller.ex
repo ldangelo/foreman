@@ -18,6 +18,11 @@ defmodule ForemanServerWeb.DoctorController do
       to deliver, `warn` when messaging is enabled but its config is invalid, the
       notifier or the dispatcher process is down, or events were refused
       (`Notifier.status/0`; it never names a destination);
+    * `effect_keys` - ambiguous effect keys (`MCP.Tools.Doctor.unresolved_effect_keys/0`):
+      `ok` with the count in the title (informational, so `foreman doctor --strict`
+      stays green: Phase 0 has no way to clear a key) and the store line plus one
+      line per key (class, run id, run status) in `detail`; `warn` only when the
+      keys cannot be read;
     * `project.recommendations` - with `?project=`, counts of setup
       recommendations by severity (`Projects.Recommendations`).
 
@@ -44,7 +49,8 @@ defmodule ForemanServerWeb.DoctorController do
     checks =
       [check("server", :ok, "Server reachable", "The server answered this request.")] ++
         [event_store_check()] ++
-        provider_checks() ++ workflow_checks() ++ [notifier_check()] ++ project_check
+        provider_checks() ++
+        workflow_checks() ++ [notifier_check(), effect_keys_check()] ++ project_check
 
     case Enum.find(project_check, &(&1["status"] == "not_found")) do
       nil -> conn |> put_status(:ok) |> json(%{checks: checks})
@@ -58,6 +64,30 @@ defmodule ForemanServerWeb.DoctorController do
   catch
     :exit, reason ->
       check("event_store", :fail, "Read model unreachable", inspect(reason))
+  end
+
+  defp effect_keys_check do
+    case safely(&Doctor.unresolved_effect_keys/0) do
+      {:ok, {:ok, entries}} ->
+        lines = [
+          Doctor.store_line() | Enum.map(Doctor.effect_entry_lines(entries), &("  " <> &1))
+        ]
+
+        check(
+          "effect_keys",
+          :ok,
+          "Unresolved effect keys: #{length(entries)}",
+          Enum.join(lines, "\n")
+        )
+
+      _unreadable ->
+        check(
+          "effect_keys",
+          :warn,
+          "Unresolved effect keys could not be read",
+          "The idempotency store did not answer, so ambiguous effect keys are unknown."
+        )
+    end
   end
 
   # Notifications are optional, so "off" is a healthy answer. What must not look healthy is the

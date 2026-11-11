@@ -22,6 +22,12 @@ defmodule ForemanServer.Workflow.PhasePRBodyTest do
       "git", ["rev-list", "--count", _range], _opts ->
         {"1", 0}
 
+      "git", ["rev-parse", "--verify", _ref], _opts ->
+        {"0123456789abcdef0123456789abcdef01234567", 0}
+
+      "git", ["ls-remote", "origin", _ref], _opts ->
+        {"", 0}
+
       "git", ["push", "-u", "origin", _branch], _opts ->
         {"", 0}
 

@@ -20,6 +20,11 @@ defmodule ForemanServer.PrCreateTest do
   alias ForemanServer.Aggregates.Run
   alias ForemanServer.TestSupport.PrFixSupport, as: Fix
   alias ForemanServer.TestSupport.PrWatchSupport, as: Support
+  alias ForemanServer.Idempotency.KeyStore
+  alias ForemanServer.Idempotency.Reconcilers.BranchPush
+  alias ForemanServer.Idempotency.Reconcilers.PrCreate, as: CreateEffect
+  alias ForemanServer.TelemetryTest.Handler
+  alias ForemanServer.TestSupport.{EffectWorld, KeyStoreReset}
 
   @base "main"
   @head_sha "0123456789abcdef0123456789abcdef01234567"
@@ -36,6 +41,10 @@ defmodule ForemanServer.PrCreateTest do
 
       case {cmd, args} do
         {"git", ["rev-list" | _]} -> {reply.ahead, 0}
+        # The push's intent reads the branch tip and the remote head before pushing; the
+        # gate signal's `rev-parse` (`script.rev`) is a different command.
+        {"git", ["rev-parse", "--verify", "refs/heads/" <> _]} -> {@head_sha <> "\n", 0}
+        {"git", ["ls-remote" | _]} -> {"", 0}
         {"git", ["rev-parse" | _]} -> reply.rev
         {"git", ["push" | _]} -> reply.push
         {"gh", ["pr", "create" | _]} -> run_gh(reply.gh, test_pid)
@@ -461,8 +470,14 @@ defmodule ForemanServer.PrCreateTest do
       {state, _version} = Aggregate.load(Run, "run:#{t.run_id}")
       assert Run.merge_gate(state) == :pending
 
-      # the head is resolved from the pushed branch, in the project checkout
-      assert [{["rev-parse", "--verify", rev], opts}] = ran("git", &(hd(&1) == "rev-parse"))
+      # the head is resolved from the pushed branch, in the project checkout (the push's own
+      # intent read the branch tip too, as `refs/heads/<branch>`: a different command)
+      assert [{["rev-parse", "--verify", rev], opts}] =
+               ran(
+                 "git",
+                 &(hd(&1) == "rev-parse" and String.ends_with?(List.last(&1), "^{commit}"))
+               )
+
       assert rev == t.branch <> "^{commit}"
       assert opts[:cd] == t.repo
     end
@@ -559,6 +574,156 @@ defmodule ForemanServer.PrCreateTest do
       # the retry resumed the open PR: no second push or PR
       assert ran("gh") == []
       assert ran("git", &(hd(&1) == "push")) == []
+    end
+  end
+
+  describe "the push and the PR create are keyed effects (TRD-013)" do
+    @terminal_event [:foreman_server, :workflow, :boot_reconciliation, :effect_on_terminal_run]
+
+    setup do
+      KeyStoreReset.reset!()
+      {handler_id, ref} = Handler.attach_event_handlers(self(), [@terminal_event])
+
+      on_exit(fn ->
+        :telemetry.detach(handler_id)
+        KeyStoreReset.reset!()
+      end)
+
+      %{ref: ref}
+    end
+
+    # A thread whose project checkout is a real repository with a bare origin and the run
+    # branch, behind the scripted GitHub (`PrCreate.set_command_runner/1` reaches AutoPR).
+    defp real_thread!(world) do
+      t = thread!()
+      fx = EffectWorld.adopt!(t.repo, t.branch)
+      PrCreate.set_command_runner(EffectWorld.runner(world))
+      {t, fx}
+    end
+
+    test "the operator path runs both under keys that carry the project checkout as cwd" do
+      t = thread!()
+
+      assert {:ok, _payload} = PrCreate.execute(t.run_id)
+
+      assert {:ok, %{status: :completed, metadata: push}} =
+               KeyStore.get(BranchPush.key(t.run_id, t.branch))
+
+      assert %{
+               "cwd" => cwd,
+               "head_branch" => head,
+               "pre_push_remote_sha" => nil,
+               "pushed_local_sha" => @head_sha
+             } = push
+
+      assert {cwd, head} == {t.repo, t.branch}
+
+      assert {:ok, %{status: :completed, metadata: create}} =
+               KeyStore.get(CreateEffect.key(t.run_id, t.branch, @base))
+
+      assert %{"cwd" => ^cwd, "head_branch" => ^head, "base_branch" => @base} = create
+    end
+
+    test "a crash after gh pr create made the PR: the sweep finds it and nothing more is created",
+         %{ref: ref} do
+      world = EffectWorld.start()
+      {t, _fx} = real_thread!(world)
+      key = CreateEffect.key(t.run_id, t.branch, @base)
+
+      EffectWorld.crash!(world, :create, :after, fn -> PrCreate.execute(t.run_id) end)
+      assert {:ok, :started} = KeyStore.status(key)
+      assert EffectWorld.executed(world, :create) == 1
+
+      EffectWorld.sweep(world)
+
+      # The operator's run is completed, so the sweep cannot block it: it reports the verdict.
+      assert_receive {@terminal_event, ^ref, %{count: 1},
+                      %{
+                        run_id: run_id,
+                        status: "completed",
+                        effect_class: "pr_create",
+                        effect_verdict: "done",
+                        reason: "effect_already_done"
+                      }}
+
+      assert run_id == t.run_id
+      assert {:ok, :ambiguous} = KeyStore.status(key)
+      assert EffectWorld.executed(world, :create) == 1
+      assert length(EffectWorld.prs(world)) == 1
+    end
+
+    test "a crash before gh pr create ran: the sweep reports it not done and the retry creates it once",
+         %{ref: ref} do
+      world = EffectWorld.start()
+      {t, _fx} = real_thread!(world)
+      key = CreateEffect.key(t.run_id, t.branch, @base)
+
+      EffectWorld.crash!(world, :create, :before, fn -> PrCreate.execute(t.run_id) end)
+      assert EffectWorld.executed(world, :create) == 0
+
+      EffectWorld.sweep(world)
+
+      assert_receive {@terminal_event, ^ref, _, %{effect_verdict: "not_done", reason: nil}}
+      assert EffectWorld.executed(world, :create) == 0
+
+      assert {:ok, %{pr_url: url}} = PrCreate.execute(t.run_id)
+
+      assert [%{"url" => ^url}] = EffectWorld.prs(world)
+      assert EffectWorld.executed(world, :create) == 1
+      assert {:ok, %{pr_url: ^url}} = ProjectionStore.pr_association(t.run_id)
+      assert {:ok, :completed} = KeyStore.status(key)
+    end
+
+    test "a crash after the push reached the remote: the sweep reports it done and nothing more is pushed",
+         %{ref: ref} do
+      world = EffectWorld.start()
+      {t, fx} = real_thread!(world)
+      key = BranchPush.key(t.run_id, t.branch)
+
+      EffectWorld.crash!(world, :push, :after, fn -> PrCreate.execute(t.run_id) end)
+      assert {:ok, :started} = KeyStore.status(key)
+      assert EffectWorld.remote_tip(fx) == EffectWorld.local_tip(fx)
+
+      EffectWorld.sweep(world)
+
+      assert_receive {@terminal_event, ^ref, %{count: 1},
+                      %{
+                        run_id: run_id,
+                        status: "completed",
+                        effect_class: "branch_push",
+                        effect_verdict: "done",
+                        reason: "effect_already_done"
+                      }}
+
+      assert run_id == t.run_id
+      assert {:ok, :ambiguous} = KeyStore.status(key)
+      assert EffectWorld.executed(world, :push) == 1
+      assert EffectWorld.executed(world, :create) == 0
+    end
+
+    test "a crash before the push reached the remote: the sweep reports it not done and the retry pushes once",
+         %{ref: ref} do
+      world = EffectWorld.start()
+      {t, fx} = real_thread!(world)
+      key = BranchPush.key(t.run_id, t.branch)
+
+      EffectWorld.crash!(world, :push, :before, fn -> PrCreate.execute(t.run_id) end)
+      assert EffectWorld.executed(world, :push) == 0
+      assert EffectWorld.remote_tip(fx) == nil
+
+      EffectWorld.sweep(world)
+
+      assert_receive {@terminal_event, ^ref, _,
+                      %{effect_class: "branch_push", effect_verdict: "not_done", reason: nil}}
+
+      assert EffectWorld.executed(world, :push) == 0
+
+      assert {:ok, %{pr_url: url}} = PrCreate.execute(t.run_id)
+
+      assert EffectWorld.executed(world, :push) == 1
+      assert EffectWorld.remote_tip(fx) == EffectWorld.local_tip(fx)
+      assert [%{"url" => ^url}] = EffectWorld.prs(world)
+      assert {:ok, :completed} = KeyStore.status(key)
     end
   end
 end

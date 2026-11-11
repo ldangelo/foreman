@@ -31,6 +31,7 @@ defmodule ForemanServer.Idempotency.KeyStore do
   @table :foreman_idempotency_keys
 
   import Ecto.Query
+  require Logger
   alias ForemanServer.Idempotency.IdempotencyKey
   alias ForemanServer.Agents.JidoCheckpointStore
 
@@ -80,6 +81,73 @@ defmodule ForemanServer.Idempotency.KeyStore do
   end
 
   @doc """
+  True exactly for effect keys (`effect:<class>:<run_id>:<identity>`, written by
+  `ForemanServer.Idempotency.Effect`). Agent-phase keys are
+  `"phase:<run_id>:<phase_id>"`, so the two families cannot collide. Recovery
+  and the doctor partition keys with this predicate rather than the prefix.
+  """
+  @spec effect_key?(term()) :: boolean()
+  def effect_key?("effect:" <> _), do: true
+  def effect_key?(_), do: false
+
+  @unresolved_version_field "unresolved_at_run_version"
+
+  @doc """
+  Record on an effect key that recovery could not resolve it: the key stays
+  (or becomes) `ambiguous` and its metadata gains the run stream's version at
+  that moment (`unresolved_at_run_version`) and the reason
+  (`unresolved_reason`). `Idempotency.Effect.run/4` refuses to repeat a key that
+  carries the marker until the run has been reset. String keys, merged with the
+  stored metadata like every record call. Returns `:ok` or `{:error, reason}`.
+  """
+  @spec mark_unresolved(String.t(), non_neg_integer(), String.t()) :: :ok | {:error, term()}
+  def mark_unresolved(key, run_version, reason)
+      when is_integer(run_version) and run_version >= 0 do
+    GenServer.call(
+      __MODULE__,
+      {:record, key, :ambiguous,
+       %{@unresolved_version_field => run_version, "unresolved_reason" => reason}}
+    )
+  end
+
+  @doc """
+  The run-stream version recorded by `mark_unresolved/3` in a key's metadata
+  (string key), `:none` when the key carries no marker (absent or nil), and
+  `{:error, :malformed}` when a marker is present but is not a non-negative
+  integer: the caller must treat that as unresolved, never as no marker.
+  """
+  @spec unresolved_version(term()) :: {:ok, non_neg_integer()} | :none | {:error, :malformed}
+  def unresolved_version(metadata) when is_map(metadata) do
+    case Map.get(metadata, @unresolved_version_field) do
+      nil -> :none
+      version when is_integer(version) and version >= 0 -> {:ok, version}
+      _other -> {:error, :malformed}
+    end
+  end
+
+  def unresolved_version(_metadata), do: :none
+
+  @doc """
+  Atomically move an unresolved key to `started` (an operator `run.reset` has
+  lifted the refusal): only when the key is `ambiguous` and its marker is still
+  `observed_version`, the version the caller read before deciding the reset
+  lifts it. So of two concurrent callers that both saw the reset only one wins,
+  and a marker rewritten after the check is not lifted on the earlier decision.
+  `meta` is merged like any record call; it must clear the marker fields. A
+  malformed marker is never lifted (`unresolved_version/1` is an error): it is
+  operator-repair only.
+
+  Returns `:lifted`, `:not_unresolved` (the key no longer carries that marker) or
+  `{:error, reason}`.
+  """
+  @spec lift_unresolved(String.t(), non_neg_integer(), map()) ::
+          :lifted | :not_unresolved | {:error, term()}
+  def lift_unresolved(key, observed_version, meta)
+      when is_integer(observed_version) and is_map(meta) do
+    GenServer.call(__MODULE__, {:lift_unresolved, key, observed_version, meta})
+  end
+
+  @doc """
   Return the current status of an idempotency key.
   Returns `{:ok, status}` when found, `:not_found` otherwise.
   """
@@ -103,6 +171,98 @@ defmodule ForemanServer.Idempotency.KeyStore do
     GenServer.call(__MODULE__, {:list_by_status, status})
   end
 
+  @typedoc "A stored key record as `list_records_checked/1` returns it."
+  @type stored_record :: %{key: String.t(), status: atom(), metadata: map()}
+
+  @doc """
+  List the full records (key, status, metadata) with a given status, reporting
+  a failed read instead of hiding it.
+
+  Returns `{:ok, [record]}` or `{:error, reason}`. With a repo configured it
+  queries the stored rows under a rescue and NEVER falls back to ETS (a
+  fallback would show an outage as an empty list); a repo that is down, or a
+  `KeyStore` that is not running, is `{:error, reason}`. Without a repo it
+  scans the ETS table. Metadata keys are strings when read from the repo
+  (JSON round trip) and as written when read from ETS. `list_by_status/1`
+  keeps its ETS fallback: boot reconciliation reads it and is not changed here.
+  """
+  @spec list_records_checked(atom()) :: {:ok, [stored_record()]} | {:error, term()}
+  def list_records_checked(status) do
+    GenServer.call(__MODULE__, {:list_records_checked, status})
+  catch
+    :exit, reason -> {:error, {:exit, reason}}
+  end
+
+  @doc """
+  The store's durability: `:durable` only when a repo is configured AND answers
+  (probed by a one-row read of the same table);
+  `{:not_durable, :no_repo}` for the ETS-only fallback (keys do not survive a
+  restart); `{:not_durable, {:unreachable, reason}}` for a repo that is
+  configured but does not answer (or a `KeyStore` that is not running).
+  """
+  @spec durability() :: :durable | {:not_durable, :no_repo | {:unreachable, term()}}
+  def durability do
+    GenServer.call(__MODULE__, :durability)
+  catch
+    :exit, reason -> {:not_durable, {:unreachable, {:exit, reason}}}
+  end
+
+  @doc "True only when `durability/0` is `:durable`."
+  @spec durable?() :: boolean()
+  def durable?, do: durability() == :durable
+
+  @production_switches "FOREMAN_JIDO_ECTO_ENABLED=true (or `config :foreman_server, :jido_ecto, " <>
+                         "enabled: true`) and JIDO_CHECKPOINT_DATABASE_URL"
+
+  @doc """
+  The one-line statement of the store's durability, used by the boot log and the
+  doctor. `nil` when the store is durable.
+  """
+  @spec durability_note() :: String.t() | nil
+  def durability_note do
+    case durability() do
+      :durable ->
+        nil
+
+      {:not_durable, :no_repo} ->
+        "idempotency store is not durable: no repo is configured (ETS fallback), so effect keys " <>
+          "do not survive a restart and crash recovery cannot reconcile effects; set " <>
+          @production_switches
+
+      {:not_durable, {:unreachable, reason}} ->
+        "idempotency store is configured but unreachable (#{inspect(reason, limit: 5)}): " <>
+          "keys written now do not survive a restart and crash recovery cannot reconcile " <>
+          "effects; check " <> @production_switches
+    end
+  end
+
+  @doc """
+  Boot report: when the store is not durable, logs an error and emits
+  `[:foreman_server, :idempotency, :key_store, :not_durable]` (measurements
+  `%{count: 1}`, metadata `%{reason: :no_repo | :unreachable}`). Called once from
+  `ForemanServer.Application.start/2` after the supervision tree is up, so a
+  configured repo has started.
+  """
+  @spec report_boot_durability() :: :durable | {:not_durable, :no_repo | {:unreachable, term()}}
+  def report_boot_durability do
+    case durability() do
+      :durable ->
+        :durable
+
+      {:not_durable, detail} = result ->
+        reason = if detail == :no_repo, do: :no_repo, else: :unreachable
+        Logger.error(durability_note())
+
+        :telemetry.execute(
+          [:foreman_server, :idempotency, :key_store, :not_durable],
+          %{count: 1},
+          %{reason: reason}
+        )
+
+        result
+    end
+  end
+
   # --- genserver callbacks ---
 
   @impl true
@@ -117,13 +277,11 @@ defmodule ForemanServer.Idempotency.KeyStore do
   @impl true
   def handle_call({:record, key, status, meta}, _from, %{repo: repo} = state)
       when repo != nil do
-    existing_meta =
+    merged =
       case :ets.lookup(@table, key) do
-        [{^key, _status, existing}] -> existing
-        [] -> %{}
+        [{^key, _status, existing}] -> Map.merge(existing, meta)
+        [] -> merge_stored(repo, key, meta)
       end
-
-    merged = Map.merge(existing_meta, meta)
 
     changeset =
       IdempotencyKey.upsert_changeset(%IdempotencyKey{key: key}, %{
@@ -160,6 +318,28 @@ defmodule ForemanServer.Idempotency.KeyStore do
     merged = Map.merge(existing_meta, meta)
     :ets.insert(@table, {key, status, merged})
     {:reply, :ok, state}
+  end
+
+  # Compare-and-set for `lift_unresolved/2`: runs inside the server, so the
+  # marker check and the `started` write cannot interleave with another caller.
+  @impl true
+  def handle_call({:lift_unresolved, key, observed_version, meta}, from, state) do
+    case current_record(state, key) do
+      {:ok, :ambiguous, stored} when is_map(stored) ->
+        if unresolved_version(stored) == {:ok, observed_version} do
+          case handle_call({:record, key, :started, meta}, from, state) do
+            {:reply, :ok, state} -> {:reply, :lifted, state}
+            other -> other
+          end
+        else
+          {:reply, :not_unresolved, state}
+        end
+
+      _no_marker ->
+        {:reply, :not_unresolved, state}
+    end
+  rescue
+    err -> {:reply, {:error, err}, state}
   end
 
   # Durable path: status lookup
@@ -231,6 +411,31 @@ defmodule ForemanServer.Idempotency.KeyStore do
     {:reply, result, state}
   end
 
+  # Checked reads and the durability probe. A failed repo query is an error, never ETS.
+  @impl true
+  def handle_call({:list_records_checked, status}, _from, %{repo: repo} = state)
+      when repo != nil do
+    {:reply, query_records(repo, status), state}
+  end
+
+  def handle_call({:list_records_checked, status}, _from, %{repo: nil} = state) do
+    records =
+      for {key, ^status, meta} <- :ets.tab2list(@table),
+          do: %{key: key, status: status, metadata: meta}
+
+    {:reply, {:ok, records}, state}
+  end
+
+  def handle_call(:durability, _from, %{repo: nil} = state),
+    do: {:reply, {:not_durable, :no_repo}, state}
+
+  def handle_call(:durability, _from, %{repo: repo} = state) do
+    case probe_repo(repo) do
+      :ok -> {:reply, :durable, state}
+      {:error, reason} -> {:reply, {:not_durable, {:unreachable, reason}}, state}
+    end
+  end
+
   # Durable path: list by status
   @impl true
   def handle_call({:list_by_status, status}, _from, %{repo: repo} = state)
@@ -260,6 +465,60 @@ defmodule ForemanServer.Idempotency.KeyStore do
   end
 
   # --- internal helpers ---
+
+  # Does the repo answer? One key, never the rows: the probe runs at boot and on every doctor
+  # render, so it must not load every ambiguous record with its metadata.
+  defp probe_repo(repo) do
+    _ = repo.all(from(k in IdempotencyKey, limit: 1, select: k.key))
+    :ok
+  rescue
+    err -> {:error, err}
+  catch
+    :exit, reason -> {:error, {:exit, reason}}
+  end
+
+  defp query_records(repo, status) do
+    rows = repo.all(from(k in IdempotencyKey, where: k.status == ^status))
+
+    {:ok, Enum.map(rows, &%{key: &1.key, status: &1.status, metadata: &1.metadata || %{}})}
+  rescue
+    err -> {:error, err}
+  catch
+    :exit, reason -> {:error, {:exit, reason}}
+  end
+
+  defp current_record(%{repo: repo}, key) do
+    case :ets.lookup(@table, key) do
+      [{^key, status, meta}] ->
+        {:ok, status, meta}
+
+      [] when repo == nil ->
+        :not_found
+
+      [] ->
+        case repo.get(IdempotencyKey, key) do
+          %IdempotencyKey{status: status, metadata: meta} -> {:ok, status, meta}
+          nil -> :not_found
+        end
+    end
+  end
+
+  # After a restart ETS has no copy of the key (`init/1` creates the table
+  # empty) but the stored row does. Merge the incoming fields into the stored
+  # metadata so a status change never drops a field it did not name. The stored
+  # map has string keys (JSON round trip), so the incoming keys are converted
+  # to strings to line up with it. No stored row: the incoming fields as given.
+  defp merge_stored(repo, key, meta) do
+    case repo.get(IdempotencyKey, key) do
+      %IdempotencyKey{metadata: stored} when is_map(stored) ->
+        Map.merge(stringify_keys(stored), stringify_keys(meta))
+
+      _none ->
+        meta
+    end
+  end
+
+  defp stringify_keys(map), do: Map.new(map, fn {k, v} -> {to_string(k), v} end)
 
   defp repo_from_config do
     Application.get_env(:foreman_server, JidoCheckpointStore, [])[:repo]
