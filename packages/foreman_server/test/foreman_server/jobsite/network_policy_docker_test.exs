@@ -131,14 +131,6 @@ defmodule ForemanServer.Jobsite.NetworkPolicyDockerTest do
 
       on_exit(fn -> Docker.close(state) end)
 
-      # Positive control: a file inside the worktree is readable at the sandbox path.
-      File.write!(Path.join(worktree.path, "inside.txt"), "inside\n")
-
-      assert {:ok, %{exit_code: 0, stdout: inside}} =
-               Docker.exec(state, "cat #{sandbox_path}/inside.txt", [])
-
-      assert inside =~ "inside"
-
       # The host path itself, the same path under the sandbox mount (what a host-root mount would
       # expose), and a climb out of the mount: each read fails and shows nothing.
       for marker <- [repo_marker, tmp_marker],
@@ -147,6 +139,15 @@ defmodule ForemanServer.Jobsite.NetworkPolicyDockerTest do
         assert code != 0, "read of #{path} succeeded"
         refute out =~ "secret-in"
       end
+
+      # Positive control (so the failures above are not a broken sandbox): a file inside the
+      # worktree is readable at the sandbox path.
+      File.write!(Path.join(worktree.path, "inside.txt"), "inside\n")
+
+      assert {:ok, %{exit_code: 0, stdout: inside}} =
+               Docker.exec(state, "cat #{sandbox_path}/inside.txt", [])
+
+      assert inside =~ "inside"
     end
   end
 
