@@ -131,10 +131,28 @@ defmodule ForemanServer.Jobsite.NetworkPolicyDockerTest do
 
       on_exit(fn -> Docker.close(state) end)
 
+      # A file next to the worktree, in its parent directory: a mount wider by one level shows it
+      # at `<sandbox_path>/<name>` (Docker Desktop on macOS does not expose the host's `/` itself,
+      # so a widening that stops short of the root is the one it can show).
+      parent_marker =
+        Path.join(
+          Path.dirname(worktree.path),
+          "outside-marker-#{System.unique_integer([:positive])}.txt"
+        )
+
+      File.write!(parent_marker, "secret-in-parent\n")
+      on_exit(fn -> File.rm(parent_marker) end)
+
       # The host path itself, the same path under the sandbox mount (what a host-root mount would
-      # expose), and a climb out of the mount: each read fails and shows nothing.
-      for marker <- [repo_marker, tmp_marker],
-          path <- [marker, sandbox_path <> marker, "#{sandbox_path}/../.." <> marker] do
+      # expose), a climb out of the mount, and the marker's bare name under the mount (what a wider
+      # mount shows): each read fails and shows nothing.
+      for marker <- [repo_marker, tmp_marker, parent_marker],
+          path <- [
+            marker,
+            sandbox_path <> marker,
+            "#{sandbox_path}/../.." <> marker,
+            "#{sandbox_path}/#{Path.basename(marker)}"
+          ] do
         assert {:ok, %{exit_code: code, stdout: out}} = Docker.exec(state, "cat #{path}", [])
         assert code != 0, "read of #{path} succeeded"
         refute out =~ "secret-in"
