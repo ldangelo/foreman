@@ -123,7 +123,7 @@ defmodule ForemanServer.Overview.ExpiredSignalsTest do
     assert Overview.attention(@project) == overview.attention
   end
 
-  test "the expiry is history once the thread resumes: it is working again, not waiting on you" do
+  test "an expired request is history once the thread resumes; an expired question stays until the thread ends" do
     :ok =
       ProjectionStore.apply_events([
         ev("RunResumed", %{run_id: "appr"}),
@@ -132,14 +132,30 @@ defmodule ForemanServer.Overview.ExpiredSignalsTest do
 
     {:ok, overview} = Overview.build(@project, now_fun: fn -> @now end)
 
-    assert reasons_by_thread(overview.groups.waiting_on_you) == %{"run:plain" => :paused}
-
-    assert reasons_by_thread(overview.groups.working) == %{
-             "run:appr" => :in_flight,
-             "run:ques" => :in_flight
+    assert reasons_by_thread(overview.groups.waiting_on_you) == %{
+             "run:plain" => :paused,
+             "run:ques" => :question_expired
            }
 
-    assert overview.attention == %{needed: true, count: 1, reasons: [:paused]}
+    assert reasons_by_thread(overview.groups.working) == %{"run:appr" => :in_flight}
+
+    assert overview.attention == %{needed: true, count: 2, reasons: [:paused, :question_expired]}
+  end
+
+  test "an expired question on a running (never paused) thread waits on you; a terminal thread does not" do
+    :ok =
+      ProjectionStore.apply_events(
+        [ev("RunStarted", %{run_id: "live", task_id: "t-live", project_id: @project})] ++
+          expired_question("live") ++
+          [ev("RunStarted", %{run_id: "done", task_id: "t-done", project_id: @project})] ++
+          expired_question("done") ++
+          [ev("RunCompleted", %{run_id: "done"})]
+      )
+
+    {:ok, overview} = Overview.build(@project, now_fun: fn -> @now end)
+
+    assert reasons_by_thread(overview.groups.waiting_on_you)["run:live"] == :question_expired
+    refute Map.has_key?(reasons_by_thread(overview.groups.waiting_on_you), "run:done")
   end
 
   test "a request still pending, or a question still open, outranks the expired one beside it" do

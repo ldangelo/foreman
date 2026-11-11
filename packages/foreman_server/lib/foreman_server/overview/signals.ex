@@ -26,6 +26,7 @@ defmodule ForemanServer.Overview.Signals do
         }
 
   @no_approvals %{pending: 0, expired: 0, failed_deliveries: 0}
+  @terminal ~w(completed failed cancelled deleted removed)
   @no_questions %{open: 0, expired: 0, undelivered: 0}
 
   @doc """
@@ -47,7 +48,7 @@ defmodule ForemanServer.Overview.Signals do
 
       {thread.id,
        signals(
-         thread.status == "paused",
+         thread.status,
          sum(approvals, ids, @no_approvals),
          sum(questions, ids, @no_questions)
        )}
@@ -57,12 +58,19 @@ defmodule ForemanServer.Overview.Signals do
   # Expired requests, undelivered approvals and answers that never reached the agent
   # matter only while the thread is still stuck (`paused`): once it resumes (the
   # operator steers it with a deliverable message) they are history, not "waiting on you".
-  defp signals(stuck?, approvals, questions) do
+  #
+  # An expired question is the exception: nothing pauses a run for a question, so the
+  # `paused` gate would hide it on a running thread. It shows while the thread is not
+  # terminal (completed, failed, cancelled). No event clears it; it stays until the
+  # thread reaches a terminal status.
+  defp signals(status, approvals, questions) do
+    stuck? = status == "paused"
+
     %{
       pending_approvals: approvals.pending,
       open_questions: questions.open,
       expired_approvals: if(stuck?, do: approvals.expired, else: 0),
-      expired_questions: if(stuck?, do: questions.expired, else: 0),
+      expired_questions: if(status in @terminal, do: 0, else: questions.expired),
       undelivered_answers: if(stuck?, do: questions.undelivered, else: 0),
       failed_approval_deliveries: if(stuck?, do: approvals.failed_deliveries, else: 0)
     }

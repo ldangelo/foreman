@@ -159,7 +159,7 @@ defmodule ForemanServer.Overview.SignalsTest do
              }
     end
 
-    test "expired requests and undelivered approvals explain a PAUSED thread only" do
+    test "expired requests and undelivered approvals explain a PAUSED thread; an expired question any live one" do
       stuck = Signals.for_threads([workflow(["r2"], "paused")])
 
       assert stuck["run:r2"] == %{
@@ -171,7 +171,11 @@ defmodule ForemanServer.Overview.SignalsTest do
              }
 
       running = Signals.for_threads([workflow(["r2"], "in_progress")])
-      assert running["run:r2"] == zero()
+      assert running["run:r2"] == %{zero() | expired_questions: 1}
+
+      for status <- ["completed", "failed", "cancelled"] do
+        assert Signals.for_threads([workflow(["r2"], status)])["run:r2"] == zero()
+      end
     end
 
     test "a thread nothing was asked of has all-zero counts" do
