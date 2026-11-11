@@ -41,11 +41,12 @@ config :foreman_server, ForemanServer.Overwatch, enabled: true
 # Effect reconcilers (TRD-011..013): the class of an ambiguous `effect:` key (the
 # `effect_class` its metadata carries) mapped to the module that asks the outside
 # world whether the effect happened. A class with no entry blocks the run
-# `effect_class_unregistered`. `task_provider` is registered by TRD-015.
+# `effect_class_unregistered`.
 config :foreman_server, ForemanServer.Idempotency.Reconciler,
   classes: %{
     "branch_push" => ForemanServer.Idempotency.Reconcilers.BranchPush,
-    "pr_create" => ForemanServer.Idempotency.Reconcilers.PrCreate
+    "pr_create" => ForemanServer.Idempotency.Reconcilers.PrCreate,
+    "task_provider" => ForemanServer.Idempotency.Reconcilers.TaskProvider
   }
 
 # foreman_server: task_provider subsystem (TRD-029)

@@ -73,13 +73,14 @@ defmodule ForemanServer.Idempotency.ReconcilerTest do
       assert Reconciler.verdict("exiting", %{}, classes: @classes) == :unknown
     end
 
-    test "the configured registry holds the push and PR-create reconcilers (TRD-013); task_provider waits for TRD-015" do
+    test "the configured registry holds the push, PR-create and task-provider reconcilers" do
       assert Reconciler.classes() == %{
                "branch_push" => ForemanServer.Idempotency.Reconcilers.BranchPush,
-               "pr_create" => ForemanServer.Idempotency.Reconcilers.PrCreate
+               "pr_create" => ForemanServer.Idempotency.Reconcilers.PrCreate,
+               "task_provider" => ForemanServer.Idempotency.Reconcilers.TaskProvider
              }
 
-      assert Reconciler.verdict("task_provider", %{}) == :unregistered
+      assert Reconciler.verdict("annotate", %{}) == :unregistered
     end
   end
 

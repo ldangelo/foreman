@@ -67,6 +67,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   alias ForemanServer.Workflow.WorktreeSpec
   alias ForemanServer.Agents.VfsIsolation
   alias ForemanServer.TaskProvider.Telemetry, as: TaskProviderTelemetry
+  alias ForemanServer.Idempotency.Reconcilers.TaskProvider, as: TaskProviderEffect
   alias ForemanServer.TaskProvider.Registry, as: TaskProviderRegistry
   alias ForemanServer.Aggregate.Actor
   alias ForemanServer.Incarnation
@@ -125,7 +126,15 @@ defmodule ForemanServer.Workflow.RunExecutor do
       when is_binary(project_id) and project_id != "" and is_binary(task_id) and task_id != "" and
              is_binary(run_id) and run_id != "" do
     with {:ok, provider_module, project_config} <- resolve_provider(project_id, :claim, run_id),
-         result <- provider_module.claim(task_id, actor, project_config) do
+         result <-
+           TaskProviderEffect.run(
+             run_id,
+             project_id,
+             :claim,
+             task_id,
+             fn -> provider_module.claim(task_id, actor, project_config) end,
+             %{actor: if(is_binary(actor), do: actor)}
+           ) do
       maybe_retry_lost_claim(result, provider_module, project_config, task_id)
     end
   end
@@ -138,11 +147,13 @@ defmodule ForemanServer.Workflow.RunExecutor do
       when is_binary(project_id) and project_id != "" and is_binary(task_id) and task_id != "" and
              is_binary(run_id) and run_id != "" do
     with {:ok, provider_module, project_config} <- resolve_provider(project_id, :close, run_id) do
-      provider_module.complete(
-        task_id,
-        %{run_id: run_id, artifact_path: artifact_path},
-        project_config
-      )
+      TaskProviderEffect.run(run_id, project_id, :complete, task_id, fn ->
+        provider_module.complete(
+          task_id,
+          %{run_id: run_id, artifact_path: artifact_path},
+          project_config
+        )
+      end)
     end
   end
 
@@ -5229,7 +5240,15 @@ defmodule ForemanServer.Workflow.RunExecutor do
           })
 
         try do
-          case fail(project_id(state), provider_task_id(state), state.run_id, failure_reason) do
+          case TaskProviderEffect.run(
+                 state.run_id,
+                 project_id(state),
+                 :fail,
+                 provider_task_id(state),
+                 fn ->
+                   fail(project_id(state), provider_task_id(state), state.run_id, failure_reason)
+                 end
+               ) do
             {:ok, _issue} ->
               :provider_failed
 

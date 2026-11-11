@@ -38,6 +38,7 @@ defmodule ForemanServer.Workflow.BootReconciliation do
 
   alias ForemanServer.Aggregates.{BeadsDbLease, RunSlots}
   alias ForemanServer.Idempotency.{CrashRecovery, KeyStore, Reconciler, RestartBackoff}
+  alias ForemanServer.Idempotency.Reconcilers.TaskProvider, as: TaskProviderEffect
   alias ForemanServer.Incarnation
   alias ForemanServer.TaskProvider.Issue
   alias ForemanServer.TaskProvider.Registry, as: TaskProviderRegistry
@@ -408,7 +409,7 @@ defmodule ForemanServer.Workflow.BootReconciliation do
       {"in_progress", false} ->
         case ensure_json_schema_cache_started() do
           :ok ->
-            case provider_module.reopen(issue.id, @transition_comment, project_config) do
+            case reopen_orphan(provider_module, project_config, project_id, issue) do
               :ok -> emit(@orphan_reopen_event, project_id, issue, false)
               {:ok, _result} -> emit(@orphan_reopen_event, project_id, issue, false)
               {:error, reason} -> log_reopen_failure(project_id, issue.id, reason)
@@ -431,6 +432,46 @@ defmodule ForemanServer.Workflow.BootReconciliation do
 
   defp reconcile_issue(_issue, _active_task_ids, _provider_module, _project_config, _project_id),
     do: :ok
+
+  # The reopen is a keyed effect (TRD-015, `Reconcilers.TaskProvider`) attributed to
+  # the newest projected run of the issue. That run is never active (the branch is
+  # taken only when no active run holds the issue), so recovery's verdict can block
+  # it only when it is `paused`; for a terminal run the verdict is logged and
+  # counted (TRD-012). An issue with no projected run has nothing to attribute a
+  # key to: its reopen is NOT keyed and a crash during it is not reconciled.
+  defp reopen_orphan(provider_module, project_config, project_id, %Issue{} = issue) do
+    reopen = fn -> provider_module.reopen(issue.id, @transition_comment, project_config) end
+
+    case newest_run_id_for_task(project_id, issue.id) do
+      {:ok, run_id} ->
+        TaskProviderEffect.run(run_id, project_id, :reopen, issue.id, reopen)
+
+      :none ->
+        Logger.warning(
+          "BootReconciliation reopening #{inspect(issue.id)} for project #{inspect(project_id)} " <>
+            "without an effect key: no projected run holds the task, so a crash during this " <>
+            "reopen is not reconciled (unprotected)",
+          project_id: project_id,
+          issue_id: issue.id
+        )
+
+        reopen.()
+    end
+  end
+
+  # `ProjectionStore.list_runs/1` is newest first (last event).
+  defp newest_run_id_for_task(project_id, task_id) do
+    [project_id: project_id]
+    |> ProjectionStore.list_runs()
+    |> Enum.find_value(:none, fn run ->
+      with {:ok, ^task_id} <- fetch_task_id(run),
+           run_id when is_binary(run_id) and run_id != "" <- fetch_map_value(run, :run_id) do
+        {:ok, run_id}
+      else
+        _ -> nil
+      end
+    end)
+  end
 
   defp ensure_coordination_status(provider_module) when is_atom(provider_module) do
     if function_exported?(provider_module, :coordination_status, 1) do
