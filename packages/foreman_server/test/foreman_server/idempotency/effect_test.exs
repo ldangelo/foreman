@@ -289,4 +289,46 @@ defmodule ForemanServer.Idempotency.EffectTest do
              } = metadata
     end
   end
+
+  describe "an unresolved marker on the repo path" do
+    test "survives restarts with string keys and keeps the effect refused" do
+      use_fake_repo()
+      key = push_key()
+
+      :ok =
+        KeyStore.mark_started(key, %{
+          "run_id" => @run_id,
+          "effect_class" => "branch_push",
+          "cwd" => "/w"
+        })
+
+      restart_key_store()
+      assert [] = :ets.lookup(@table, key)
+
+      :ok = KeyStore.mark_unresolved(key, 7, "effect_outcome_ambiguous")
+      restart_key_store()
+      assert [] = :ets.lookup(@table, key)
+
+      assert {:ok, %{status: :ambiguous, metadata: metadata} = stored} = KeyStore.get(key)
+      assert %{"run_id" => @run_id, "cwd" => "/w", "unresolved_at_run_version" => 7} = metadata
+      assert KeyStore.unresolved_version(metadata) == {:ok, 7}
+
+      test_pid = self()
+
+      assert {:error, {:effect_unresolved, ^key}} =
+               Effect.run(:branch_push, key, fn -> send(test_pid, :ran) end, push_meta())
+
+      refute_received :ran
+      assert {:ok, ^stored} = KeyStore.get(key)
+    end
+
+    test "a key without a marker is not refused" do
+      key = push_key()
+      :ok = KeyStore.mark_started(key, %{"run_id" => @run_id})
+      :ok = KeyStore.mark_ambiguous(key, "orphaned_started_key")
+
+      assert :ran == Effect.run(:branch_push, key, fn -> :ran end, push_meta())
+      assert {:ok, %{status: :completed}} = KeyStore.get(key)
+    end
+  end
 end

@@ -26,6 +26,8 @@ defmodule ForemanServer.Idempotency.Effect do
   `HeartbeatLease.acquire/4` arms a live-worker expiry timer and is not used.
   """
 
+  alias ForemanServer.Aggregate
+  alias ForemanServer.EventStore
   alias ForemanServer.Idempotency.KeyStore
 
   require Logger
@@ -37,6 +39,8 @@ defmodule ForemanServer.Idempotency.Effect do
           | {:missing_metadata, String.t()}
           | :cwd_missing
           | term()
+
+  @max_events 99_999_999
 
   @required %{
     "branch_push" => ["head_branch", "cwd"],
@@ -56,20 +60,26 @@ defmodule ForemanServer.Idempotency.Effect do
 
   Returns `fun`'s own result unchanged. Returns
   `{:error, {:intent_not_recorded, reason}}` without calling `fun` when the
-  metadata is incomplete or the `started` key cannot be written. The key is
+  metadata is incomplete or the `started` key cannot be written, and
+  `{:error, {:effect_unresolved, key}}` (also without calling `fun`, key and
+  metadata untouched) when recovery left the key unresolved and the run has not
+  been reset since. The key is
   marked `failed` when `fun` returns `:error`/`{:error, _}` or raises/throws/exits
   (the exception is re-raised), otherwise `completed`.
   """
   @spec run(class(), String.t(), (-> result), map()) ::
-          result | {:error, {:intent_not_recorded, intent_error()}}
+          result
+          | {:error, {:intent_not_recorded, intent_error()} | {:effect_unresolved, String.t()}}
         when result: term()
   def run(class, key, fun, meta) when is_function(fun, 0) and is_map(meta) do
     with {:ok, class_name} <- class_name(class),
          :ok <- check_key(key, class_name),
          {:ok, typed} <- typed_meta(class_name, meta),
+         {:ok, typed} <- check_unresolved(key, typed),
          :ok <- record_intent(key, typed) do
       execute(key, fun)
     else
+      {:unresolved, key} -> {:error, {:effect_unresolved, key}}
       {:error, reason} -> {:error, {:intent_not_recorded, reason}}
     end
   end
@@ -101,6 +111,61 @@ defmodule ForemanServer.Idempotency.Effect do
       "cwd" -> {:error, :cwd_missing}
       field -> {:error, {:missing_metadata, field}}
     end
+  end
+
+  # A key recovery could not resolve (`KeyStore.mark_unresolved/3`: a reconciler
+  # blocked the run, or the run was terminal and could not be blocked) is never
+  # repeated: the earlier attempt may have happened, and re-marking the key
+  # `started` would also overwrite the SHAs its reconciler needs. The only exit
+  # is an operator `run.reset`, which appends `RunReset` to the run's stream
+  # after the version the marker recorded. Any other event (a terminal run still
+  # takes PR events) leaves the refusal in place. A stream that cannot be read
+  # refuses too: not repeating is the safe side. A lifted key is re-marked
+  # `started` with the marker cleared.
+  defp check_unresolved(key, typed) do
+    case KeyStore.get(key) do
+      {:ok, %{status: :ambiguous, metadata: metadata}} when is_map(metadata) ->
+        case KeyStore.unresolved_version(metadata) do
+          {:ok, version} -> lift_if_reset(key, typed, version)
+          :none -> {:ok, typed}
+        end
+
+      _no_marker_to_honour ->
+        {:ok, typed}
+    end
+  catch
+    :exit, reason -> {:error, {:key_store_unavailable, reason}}
+  end
+
+  defp lift_if_reset(key, typed, version) do
+    case reset_after?(typed["run_id"], version) do
+      true ->
+        {:ok, Map.put(typed, "unresolved_at_run_version", nil)}
+
+      false ->
+        {:unresolved, key}
+
+      {:error, reason} ->
+        Logger.error(
+          "Effect: unresolved key #{inspect(key)}: run stream unreadable (#{inspect(reason)}); not repeating",
+          key: key
+        )
+
+        {:unresolved, key}
+    end
+  end
+
+  defp reset_after?(run_id, version) do
+    case EventStore.read_stream_forward("run:#{run_id}", version + 1, @max_events) do
+      {:ok, events} -> Enum.any?(events, &(Aggregate.event_type(&1) == "RunReset"))
+      {:error, :stream_not_found} -> false
+      {:error, reason} -> {:error, reason}
+      other -> {:error, {:unexpected, other}}
+    end
+  rescue
+    err -> {:error, err}
+  catch
+    :exit, reason -> {:error, {:exit, reason}}
   end
 
   defp normalize(v) when is_atom(v) and v not in [nil, true, false], do: Atom.to_string(v)

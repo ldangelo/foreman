@@ -174,4 +174,34 @@ defmodule ForemanServer.Idempotency.KeyStoreTest do
                KeyStore.get("phase:r9:p1")
     end
   end
+
+  describe "mark_unresolved/3 (fallback)" do
+    setup do
+      Application.put_env(:foreman_server, ForemanServer.Agents.JidoCheckpointStore, [])
+      ForemanServer.TestSupport.KeyStoreReset.reset!()
+    end
+
+    test "keeps the key ambiguous, merges into its metadata and is read back as a version" do
+      key = "effect:branch_push:r1:feature/x"
+      :ok = KeyStore.mark_started(key, %{"run_id" => "r1", "pushed_local_sha" => "abc"})
+      :ok = KeyStore.mark_unresolved(key, 4, "effect_already_done")
+
+      assert {:ok, %{status: :ambiguous, metadata: metadata}} = KeyStore.get(key)
+
+      assert %{
+               "run_id" => "r1",
+               "pushed_local_sha" => "abc",
+               "unresolved_reason" => "effect_already_done"
+             } = metadata
+
+      assert KeyStore.unresolved_version(metadata) == {:ok, 4}
+    end
+
+    test "unresolved_version/1 is :none without a usable marker" do
+      assert KeyStore.unresolved_version(%{}) == :none
+      assert KeyStore.unresolved_version(%{"unresolved_at_run_version" => nil}) == :none
+      assert KeyStore.unresolved_version(%{"unresolved_at_run_version" => "4"}) == :none
+      assert KeyStore.unresolved_version(nil) == :none
+    end
+  end
 end

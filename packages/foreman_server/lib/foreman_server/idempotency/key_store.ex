@@ -90,6 +90,41 @@ defmodule ForemanServer.Idempotency.KeyStore do
   def effect_key?("effect:" <> _), do: true
   def effect_key?(_), do: false
 
+  @unresolved_version_field "unresolved_at_run_version"
+
+  @doc """
+  Record on an effect key that recovery could not resolve it: the key stays
+  (or becomes) `ambiguous` and its metadata gains the run stream's version at
+  that moment (`unresolved_at_run_version`) and the reason
+  (`unresolved_reason`). `Idempotency.Effect.run/4` refuses to repeat a key that
+  carries the marker until the run has been reset. String keys, merged with the
+  stored metadata like every record call. Returns `:ok` or `{:error, reason}`.
+  """
+  @spec mark_unresolved(String.t(), non_neg_integer(), String.t()) :: :ok | {:error, term()}
+  def mark_unresolved(key, run_version, reason)
+      when is_integer(run_version) and run_version >= 0 do
+    GenServer.call(
+      __MODULE__,
+      {:record, key, :ambiguous,
+       %{@unresolved_version_field => run_version, "unresolved_reason" => reason}}
+    )
+  end
+
+  @doc """
+  The run-stream version recorded by `mark_unresolved/3` in a key's metadata
+  (string or atom keys), or `:none` when the key carries no marker.
+  """
+  @spec unresolved_version(map()) :: {:ok, non_neg_integer()} | :none
+  def unresolved_version(metadata) when is_map(metadata) do
+    case Map.get(metadata, @unresolved_version_field) ||
+           Map.get(metadata, :unresolved_at_run_version) do
+      version when is_integer(version) and version >= 0 -> {:ok, version}
+      _ -> :none
+    end
+  end
+
+  def unresolved_version(_metadata), do: :none
+
   @doc """
   Return the current status of an idempotency key.
   Returns `{:ok, status}` when found, `:not_found` otherwise.
