@@ -363,12 +363,31 @@ defmodule ForemanServer.Workflow.AutoPR do
        ) do
     Logger.error(
       "AutoPR.run_id=#{run_id} #{what} NOT run: #{inspect(key)} is unresolved (see foreman_doctor, Unresolved effect keys). " <>
-        "run.reset lifts this only for a failed, stuck, blocked or paused run; for any other run check GitHub and the doctor list",
+        "run.reset lifts this only for a failed, stuck, blocked or paused run, and only when the reset run resumes and reaches the effect again; for any other run check GitHub and the doctor list",
       run_id: run_id,
       head_branch: head_branch,
       operation: operation,
       outcome: "refused",
       reason: "effect_unresolved"
+    )
+
+    result
+  end
+
+  defp log_refusal(
+         {:error, {:effect_marker_malformed, key}} = result,
+         run_id,
+         head_branch,
+         operation,
+         what
+       ) do
+    Logger.error(
+      "AutoPR.run_id=#{run_id} #{what} NOT run: the unresolved marker of #{inspect(key)} is malformed; no reset clears it, the stored key needs an operator's repair (see foreman_doctor, Unresolved effect keys)",
+      run_id: run_id,
+      head_branch: head_branch,
+      operation: operation,
+      outcome: "refused",
+      reason: "effect_marker_malformed"
     )
 
     result

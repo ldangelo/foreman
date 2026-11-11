@@ -770,8 +770,23 @@ defmodule ForemanServerWeb.Workspace.Actions do
     do:
       "an earlier push or pull request attempt (#{key}) may already have happened and " <>
         "could not be confirmed, so it is not repeated. Check GitHub and foreman_doctor, " <>
-        "Unresolved effect keys. Resetting the run lifts this only for a failed, stuck, " <>
-        "blocked or paused run; for any other run the key stays unresolved"
+        "Unresolved effect keys. For a failed, stuck, blocked or paused run, reset the run " <>
+        "and let it resume: the key is lifted when the restarted run reaches that step again. " <>
+        "For any other run the key stays unresolved"
+
+  def describe({:effect_marker_malformed, key}),
+    do:
+      "the unresolved marker of #{key} is malformed, so the earlier push or pull request " <>
+        "attempt is not repeated and resetting the run does not clear it; the stored key needs " <>
+        "an operator's repair (see foreman_doctor, Unresolved effect keys)"
+
+  def describe({:intent_not_recorded, :cwd_missing}),
+    do: "nothing was pushed or opened: the run has no checkout directory to run git and gh in"
+
+  def describe({:intent_not_recorded, reason}),
+    do:
+      "nothing was pushed or opened: the intent of the push or pull request could not be " <>
+        "recorded (#{inspect(reason, limit: 5)})"
 
   def describe({:effect_check_failed, reason}),
     do:

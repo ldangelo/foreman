@@ -17,7 +17,8 @@ defmodule ForemanServer.Workflow.PhasePR do
   returns `%Error{reason: :intent_not_recorded}` (the effect and the recorder's
   reason in `details`). A key recovery left unresolved is not repeated: the result is
   `%Error{reason: :effect_unresolved}` (the effect and key in `details`) until the run
-  is reset; a refusal check that cannot be made is `%Error{reason: :effect_check_failed}`.
+  is reset; a refusal check that cannot be made is `%Error{reason: :effect_check_failed}`; a malformed marker
+  is `%Error{reason: :effect_marker_malformed}` (an operator repairs the stored key).
   The PR-create key is checked before the push, so a refusal stops the push too.
   """
 
@@ -306,10 +307,18 @@ defmodule ForemanServer.Workflow.PhasePR do
   defp effect_result({:error, {:effect_unresolved, key}}, request, effect) do
     Logger.error(
       "PhasePR.run_id=#{request.run_id} #{effect} NOT run: #{inspect(key)} is unresolved (see foreman_doctor, Unresolved effect keys). " <>
-        "run.reset lifts this only for a failed, stuck, blocked or paused run; for any other run check GitHub and the doctor list"
+        "run.reset lifts this only for a failed, stuck, blocked or paused run, and only when the reset run resumes and reaches the effect again; for any other run check GitHub and the doctor list"
     )
 
     typed_error(request, :effect_unresolved, %{effect: effect, key: key})
+  end
+
+  defp effect_result({:error, {:effect_marker_malformed, key}}, request, effect) do
+    Logger.error(
+      "PhasePR.run_id=#{request.run_id} #{effect} NOT run: the unresolved marker of #{inspect(key)} is malformed; no reset clears it, the stored key needs an operator's repair (see foreman_doctor, Unresolved effect keys)"
+    )
+
+    typed_error(request, :effect_marker_malformed, %{effect: effect, key: key})
   end
 
   defp effect_result({:error, {:effect_check_failed, reason}}, request, effect) do

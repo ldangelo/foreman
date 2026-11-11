@@ -450,6 +450,24 @@ defmodule ForemanServer.Workflow.PhasePREffectsTest do
       assert {:ok, ^before_key} = KeyStore.get(create_key)
     end
 
+    test "a malformed marker is its own typed error and nothing runs", ctx do
+      %{request: request, world: world, run_id: run_id, create_key: create_key} = ctx
+
+      :ets.insert(
+        :foreman_idempotency_keys,
+        {create_key, :ambiguous,
+         %{"run_id" => run_id, "effect_class" => "pr_create", "unresolved_at_run_version" => "x"}}
+      )
+
+      assert {:error,
+              %PhasePR.Error{
+                reason: :effect_marker_malformed,
+                details: %{effect: :pr_create, key: ^create_key}
+              }} = PhasePR.maybe_create(request)
+
+      assert EffectWorld.executed(world, :push) == 0
+    end
+
     test "a check that cannot be made is its own typed error and nothing runs", ctx do
       %{request: request, world: world, run_id: run_id, create_key: create_key} = ctx
 
