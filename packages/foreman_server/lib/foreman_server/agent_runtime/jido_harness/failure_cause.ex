@@ -48,10 +48,27 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.FailureCause do
     |> truncate()
   end
 
-  @doc "Text persisted for a failure reason: the cause for a `%FailureCause{}`, `inspect/1` otherwise."
+  @doc "Text persisted for a failure reason: the cause for a `%FailureCause{}`, readable text for `{:isolation_unsupported, kind, backend}`, `inspect/1` otherwise."
   @spec render(term()) :: String.t()
   def render(%__MODULE__{code: code, detail: detail}), do: "#{inspect(code)}: #{detail}"
+
+  # `Jobsite.NetworkPolicy.check_backend/2`'s typed refusal: the tuple stays the reason
+  # everywhere it is matched; only its persisted text is readable, and it still contains it.
+  def render({:isolation_unsupported, kind, backend} = reason),
+    do: "isolation_unsupported: #{isolation_text(kind, backend)} (#{inspect(reason)})"
+
   def render(reason), do: inspect(reason)
+
+  defp isolation_text(:network, :host_workflow),
+    do:
+      "this project requires a network policy (its environment.network is not default) " <>
+        "that the host workflow door cannot enforce; run it on the docker jobsite door " <>
+        "or set the project's network policy to default"
+
+  defp isolation_text(kind, backend),
+    do:
+      "the #{backend} backend cannot enforce this project's #{kind} isolation requirement; " <>
+        "run it on a backend that can, or drop the requirement"
 
   defp describe(%RunResult{error: %Error{} = error}) do
     base = "#{error.category}: #{Error.message(error)}"
