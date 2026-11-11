@@ -401,6 +401,29 @@ defmodule ForemanServer.Workflow.PhasePREffectsTest do
       assert EffectWorld.executed(world, :create) == 0
       assert :not_found = KeyStore.get(push_key)
     end
+
+    test "a push key recovery left unresolved is refused with a typed error and not repeated",
+         %{request: request, world: world, run_id: run_id, push_key: push_key} do
+      :ok =
+        KeyStore.mark_started(push_key, %{
+          "run_id" => run_id,
+          "effect_class" => "branch_push",
+          "pushed_local_sha" => "abc"
+        })
+
+      :ok = KeyStore.mark_unresolved(push_key, 0, "effect_outcome_ambiguous")
+      {:ok, before_key} = KeyStore.get(push_key)
+
+      assert {:error,
+              %PhasePR.Error{
+                reason: :effect_unresolved,
+                details: %{effect: :branch_push, key: ^push_key}
+              }} = PhasePR.maybe_create(request)
+
+      assert EffectWorld.executed(world, :push) == 0
+      assert EffectWorld.executed(world, :create) == 0
+      assert {:ok, ^before_key} = KeyStore.get(push_key)
+    end
   end
 
   describe "a crash on either side of the push" do

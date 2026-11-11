@@ -343,6 +343,25 @@ defmodule ForemanServer.Workflow.AutoPR do
   # An effect whose intent was not recorded did not run. Nothing downstream
   # tells that from a failed call, so say it here.
   defp log_refusal(
+         {:error, {:effect_unresolved, key}} = result,
+         run_id,
+         head_branch,
+         operation,
+         what
+       ) do
+    Logger.error(
+      "AutoPR.run_id=#{run_id} #{what} NOT run: #{inspect(key)} is unresolved (see foreman_doctor, Unresolved effect keys); reset the run to retry",
+      run_id: run_id,
+      head_branch: head_branch,
+      operation: operation,
+      outcome: "refused",
+      reason: "effect_unresolved"
+    )
+
+    result
+  end
+
+  defp log_refusal(
          {:error, {:intent_not_recorded, reason}} = result,
          run_id,
          head_branch,

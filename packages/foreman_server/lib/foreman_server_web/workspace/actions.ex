@@ -765,6 +765,13 @@ defmodule ForemanServerWeb.Workspace.Actions do
   def describe(:no_base_branch), do: "the run has no base branch"
   def describe(:no_commits_to_propose), do: "the branch has no commits to propose"
   def describe({:pr_already_associated, url}), do: "a pull request already exists (#{url})"
+
+  def describe({:effect_unresolved, key}),
+    do:
+      "an earlier push or pull request attempt (#{key}) may already have happened and " <>
+        "could not be confirmed, so it is not repeated; see foreman_doctor, Unresolved effect keys, " <>
+        "and reset the run to retry"
+
   def describe({:project_unresolved, id}), do: "project #{id} is not registered"
   def describe({:fix_in_flight, _url}), do: "a fix is already running for that pull request"
   def describe({:pr_not_open, status}), do: "the pull request is #{status}"

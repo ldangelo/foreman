@@ -15,7 +15,9 @@ defmodule ForemanServer.Workflow.PhasePR do
   (`Reconcilers.BranchPush`) or GitHub (`Reconcilers.PrCreate`) instead of the call
   being repeated. An effect whose intent cannot be recorded does not run and
   returns `%Error{reason: :intent_not_recorded}` (the effect and the recorder's
-  reason in `details`).
+  reason in `details`). A key recovery left unresolved is not repeated: the result is
+  `%Error{reason: :effect_unresolved}` (the effect and key in `details`) until the run
+  is reset.
   """
 
   alias ForemanServer.Idempotency.Effect
@@ -282,6 +284,16 @@ defmodule ForemanServer.Workflow.PhasePR do
     )
 
     typed_error(request, :intent_not_recorded, %{effect: effect, reason: reason})
+  end
+
+  # An unresolved key (recovery could not tell whether the effect happened) is
+  # never repeated until the run is reset: `%Error{reason: :effect_unresolved}`.
+  defp effect_result({:error, {:effect_unresolved, key}}, request, effect) do
+    Logger.error(
+      "PhasePR.run_id=#{request.run_id} #{effect} NOT run: #{inspect(key)} is unresolved (see foreman_doctor, Unresolved effect keys); reset the run to retry"
+    )
+
+    typed_error(request, :effect_unresolved, %{effect: effect, key: key})
   end
 
   defp effect_result(result, _request, _effect), do: result
