@@ -143,9 +143,14 @@ defmodule ForemanServer.Aggregates.Phase do
       else: {:error, :phase_not_retryable}
   end
 
-  defp reject_terminal_for_non_retry(%State{status: status}, "phase.retry", _payload)
-       when status in ["failed", "timed_out", "retrying"],
-       do: :ok
+  # `resumed` is the restart of an in_progress phase; a failed, timed-out or
+  # retrying phase takes an ordinary retry only.
+  defp reject_terminal_for_non_retry(%State{status: status}, "phase.retry", payload)
+       when status in ["failed", "timed_out", "retrying"] do
+    if Aggregate.get(payload, :reason) == "resumed",
+      do: {:error, :phase_not_retryable},
+      else: :ok
+  end
 
   defp reject_terminal_for_non_retry(%State{}, "phase.retry", _payload),
     do: {:error, :phase_not_retryable}

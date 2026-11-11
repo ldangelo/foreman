@@ -344,6 +344,30 @@ defmodule ForemanServer.Aggregates.PhaseTest do
       end
     end
 
+    test "rejects reason resumed from failed, timed_out and retrying (scoped to in_progress)" do
+      for {event, status} <- [
+            {"PhaseFailed", "failed"},
+            {"PhaseTimedOut", "timed_out"},
+            {"PhaseRetried", "retrying"}
+          ] do
+        started = fold(started_state(), "PhaseStarted", %{run_id: "r", phase_id: "p", attempt: 1})
+        state = fold(started, event, %{run_id: "r", phase_id: "p", reason: "boom"})
+        assert state.status == status
+
+        assert {:error, :phase_not_retryable} =
+                 Phase.handle_command(state, %{
+                   type: "phase.retry",
+                   payload: %{run_id: "r", phase_id: "p", reason: "resumed"}
+                 })
+
+        assert {:ok, %{event_type: "PhaseRetried"}} =
+                 Phase.handle_command(state, %{
+                   type: "phase.retry",
+                   payload: %{run_id: "r", phase_id: "p", reason: "again"}
+                 })
+      end
+    end
+
     test "a resumed retry keeps in_progress and advances attempt on each restart" do
       started = fold(started_state(), "PhaseStarted", %{run_id: "r", phase_id: "p", attempt: 1})
       command = %{type: "phase.retry", payload: %{run_id: "r", phase_id: "p", reason: "resumed"}}
