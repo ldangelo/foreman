@@ -876,14 +876,16 @@ defmodule ForemanServer.Workflow.RunExecutor do
     case find_resumable_worktree(state.run_id) do
       nil ->
         if worktree_expected?(state) do
-          Logger.warning(
-            "RunExecutor #{state.run_id} resume found no worktree entry for #{name}; provisioning a fresh worktree",
-            run_id: state.run_id,
-            task_id: task_id(state),
-            operation: "run_executor.resume"
-          )
+          with :ok <- assert_resume_base_resolvable(state) do
+            Logger.warning(
+              "RunExecutor #{state.run_id} resume found no worktree entry for #{name}; provisioning a fresh worktree",
+              run_id: state.run_id,
+              task_id: task_id(state),
+              operation: "run_executor.resume"
+            )
 
-          {:ok, Map.put(state, :prior_worktree_discarded, %{name: name, path: nil})}
+            {:ok, Map.put(state, :prior_worktree_discarded, %{name: name, path: nil})}
+          end
         else
           {:ok, state}
         end
@@ -940,12 +942,26 @@ defmodule ForemanServer.Workflow.RunExecutor do
       operation: "run_executor.resume"
     )
 
-    case System.cmd("git", ["-C", entry.repo_path, "worktree", "prune"], stderr_to_stdout: true) do
-      {_output, 0} ->
-        {:ok, Map.put(state, :prior_worktree_discarded, %{name: name, path: entry.worktree_path})}
-
-      {output, code} ->
+    with {_output, 0} <-
+           System.cmd("git", ["-C", entry.repo_path, "worktree", "prune"], stderr_to_stdout: true),
+         :ok <- assert_resume_base_resolvable(state) do
+      {:ok, Map.put(state, :prior_worktree_discarded, %{name: name, path: entry.worktree_path})}
+    else
+      {output, code} when is_integer(code) ->
         {:error, {:resume_worktree_prune_failed, entry.repo_path, code, output}}
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  # A worktree that is re-provisioned on resume is cut from the run's base. When
+  # that base cannot be resolved the run ends (`:resume_context_unresolvable`)
+  # before any phase starts: the run is never cut from a guessed base.
+  defp assert_resume_base_resolvable(state) do
+    case resolve_run_base(state, state.worktree_spec || %{}) do
+      {:ok, _project_root, _base_ref, _implementation_key, _trd_scope} -> :ok
+      {:error, _} = error -> error
     end
   end
 
@@ -5059,6 +5075,12 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   @doc false
   def __resume_prelude_for_test__(state), do: resume_prelude(state)
+
+  # Runs `handle_kickoff_ready/1` (resume prelude, then the first phase on
+  # success) as the GenServer callback result; it skips only the provider and
+  # model preflight that precedes it in `kickoff_preflight/1`.
+  @doc false
+  def __handle_kickoff_ready_for_test__(state), do: handle_kickoff_ready(state)
 
   @doc false
   def __resolve_run_repo_set_for_test__(state), do: resolve_run_repo_set(state)
