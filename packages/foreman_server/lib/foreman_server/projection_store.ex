@@ -44,6 +44,7 @@ defmodule ForemanServer.ProjectionStore do
 
   alias ForemanServer.Usage
   alias ForemanServer.Usage.Ledger, as: UsageLedger
+  alias ForemanServer.Workflow.WorktreeDiscard
 
   @pr_fold_events ForemanServer.Overview.PrFold.events()
   @pr_watch_only_events ForemanServer.PrWatchFold.events() -- @pr_fold_events
@@ -5764,11 +5765,13 @@ defmodule ForemanServer.ProjectionStore do
   defp maybe_put(project, key, value), do: Map.put(project, key, value)
 
   # The discard record arrives as an atom-keyed map from a live dispatch and as a
-  # string-keyed map from a replayed event; the phase entry holds one shape.
+  # string-keyed map from a replayed event; `WorktreeDiscard.from_event/1` makes
+  # that one struct and the phase entry holds one shape.
   defp discarded_worktree(nil), do: nil
 
   defp discarded_worktree(%{} = discard) do
-    %{name: get(discard, :name), path: get(discard, :path)}
+    %{name: name, path: path} = WorktreeDiscard.from_event(discard)
+    %{name: name, path: path}
   end
 
   # -- usage ledger (E14) ------------------------------------------------------
