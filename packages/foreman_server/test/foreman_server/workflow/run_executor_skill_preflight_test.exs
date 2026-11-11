@@ -448,6 +448,86 @@ defmodule ForemanServer.Workflow.RunExecutorSkillPreflightTest do
       assert [%{execution_profile: %{skill: %{state: "available"}}}] =
                ProjectionStore.phases_for_run(w.run_id)
     end
+
+    test "a relative PI_CODING_AGENT_DIR is unverifiable: pi resolves it against a launch cwd that does not exist yet",
+         %{skill_home: home} do
+      # Present in the server's agent dir, and a relative dir can never be
+      # resolved at admission: neither `available` nor `missing` is promised.
+      install_skill!(home, "relative-dir-skill")
+
+      w =
+        world(
+          "launch-dir-relative",
+          [command_phase(:write_prd, "/skill:relative-dir-skill")],
+          false,
+          vars: %{"PI_CODING_AGENT_DIR" => "relative/dir"}
+        )
+
+      start_executor!(w)
+      await_completed!(w)
+
+      assert [%{execution_profile: %{skill: %{state: "unverifiable"}}}] =
+               ProjectionStore.phases_for_run(w.run_id)
+    end
+
+    test "a ~/ agent dir expands against the HOME the project's environment sets" do
+      project_home =
+        Path.join(System.tmp_dir!(), "project-home-#{System.unique_integer([:positive])}")
+
+      install_agent_dir_skill!(Path.join(project_home, "agent"), "tilde-skill")
+      on_exit(fn -> File.rm_rf(project_home) end)
+
+      w =
+        world("launch-dir-tilde", [command_phase(:write_prd, "/skill:tilde-skill")], false,
+          vars: %{"HOME" => project_home, "PI_CODING_AGENT_DIR" => "~/agent"}
+        )
+
+      start_executor!(w)
+      await_completed!(w)
+
+      assert [%{execution_profile: %{skill: %{state: "available"}}}] =
+               ProjectionStore.phases_for_run(w.run_id)
+    end
+  end
+
+  describe "a project environment that cannot be resolved" do
+    test "is unverifiable, never guessed at, and the warning names why without the environment",
+         %{skill_home: home} do
+      # The server's own home DOES hold the skill: a verdict computed against it
+      # would be `available` for a launch that will not use it (and will fail).
+      install_skill!(home, "env-unresolved-skill")
+
+      w =
+        world(
+          "env-unresolved",
+          [command_phase(:write_prd, "/skill:env-unresolved-skill")],
+          false,
+          project_config: %{env: %{"FOREMAN_BASE_BRANCH" => "evil-secret-value"}}
+        )
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          start_executor!(w)
+
+          # The preflight lets the run through; the launch is what fails on the
+          # same environment.
+          await(fn ->
+            case ProjectionStore.run(w.run_id) do
+              %{status: "failed", terminal?: true} -> {:ok, :failed}
+              _ -> :waiting
+            end
+          end)
+        end)
+
+      assert {:claim, w.task_id} in FakeTaskProvider.calls(w.db)
+
+      assert [%{execution_profile: %{skill: %{state: "unverifiable"}}}] =
+               ProjectionStore.phases_for_run(w.run_id)
+
+      assert log =~ "could not verify skill \"env-unresolved-skill\""
+      assert log =~ "project env unresolved: :reserved_project_env_keys"
+      refute log =~ "evil-secret-value"
+    end
   end
 
   describe "a harness that is not installed" do
@@ -612,7 +692,7 @@ defmodule ForemanServer.Workflow.RunExecutorSkillPreflightTest do
     project_id = "project-skill-#{label}-#{System.unique_integer([:positive])}"
     db = "/abs/skill-preflight/#{project_id}.db"
     repo = init_repo!(project_id)
-    register_project!(project_id, db, repo)
+    register_project!(project_id, db, repo, opts[:project_config] || %{})
 
     # The project's environment record: what the launch's environment gets
     # overlaid with (`vars` such as `PI_CODING_AGENT_DIR`).
@@ -711,11 +791,12 @@ defmodule ForemanServer.Workflow.RunExecutorSkillPreflightTest do
     repo
   end
 
-  defp register_project!(project_id, db, repo) do
+  defp register_project!(project_id, db, repo, config) do
     dispatch_system!("project.register", "project:#{project_id}", %{
       project_id: project_id,
       name: project_id,
       path: repo,
+      config: config,
       task_provider: %{
         provider: FakeTaskProvider.provider_ref(),
         config: %{"database_path" => db}
