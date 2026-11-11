@@ -910,7 +910,15 @@ defmodule ForemanServer.Workflow.BootReconciliation do
         case KeyStore.unresolved_version(metadata) do
           :none ->
             {verdict, reason} = effect_verdict(status, class, metadata, opts)
-            handle_effect_verdict(key, run_id, class, verdict, reason)
+
+            handle_effect_verdict(
+              key,
+              run_id,
+              class,
+              verdict,
+              reason,
+              repeatable_effect?(class, metadata)
+            )
 
           # The outcome was decided at an earlier boot (the key carries its marker):
           # `Effect.run/4` refuses it until an operator `run.reset`, and honours the
@@ -997,7 +1005,7 @@ defmodule ForemanServer.Workflow.BootReconciliation do
   defp effect_verdict(_status, _class, _metadata, _opts),
     do: {"unknown", @effect_block_reasons.unknown}
 
-  defp handle_effect_verdict(key, run_id, class, "not_done" = verdict, nil) do
+  defp handle_effect_verdict(key, run_id, class, "not_done" = verdict, nil, _repeatable?) do
     fields = %{effect_class: class, effect_key: key, effect_verdict: verdict}
 
     command =
@@ -1024,7 +1032,7 @@ defmodule ForemanServer.Workflow.BootReconciliation do
     end
   end
 
-  defp handle_effect_verdict(key, run_id, class, verdict, reason) do
+  defp handle_effect_verdict(key, run_id, class, verdict, reason, repeatable?) do
     fields = %{effect_class: class, effect_key: key, effect_verdict: verdict}
     {_state, version} = load_run_stream(run_id)
 
@@ -1033,7 +1041,13 @@ defmodule ForemanServer.Workflow.BootReconciliation do
     # slow dispatch below leaves an unmarked ambiguous key that a retry would
     # repeat. A marker that cannot be written leaves the key unresolved and the run
     # untouched (`:unresolved`), never counted as a block.
-    with :ok <- mark_effect_unresolved(key, version, reason) do
+    #
+    # A repeatable effect (a task-provider `reopen`, TRD-015) is never marked: the
+    # marker exists to stop a repeated push or PR create, and repeating a reopen
+    # is harmless. A marked reopen key would refuse the next boot's reopen of an
+    # issue whose run is terminal (so the block below is rejected) until an
+    # operator reset a run that cannot be reset.
+    with :ok <- mark_unless_repeatable(key, version, reason, repeatable?) do
       block_for_effect(key, run_id, class, verdict, reason, fields, version)
     else
       {:error, marker_error} ->
@@ -1046,6 +1060,14 @@ defmodule ForemanServer.Workflow.BootReconciliation do
         :unresolved
     end
   end
+
+  defp mark_unless_repeatable(_key, _version, _reason, true), do: :ok
+
+  defp mark_unless_repeatable(key, version, reason, false),
+    do: mark_effect_unresolved(key, version, reason)
+
+  defp repeatable_effect?("task_provider", metadata), do: TaskProviderEffect.repeatable?(metadata)
+  defp repeatable_effect?(_class, _metadata), do: false
 
   defp block_for_effect(key, run_id, class, verdict, reason, fields, version) do
     # The ids carry the run stream's version, so a block after an operator

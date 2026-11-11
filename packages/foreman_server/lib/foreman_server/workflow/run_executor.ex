@@ -2114,6 +2114,14 @@ defmodule ForemanServer.Workflow.RunExecutor do
          :ok <- finish_task_failure(state, reason, provider_attempt) do
       :ok
     else
+      {:error, {:provider_fail_not_attempted, refusal}} = error ->
+        Logger.error(
+          "RunExecutor #{state.run_id} task-provider fail for #{phase_id} was not attempted: " <>
+            "effect recovery refused it (#{inspect(refusal)}); the run still failed"
+        )
+
+        error
+
       {:error, reason} ->
         Logger.error(
           "RunExecutor phase.fail dispatch for #{state.run_id}/#{phase_id} failed: #{inspect(reason)}"
@@ -5251,6 +5259,16 @@ defmodule ForemanServer.Workflow.RunExecutor do
                ) do
             {:ok, _issue} ->
               :provider_failed
+
+            {:error, {kind, _detail} = refusal}
+            when kind in [
+                   :effect_unresolved,
+                   :effect_check_failed,
+                   :effect_marker_malformed,
+                   :intent_not_recorded
+                 ] ->
+              # `Effect.run/4` refused: the provider was never called.
+              {:permanent, {:provider_fail_not_attempted, refusal}}
 
             {:error, error_reason} ->
               case classify_fail_reason(error_reason) do

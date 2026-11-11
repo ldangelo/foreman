@@ -90,6 +90,15 @@ defmodule ForemanServer.Idempotency.Reconcilers.TaskProvider do
   def reconcile(metadata), do: reconcile(metadata, [])
 
   @doc """
+  True when repeating the call is harmless: a `reopen` only moves an `in_progress`
+  issue to `open`. Recovery does not mark such a key unresolved (the marker stops
+  a repeated push or PR create), so the boot scan can reopen the issue again.
+  """
+  @spec repeatable?(map()) :: boolean()
+  def repeatable?(%{"op" => "reopen"}), do: true
+  def repeatable?(_metadata), do: false
+
+  @doc """
   `reconcile/1` with `opts[:timeout_ms]` replacing the bound on the provider read.
   """
   @spec reconcile(map(), keyword()) :: Reconciler.verdict()
