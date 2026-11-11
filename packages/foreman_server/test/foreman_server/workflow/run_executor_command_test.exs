@@ -726,6 +726,34 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
     end
   end
 
+  test "a workflow phase launch never sets no_skills, so a skill reported available is loadable" do
+    # TRD-021: only the coordinator profile sets `no_skills`, and it runs no
+    # workflow phase. The preflight's `:available` verdict is a promise that the
+    # harness will load the skill; `--no-skills` would break it.
+    state = %{
+      run_id: unique_id("run-no-skills"),
+      plan_context: %{},
+      task: %{task_id: "t1", project_id: nil},
+      completed: [],
+      phase_specs: [],
+      artifact_base: System.tmp_dir!(),
+      project_settings: nil
+    }
+
+    for phase_spec <- [
+          %{name: :implement, command: "/skill:fix-issue --foreman"},
+          %{name: :implement, prompt: "do it"},
+          %{name: :implement, command: "/skill:fix-issue", provider: :pi}
+        ] do
+      assert {:ok, launch} =
+               RunExecutor.__prepare_agent_launch_for_test__(state, phase_spec, 0, 1, nil)
+
+      refute Keyword.has_key?(launch.driver_opts.(60_000), :no_skills)
+      refute Keyword.has_key?(launch.launch_opts, :no_skills)
+      refute Map.has_key?(launch.phase, :no_skills)
+    end
+  end
+
   test "a project env value that cannot be stringified is a typed error, not a raise" do
     previous = Application.get_env(:foreman_server, :worker_environment)
     project_id = unique_id("legacy-env-project")
