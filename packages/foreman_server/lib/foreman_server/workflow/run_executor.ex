@@ -540,11 +540,13 @@ defmodule ForemanServer.Workflow.RunExecutor do
         # An unverifiable skill never blocks, but the run proceeds on a promise
         # nobody checked: say so, once per phase (AGENTS.md: warn where the
         # consequence is merely invisible).
-        for %{phase: phase, skill: skill, provider: provider} <- unverifiable do
+        for %{phase: phase, skill: skill, provider: provider, reason: reason} <- unverifiable do
+          why = if reason, do: " (project env unresolved: #{inspect(reason)})", else: ""
+
           Logger.warning(
             "RunExecutor skill preflight for #{state.run_id} could not verify skill " <>
               "#{inspect(skill)} of phase #{inspect(phase)} for provider #{inspect(provider)} " <>
-              "on the #{inspect(ExecutionProfile.host_backend())} backend; the run proceeds",
+              "on the #{inspect(ExecutionProfile.host_backend())} backend#{why}; the run proceeds",
             run_id: state.run_id,
             task_id: task_id(state),
             operation: "run_executor.skill_preflight",
@@ -552,7 +554,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
             phase: inspect(phase),
             skill: skill,
             provider: inspect(provider),
-            backend: inspect(ExecutionProfile.host_backend())
+            backend: inspect(ExecutionProfile.host_backend()),
+            reason: if(reason, do: "project_env_unresolved: #{inspect(reason)}")
           )
         end
 
@@ -1147,59 +1150,78 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # (`jido_harness_worker.ex` `put_env/2`, `env_mode: :overlay`); Foreman sets no
   # `HOME` or `PI_CODING_AGENT_DIR` of its own. So the resolver's defaults (the
   # server's `PI_CODING_AGENT_DIR`, else `~/.pi/agent`) are right unless the
-  # project's environment sets either one, and then the project's value is the
-  # one the launch sees. `config :foreman_server, :skill_home` names a home to
-  # read instead of the server user's: `home` is that directory and the agent
-  # directory is `<home>/.pi/agent`, whatever the ambient environment says.
-  # The project root is the registered checkout: no worktree exists at
-  # admission, and a project-scoped find is only ever `:unverifiable`.
+  # project's environment sets either one, and then the project's RAW value is
+  # what the launch sees: it is passed through as `agent_dir:`/`home:` and
+  # `SkillResolver` decides what it means (a relative agent dir is resolved by pi
+  # against a launch cwd that does not exist yet, so it is unverifiable there).
+  # `config :foreman_server, :skill_home` names a home to read instead of the
+  # server user's: `home` is that directory and the agent directory is
+  # `<home>/.pi/agent`, whatever the ambient environment says. The project root
+  # is the registered checkout: no worktree exists at admission.
+  #
+  # A project environment that cannot be resolved is what the launch fails on
+  # (`prepare_agent_launch/5` needs it too); the environment the launch would
+  # have had is unknown, so no home is guessed: `{:unverifiable, error_class}`.
+  # Only the error's class is kept, never its content (a value may be a secret).
   defp skill_resolve_opts(state) do
-    launch_env =
-      case project_env(state) do
-        {:ok, %{env: env}} -> env
-        _unresolved -> %{}
-      end
+    case project_launch_env(state) do
+      {:ok, launch_env} ->
+        configured_home =
+          case Application.get_env(:foreman_server, :skill_home) do
+            home when is_binary(home) and home != "" -> home
+            _unset -> nil
+          end
 
-    configured_home =
-      case Application.get_env(:foreman_server, :skill_home) do
-        home when is_binary(home) and home != "" -> home
-        _unset -> nil
-      end
+        home = env_string(launch_env, "HOME") || configured_home
 
-    home = Map.get(launch_env, "HOME") || configured_home
+        agent_dir =
+          case env_string(launch_env, "PI_CODING_AGENT_DIR") do
+            nil when not is_nil(configured_home) -> Path.join(home, ".pi/agent")
+            dir -> dir
+          end
 
-    agent_dir =
-      case Map.get(launch_env, "PI_CODING_AGENT_DIR") do
-        dir when is_binary(dir) and dir != "" ->
-          expand_agent_dir(dir, home)
+        {:ok,
+         [home: home, agent_dir: agent_dir, project_root: project_path(state)]
+         |> Enum.reject(fn {_key, value} -> is_nil(value) end)}
 
-        _unset when is_binary(home) and not is_nil(configured_home) ->
-          Path.join(home, ".pi/agent")
-
-        _unset ->
-          nil
-      end
-
-    [home: home, agent_dir: agent_dir, project_root: project_path(state)]
-    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+      {:error, class} ->
+        {:unverifiable, class}
+    end
   end
 
-  # pi expands a leading `~` against the home directory and resolves anything
-  # else against `/`, as `SkillResolver` does for the ambient variable.
-  defp expand_agent_dir("~", home), do: home || System.user_home!()
-  defp expand_agent_dir("~/" <> rest, home), do: Path.join(home || System.user_home!(), rest)
-  defp expand_agent_dir(dir, _home), do: Path.expand(dir, "/")
+  defp env_string(env, name) do
+    case Map.get(env, name) do
+      value when is_binary(value) and value != "" -> value
+      _unset -> nil
+    end
+  end
+
+  # The project's environment as the launch will build it, or the CLASS of why it
+  # cannot be (never the error itself, never a raise out of the preflight).
+  defp project_launch_env(state) do
+    case project_env(state) do
+      {:ok, %{env: env}} -> {:ok, env}
+      {:error, error} when is_tuple(error) and tuple_size(error) > 0 -> {:error, elem(error, 0)}
+      {:error, _other} -> {:error, :unknown}
+    end
+  rescue
+    _error -> {:error, :raised}
+  end
+
+  defp unresolved_reason({:unverifiable, class}), do: class
+  defp unresolved_reason({:ok, _opts}), do: nil
 
   # Resolves the skill each still-to-run `command:` phase names, against that
   # phase's launching provider and the project's checkout (no worktree exists at
   # admission). `{:ok, verdicts, unverifiable}` (`verdicts` is `%{phase_number =>
   # :available | :unverifiable}`, `unverifiable` the phases whose skill could not
-  # be checked, for the log) or the `:skill_not_found` failures of every phase
-  # whose skill is missing. A resumed run skips the phases it already completed:
-  # they never launch again.
+  # be checked, for the log, each with the `reason` the environment was
+  # unresolved or `nil`) or the `:skill_not_found` failures of every phase whose
+  # skill is missing. A resumed run skips the phases it already completed: they
+  # never launch again.
   defp preflight_skills(state) do
     backend = ExecutionProfile.host_backend()
-    resolve_opts = skill_resolve_opts(state)
+    resolution = skill_resolve_opts(state)
 
     {failures, verdicts, unverifiable} =
       state.phase_specs
@@ -1209,7 +1231,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
         with skill when is_binary(skill) <-
                Validator.skill_from_command(Map.get(phase_spec, :command)),
              provider = phase_launch_provider(phase_spec),
-             verdict = SkillResolver.resolve(provider, skill, backend, resolve_opts) do
+             verdict = skill_verdict(resolution, provider, skill, backend) do
           name = phase_spec_name(phase_spec)
           verdicts = Map.put(verdicts, phase_number(phase_spec, index), verdict)
 
@@ -1226,8 +1248,14 @@ defmodule ForemanServer.Workflow.RunExecutor do
               {[failure | failures], verdicts, unverifiable}
 
             :unverifiable ->
-              {failures, verdicts,
-               [%{phase: name, skill: skill, provider: provider} | unverifiable]}
+              note = %{
+                phase: name,
+                skill: skill,
+                provider: provider,
+                reason: unresolved_reason(resolution)
+              }
+
+              {failures, verdicts, [note | unverifiable]}
 
             :available ->
               {failures, verdicts, unverifiable}
@@ -1241,6 +1269,13 @@ defmodule ForemanServer.Workflow.RunExecutor do
       do: {:ok, verdicts, Enum.reverse(unverifiable)},
       else: {:error, Enum.reverse(failures)}
   end
+
+  # An unresolved launch environment is never guessed at: the resolver is not
+  # asked, whatever it would have said for the server's own home.
+  defp skill_verdict({:ok, opts}, provider, skill, backend),
+    do: SkillResolver.resolve(provider, skill, backend, opts)
+
+  defp skill_verdict({:unverifiable, _class}, _provider, _skill, _backend), do: :unverifiable
 
   defp phase_provider_and_model_check(phase_spec, state, cache) do
     declared_provider = Map.get(phase_spec, :provider)
