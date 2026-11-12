@@ -385,6 +385,148 @@ defmodule ForemanServer.PrObservationTest do
     end
   end
 
+  describe "what may notify" do
+    test "only a change of the notification digest maps to the CI-failed notification", ctx do
+      failing = Support.status(checks: [Support.failing_check("unit")], checks_state: :failing)
+
+      # The failing set is the same; a slower passing job finished.
+      later = %{failing | checks: failing.checks ++ [passing_check("slow")]}
+
+      {:ok, first} = PrObservation.commands(ctx.run_id, ctx.pr_url, failing, nil)
+      record = apply!(first, ctx.run_id, ctx.pr_url)
+      {:ok, [evidence_only]} = PrObservation.commands(ctx.run_id, ctx.pr_url, later, record)
+      Support.dispatch!(evidence_only)
+
+      assert [%{change: "digest"}, %{change: "evidence"}] =
+               ctx.run_id
+               |> Support.run_events()
+               |> Enum.filter(&(&1.event_type == "PrChecksChanged"))
+               |> Enum.map(& &1.data)
+
+      rules = ForemanServer.Notifier.Mapping.rules()
+
+      lookups =
+        ctx.run_id
+        |> Support.run_events()
+        |> Enum.filter(&(&1.event_type == "PrChecksChanged"))
+        |> Enum.map(fn event ->
+          ForemanServer.Notifier.Mapping.lookup(
+            rules,
+            "PrChecksChanged",
+            ForemanServer.Notifier.Rule.normalize_payload!(event.data)
+          )
+        end)
+
+      assert [{:ok, %{class: :failure}}, :ignore] = lookups
+    end
+  end
+
+  describe "an observation that spans a head move" do
+    test "an unchanged review is re-recorded in the same batch, not a poll later", ctx do
+      commented = [%{id: "IC_9", author: "r", body: "fix this", url: nil, created_at: nil}]
+      first = Support.status(comments: commented, review_decision: :changes_requested)
+
+      record = step(ctx, first, nil)
+      assert record.review_decision == "changes_requested"
+
+      pushed = %{first | head_sha: "sha-2"}
+      assert {:ok, commands} = PrObservation.commands(ctx.run_id, ctx.pr_url, pushed, record)
+      assert types(commands) == ["run.pr.update", "run.pr.review"]
+
+      record = apply!(commands, ctx.run_id, ctx.pr_url)
+      assert record.head_sha == "sha-2"
+      assert record.review_decision == "changes_requested"
+      assert record.review_seq == 2
+      assert {:ok, []} = PrObservation.commands(ctx.run_id, ctx.pr_url, pushed, record)
+    end
+  end
+
+  describe "malformed force" do
+    test "is a typed error, never a case clause", ctx do
+      status = Support.status()
+
+      for bad <- [
+            :now,
+            %{nonce: "n"},
+            %{nonce: "", now_ms: 1},
+            %{nonce: 7, now_ms: 1},
+            %{nonce: "n", now_ms: "1"}
+          ] do
+        assert {:error, {:invalid_force, ^bad}} =
+                 PrObservation.commands(ctx.run_id, ctx.pr_url, status, nil, nil, force: bad)
+      end
+    end
+  end
+
+  describe "bounds, baselines and replay" do
+    setup do
+      {:ok, base: Support.status(checks: [Support.failing_check("unit")], checks_state: :failing)}
+    end
+
+    test "the command keeps the last 100 checks, cuts text at 200 and carries checks_truncated",
+         ctx do
+      checks =
+        for n <- 1..130,
+            do: %{passing_check("c#{n}") | name: String.duplicate("n", 300) <> "#{n}"}
+
+      status = %{ctx.base | checks: checks, checks_state: :passing, checks_truncated: true}
+
+      assert {:ok, [_update, command]} =
+               PrObservation.commands(ctx.run_id, ctx.pr_url, status, nil)
+
+      assert command.payload.checks_truncated == true
+      assert length(command.payload.checks) == 100
+      assert Enum.all?(command.payload.checks, &(String.length(&1.name) == 200))
+      assert command.payload.evidence_digest == PrObservation.evidence_digest(status)
+    end
+
+    test "a previous whose evidence was recorded for another head does not suppress the event",
+         ctx do
+      old_head = %{ctx.base | head_sha: "sha-0"}
+      previous = recorded(old_head)
+
+      assert {:ok, commands} = PrObservation.commands(ctx.run_id, ctx.pr_url, ctx.base, previous)
+      assert types(commands) == ["run.pr.update", "run.pr.checks"]
+    end
+
+    test "the first observation after the deploy (no evidence, checks present) is exactly one event",
+         ctx do
+      previous = ctx.base |> recorded() |> Map.delete(:evidence)
+
+      assert {:ok, [command]} = PrObservation.commands(ctx.run_id, ctx.pr_url, ctx.base, previous)
+      assert command.type == "run.pr.checks"
+      assert command.payload.digest == previous.checks_digest
+      assert command.payload.change == "evidence"
+      assert command.payload.evidence_digest == PrObservation.evidence_digest(ctx.base)
+    end
+
+    test "a forced batch holds no review command even when the review changed", ctx do
+      commented = [%{id: "IC_9", author: "r", body: "x", url: nil, created_at: nil}]
+      changed = %{ctx.base | comments: commented, review_decision: :changes_requested}
+
+      assert {:ok, commands} =
+               PrObservation.commands(ctx.run_id, ctx.pr_url, changed, recorded(ctx.base), nil,
+                 force: %{nonce: "n-9", now_ms: 5}
+               )
+
+      assert types(commands) == ["run.pr.update", "run.pr.checks"]
+      refute "run.pr.review" in types(commands)
+    end
+
+    test "the aggregate rebuilt from the stored stream (Aggregate.load/2) holds the projection's evidence",
+         ctx do
+      record = step(ctx, ctx.base, nil)
+
+      {state, _version} =
+        ForemanServer.Aggregate.load(ForemanServer.Aggregates.Run, "run:#{ctx.run_id}")
+
+      loaded = state.pr_watch[ctx.pr_url]
+      assert loaded.evidence == record.evidence
+      assert loaded.checks_state == record.checks_state
+      assert loaded.checks_digest == record.checks_digest
+    end
+  end
+
   defp step(ctx, status, previous) do
     {:ok, commands} = PrObservation.commands(ctx.run_id, ctx.pr_url, status, previous)
     apply!(commands, ctx.run_id, ctx.pr_url)
