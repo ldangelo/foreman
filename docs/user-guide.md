@@ -1962,8 +1962,10 @@ collapsing into one if such a caller is added.
 
 Two boundaries worth stating plainly: `~/.foreman/skills` is computed by
 `ForemanServer.Skills.Installer.target_dir/1` and is NOT a directory the `pi`/`omp` CLIs scan
-for skills (`packages/foreman_cli/cmd/foreman/agent_commands.go` renders skill files under
-`.pi/agent/skills` instead), and `foreman init --force` refreshes workflows and prompts only,
+for skills. pi reads `<project>/.pi/skills` and `~/.pi/agent/skills`. The CLI
+(`packages/foreman_cli/cmd/foreman/agent_commands.go`) recommends `.pi/agent/skills` for a
+project, which pi does not read (a known defect, bead `foreman-kaa9w`; the global
+recommendation `~/.pi/agent/skills` is correct). `foreman init --force` refreshes workflows and prompts only,
 never skills. A skill placed anywhere other than `~/.foreman/skills` is invisible to
 `maybe_install/1`'s missing-skill check.
 
