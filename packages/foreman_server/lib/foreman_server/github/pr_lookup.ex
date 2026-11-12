@@ -5,11 +5,14 @@ defmodule ForemanServer.GitHub.PrLookup do
   `ForemanServer.Idempotency.Reconcilers.Command`.
 
       gh pr list --state <open|closed> --head <head> --base <base> \\
-        --json url,number,state,headRefOid,isCrossRepository --limit 5
+        --json url,number,state,headRefOid,isCrossRepository --limit 100
 
   `--head` takes a branch NAME and matches it whatever repository the PR's head is in, so a
   fork's PR of the same branch name comes back too (`isCrossRepository: true`); `--state
-  closed` returns merged PRs as well (probed with gh 2.103.3). A PR is therefore the run's
+  closed` returns merged PRs as well (probed with gh 2.103.3). `gh` has no `owner:branch`
+  form of `--head` (`gh pr list --help`), and the fork filter below runs after `gh` has
+  truncated, so the limit is gh's own maximum: so many fork PRs of one branch name that they
+  push this repository's PR out of the answer is not a case worth a second query. A PR is therefore the run's
   only when it is this repository's and its head is the commit the run pushed:
 
     * `find/4` drops every PR with `isCrossRepository: true`: a fork's PR is not the run's PR
@@ -29,7 +32,8 @@ defmodule ForemanServer.GitHub.PrLookup do
 
   `opts`: `:cwd` (required, the checkout `gh` runs in), `:command_runner` (a 3-arity
   `(cmd, args, opts)` returning `{output, exit_code}`; `System.cmd/3` by default),
-  `:expected_head` (a commit SHA) and `:timeout_ms` (`Command.run/4`; unbounded by default).
+  `:expected_head` (a commit SHA) and `:timeout_ms` (`Command.run/4`; `Command.default_timeout_ms/0` by default, so a hung `gh`
+  cannot hold the caller).
   Absent options are omitted, never `nil`; a present option of another type raises.
   """
 
@@ -60,7 +64,7 @@ defmodule ForemanServer.GitHub.PrLookup do
   @type result :: {:ok, Pr.t()} | :none | {:error, error()}
 
   @json_fields "url,number,state,headRefOid,isCrossRepository"
-  @limit "5"
+  @limit "100"
   @states %{"OPEN" => :open, "CLOSED" => :closed, "MERGED" => :merged}
 
   @doc """
@@ -90,7 +94,10 @@ defmodule ForemanServer.GitHub.PrLookup do
       @limit
     ]
 
-    case Command.run(runner, "gh", args, [cd: cwd] ++ Keyword.take(opts, [:timeout_ms])) do
+    case Command.run(runner, "gh", args,
+           cd: cwd,
+           timeout_ms: Keyword.get(opts, :timeout_ms, Command.default_timeout_ms())
+         ) do
       {:ok, {output, 0}} ->
         with {:ok, prs} <- parse(output), do: pick(prs, expected)
 

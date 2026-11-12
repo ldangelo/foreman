@@ -99,7 +99,7 @@ defmodule ForemanServer.GitHub.PrLookupTest do
                "--json",
                "url,number,state,headRefOid,isCrossRepository",
                "--limit",
-               "5"
+               "100"
              ]
 
       assert opts[:cd] == @cwd
