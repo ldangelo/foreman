@@ -141,7 +141,7 @@ defmodule ForemanServer.Idempotency.EffectTest do
       assert {:error, :rejected} ==
                Effect.run(:branch_push, key, fn -> {:error, :rejected} end, push_meta())
 
-      assert {:ok, %{status: :failed, metadata: %{"run_id" => @run_id, reason: reason}}} =
+      assert {:ok, %{status: :failed, metadata: %{"run_id" => @run_id, "reason" => reason}}} =
                KeyStore.get(key)
 
       assert reason =~ "rejected"
