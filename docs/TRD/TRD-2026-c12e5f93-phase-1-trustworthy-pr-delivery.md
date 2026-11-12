@@ -8,7 +8,7 @@ source_prd: PRD-2026-c12e5f93
 prd_reference: docs/PRD/PRD-2026-c12e5f93-phase-1-trustworthy-pr-delivery.md
 prd_version_locked: 1.1.0
 kind: trd
-design_readiness_score: 3.75
+design_readiness_score: 4.0
 ---
 
 # TRD: Phase 1 — Trustworthy PR Delivery
@@ -20,10 +20,10 @@ design_readiness_score: 3.75
 | Source PRD | docs/PRD/PRD-2026-c12e5f93-phase-1-trustworthy-pr-delivery.md (PRD-2026-c12e5f93 v1.1.0: 5 requirements, 18 acceptance criteria) |
 | Implementation tasks | 27 |
 | Test tasks | 27 |
-| Total estimate | [TO COMPUTE]h |
+| Total estimate | 266h (27 implementation tasks and 27 test tasks; no task over 8h) |
 | PR boundaries | 9 |
 | Open technical decisions | 8 (see §11) |
-| Design Readiness Score | 3.75 (PASS with concerns) |
+| Design Readiness Score | 4.0 (PASS with concerns, §15) |
 
 ## 1. Context
 
@@ -59,11 +59,58 @@ Each row is a fact the design depends on. Paths are relative to `packages/forema
 
 | Fact | Source |
 |---|---|
-| [TO FILL in the next pass: the rows listed in the task text below carry their own citations] | |
+| `PrStatus` reads a PR with one `gh pr view --json` call and names the head by `headRefOid`. | `lib/foreman_server/github/pr_status.ex:131,275,321` |
+| A normalised check has name, kind, state, conclusion and url; `@fail_conclusions` includes `STALE`; `checks_state` is a rollup; lists are bounded (`@max_list 100`) and comment bodies are cut at 2000 characters. | `github/pr_status.ex:64-71,133-134,143,388-418,438-448,535,539-541` |
+| Probe (gh 2.103.3, 2026-11-12, read only): a check-run rollup item carries `__typename, completedAt, conclusion, detailsUrl, name, startedAt, status, workflowName`; a status context carries `__typename, context, startedAt, state, targetUrl` (no `completedAt`, creator or app). | command run: `gh pr view <n> --json statusCheckRollup` on PR #861 of this repository, rails/rails #59767, nodejs/node #67415 |
+| Probe: `gh pr view --json files` lists 100 of 223 changed files for DefinitelyTyped/DefinitelyTyped #75892 while `changedFiles` says 223; items are `{additions, changeType, deletions, path}`. | command run, 2026-11-12 |
+| Probe: `gh pr view --json comments` returns `id, url, body, author, viewerDidAuthor` per comment and pages through all 908 comments of kubernetes/kubernetes #18085 (26 s); `gh pr comment --help` documents `--body-file -`. No comment write was run. | command run, 2026-11-12 |
+| The checks digest hashes only the failing checks (so a changed passing set does not move it); a first sighting with nothing to report emits nothing. | `pr_observation.ex:43-51,194-197` |
+| `PrObservation` is pure (its one outside read is `ProjectionStore.run/1`); `commands/5` builds the update, checks and review commands; `comment_ids/1` skips bot-authored comments. | `pr_observation.ex:1-5,75-79,96-106,134-160` |
+| `PrChecksChanged` carries the rollup state, the failing names and a digest, and no list of checks. | `events/pr_checks_changed.ex:13-46` |
+| All four head-carrying PR events put `head_sha`; none clears the half of the evidence it does not carry. The projection record has `failing` and `comment_ids`; the aggregate record does not. | `pr_watch_fold.ex:111-150`; `aggregates/run/pr_watch.ex:522-552,629-640` |
+| `PrWatch` holds the PR commands: the command list, the command-to-event map, `@operator_types`, the `run.pr.checks` and `run.pr.review` handlers and the allowed-field list of `event/6`. | `aggregates/run/pr_watch.ex:37-60,82-83,165-193,460-490` |
+| `Run` holds the gate: `MergePin`, `State.pr_watch`, `merge_pin/2`, `validate_approval/1` (public), `ensure_merge_gate_pending/2` (private), `merge_approve`, the PR-event routing and the no-op for unknown events; `RunReset` returns `initial_state()`. | `aggregates/run.ex:31-82,119,148-163,306-307,428-445,936-967,1275-1282` |
+| `Run.repo_pr_operator_types/0` (`run.pr.retry`) feeds the gateway's operator allowlist. | `aggregates/run.ex:1291-1299`; `command_gateway.ex:65-79,703-704` |
+| The gateway verifies the approved head against GitHub (`RunPrMerge.verify_head/3`, one `PrStatus.fetch/2` without review threads) and re-holds an approval when an observation shows another head. | `command_gateway.ex:86-87,177-189,244-259`; `run_pr_merge.ex:74-98` |
+| The merge is pinned to the approved head. | `github/pr_merge.ex:40` |
+| `signal_pr_ready/2` takes the head from the local `resolve_revision`, a failure is only logged, `finalize_run` discards the PR finalisation result, and a phase PR is returned as the run's PR. | `workflow/run_executor.ex:2491,2570-2594,2630-2657,2659-2683` |
+| `PrCreate.signal_ready/6` uses a local `rev-parse`; `PrCreate.open/4` calls `AutoPR` and then string-matches "already exists". | `pr_create.ex:104-125,129-143,206-229` |
+| `AutoPR` runs the push and `gh pr create` as keyed effects; `PhasePR` looks up an open PR after its push. | `workflow/auto_pr.ex:237-266,299-353`; `workflow/phase_pr.ex:183-199,334-371` |
+| `ReviewFindings.extract/1` answers `:none` for an absent or blank block and for an unreadable file; two callers. | `workflow/review_findings.ex:13-27,38-74`; `workflow/auto_pr.ex:519-525`; `workflow/phase_pr.ex:453-459` |
+| `Effect.run/4` and `preflight/3` treat a `started` key and an unmarked `ambiguous` key as clear; the required metadata per class is a map. | `idempotency/effect.ex:43-55,82-114,159-182` |
+| `KeyStore` records merge metadata; `list_by_status/1` falls back to ETS when the repo query raises, `list_records_checked/1` does not; durability is probed. | `idempotency/key_store.ex:186-194,204-240,277-324,444-458` |
+| The `Reconciler` behaviour has one callback; the registry is configuration; the task-provider `reopen` is repeatable. | `idempotency/reconciler.ex:41,44-65`; `idempotency/reconcilers/task_provider.ex:97-99`; `config/config.exs:45-50` |
+| The boot sweep marks an orphaned `started` key `ambiguous` unless the run's executor is alive; `scan_ambiguous_keys/0` has no runtime caller; an unregistered class blocks the run `effect_class_unregistered`. | `workflow/boot_reconciliation.ex:190-192,751-787,803-842,873,885,901-947,1008-1033` |
+| `Effect.run/4` callers are `AutoPR`, `PhasePR`, the task-provider wrapper and the boot reopen; `PrFix` is not one. | `workflow/auto_pr.ex:238,258,300`; `workflow/phase_pr.ex:204,220,249`; `idempotency/reconcilers/task_provider.ex:81`; `workflow/run_executor.ex:142,162,5644`; `workflow/boot_reconciliation.ex:447` |
+| `PrFix` pushes through a jobsite spec; when the fix ends the reactor re-reads the PR through `Observer.observe/2`. | `pr_fix.ex:383`; `pr_watcher.ex:416-447`; `pr_watcher/observer.ex:62-80` |
+| The PR monitor is opt-in, the watcher is on by default, the webhook endpoint fails closed without its secret, and an `issue_comment` delivery triggers a refresh. | `config/runtime.exs:79-84,227-232`; `config/config.exs:311`; `application.ex:724-735`; `webhooks/github.ex:135-141` |
+| The settings vocabulary is closed (`@keys`, `validate/2`, `normalize_cleared/1`); `pr_auto_fix` is its precedent and is referenced only in the settings module, the event, the typed read, the MCP tool and the auto-fix policy. | `aggregates/project/settings.ex:43-47,144-163,184-204,219-291`; `events/project_updated.ex:12-58`; `project_settings.ex:9-29`; `pr_watcher/auto_fix.ex:42` |
+| `foreman_project_settings_update` is an MCP write tool (usable when `allow_workflow_writes` is on, default off), dispatches `project.update` as an operator command, and its `clear` list accepts any setting name. | `mcp/policy.ex:4-32,75-77`; `mcp/tools.ex:508-578,2452-2478,2684-2694` |
+| The Go CLI: project flags and usage text; `runApproveMerge`; `runPrs` prints the server's JSON; the drift tests check verbs (usage and cli-reference), not flags. | `packages/foreman_cli/cmd/foreman/project.go:21,194,293-300,455-463`; `run.go:191-236,378-394`; `main.go:97`; `usage_drift_test.go:148-201` |
+| The PR DTO is built from the projection with three store calls and has no typed unavailable answer. | `pr_watch/dto.ex:17-51,60-99`; `foreman_server_web/controllers/run_controller.ex:54-64`; `mcp/tools.ex:1482-1490` |
+| `ProjectionStore.init/1` starts empty when the event-log read fails; the runtime rebuild replies the error and keeps its state. | `projection_store.ex:1240-1243,1573-1587,2184-2189` |
+| Overview classification, its input, the dashboard reset matrix. | `overview/group.ex:130-159`; `overview/input.ex:34-50`; `overview.ex:295-325`; `foreman_server_web/operator_dashboard.ex:158-170` |
+| `Coordinator.Redact` exists; no PR comment or review write exists anywhere (grep over workflow, github, pr_watcher, vcs_adapter); the other `gh` calls are `pr_status.ex:275`, `vcs_adapter/default.ex:70`, `github/pr_merge.ex:40`. | `coordinator/redact.ex:1-107` |
+| The guard tests pin the operator-only commands and forbid the words merge and approve in MCP tool names. | `test/foreman_server/operator_only_pr_commands_test.exs:17-24`; `test/foreman_server/mcp/no_merge_tool_test.exs:7-23` |
+| The constitution: only `CommandRouter` appends, events are typed modules, and breaking changes to CLI commands or domain events need explicit approval. | `docs/standards/constitution.md:88-92,124-128,132-140` |
+| The four beads exist and are open; the decision record's limitations (xv), (xviii) and (xxii) describe them. | `.beads/issues.jsonl` (`foreman-by6nl` line 1864); `docs/decisions/phase-0-durable-execution-engine.md:159,165,173` |
 
 ## 6. Architecture Decision
 
-[TO FILL in the next pass]
+Decision: extend the current engine (the operator's Phase 0 decision) with a per-head evidence record folded into the Run aggregate, a deterministic evaluator read by the approval gate, and a keyed, redacted PR comment. Four things were considered.
+
+- **A. Server-observed GitHub evidence, decided in the aggregate (chosen).** Check results come from the GitHub rollup in the same `gh pr view` response that names the head. The aggregate records them, so `merge_approve` decides from folded state and stays deterministic. The cost is more events and a second fold (the projection), kept equal by one shared fold module.
+- **B. Server-run command checks (deferred).** They would run project code in a checkout of the head on a host whose filesystem and network the Phase 0 execution profile records as unenforced. Revisit in a later phase with an enforced profile.
+- **C. A model-only rubric (rejected).** A model's level cannot be reproduced, so it cannot be tested or audited; the model may only raise the deterministic level (AC-003-5).
+- **D. Evidence held outside the aggregate (rejected).** An evaluator that reads the projection or GitHub inside `merge_approve` is not deterministic on replay and is not network-free (`run_pr_merge.ex:7-12`).
+
+**Components.** `PrEvidence` (new): the evidence sub-record, one fold used by both `PrWatch.apply_event/3` and `PrWatchFold.apply_event/3`, `evaluate/2`, `evaluate_checks/2`, `project_policy/1`. `PrRisk` and `PrRisk.Rubric`: the judgement parser and the pure rubric. `PrReport`, `PrReport.Publisher` and `GitHub.PrComment`: the rendered, redacted comment and its write. `GitHub.PrLookup`: the open-PR lookup. `Reconcilers.PrComment`: the reconciler of the new effect class. Changed: `PrStatus`, `PrObservation`, `Observer`, `PrWatch`, `Run`, `CommandGateway`, `RunPrMerge`, `Effect`, `KeyStore`, `BootReconciliation`, the settings vocabulary, the DTO, `ProjectionStore.init/1`, Overview and the dashboard.
+
+**Data flow.** An observation (poll, webhook or the gateway's own read at approval) yields one `PrStatus`; `PrObservation.commands/6` turns it into `run.pr.update`, `run.pr.checks` (every check, the policy) and `run.pr.risk` commands; the aggregate folds them into `evidence`. At finalisation the review artifact is parsed once into `run.pr.findings` (findings and judgement, bound to the reviewed head). `merge_approve` evaluates `PrEvidence.evaluate/2` for `approval.head_sha` from aggregate state. The publisher reacts to `PrRiskRecorded` and writes one comment through the keyed `pr_comment` effect.
+
+**Head invalidation.** When an event brings a head different from the record's, the fold resets the check and review fields and `evidence`. Per surface: the fold (reset, TRD-007); the DTO (evidence of another head is labelled stale, TRD-023); the published comment (it names its head and digest; a new head edits it, TRD-021); the waiver (dropped with the head, TRD-012); the approval (re-held by the existing `run.pr.rehold`, `command_gateway.ex:177-189`); the effect (keyed by head, P-4: a settled key is re-run, `effect.ex:159-182`).
+
+**What must be on.** The gate does not depend on monitoring: at approval the gateway re-reads GitHub and records fresh evidence for the named head (TRD-022). The PR monitor (`FOREMAN_PR_MONITOR_ENABLED=true`) or a verified webhook is needed only for the status to show a head change without anyone approving; the doctor reports it (TRD-009, TRD-010).
 
 ## 7. Design Principles for Every Task
 
@@ -571,31 +618,126 @@ Declared once here so every `Target Files:` line stays a bare path. Paths are re
 
 ## 9. Sprint Planning
 
-Informational only; `implement-trd-beads` does not parse this section. [TO FILL: longest chains, computed from `trd-cli parse`]
+Informational only; `implement-trd-beads` does not parse this section. Hours per PR (implementation plus test): PR 1 4h (2 tasks), PR 2 39h (8), PR 3 39h (8), PR 4 35h (6), PR 5 30h (6), PR 6 30h (6), PR 7 32h (6), PR 8 35h (6), PR 9 22h (6); total 266h. The longest dependency chain, computed from `trd-cli parse`, is 100h over 17 tasks: TRD-006, 007, 009, 010, 011, 015, 016, 018, 019, 020, 021, 023, 024, 025, 026, 027, 027-TEST. PR 2 (the preconditions) does not lie on it: TRD-005 joins the chain only at TRD-010, so PR 2 and PR 3 can be built in parallel and merged in stack order; PR 5 (TRD-013, TRD-014) can start after PR 2 and before PR 4 lands, because TRD-015 is the first task that needs the evaluator.
 
 ## 10. Acceptance Criteria Traceability
 
-[TO FILL: per-REQ and per-AC tables]
+Every PRD criterion has at least one implementation task and one test task (parse check: 18 of 18 covered, 5 of 5 requirements satisfied). Tasks that carry no PRD criterion are verified by inspection or by their own tests: TRD-001 (decision-record edit), TRD-002 to TRD-004 (preconditions P-1 and P-2), TRD-026 (exit record) and TRD-027 (documentation gate), with their `-TEST` siblings.
+
+| Requirement | Implementation tasks |
+|---|---|
+| REQ-001 | 001 to 008, 010, 011, 012, 022, 025 |
+| REQ-002 | 013, 014, 015 |
+| REQ-003 | 016 to 021, 025 |
+| REQ-004 | 022, 025, 026, 027 |
+| REQ-005 | 007, 008, 009, 023, 024 |
+
+| PRD criterion | Implementation | Test |
+|---|---|---|
+| AC-001-1 | 006, 007, 008 | 006-TEST, 007-TEST, 008-TEST |
+| AC-001-2 | 011, 022, 025 | 011-TEST, 022-TEST |
+| AC-001-3 | 011, 012 | 011-TEST, 012-TEST |
+| AC-001-4 | 006, 010, 025 | 006-TEST, 010-TEST |
+| AC-001-5 | 012 | 012-TEST |
+| AC-001-6 | 005, 010 | 005-TEST, 010-TEST |
+| AC-002-1 | 013, 014, 015 | 013-TEST, 014-TEST, 015-TEST |
+| AC-002-2 | 013, 015, 022 | 013-TEST, 015-TEST, 022-TEST |
+| AC-003-1 | 017, 018 | 017-TEST, 018-TEST |
+| AC-003-2 | 016, 018 | 016-TEST, 018-TEST |
+| AC-003-3 | 019, 020, 021, 025 | 019-TEST, 020-TEST, 021-TEST |
+| AC-003-4 | 019 | 019-TEST |
+| AC-003-5 | 016, 018 | 016-TEST, 018-TEST |
+| AC-004-1 | 022, 025 | 022-TEST, 025-TEST |
+| AC-004-2 | 007, 025 | 007-TEST, 025-TEST |
+| AC-005-1 | 008, 023, 024 | 008-TEST, 023-TEST, 024-TEST |
+| AC-005-2 | 007, 009, 023 | 007-TEST, 009-TEST, 023-TEST |
+| AC-005-3 | 023 | 023-TEST |
 
 ## 11. Open Technical Decisions
 
-[TO FILL: the eight decisions, thresholds table, sensitive-path list]
+Eight decisions need the operator. Each is a proposal with its basis; the repository has no evidence for the numbers, so none is presented as measured. TRD-026 records the operator's answer to each.
+
+1. **Rubric thresholds.** Proposed in the table below; the level is the maximum over all rows and the model can only raise it.
+2. **Gate semantics.** `merge_approve` is refused with a typed reason unless the evidence for the current head is eligible or explicitly waived (still operator-approved and SHA-pinned). Basis: PRD REQ-004 and the operator's decision on waivers.
+3. **Observation.** Turn the PR monitor on for any deployment that gates a project (the webhook is optional); the doctor warns otherwise. The gate is safe without it (TRD-022).
+4. **Sensitive-path table v1** (below).
+5. **Waivable reasons.** `no_checks_configured`, `missing`, `findings_absent`, `findings_other_sha`. Never waivable: `failing`, `pending`, `stale`, `other_sha`, `findings_malformed`. An absent or malformed model judgement is HIGH (conservative; it makes LOW rare until the review prompts reliably emit the block).
+6. **Default per project.** The gate is off until `required_checks` is set; publication follows the gate switch.
+7. **Durable-store guard.** Enabling `required_checks` is refused (not only warned) while the idempotency store is ETS-only; true in `config/config.exs`, false in dev and test.
+8. **Freshness window.** Check evidence older than 900 seconds is `stale`.
+
+| Input | LOW | MEDIUM | HIGH |
+|---|---|---|---|
+| Changed files | 10 or fewer | 11 to 25 | more than 25 |
+| Lines added plus deleted | 200 or fewer | 201 to 800 | more than 800 |
+| Unresolved findings | none, or nitpicks only | any minor | any critical or major |
+| Changed-file evidence | complete | complete | incomplete (`files_incomplete?`) |
+| Sensitive path touched | no | no | yes |
+| Required checks | all passing, not waived | not used | any not passing, none configured, or waived |
+| Base branch | equals the run's recorded base | not used | differs |
+| Model judgement | LOW | MEDIUM | HIGH, missing, malformed, or for another head |
+
+Sensitive-path table v1 (every path exists in the repository; a prefix ends in a slash; paths under `packages/foreman_server/` are written from there):
+
+| Group | Match |
+|---|---|
+| CI | prefix `.github/workflows/` |
+| Runtime configuration | prefix `packages/foreman_server/config/` |
+| Migrations | prefix `packages/foreman_server/priv/repo/migrations/` |
+| Bundled workflows and prompts | prefix `packages/foreman_server/priv/defaults/workflows/` |
+| Merge, approval and effect code | exact `lib/foreman_server/aggregates/run.ex`, `pr_gate.ex`, `run_pr_merge.ex`, `command_gateway.ex`, `github/pr_merge.ex`, `workflow/approver_authorizer.ex`, `workflow/merge_gate.ex`; prefix `lib/foreman_server/idempotency/` |
+| Authentication and secrets | prefix `lib/foreman_server_web/plugs/`; exact `lib/foreman_server/mcp/auth.ex`, `mcp/policy.ex`, `aggregates/project_secret.ex`, `config_providers/secrets.ex` |
+| Instruction files | base name `AGENTS.md`, `CLAUDE.md` |
+| Dependency and build manifests | base name `mix.exs`, `mix.lock`, `go.mod`, `package.json`, `package-lock.json`, `devbox.json`, `devbox.lock`, `Dockerfile`, `docker-compose.yml` |
+| Secret-like names | base name containing `secret` or starting with `.env` |
 
 ## 12. Testing Plan
 
-[TO FILL]
+- **Pure units:** `PrEvidence.evaluate/2` over every reason code and every combination of head, waiver and policy; `PrRisk.Rubric.classify/1` over every HIGH trigger, the MEDIUM triggers, LOW, raise-only and determinism; the findings parser over recorded, absent and every malformed shape.
+- **Aggregate:** every new command validated strictly and rejected without appending; replay equals the live fold (`Aggregate.load/2`); the gate refusal is identical on replay.
+- **Fold parity:** aggregate and projection hold the same `evidence` for the same events (TRD-007-TEST), including a cross-half head reset.
+- **Gateway with a fake `gh` runner:** the fresh observation at approval, the head mismatch, a failed read, the durable-store guard, the waiver's live-head check.
+- **Effects (`async: false`):** the refusal of an undecided key per status, the decision lifecycle, the repeatable exception, the sweep (decision written, failing read, on-demand scan), the `pr_comment` key and reconciler (crash on each side of the post), and the block, reset, resume walk for `foreman-tnlqt`.
+- **Real fixtures:** rollup items captured from `gh` 2.103.3 (check run and status context) and the 100-of-223 file list.
+- **Go:** `go test` for the new flag and verb in `packages/foreman_cli/cmd/foreman` (`project_settings_test.go`, `run_merge_test.go`, `usage_drift_test.go`).
+- **Adversarial suite (TRD-025):** missing result, spoofed result (status context named like a required check run, another workflow's check, an agent-written artifact), stale result after a fix push, head change after approval and after publish, re-run per head, waiver for another head, forged risk level, feedback loop. TRD-025-TEST reverts each guard in a scratch copy and records that the matching scenario goes red.
+- **Documentation gate (TRD-026, TRD-027):** reviewer checklists; every CLI, MCP and HTTP name checked against source.
+- **Run one file:** `devbox run -- bash -c 'cd packages/foreman_server && MIX_ENV=test mix test <path>'` (AGENTS.md); the full suite once, after all tasks land.
 
 ## 13. Rollout and Rollback
 
-[TO FILL]
+- **Order of exposure.** PR 1 to PR 3 add no gate. PR 4 adds the setting, off by default. PR 5 and PR 6 record findings and risk. PR 7 publishes, only for projects with `required_checks` set. PR 8 enforces, only for those projects. A project that never sets `required_checks` behaves as today, apart from P-1 (an undecided effect key is refused) and P-2 (an existing PR is adopted), which apply everywhere.
+- **Enabling gating for a project (operator steps).** Switch the durable store on first (`config :foreman_server, :jido_ecto, enabled: true` and `JIDO_CHECKPOINT_DATABASE_URL`; `config/prod.exs:74-78` has it off); turn the PR monitor on (`FOREMAN_PR_MONITOR_ENABLED=true`); run `foreman doctor`; set `foreman project update <id> --required-checks '<json>'`; confirm the first PR shows its eligibility with `foreman run prs <id>`. The first publication needs the one-time scratch-PR check of TRD-019 (the `gh` writes are unverified).
+- **Rollback.** Clear `required_checks` (`--clear required_checks`): the gate is off, publication stops, approval behaves as before. New events stay in the streams. A stream that contains a new optional field cannot be decoded by an older build, so rolling the binary back is safe only before the first gated PR; after that, roll forward or clear the setting and keep the build. `RunReset` returns the run state to its initial value (`aggregates/run.ex:306-307`), so evidence is re-observed after a reset.
+- **Boot behaviour changes.** `ProjectionStore.init/1` stops with `{:event_log_read_failed, reason}` instead of starting empty (TRD-023): while the event log is unreadable the server does not boot, by design. An undecided effect key is refused until the sweep decides it (TRD-002, TRD-003); `foreman_doctor` lists such keys.
 
 ## 14. Self-Review Findings
 
-[TO FILL]
+Honest gaps, and corrections to the scout reports this TRD started from.
+
+- **Corrected from the scouts.** `PhasePR` already looks up an open PR after its push (`phase_pr.ex:183-199`); `PrCreate` already adopts an existing PR by string match (`pr_create.ex:215-229`); a phase PR is already signalled as the run's PR (`run_executor.ex:2659-2683`), so the lessons file sentence at `:641-643` is stale (TRD-027 corrects it); the DTO is built from the projection, not the aggregate (`dto.ex:61-73`); GitHub's rollup does carry `completedAt` for check runs (probe); `PrObservation` is pure, so the policy is passed in; the waiver handler must live in `Run` because the gate check is private there; the usage drift test checks verbs, not flags; `foreman run prs` prints JSON, so there is no CLI change for the status; the documentation task is TRD-027.
+- **Not built.** Sweep ordering before executors resume (the third item of `foreman-by6nl`): a `started` key of a run whose executor is alive is not orphaned by the sweep (`boot_reconciliation.ex:836-842`), so it stays refused until that executor ends and a later scan or a restart decides it. A refusal casts an on-demand scan; it does not remove this wait.
+- **Out-of-order observations** can rewind the head of record; the effect is fail-safe (a refusal or a re-hold), not fixed here.
+- **`status_context` is weaker than `check_run`.** A status context has no creator or app (probe), so anyone who can create statuses can satisfy an entry of that kind; an entry names its kind, and the operator chooses `check_run` where the source matters.
+- **Proposals, not measurements:** the thresholds, the sensitive-path table, the waivable set and the freshness window (§11).
+- **Unverified:** every `gh` comment write, that the node id `gh pr view` returns is accepted by `updateIssueComment`, and what `gh pr comment` prints on success (TRD-019 probes them on a scratch PR); the `go test` invocation; that a second reader would find every cited line unchanged (line numbers drift).
+- **Findings are re-needed after every fix push:** `findings_other_sha` makes the PR ineligible until the review is re-run or the reason is waived. PRs of a multi-repository run other than the primary read `findings_absent` until waived.
+- **A run with no review phase** records `absent` and needs a waiver when the gate is on.
+- **Large PRs:** `gh pr view --json comments` pages every comment (26 s for 908), which slows the reconciler and `list/2`; over 100 changed files the list is incomplete and the rubric gives HIGH.
+- **Operator-only is a convention of the API token:** whoever holds the token can send `run.pr.waive_evidence` and clear `required_checks`; the approver identity is a claim checked against `ApproverAuthorizer`'s list, as for `merge_approve`.
+- **Constitution §5:** new events, new commands and a new CLI verb are changes that need the operator's approval (`docs/standards/constitution.md:132-140`); this TRD is the artifact for that review.
 
 ## 15. Design Readiness Scorecard
 
-[TO FILL]
+| Dimension | Score | Basis |
+|---|---|---|
+| Requirement traceability | 5 | 18 of 18 criteria and 5 of 5 requirements covered; the parse reports no warning |
+| Source grounding | 4 | each design claim cites a line read in the worktree; no independent second pass; line numbers drift |
+| Task decomposition | 4 | 27 implementation tasks and 27 test tasks, none over 8h, no forward dependency; several 7h tasks are dense |
+| Test design | 4 | every implementation task has a mutation-style test task; GitHub behaviour is faked except the captured fixtures |
+| Open unknowns | 3 | `gh` writes unverified; thresholds, waivable set and sensitive paths are proposals; eight operator decisions pending |
+
+Average 4.0. PASS with concerns: the build can start with PR 1 to PR 4 while the operator answers §11; PR 7 needs the scratch-PR check first.
 
 ## 16. Changelog
 
