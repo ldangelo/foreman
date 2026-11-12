@@ -157,7 +157,8 @@ defmodule ForemanServer.Idempotency.KeyStoreDurabilityTest do
       assert {:ok, :completed} = KeyStore.status(key)
 
       # A crash mid-effect leaves `started`; the restart empties the table, so the
-      # sweep (which reads `list_by_status/1`) finds nothing to reconcile.
+      # sweep (which reads `list_records_checked/1`) finds nothing to reconcile; the ETS-only
+      # `list_by_status/1` agrees.
       :ok = KeyStore.mark_started(key, %{"run_id" => "run-1"})
       restart_key_store()
 
@@ -235,7 +236,8 @@ defmodule ForemanServer.Idempotency.KeyStoreDurabilityTest do
 
       refute KeyStore.durable?()
 
-      # Boot's read is deliberately unchanged: it still falls back to the ETS keys.
+      # `list_by_status/1` (no production caller; boot reads the checked list above) still
+      # falls back to the ETS keys.
       assert KeyStore.list_by_status(:ambiguous) == ["k-a"]
     end
 

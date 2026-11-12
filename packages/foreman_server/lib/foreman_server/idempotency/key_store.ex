@@ -251,8 +251,8 @@ defmodule ForemanServer.Idempotency.KeyStore do
   fallback would show an outage as an empty list); a repo that is down, or a
   `KeyStore` that is not running, is `{:error, reason}`. Without a repo it
   scans the ETS table. Metadata keys are strings when read from the repo
-  (JSON round trip) and as written when read from ETS. `list_by_status/1`
-  keeps its ETS fallback: boot reconciliation reads it and is not changed here.
+  (JSON round trip) and as written when read from ETS. Boot reconciliation reads this
+  checked list; `list_by_status/1` keeps its ETS fallback and has no production caller.
   """
   @spec list_records_checked(atom()) :: {:ok, [stored_record()]} | {:error, term()}
   def list_records_checked(status) do
