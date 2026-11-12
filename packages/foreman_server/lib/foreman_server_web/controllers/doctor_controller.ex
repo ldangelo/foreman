@@ -24,7 +24,7 @@ defmodule ForemanServerWeb.DoctorController do
       gating line (`Doctor.gating_line/0`: durable store required and met or not; a switch that
       is not a boolean is read as on and says so) and one line per key in `detail`
       (`<class> run=<id> status=<run status> key=<key> key_status=<started|ambiguous>
-      decision=<not_done|none>`, `Doctor.effect_entry_line/1`); `warn` only when the
+      decision=<not_done|none> writer=<alive|dead|none>`, `Doctor.effect_entry_line/1`); `warn` only when the
       keys cannot be read (the detail then still carries the gating line);
     * `pr_observation` - what shows a head change, a new check result or a published
       report without anyone approving (a fix push is re-read by the watcher; any other push
