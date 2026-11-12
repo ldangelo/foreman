@@ -340,6 +340,48 @@ defmodule ForemanServerWeb.MCP.Tools.DoctorTest do
     test "rows/0 stays provider rows only" do
       assert Enum.all?(Doctor.rows(), &match?({:provider, _name, _status, _hint}, &1))
     end
+
+    defp put_gating(value) do
+      original = Application.fetch_env(:foreman_server, :require_durable_store_for_gating)
+
+      on_exit(fn ->
+        case original do
+          {:ok, v} -> Application.put_env(:foreman_server, :require_durable_store_for_gating, v)
+          :error -> Application.delete_env(:foreman_server, :require_durable_store_for_gating)
+        end
+      end)
+
+      Application.put_env(:foreman_server, :require_durable_store_for_gating, value)
+    end
+
+    test "gating line: not required (the test and development setting) is a ✓ line" do
+      put_gating(false)
+
+      assert {:ok, output} = Doctor.run()
+      assert output =~ "✓ Phase 1 gating: durable store not required"
+      refute output =~ "NOT met"
+      # It sits with the store line, before the unresolved-keys section.
+      assert output =~
+               ~r/Idempotency store\n✗ [^\n]*\n✓ Phase 1 gating[^\n]*\n\nUnresolved effect keys/
+    end
+
+    test "gating line: required and the store is ETS-only is a ✗ line naming the switches" do
+      put_gating(true)
+
+      assert {:ok, output} = Doctor.run()
+      assert output =~ "✗ Phase 1 gating: durable store required and NOT met: "
+      assert output =~ "JIDO_CHECKPOINT_DATABASE_URL"
+    end
+
+    test "gating line: required and the store is durable says met" do
+      put_gating(true)
+      Application.put_env(:foreman_server, @config, repo: AnsweringRepo)
+      restart_key_store()
+
+      assert {:ok, output} = Doctor.run()
+      assert output =~ "✓ Phase 1 gating: durable store required and met"
+      refute output =~ "NOT met"
+    end
   end
 
   defp put_status(provider, value) do

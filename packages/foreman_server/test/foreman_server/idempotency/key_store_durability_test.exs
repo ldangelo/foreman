@@ -277,4 +277,105 @@ defmodule ForemanServer.Idempotency.KeyStoreDurabilityTest do
       end
     end
   end
+
+  describe "require_durable/0 (P-3: the gating guard)" do
+    @switch :require_durable_store_for_gating
+
+    setup do
+      original = Application.fetch_env(:foreman_server, @switch)
+
+      on_exit(fn ->
+        case original do
+          {:ok, value} -> Application.put_env(:foreman_server, @switch, value)
+          :error -> Application.delete_env(:foreman_server, @switch)
+        end
+      end)
+
+      Application.put_env(:foreman_server, @switch, true)
+      :ok
+    end
+
+    test "required and ETS-only: refused, and the note names the production switches" do
+      assert {:error, {:store_not_durable, note}} = KeyStore.require_durable()
+      assert note == KeyStore.durability_note()
+      assert note =~ "`config :foreman_server, :jido_ecto, enabled: true`"
+      assert note =~ "JIDO_CHECKPOINT_DATABASE_URL"
+      assert note =~ "no repo is configured"
+    end
+
+    test "required and the repo answers: ok" do
+      use_fake_repo()
+      assert KeyStore.durable?()
+      assert :ok = KeyStore.require_durable()
+    end
+
+    test "required and the repo is unreachable: refused with the unreachable note, not no_repo" do
+      use_fake_repo()
+      repo_mode(:raise)
+
+      assert {:error, {:store_not_durable, note}} = KeyStore.require_durable()
+      assert note =~ "configured but unreachable"
+      refute note =~ "no repo is configured"
+      assert note =~ "JIDO_CHECKPOINT_DATABASE_URL"
+    end
+
+    test "required and the KeyStore is not running: refused, never a crash" do
+      Supervisor.terminate_child(ForemanServer.Application, KeyStore)
+
+      try do
+        assert {:error, {:store_not_durable, note}} = KeyStore.require_durable()
+        assert note =~ "configured but unreachable"
+      after
+        {:ok, _pid} = Supervisor.restart_child(ForemanServer.Application, KeyStore)
+      end
+    end
+
+    test "switch off: ok whatever the store" do
+      Application.put_env(:foreman_server, @switch, false)
+
+      refute KeyStore.durable_store_required?()
+      assert :ok = KeyStore.require_durable()
+
+      use_fake_repo()
+      repo_mode(:raise)
+      refute KeyStore.durable?()
+      assert :ok = KeyStore.require_durable()
+    end
+
+    test "a switch that is not a boolean is an error, never read as off" do
+      Application.put_env(:foreman_server, @switch, "false")
+
+      assert_raise ArgumentError, ~r/must be a boolean/, fn -> KeyStore.require_durable() end
+    end
+  end
+
+  describe "the shipped configuration (config.exs + dev.exs / test.exs / prod.exs)" do
+    @config_dir Path.expand("../../../config", __DIR__)
+
+    defp shipped(env) do
+      [foreman_server: opts] =
+        @config_dir
+        |> Path.join("config.exs")
+        |> Config.Reader.read!(env: env, target: :host)
+        |> Keyword.take([:foreman_server])
+
+      opts
+    end
+
+    test "development sets the switch to false: gating there is not refused store_not_durable" do
+      opts = shipped(:dev)
+      assert Keyword.fetch!(opts, @switch) == false
+      assert Keyword.fetch!(opts, :jido_ecto) == [enabled: false]
+    end
+
+    test "test sets the switch to false" do
+      assert Keyword.fetch!(shipped(:test), @switch) == false
+    end
+
+    test "production keeps the switch true and the durable store off by default" do
+      opts = shipped(:prod)
+      assert Keyword.fetch!(opts, @switch) == true
+      assert Keyword.fetch!(opts, :jido_ecto) == [enabled: false]
+    end
+  end
 end

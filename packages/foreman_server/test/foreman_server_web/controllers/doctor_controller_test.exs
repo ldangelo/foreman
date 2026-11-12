@@ -138,6 +138,48 @@ defmodule ForemanServerWeb.DoctorControllerTest do
 
       assert Enum.any?(checks, &String.starts_with?(&1["id"], "provider."))
     end
+
+    defp put_gating(value) do
+      original = Application.fetch_env(:foreman_server, :require_durable_store_for_gating)
+
+      on_exit(fn ->
+        case original do
+          {:ok, v} -> Application.put_env(:foreman_server, :require_durable_store_for_gating, v)
+          :error -> Application.delete_env(:foreman_server, :require_durable_store_for_gating)
+        end
+      end)
+
+      Application.put_env(:foreman_server, :require_durable_store_for_gating, value)
+    end
+
+    test "the Phase 1 gating line sits with the store line; not required is ok" do
+      put_gating(false)
+      %{"checks" => checks} = get_json("/api/doctor", 200)
+
+      assert %{"status" => "ok", "detail" => detail} = effect_check(checks)
+      assert detail =~ "✓ Phase 1 gating: durable store not required"
+    end
+
+    test "required with an ETS-only store: the line says NOT met, naming the switches" do
+      put_gating(true)
+      %{"checks" => checks} = get_json("/api/doctor", 200)
+
+      assert %{"detail" => detail} = effect_check(checks)
+      assert detail =~ "✗ Phase 1 gating: durable store required and NOT met: "
+      assert detail =~ "JIDO_CHECKPOINT_DATABASE_URL"
+    end
+
+    test "the gating line is also shown when the keys cannot be read" do
+      put_gating(true)
+      Application.put_env(:foreman_server, @config, repo: DownRepo)
+      restart_key_store()
+
+      %{"checks" => checks} = get_json("/api/doctor", 200)
+
+      assert %{"status" => "warn", "detail" => detail} = effect_check(checks)
+      assert detail =~ "✗ Phase 1 gating: durable store required and NOT met: "
+      assert detail =~ "configured but unreachable"
+    end
   end
 
   test "?project= adds a recommendations summary; unknown project is 404", %{tmp_dir: repo} do
