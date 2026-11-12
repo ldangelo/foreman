@@ -32,7 +32,15 @@ defmodule ForemanServer.PrWatcherFixTest do
     %{github: github, starter: starter}
   end
 
-  defp fetch_fun(github), do: fn _url -> Agent.get(github, &{:ok, &1}) end
+  # A stored `{:error, reason}` is a failed read; any other value is the PR's status.
+  defp fetch_fun(github) do
+    fn _url ->
+      case Agent.get(github, & &1) do
+        {:error, _reason} = error -> error
+        status -> {:ok, status}
+      end
+    end
+  end
 
   defp github!(github, status), do: Agent.update(github, fn _ -> status end)
 
@@ -298,6 +306,56 @@ defmodule ForemanServer.PrWatcherFixTest do
       # is labelled with the head it was recorded for
       assert record.evidence.checks.head_sha == "sha-2"
       refute record.evidence.checks.evidence_digest == old_checks.evidence_digest
+    end
+
+    test "a failed re-read is `failed` with refresh_failed_*, and the old head's observation stays",
+         tc do
+      ctx = setup_run!(tc)
+      start_watcher!(ctx, tc)
+      old_head = ctx.status.head_sha
+      [before] = ProjectionStore.pr_watch(ctx.run_id)
+
+      request_fix!(ctx)
+      {jobsite_id, _opts} = assert_started!()
+      await_event("PrFixStarted", ctx.run_id)
+
+      # the fix pushed, but GitHub cannot be read once the jobsite ends
+      github!(tc.github, {:error, {:gh_failed, 1, "boom"}})
+      finish_jobsite!("JobsiteCompleted", jobsite_id)
+
+      finished = await_event("PrFixFinished", ctx.run_id)
+      assert finished.outcome == "failed"
+      assert finished.error_code == "refresh_failed_gh_failed"
+      refute Map.get(finished, :new_head_sha)
+
+      # nothing was re-observed: the record still holds the old head's observation
+      assert [record] = ProjectionStore.pr_watch(ctx.run_id)
+      assert record.head_sha == old_head
+      assert record.evidence.checks == before.evidence.checks
+    end
+
+    test "a watch the operator stopped is not re-read: the fix finishes `failed` not_watched",
+         tc do
+      ctx = setup_run!(tc)
+      start_watcher!(ctx, tc)
+
+      request_fix!(ctx)
+      {jobsite_id, _opts} = assert_started!()
+      await_event("PrFixStarted", ctx.run_id)
+
+      Support.dispatch!(%{
+        type: "run.pr.watch_stop",
+        command_id: "stop-#{ctx.run_id}",
+        aggregate_id: "run:#{ctx.run_id}",
+        payload: %{run_id: ctx.run_id, pr_url: ctx.pr_url, reason: "operator"}
+      })
+
+      github!(tc.github, %{ctx.status | head_sha: "sha-2", checks_state: :passing, checks: []})
+      finish_jobsite!("JobsiteCompleted", jobsite_id)
+
+      finished = await_event("PrFixFinished", ctx.run_id)
+      assert finished.outcome == "failed"
+      assert finished.error_code == "refresh_failed_not_watched"
     end
 
     test "an unchanged head is `no_change`", tc do

@@ -202,6 +202,9 @@ defmodule ForemanServer.PrCreateTest do
     end
   end
 
+  # Every call, `gh pr view` included: a refusal must not read GitHub at all.
+  defp ran_all(cmd), do: ran(cmd, fn _ -> true end)
+
   defp view_ran, do: ran("gh", &match?(["pr", "view" | _], &1))
 
   defp create_command(run_id, payload \\ %{}) do
@@ -388,7 +391,7 @@ defmodule ForemanServer.PrCreateTest do
       script!(script, :ahead, "0\n")
 
       assert {:error, :no_commits_to_propose} = PrCreate.execute(t.run_id)
-      assert ran("gh") == []
+      assert ran_all("gh") == []
       assert ran("git", &(hd(&1) == "push")) == []
       assert {:error, :not_found} = ProjectionStore.pr_association(t.run_id)
     end
@@ -419,7 +422,7 @@ defmodule ForemanServer.PrCreateTest do
       assert {:error, {:project_unresolved, ^project_id}} = PrCreate.execute(orphan.run_id)
 
       # none of the refusals ran a command
-      assert ran("gh") == []
+      assert ran_all("gh") == []
       assert ran("git") == []
     end
   end
@@ -472,7 +475,7 @@ defmodule ForemanServer.PrCreateTest do
       assert {:error, {:pr_already_associated, ^pr_url}} =
                CommandGateway.dispatch_operator(create_command(t.run_id))
 
-      assert ran("gh") == []
+      assert ran_all("gh") == []
       assert Enum.count(Support.run_event_types(t.run_id), &(&1 == "PrCreated")) == 1
     end
 

@@ -132,6 +132,9 @@ defmodule ForemanServer.Workflow.RunExecutorPrReadyTest do
     [ready] = Enum.filter(events, &(&1.event_type == "PrReady"))
 
     assert ready.data.branch_name == "agent/chosen"
+    refute ready.data.branch_name == "foreman/run-branch"
+    # the head is the PR's, read from GitHub for the signalled url, whichever branch was chosen
+    assert_received {:pr_ready_gh, @pr_url}
     assert ready.data.head_sha == @github_head
   end
 
