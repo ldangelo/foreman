@@ -149,6 +149,53 @@ defmodule ForemanServer.Workflow.RunExecutorPrReadyTest do
     assert MergeGate.pending_for_key?("run:#{run_id}")
   end
 
+  test "PrReady records GitHub's head H2 while the local branch tip is H1", %{
+    repo: repo,
+    run_id: run_id
+  } do
+    h1 = git!(repo, ["rev-parse", "foreman/run-branch"]) |> String.trim()
+    refute h1 == @github_head
+
+    assert :ok = RunExecutor.__signal_pr_ready_for_test__(state(repo, run_id), @pr_url)
+
+    {:ok, events} = ForemanServer.EventStore.read_stream_forward("run:#{run_id}", 0, 1_000)
+    [ready] = Enum.filter(events, &(&1.event_type == "PrReady"))
+    assert ready.data.head_sha == @github_head
+  end
+
+  test "a failed GitHub read logs at error level, appends no PrReady and never engages the gate",
+       %{repo: repo, run_id: run_id} do
+    PrReadyGithub.install!(fn _url -> {:error, 1} end)
+
+    log =
+      ExUnit.CaptureLog.capture_log([level: :error], fn ->
+        assert :ok = RunExecutor.__signal_pr_ready_for_test__(state(repo, run_id), @pr_url)
+      end)
+
+    assert log =~ "[error]"
+    assert log =~ "run.pr.ready was NOT signalled"
+    assert log =~ "head_read_failed"
+
+    {:ok, events} = ForemanServer.EventStore.read_stream_forward("run:#{run_id}", 0, 1_000)
+    refute Enum.any?(events, &(&1.event_type == "PrReady"))
+    refute MergeGate.pending_for_key?("run:#{run_id}")
+  end
+
+  test "a repeat after GitHub's head moved keeps the one PrReady and the head it recorded", %{
+    repo: repo,
+    run_id: run_id
+  } do
+    st = state(repo, run_id)
+    assert :ok = RunExecutor.__signal_pr_ready_for_test__(st, @pr_url)
+
+    PrReadyGithub.install!(%{@pr_url => PrReadyGithub.sha("moved")})
+    assert :ok = RunExecutor.__signal_pr_ready_for_test__(st, @pr_url)
+
+    {:ok, events} = ForemanServer.EventStore.read_stream_forward("run:#{run_id}", 0, 1_000)
+    assert [ready] = Enum.filter(events, &(&1.event_type == "PrReady"))
+    assert ready.data.head_sha == @github_head
+  end
+
   test "a run whose base branch was never recorded fails loudly and never engages the gate", %{
     repo: repo,
     run_id: run_id

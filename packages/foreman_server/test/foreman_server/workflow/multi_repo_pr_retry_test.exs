@@ -188,6 +188,45 @@ defmodule ForemanServer.Workflow.MultiRepoPrRetryTest do
       %{ctx: ctx}
     end
 
+    test "the retried PR's PrReady names the head GitHub shows, not the preserved local tip",
+         %{ctx: ctx} do
+      repair_origin!(ctx)
+      local_tip = git!(ctx.wt_b, ["rev-parse", "HEAD"])
+      PrReadyGithub.install!(fn _url -> PrReadyGithub.sha("retry force-pushed") end)
+
+      assert {:ok, _} = retry(ctx, "b")
+
+      assert [%{"head_sha" => head}] =
+               Enum.filter(run_events(ctx, "PrReady"), &(&1["repo_id"] == "b"))
+
+      assert head == PrReadyGithub.sha("retry force-pushed")
+      assert head != local_tip
+    end
+
+    test "a retry whose GitHub read fails opens the PR but signals nothing; the next retry signals",
+         %{ctx: ctx} do
+      repair_origin!(ctx)
+      PrReadyGithub.install!(fn _url -> {:error, 1} end)
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert {:ok, _} = retry(ctx, "b")
+        end)
+
+      assert log =~ "created but run.pr.ready was NOT signalled"
+      assert [] = Enum.filter(run_events(ctx, "PrReady"), &(&1["repo_id"] == "b"))
+      assert %{pr_association: %{pr_url: url}, gate: :none} = repo(ctx, "b")
+
+      PrReadyGithub.install!(fn _url -> PrReadyGithub.sha("recovered") end)
+      assert {:ok, _} = retry(ctx, "b")
+      assert creates(ctx, "repo-b") == 1
+
+      assert [%{"pr_url" => ^url, "head_sha" => head}] =
+               Enum.filter(run_events(ctx, "PrReady"), &(&1["repo_id"] == "b"))
+
+      assert head == PrReadyGithub.sha("recovered")
+    end
+
     test "opens the missing PR from the preserved worktree, then reclaims it", %{ctx: ctx} do
       repair_origin!(ctx)
       assert File.dir?(ctx.wt_b)

@@ -697,6 +697,64 @@ defmodule ForemanServer.PrCreateTest do
     end
   end
 
+  describe "the head of record comes from GitHub (TRD-008)" do
+    @github_head PrReadyGithub.sha("github names this head")
+    @moved_head PrReadyGithub.sha("a later force push")
+
+    test "PrReady.head_sha is the head GitHub names, not the local branch tip", %{
+      script: script,
+      pr_url: pr_url
+    } do
+      t = thread!()
+      refute @github_head == @head_sha
+      script!(script, :view, PrReadyGithub.view_reply(@github_head))
+
+      assert {:ok, _spec} = CommandGateway.dispatch_operator(create_command(t.run_id))
+
+      assert [ready] =
+               t.run_id |> Support.run_events() |> Enum.filter(&(&1.event_type == "PrReady"))
+
+      assert ready.data.head_sha == @github_head
+      assert ready.data.pr_url == pr_url
+      assert ready.data.branch_name == t.branch
+      # no revision is read from the local checkout for the signal
+      assert ran(
+               "git",
+               &(hd(&1) == "rev-parse" and String.ends_with?(List.last(&1), "^{commit}"))
+             ) ==
+               []
+    end
+
+    test "a failed GitHub read appends no PrReady and is typed head_read_failed", %{
+      script: script
+    } do
+      t = thread!()
+      script!(script, :view, {"GraphQL: boom", 1})
+
+      assert {:error,
+              {:pr_ready_signal_failed, {:head_read_failed, {:gh_failed, 1, "GraphQL: boom"}}}} =
+               PrCreate.execute(t.run_id)
+
+      refute "PrReady" in Support.run_event_types(t.run_id)
+    end
+
+    test "a repeated signal keeps the first PrReady: one event, the head it first recorded", %{
+      script: script
+    } do
+      t = thread!()
+      script!(script, :view, PrReadyGithub.view_reply(@github_head))
+      assert {:ok, _} = PrCreate.execute(t.run_id)
+
+      script!(script, :view, PrReadyGithub.view_reply(@moved_head))
+      assert {:ok, _} = PrCreate.execute(t.run_id)
+
+      assert [ready] =
+               t.run_id |> Support.run_events() |> Enum.filter(&(&1.event_type == "PrReady"))
+
+      assert ready.data.head_sha == @github_head
+    end
+  end
+
   describe "the push and the PR create are keyed effects (TRD-013)" do
     @terminal_event [:foreman_server, :workflow, :boot_reconciliation, :effect_on_terminal_run]
 
