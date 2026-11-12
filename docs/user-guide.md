@@ -881,7 +881,7 @@ foreman project network set --mode allowlist --allow pypi.org project-123
 | Secrets | Names `^[A-Z][A-Z0-9_]{0,63}$`, values <= 16 KiB. The value goes straight into the server's secret store (default: 0600 files under `~/.foreman/secrets`, dir 0700, outside any repo; `config :foreman_server, :secret_store, dir:`). **Events, projections, logs, API responses and MCP results carry only the name and a version, never the value.** The CLI reads the value from stdin or `--from-env`, never from a flag. Secrets are delivered to agents as environment variables and redacted from run logs, jobsite output and session archives (transcript, `diff.patch`, `changed-files.txt`, `request.md`, analysis files): only values present in the server environment are recognised, so a value an agent reads from a committed `.env` file or fetches at runtime is not caught (see [Session archive](#session-archive-and-automated-review)). A secret wins over a variable of the same name. If the store is unavailable at launch the run proceeds without stored secrets (warning logged). The same list (`ProjectEnvironment.secrets/1`: every secret-store value, whatever its name, plus the values of secret-named env variables) redacts project memory and the coordinator's conversation text by value, and so do the question text, tool-call input summaries, thread transcripts (at read time, so older events too), PR-fix prompts and the coordinator's recorded action parameters and turn-failure messages. A global/legacy run (no project) or a project whose environment cannot be resolved is redacted by the built-in name patterns only, with a warning in the server log (never a name or value). Values shorter than 8 characters are not matched by value unless their name looks secret. **Known limit:** where one secret is a substring of another the outcome depends on replacement order. **Known limit (observed live 2026-10-30, `foreman-mw5rz`, fixed by PR #775 and re-verified live 2026-10-31):** the server's debug request log (Phoenix `Parameters:` lines and LiveView `HANDLE EVENT` lines, in stdout, `~/.foreman/logs/foreman-server.log` and the SigNoz export) recorded the arguments of an MCP `tools/call` and the text of a chat request before redaction, so a stored value that an agent sent through an MCP tool (for example a memory write) or that an operator typed into a chat message was in the server log. `config :phoenix, :filter_parameters` now hides the free-text keys (`text`, `content`, `description`, `prompt`, `message`, `instructions`, `goal`, `body`), the MCP `params` envelope and `token` (the dashboard's `?token=`). Keys match by substring, so that layer alone would miss a free-text key added later; a `:logger` primary filter (`ForemanServer.Observability.SecretValueLogFilter`, `foreman-25sqf.1.1`) therefore also redacts every stored secret value of 8 or more characters from every log event, whatever key carries it (see the paragraph on the server's operational log under Observability). Re-verified live 2026-10-31 (`scripts/e2e/redaction_value_live.sh`, real pi agent and coordinator, two runs, before the value-based filter existed): the 22-character value had 0 hits in the server stdout log and the file log (11 occurrences before the fix). In the observed run the event store, a whole-database dump, project memory, the run archive and the webhook capture held no copy (`docs/acceptance/e2e-live-verify-2026-10-30.md`). **Accepted by policy (`foreman-4ohex`, owner decision 2026-10-31):** a stored secret the agent reads from its environment and uses is also in the agent's own event stream, which the jido_harness cache (`$HOME/Library/Caches/jido_harness/*`, `proc_*/` and `run_*/` directories) keeps on disk in plain text, outside the redacted event store, exactly like the agent's own session files (for example pi's `~/.pi` sessions); the byte-search in `scripts/e2e/redaction_value_live.sh` reports it as an INFO line, not a failure. Treat the host account that runs agents as trusted with every secret the project injects, and clear the cache directory if you rotate a secret. OS keychain backends were evaluated and rejected (docs/spikes/E4-SP1.md). |
 | Delivery | Both doors: workflow runs get the project env plus secrets (Foreman's own `FOREMAN_*` values cannot be overridden: no project key may use that namespace); jobsites get the same as a base that the spec's own allowlisted `agent.env` overrides. |
 | Setup script | Runs once, right after a fresh run worktree (or jobsite worktree) is created and before any agent starts, as `sh -c` in the worktree with the project env and secrets plus `FOREMAN_WORKTREE_PATH`, `FOREMAN_RUN_ID`, `FOREMAN_PROJECT_ID`. Non-zero exit or exceeding `config :foreman_server, :project_setup, timeout_ms:` (default 300000; the process group is killed) fails the phase / jobsite (`setup_script_failed`, `setup_script_timeout`; jobsites: `hook_failed`). Output is bounded (64 KiB tail), redacted and written to `<artifact dir>/<run_id>/setup.log` (workflow door). It is not re-run for later phases that reuse the worktree. Remote jobsite specs still cannot supply `hooks.host.*`; the script only comes from this record. |
-| Network policy | `default` (unchanged), `none` (`docker run --network none`; the agent cannot reach its provider API, so this fits offline tasks) or `allowlist` (an internal docker network plus an egress proxy sidecar permitting your `--allow` hosts and the always-allowed provider/VCS hosts; spike docs/spikes/E4-SP2.md). **Enforced on docker jobsites only**: the host sandbox with a non-default policy fails with `network_policy_unsupported`, a spec `sandbox.config.network` wider than the policy fails with `network_policy_violation`, and workflow runs (agents on the server host) do not enforce it. Under `allowlist` the sandbox container's own environment carries the proxy variables (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` and their lowercase twins), so sandbox hooks (`hooks.sandbox.*`) and every `docker exec` reach an allowed host through the sidecar too, not only the agent. The policy's network, sidecar and sandbox container are removed when the jobsite ends; whatever a crashed server left is swept at the next boot. Everything a policy creates or governs (`none` included) is labelled `foreman.owner=<digest of this server's event store host, port and database>` and `foreman.jobsite=<id>`, and cleanup and the sweep touch only labelled objects of that owner: a similarly named container or network, or another Foreman server on the same docker host, is left alone. Objects an older Foreman created before it labelled them are not swept: remove a leftover `foreman-jobsite-*` network and its containers by hand once. |
+| Network policy | `default` (unchanged), `none` (`docker run --network none`; the agent cannot reach its provider API, so this fits offline tasks) or `allowlist` (an internal docker network plus an egress proxy sidecar permitting your `--allow` hosts and the always-allowed provider/VCS hosts; spike docs/spikes/E4-SP2.md). **Enforced on docker jobsites only**: the host sandbox with a non-default policy fails with `network_policy_unsupported`, a spec `sandbox.config.network` wider than the policy fails with `network_policy_violation`, and a workflow run (agents on the server host) cannot enforce it, so a workflow run of a project with a non-default policy is **refused** before it claims its task or creates a worktree, never run unenforced (see [Network and skill preflight](#network-and-skill-preflight)). Under `allowlist` the sandbox container's own environment carries the proxy variables (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` and their lowercase twins), so sandbox hooks (`hooks.sandbox.*`) and every `docker exec` reach an allowed host through the sidecar too, not only the agent. The policy's network, sidecar and sandbox container are removed when the jobsite ends; whatever a crashed server left is swept at the next boot. Everything a policy creates or governs (`none` included) is labelled `foreman.owner=<digest of this server's event store host, port and database>` and `foreman.jobsite=<id>`, and cleanup and the sweep touch only labelled objects of that owner: a similarly named container or network, or another Foreman server on the same docker host, is left alone. Objects an older Foreman created before it labelled them are not swept: remove a leftover `foreman-jobsite-*` network and its containers by hand once. |
 
 `GET /api/projects/<id>/environment` returns the record (variable values only for
 the record form; a project still on legacy flat `config.env` shows `[redacted]`
@@ -1058,7 +1058,16 @@ foreman run merge --id <run-id>
 ```
 
 - `run cancel` marks the run terminal (`cancelled`) and kills the
-  dispatched agent, including its OS-level process, via `RunControl`.
+  dispatched agent, including its OS-level process, via `RunControl`. The
+  run reads as cancelled as soon as the agent has been signalled with
+  `SIGINT`; the harness then escalates to `SIGTERM` and `SIGKILL` itself
+  (5 s per step by default), so the agent can still be exiting for a few
+  seconds after the run is terminal. Foreman waits for the agent to exit
+  (up to 15 s), then `OrphanReaper` terminates the tool processes it
+  left running in the run's worktree (`SIGTERM`, then `SIGKILL`; only
+  processes whose cwd is inside the worktree and whose parent is pid 1
+  are touched). A server shutdown does the same for live agents, and a
+  restarted server reaps what an agent left in a worktree before reusing it.
 - `run pause` interrupts the current phase the same way, but first commits
   the phase's partial work to the run branch and leaves the run resumable
   (`paused`) rather than terminal — it releases the run's slot and Beads
@@ -1070,9 +1079,11 @@ foreman run merge --id <run-id>
 - `run remove` terminates the run, releases its slot and any per-DB
   Beads lease, and best-effort cleans the worktree and local branch.
   Use it when a run is wedged and you want a clean slate.
-- `run reset` clears a **failed or stuck** run's projection state so it
-  can be resubmitted fresh; cancelled or completed runs are rejected
-  with `{:run_not_resettable, "<status>"}`.
+- `run reset` clears a **failed, stuck, blocked or paused** run's
+  projection state so it can be resubmitted fresh; cancelled or completed
+  runs are rejected with `{:run_not_resettable, "<status>"}`. A run
+  blocked on an unresolved external effect is the case that needs it
+  ([Restart recovery and external effects](#restart-recovery-and-external-effects)).
 - `run approve-merge` opens the run's merge gate once its PR is ready, for the exact
   commit you name with `--head-sha` (required: there is no "approve whatever the head
   is"). The server reads the PR head back from GitHub (`gh pr view`) and refuses the
@@ -1137,6 +1148,40 @@ adapter accepts only `default` and `auto_approve`, so a phase that asks pi for `
 [Needs you](#needs-you-approvals-and-questions)). Report
 paths using `{task.projectReportsDir}` resolve under the run's worktree (or the
 task/project directory), not the server's working directory.
+
+### Restart recovery and external effects
+
+**Resuming after a restart.** At boot, reconciliation restarts an executor for each in-flight run and the run resumes (an operator `run resume` takes the same path). Every resume is recorded as the run's `recovery`: the latest record only, with `outcome` (`resumed`, `effect_retried` or `effect_blocked`), `elapsed_since_boot_ms`, an optional `reason`, and for the two effect outcomes `effect_class`, `effect_key` and `effect_verdict`. It is `run.recovery` in `foreman run get <run-id>` and `recovery` in `foreman_run_status`; `null` when nothing was recorded. It is the `RunRecoveryAttempted` event (command `run.recovery_attempt`); the executor also emits the telemetry event `[:foreman_server, :workflow, :run_executor, :resumed]` with `elapsed_since_boot_ms`. When the resumed phase was still `in_progress`, a `PhaseRetried` with reason `resumed` is appended: the phase stays `in_progress` and `attempt` advances by one per restart.
+
+If the resume had to re-provision the run's worktree, the first phase event afterwards (that `PhaseRetried`, or the next `PhaseStarted` when no phase was in flight) carries `prior_worktree_discarded` (`{name, path}`): uncommitted changes in that worktree were **not** carried over. It is recorded only when a worktree could have held work (worktrees enabled for the workflow and at least one phase had started), so a run with none does not claim a loss. It shows on `current_phase.prior_worktree_discarded` in `foreman_run_status`. A `git worktree prune` that fails during resume fails the run with `{:resume_worktree_prune_failed, repo_path, code, output}` (it used to be reported as `:resume_context_unresolvable`).
+
+**Orphaned slot entries.** A run-slot holder or waiter whose run is absent or terminal is released at boot. When that cleanup fails, the failure count is stored durably (`RunSlotRecoveryAttempted`, command `run_slots.recovery_attempt`, one budget per run across holders and waiters) and capped by the same 5-restart backoff as the agent crash-recovery loop: attempts 1 to 5 are retried at later boots, the sixth consecutive failure records the entry `exhausted` and boot skips it from then on. `GET /api/queue` and `foreman_queue_status` list these entries in `orphan_recovery`: `[{run_id, kind, attempt, outcome, reason, elapsed_since_boot_ms}]` with `kind` `slot_release` or `waiter_remove` and `outcome` `failed` or `exhausted`; `[]` when there are none. There is no operator verb to re-arm an exhausted entry. An entry leaves the list when a cleanup finally succeeds or its holder or waiter leaves the stream by another route, which also clears its count: so "recorded at 3 failures, fails again, is at 4" holds only while the entry stays in the slot stream.
+
+**External effects.** Three side effects outside the event store are recorded in the idempotency store under a key `effect:<class>:<run_id>:<identity>` (written `started` before the effect, settled after it): `branch_push` (a `git push` of the run branch; identity the head branch), `pr_create` (`gh pr create`; identity `<head>:<base>`) and `task_provider` (a provider `claim`, `complete`, `fail` or `reopen`; identity `<op>:<issue_id>`, [Task-provider enablement](#10-task-provider-beads-enablement)). A crash between the write and the settle leaves the key `ambiguous`. The boot sweep asks the class's reconciler what really happened (`git ls-remote` for a push, `gh pr list --state all` for a PR, a read of the issue for the provider) and acts on the verdict:
+
+| Verdict | Result |
+| --- | --- |
+| `not_done` | `recovery.outcome` `effect_retried`; the effect may run again when the resumed run reaches it |
+| `done` | the run is **blocked** with reason `effect_already_done` |
+| `unknown` (including a check that fails or times out) | blocked, `effect_outcome_ambiguous` |
+| a class with no reconciler | blocked, `effect_class_unregistered` (fail closed) |
+
+A blocked run has status `blocked`, the reason code as its `failure_reason`, and `recovery` `effect_blocked` naming the class, key and verdict (`done`, `unknown`, `unregistered`). Its key is marked unresolved, and the effect is refused (`... NOT run: ... is unresolved (see foreman_doctor, Unresolved effect keys)`) until an operator resets the run. Look at the real state first (the remote branch, the PR on GitHub, the issue in the tracker), fix it by hand if it needs it, then `foreman run reset --id <run-id>`: the marker is lifted when the restarted run next reaches that effect, and the effect then runs again. A task-provider `reopen` is the exception: repeating it is harmless, so its key is never marked.
+
+`foreman doctor` lists the keys nobody has resolved: its `effect_keys` check is titled `Unresolved effect keys: N`, with the store line and one `<class> run=<id> status=<run status> key=<key>` line per key (`status` is `not_found` when the run has no projection, `unknown` when it cannot be read). The check is informational: `ok` whatever the count, so `foreman doctor --strict` is unaffected, and `warn` only with the title `Unresolved effect keys could not be read` when the store does not answer. The same lines appear in the `foreman_doctor` MCP output ([MCP tool integration](#9-mcp-tool-integration)). The list is by key, whatever its run's status: Phase 0 has no command that resolves or clears an ambiguous key of a completed, cancelled or deleted run.
+
+**Durability and its switches.** Effect keys survive a restart only when the idempotency store is repo-backed. That needs `config :foreman_server, :jido_ecto, enabled: true` and a database URL in `JIDO_CHECKPOINT_DATABASE_URL`; the default is off in dev, test and prod. Without them the store is ETS-only: the server logs an error at boot and emits `[:foreman_server, :idempotency, :key_store, :not_durable]`, the doctor store line reads `✗ idempotency store is not durable ...`, effect keys vanish at a restart and crash recovery cannot reconcile effects. The same line says `configured but unreachable` when the repo is set but does not answer. The line names an environment variable `FOREMAN_JIDO_ECTO_ENABLED=true` as the switch; no configuration reads it, so set the config key.
+
+Limits you should know about:
+
+- An **undecided** key (still `started`, or ambiguous with no marker) is not refused: `Effect.run` repeats the effect. That is the case when the sweep's marker write fails, when its listing falls back to the empty ETS table after a repo error, and for a crash-left `started` key before the sweep has run. Nothing gates `Effect.run` on the sweep having finished.
+- A verdict on a **terminal or absent run** cannot block it: it is logged and counted, the key stays ambiguous, and the doctor lists it. A key whose status changed between the listing and the read (re-marked `started`, completed or failed) is skipped, not blocked.
+- After a reset of a run blocked `effect_already_done`, the effect runs again against a world that already moved. `gh pr create` has no existing-PR check, so it can fail "already exists" and the run wedges again; a provider `claim` on an issue already `in_progress`, a `complete` on one already `closed` and a `fail` on one already `blocked` are expected to be rejected. This is read from the source, not observed.
+- A refused primary-repository PR (its key unresolved) is logged at error and the run completes with no record on the run; secondary repositories do record a failure.
+- A non-zero `gh pr create` exit marks the key `failed`, although GitHub may already hold the PR; GitHub's refusal of a duplicate open PR covers the common case, not a closed one.
+- A timed-out `git ls-remote` or `gh` call is abandoned; an OS process stuck in connect may not be signalled.
+- With a task-provider `actor` configured, the claim check is unsound: `br update --claim` takes no actor, so a claim made by someone else can read `done`, not `unknown`. Reopen is attributed to the newest run of the task by last event, not the one that claimed it.
+- The dashboard does not offer Reset for a blocked or paused run: use `foreman run reset` or `POST /api/commands`.
 
 ### Agent command assets
 
@@ -1236,7 +1281,10 @@ Read endpoints are projection-only:
   when Foreman recorded none. `GET /api/runs` carries the same field on
   each listed run.
 - `GET /api/tasks/{id}`, `GET /api/projects`, `GET /api/projects/{id}`,
-  and `GET /api/queue` expose corresponding projections.
+  and `GET /api/queue` expose corresponding projections. `GET /api/queue`
+  returns `capacity`, `running`, `waiting` and `orphan_recovery` (the boot
+  cleanup budget of orphaned slot entries; `[]` when none, see
+  [Restart recovery and external effects](#restart-recovery-and-external-effects)).
 - Schedules: `GET /api/projects/{project_id}/schedules` returns
   `{ticker: "running"|"disabled", schedules: [...]}` (the Scheduled tab's data;
   MCP `foreman_schedule_list`; CLI `foreman project schedule list`). Schedules
@@ -1782,6 +1830,30 @@ receives project variables. Start the server with the provider's key exported, t
 confirm with `env -i PATH="$PATH" HOME="$HOME" <KEY>=... pi --list-models
 "<provider>/<model>"` that a minimal environment lists it.
 
+### Network and skill preflight
+
+Two more checks run at kickoff, for a fresh and a resumed run alike, in this order: the network policy, the provider/model check above, then the skill check, all before the task is claimed, a worktree is created or a phase starts.
+
+**Network policy.** Every workflow run is a host run: the agent runs on the server host as the server user, which cannot enforce a project's `environment.network`. A project whose policy is anything but `default` (`none`, `allowlist`, or a stored mode Foreman does not recognise) is therefore refused, because a policy that silently does nothing is worse than an error. A project with no policy reads as `default` and proceeds. The run and its task fail with the terminal reason `{:isolation_unsupported, :network, :host_workflow}`, and `failure_reason` reads: `isolation_unsupported: this project requires a network policy (its environment.network is not default) that the host workflow door cannot enforce; run it on the docker jobsite door or set the project's network policy to default ({:isolation_unsupported, :network, :host_workflow})`. The server logs a warning with `operation: "run_executor.network_isolation_preflight"`. Either run the work on a docker jobsite, which enforces the policy, or `foreman project network set --mode default <project-id>`. **This is a breaking change**: a project that already had a `none` or `allowlist` policy, which workflow runs used to ignore silently, now has its workflow runs refused.
+
+**Skill preflight.** For each phase still to run whose `command:` names a skill (`/skill:<name> ...`), Foreman asks whether the harness that will launch it can load that skill. The verdict is one of three:
+
+| Verdict | Meaning | Effect |
+| --- | --- | --- |
+| `available` | found where the harness loads skills, in a user-scoped source no setting filters | none |
+| `missing` | absence proven across everything the harness loads for this launch | the run is refused |
+| `unverifiable` | anything else | the run proceeds; one warning per phase (`operation: "run_executor.skill_preflight"`) |
+
+The check is fail-safe, and so it rarely refuses. Only `pi` on the host door is examined; `claude`, any other provider and the docker backend are always `unverifiable`. For `pi` it reads what pi 1.5.0's loader reads: the user skills directory (`<agent dir>/skills`, where the agent dir is `PI_CODING_AGENT_DIR` or `~/.pi/agent`), the project's `.pi/skills`, `~/.agents/skills` and each ancestor `.agents/skills` up to the repository root, the `skills` arrays of the user and project `settings.json`, and every declared package's `pi.skills`. A skill's identity is the `name` in its `SKILL.md` frontmatter (else its directory name) and one without a non-empty `description` is not loaded. `~/.foreman/skills` is **not** searched (pi does not read it; [Bundled skills](#74-bundled-skills)). A find in a project-scoped source (pi decides whether to trust the project at run time, for a worktree that does not exist yet) or behind a filter is `unverifiable`, never `available`. `missing` additionally requires that no pi extension could contribute skill paths at run time, so **on a host with pi extensions or packages `missing` is unreachable and the refusal fires only on a clean pi setup.** Other limits: absence is proven against the project checkout's working copy, not the worktree's base-ref content; the resolver mirrors pi 1.5.0 and a different pi may load more places; an unresolvable project environment makes the verdict `unverifiable`.
+
+A refused run fails with the terminal reason `{:capability_preflight_failed, [%ForemanServer.Workflow.PreflightFailure{}]}`, one struct per phase with `class: :skill_not_found`, `phase`, `provider`, `backend` and `skill`. The `failure_reason` is that struct as text; the readable line (`phase "<name>": skill_not_found - the :pi harness cannot find skill "<skill>" in its skill directories on the :host_workflow backend`) is in the server log. It is a different tuple from `{:provider_model_preflight_failed, ...}`: a harness that is not installed on the default provider is reported by that one, not this. To recover, install the skill in a directory pi loads, or fix the name in the workflow, then re-dispatch as [below](#recovering-from-a-preflight-failure).
+
+`config :foreman_server, :skill_home` is an optional key, unset in production: it names a home directory to read instead of the server user's `HOME` (agent dir `<home>/.pi/agent`) for hosts where the service user's home is not the one pi will use. A project's own `HOME` or `PI_CODING_AGENT_DIR` (set with `foreman project env set`) wins over it.
+
+**What the launch enforces.** Each phase the host door starts records an `execution_profile`: `backend` (`host_workflow`) and, for `filesystem`, `network`, `credentials` and `cleanup`, a `{state, reason}` of `enforced` or `unenforced`, plus `skill` (`available` or `unverifiable`) when the phase names a skill. It is on the phase entry and `foreman_run_status`'s `current_phase.execution_profile`, and absent for a phase recorded before the field existed. It records, it does not enforce. On the host door all four properties are always `unenforced` with the reason: the agent runs on the server host (the `VfsIsolation` registry is not an enforcement point), the host cannot enforce `environment.network`, run-scoped credentials are not enforced, and `cleanup` is never a guarantee because the worktree is removed only on the executor's own finish paths (a crash leaves it; boot reclaims a worktree only for a terminal run with a clean checkout). The docker jobsite emits no phase events, so a jobsite has no recorded profile; its enforced boundary is the sandbox container's mounts.
+
+**Refused on a resume.** A resumed run that had already claimed its task and is then refused (network, provider/model or skill) leaves the provider issue `in_progress` and its worktree retained: only the task execution is failed, not the provider's `fail` effect, and the next boot's reopen sweep reopens the issue.
+
 ### Recovering from a preflight failure
 
 A refused run costs nothing to abandon: it dispatched no phase and created no worktree
@@ -1894,6 +1966,11 @@ for skills (`packages/foreman_cli/cmd/foreman/agent_commands.go` renders skill f
 `.pi/agent/skills` instead), and `foreman init --force` refreshes workflows and prompts only,
 never skills. A skill placed anywhere other than `~/.foreman/skills` is invisible to
 `maybe_install/1`'s missing-skill check.
+
+The run-time skill preflight ([Network and skill preflight](#network-and-skill-preflight))
+relies on the first boundary: it never searches `~/.foreman/skills`, so a skill that exists
+only there is not a skill the `pi` harness loads. The installer's output does not satisfy
+the preflight.
 
 `foreman-jobsite-template` is the bundled skill for authoring Remote Jobsite
 scripts: it turns a natural-language description into a `Jobsite.Spec.from_json/2`
@@ -2046,7 +2123,29 @@ The write-gated thread tools are `foreman_thread_stop` and
   `workflow_name`, `current_phase`, timestamps, `failure_reason`, and the
   provider's own `provider_session_id` / `provider_sessions` once a phase's
   agent has reported one, and cumulative `usage` tokens and provider-reported
-  `cost_usd`, `null` where unknown).
+  `cost_usd`, `null` where unknown), plus `recovery`: the run's latest
+  recovery record, or `null` ([Restart recovery and external effects](#restart-recovery-and-external-effects)).
+  `current_phase` is the phase in progress (else the latest) with `phase_id`,
+  `run_id`, `task_id`, `index`, `name`, `status`, `attempt`, timestamps,
+  `failure_reason`, `latest_stall` and four recorded facts about its launch:
+  `input_artifacts` (the artifact references the phase started from,
+  `[{index, source_phase, path, sha256}]`; `[]` for phase 1, `null` for a
+  phase recorded before the field existed), `context` (the standing context the
+  launch delivered, [Standing context](#13-standing-context)),
+  `execution_profile` (what the launch's backend enforces and does not,
+  [Network and skill preflight](#network-and-skill-preflight)) and
+  `prior_worktree_discarded` (`{name, path}` when a resume re-provisioned a
+  worktree that may have held uncommitted work, else `null`).
+- `foreman_queue_status` returns the run-slot queue (`capacity`, `running`,
+  `waiting`) and `orphan_recovery`, the boot cleanup budget entries of
+  orphaned slot holders and waiters (same shape as `GET /api/queue`).
+- `foreman_doctor` returns `output` (the provider readiness report, then the
+  `Idempotency store` line and the `Unresolved effect keys` section, one line per
+  ambiguous effect key: `<class> run=<id> status=<run status> key=<key>`),
+  `strict` and the structured `providers` rows. `strict: true` fails with
+  `PROVIDER_MISSING` when a required provider is missing; the effect-key section
+  never changes that. `GET /api/doctor` carries the same information as its
+  `effect_keys` check ([Restart recovery and external effects](#restart-recovery-and-external-effects)).
 - `foreman_run_get_logs` reads durable worker stdout/stderr events from
   `worker:<run_id>:<worker_id>` streams. Known runs with no output return
   an empty result; unknown runs return `NOT_FOUND`.
@@ -2243,12 +2342,22 @@ write-serialization guarantee Foreman itself provides once a run is admitted.
 - **Health check.** `ForemanServer.CLI.DoctorTaskProvider.run/1`
   (dispatched via `ForemanServer.CLI.run(["doctor", "task_provider"])`)
   reports per-project provider health and the janitor's cached
-  `orphan_backlog` counters. It is **not currently wired to the Go
-  CLI** — there is no `doctor` case in
-  `packages/foreman_cli/cmd/foreman/main.go`'s dispatch table, so
-  `foreman doctor task_provider` does not run today despite being
-  referenced elsewhere; invoke the Elixir module directly (e.g. from
+  `orphan_backlog` counters. It is **not wired to the Go CLI**: the Go
+  dispatch table has a `doctor` case (`packages/foreman_cli/cmd/foreman/main.go`),
+  but `foreman doctor` runs `GET /api/doctor` and reads no positional
+  argument, so `foreman doctor task_provider` is the ordinary `foreman doctor`,
+  not this check; invoke the Elixir module directly (e.g. from
   an `iex -S mix` session) until that wiring exists.
+- **Effect keys of provider state changes.** A task-provider `claim`, `complete`,
+  `fail` and `reopen` is a keyed external effect (class `task_provider`, key
+  `effect:task_provider:<run_id>:<op>:<issue_id>`; the claim's key also records the
+  claiming `actor` when one is configured). If a restart interrupts one, boot
+  reads the issue back and compares its status with the two the call moves
+  between (claim: `open` to `in_progress`; complete: `in_progress` to `closed`;
+  fail: `in_progress` to `blocked`; reopen: `in_progress` to `open`); anything else,
+  including a provider that cannot answer in time, blocks the run
+  `effect_outcome_ambiguous`. A `reopen` key is never marked unresolved: repeating
+  it is harmless. See [Restart recovery and external effects](#restart-recovery-and-external-effects).
 - **Remediation.** `foreman task retry` is REMOVED (TRD-018,
   2026-09-13); see §4 for what's unchanged internally and what isn't.
   Never mutate the provider issue by hand while Foreman still owns
@@ -2578,6 +2687,8 @@ Empty parts are omitted entirely: a project with no instructions and no memory g
 
 **Inspecting what an agent received.** `foreman project context <project-id>` (or `GET /api/projects/:id/context`) shows what a launch would receive now. With session capture on, the text each run/jobsite actually launched with is archived as `project-context.md` beside `request.md` (workflow runs: first agent launch; jobsite: its single build) and the manifest carries a `project_context` block (`sha256`, `bytes`, `truncated`, `redactions`). There is no CLI write surface: edit instructions with `project update`, memory with `project memory`.
 
+**Recording what a phase received.** Each agent phase launch for a project that has standing context appends one `PhaseContextRecorded` event (command `phase.context`) before the agent starts; a launch with no context appends nothing. It is shown as `context` on the phase entry and on `foreman_run_status`'s `current_phase`: `sha256` and `bytes` (of the project-context text only, not the operator progress addendum, the steering block, or the separator and prompt a provider without `system_prompt` gets it prefixed to), `sections` (`[{id, bytes}]`), `truncated` (`[{section, omitted_bytes, omitted_lines}]`), `redactions` (how many secret spans were replaced) and `redaction_scope`, always `project_context_sections`: the count covers the context sections only, not the agent's prompt, files or tool output. "Recorded" means the launch built and recorded the context, not that the agent started. A record that cannot be appended **fails the launch** (`{:project_context_record_failed, reason}`): a phase does not run on context nobody can later inspect. A resumed phase clears `context` and records again at its next launch, so a phase can briefly show none. The docker jobsite builds its own bundle and emits no phase events, so a jobsite has no such record.
+
 ## 14. Project coordinator
 
 Every project has one durable **coordinator conversation**: paste a bug, a stack trace or a task list, ask a quick question, or say "go ahead". A coordinator agent triages it, answers in place, and asks Foreman to start, propose or steer **threads** (workers, each with its own session, branch and PR). It hears back when threads report (review verdicts, failures).
@@ -2680,12 +2791,17 @@ a preflight failure").
 
 ```bash
 foreman run get <run-id>                 # inspect status first
-foreman run reset --id <run-id>          # failed/stuck only; clears projection for resubmission
+foreman run reset --id <run-id>          # failed/stuck/blocked/paused; clears projection for resubmission
 foreman run remove --id <run-id>         # terminate + release slot/lease + best-effort cleanup
 ```
 
 There is no interactive "kill-switch" or phase-resume primitive; a
 stuck run is removed or reset, and the task is retried or recreated.
+
+A run `blocked` with `effect_already_done`, `effect_outcome_ambiguous` or
+`effect_class_unregistered` stopped on purpose: a push, PR create or tracker
+change may or may not have happened. Check the real state first, then reset it
+([Restart recovery and external effects](#restart-recovery-and-external-effects)).
 
 ### PR creation and merge reconciliation
 

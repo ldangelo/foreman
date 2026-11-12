@@ -117,8 +117,8 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 > is the stale artifact.
 >
 > Note also that this file is *incomplete* about what is real: it has no section
-> for `run get`, `run cancel`, `run pause`, `run resume`, `run reset`, `workflow install` or `workflow
-> remove`, all of which exist. `run pause` and `run resume` are new
+> for `run pause`, `run resume`, `workflow install` or `workflow
+> remove` (`run get`, `run cancel` and `run reset` have a short one below), all of which exist. `run pause` and `run resume` are new
 > (unattended-run-control: no default phase timeout, real pause/resume/kill —
 > `run cancel` now also kills the dispatched agent's OS-level process via
 > `RunControl.cancel_agent/1`, not just the run projection). `foreman task
@@ -432,8 +432,12 @@ versions. `set <id> NAME` reads the value from **stdin** (trailing newline trimm
 worktree is created (fatal on non-zero exit or timeout); `clear` removes it; `show` prints it.
 
 ### `foreman project network show|set <id>`
-`set --mode default|none|allowlist [--allow <host> ...]`. Enforced on docker jobsites only;
-workflow runs and the host sandbox do not enforce it (host sandbox + policy is a typed error).
+`set --mode default|none|allowlist [--allow <host> ...]`. Enforced on docker jobsites only. A
+workflow run (agents on the server host) cannot enforce it, so a workflow run of a project whose
+policy is not `default` is **refused** before it claims its task or creates a worktree, with
+`failure_reason` `isolation_unsupported: ... ({:isolation_unsupported, :network, :host_workflow})`;
+the host sandbox with a policy is a typed error (`network_policy_unsupported`). See `docs/user-guide.md`
+("Network and skill preflight").
 
 ### `foreman project context <id>`
 
@@ -726,6 +730,14 @@ foreman run list --project-id foreman           # filter by project
 | `--status <status>` | Filter by run status (`in_progress`, `completed`, `failed`, `cancelled`, etc.). |
 | `--project-id <id>` | Filter by registered project id. |
 | `--limit <n>` | Maximum number of runs to return. Must be non-negative. |
+
+### `foreman run get <run-id>`
+
+Prints the run projection as JSON (`GET /api/runs/<id>`: `{"run": {...}}`; a run waiting on admission or a slot answers 200 with its pending status; an unknown run is 404 `run_not_found`). A run that has been through a recovery step carries `recovery`: its latest record `{outcome, elapsed_since_boot_ms, reason?, effect_class?, effect_key?, effect_verdict?}`, `outcome` being `resumed`, `effect_retried` or `effect_blocked` (the effect fields only on the last two); the field is absent until one is recorded. A run stopped on an unresolved external effect has `status: "blocked"` and `failure_reason` `effect_already_done`, `effect_outcome_ambiguous` or `effect_class_unregistered`. The per-phase fields (`input_artifacts`, `context`, `execution_profile`, `prior_worktree_discarded`) are not in this output: they are on `current_phase` of the `foreman_run_status` MCP tool. See `docs/user-guide.md` ("Restart recovery and external effects").
+
+### `foreman run cancel --id <run-id> [--reason <text>]` / `foreman run reset --id <run-id>`
+
+`run cancel` posts `run.cancel` (default reason `operator_cancel`): the run is terminal as soon as the agent has been signalled with `SIGINT`; the harness escalates to `SIGTERM` then `SIGKILL` (5 s per step by default), Foreman waits for the agent to exit (up to 15 s) and `OrphanReaper` then terminates the tool processes it left in the run's worktree (`SIGTERM`, then `SIGKILL`). `run reset` posts `run.reset`, accepted for a run in `failed`, `stuck`, `blocked` or `paused` status; any other status is rejected with `{:run_not_resettable, "<status>"}`. A blocked run (an unresolved external effect) is reset after the operator has checked the real state of the push, PR or tracker change.
 
 ### `foreman run remove --id <run-id>`
 
@@ -1165,6 +1177,8 @@ foreman recover bd-abc1 --execute-clean-replay  # Full clean replay flow
 ### `foreman doctor`
 
 Reports the health checks the server really performs, via `GET /api/doctor`: server reachable, read model (event store projection) reachable, one row per `jido_harness` provider (the same data as the `foreman_doctor` MCP tool), workflow catalog installed, a `workflows.bead_types` row (below), one `warn` row `workflow.<file>.yaml` per workflow manifest the catalog refused to load (its detail is the validation error; a never-loaded manifest is not startable, while a refused edit over a loaded one leaves the previous valid version running and the row says so), a `notifier` row (`ok` when outbound notifications are off or on and running, with the counts since the server started; `warn` when they are enabled but the messaging config is invalid, the notifier or the dispatcher process is stopped, or events were refused; the detail never names a destination URL), and, with `--project`, a summary of that project's setup recommendations (see `foreman project recommend`).
+
+The `effect_keys` row reports ambiguous external-effect keys (`effect:<class>:<run_id>:<identity>`, classes `branch_push`, `pr_create`, `task_provider`) that no operator has resolved. It is titled `Unresolved effect keys: N`; its detail is the idempotency store line (`✓ idempotency store is durable (repo-backed); effect keys survive a restart`, or `✗ idempotency store is not durable ...` naming the switches) followed by one `<class> run=<run id> status=<run status> key=<key>` line per key (`none` when there are none; `none in this process (keys from before the last restart are not listed)` on the non-durable ETS fallback). It is informational: `ok` whatever the count, so `--strict` does not fail on it. It is a `warn` only when the store cannot be read (`Unresolved effect keys could not be read`). The detail is multi-line; text output prints it unindented after its first line, `--format json` returns it as one string. The `foreman_doctor` MCP tool prints the same store line and an `Unresolved effect keys` section after its provider report. Detail: `docs/user-guide.md` ("Restart recovery and external effects").
 
 The `workflows.bead_types` row says which bead `issue_type`s BeadsWatcher dispatches and which it holds, derived from the installed manifests' `task_types:` and `br`'s built-in types (`task`, `bug`, `feature`, `epic`, `chore`, `docs`, `question`) rather than from a hand-kept list. It is `ok`, titled `Bead types: N mapped to a workflow, M held`, with a detail like `dispatched: bug -> fix, feature -> prd, ...; held (no workflow maps them, so a labelled bead of these types is never dispatched): chore, docs, ...`. A held type is not a fault (a labelled, open bead of that type is left untouched and reported as the `:unmapped` outcome on every poll), so `--strict` does not fail on it; the row is a `warn` only when no workflow maps any type (`No workflow maps any bead type`) or the catalog did not answer (`Bead type mapping unknown`). `br` also accepts custom type strings; one appears in the row only once a manifest maps it. Map a held type with a manifest `task_types:` entry and `foreman init --force` (see `docs/user-guide.md` §10).
 
@@ -1608,6 +1622,8 @@ optional `after`, `limit`), `foreman_thread_find` (`project_id`, optional `q`,
 `foreman_workflow_list` returns `{workflows: [<manifest filename>...], invalid: [{filename, path, stage, reason, serving_previous}]}`: `invalid` lists manifests the catalog refused to load, each with the validation error; `foreman_workflow_get` on such a name answers `INVALID_MANIFEST` with the same reason (not `NOT_FOUND`). A loaded manifest whose latest edit was refused is still served: its `invalid` entry has `serving_previous: true` and `foreman_workflow_get` returns the served snapshot plus a `refused_edit` object (the doctor row is titled "the latest edit is invalid; its previous valid version is still served").
 
 `foreman_workflow_get` (`name`) returns `{name, description, digest, phase_count, manifest_path, phases}` for a loaded workflow: `description` and `digest` are `""` when the manifest declares none (a `digest` is only computed for a manifest with a `worktree:` block), and `phases` are the phases the manifest declares, as written (string keys), without the catalog's derived fields.
+
+`foreman_run_status` returns `recovery` (the run's latest recovery record, or `null`) and `current_phase` with `phase_id`, `run_id`, `task_id`, `index`, `name`, `status`, `attempt`, `input_artifacts`, `context`, `execution_profile` (including a `skill` entry of `available` or `unverifiable` when the phase names a skill) and `prior_worktree_discarded`. `foreman_queue_status` returns `capacity`, `running`, `waiting` and `orphan_recovery` (the same list as `GET /api/queue`). `foreman_doctor` returns `output`, `strict` and the provider `providers` rows; `output` ends with the idempotency store line and the `Unresolved effect keys` section. All field-level detail is in `docs/user-guide.md` (section 9, "MCP tool integration").
 
 Write-gated thread tools (`allow_workflow_writes: true`): `foreman_thread_stop`
 (`thread_id`, optional `reason`) and `foreman_thread_steer` (`thread_id`,
