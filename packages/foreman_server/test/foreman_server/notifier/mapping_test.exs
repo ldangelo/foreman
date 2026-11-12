@@ -79,6 +79,15 @@ defmodule ForemanServer.Notifier.MappingTest do
     assert :ignore = lookup("PrReviewChanged", %{review_decision: nil})
   end
 
+  test "only an observer reading of failing checks notifies; a forced (gate) observation or one without a source is ignored" do
+    assert {:failure, :blocked} =
+             class_level("PrChecksChanged", %{checks_state: "failing", source: "watch"})
+
+    assert :ignore = lookup("PrChecksChanged", %{checks_state: "failing", source: "gate"})
+    assert :ignore = lookup("PrChecksChanged", %{checks_state: "failing"})
+    assert :ignore = lookup("PrChecksChanged", %{checks_state: "passing", source: "watch"})
+  end
+
   # foreman-q9zzo C12: the rows nothing pinned. All three are `:blocked`: a thread is waiting on
   # you, so `blocked_only` (the default) delivers them and only `off` drops them.
   test "an expired question, an expired approval and an exhausted PR fix are warnings that block the thread" do

@@ -114,6 +114,21 @@ defmodule ForemanServer.Aggregates.RunPrWatchTest do
                })
     end
 
+    test "source is stored as given: watch, gate or absent; any other value is refused" do
+      for source <- ["watch", "gate"] do
+        {_state, spec} = accept(started(), "run.pr.checks", checks_payload(%{source: source}))
+        assert spec.payload.source == source
+      end
+
+      {_state, spec} = accept(started(), "run.pr.checks", checks_payload())
+      assert spec.payload.source == nil
+
+      for bad <- ["operator", "", :watch, 1] do
+        assert {:error, {:missing_or_invalid, :source}} =
+                 reject(started(), "run.pr.checks", checks_payload(%{source: bad}))
+      end
+    end
+
     test "a payload naming another project is refused" do
       assert {:error, {:missing_or_invalid, :project_id}} =
                reject(started(), "run.pr.checks", checks_payload(%{project_id: "other"}))

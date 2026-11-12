@@ -223,6 +223,168 @@ defmodule ForemanServer.PrObservationTest do
     end
   end
 
+  defp passing_check(name),
+    do: %{Support.failing_check(name) | state: :passing, conclusion: "SUCCESS"}
+
+  # The stored record an observer reads back: the notification digest and the evidence digest
+  # of `status`, as the folds record them.
+  defp recorded(status) do
+    %{
+      status: "open",
+      head_sha: status.head_sha,
+      base_branch: status.base_branch,
+      checks_digest: PrObservation.checks_digest(status),
+      checks_seq: 1,
+      evidence: %{checks: %{evidence_digest: PrObservation.evidence_digest(status)}}
+    }
+  end
+
+  describe "evidence digest" do
+    setup do
+      failing = Support.failing_check("unit")
+
+      {:ok,
+       failing: failing,
+       base: Support.status(checks: [failing, passing_check("lint")], checks_state: :failing)}
+    end
+
+    test "the notification digest ignores passing checks; the evidence digest does not", ctx do
+      added = %{ctx.base | checks: [passing_check("docs") | ctx.base.checks]}
+      removed = %{ctx.base | checks: [ctx.failing]}
+
+      rerun = %{
+        ctx.base
+        | checks: [ctx.failing, %{passing_check("lint") | completed_at: "2026-11-12T14:00:00Z"}]
+      }
+
+      for other <- [added, removed, rerun] do
+        assert PrObservation.checks_digest(other) == PrObservation.checks_digest(ctx.base)
+        refute PrObservation.evidence_digest(other) == PrObservation.evidence_digest(ctx.base)
+      end
+    end
+
+    test "the same checks in another order give equal digests", ctx do
+      reversed = %{ctx.base | checks: Enum.reverse(ctx.base.checks)}
+      assert PrObservation.evidence_digest(reversed) == PrObservation.evidence_digest(ctx.base)
+      assert PrObservation.checks_digest(reversed) == PrObservation.checks_digest(ctx.base)
+    end
+
+    test "the head, truncation and policy version are part of the evidence digest", ctx do
+      refute PrObservation.evidence_digest(%{ctx.base | head_sha: "sha-2"}) ==
+               PrObservation.evidence_digest(ctx.base)
+
+      refute PrObservation.evidence_digest(%{ctx.base | checks_truncated: true}) ==
+               PrObservation.evidence_digest(ctx.base)
+
+      refute PrObservation.evidence_digest(ctx.base, "p1") ==
+               PrObservation.evidence_digest(ctx.base)
+    end
+
+    test "a change of the evidence alone emits one run.pr.checks with the unchanged digest",
+         ctx do
+      previous = recorded(ctx.base)
+      added = %{ctx.base | checks: [passing_check("docs") | ctx.base.checks]}
+
+      assert {:ok, [command]} = PrObservation.commands(ctx.run_id, ctx.pr_url, added, previous)
+      assert command.type == "run.pr.checks"
+      assert command.payload.digest == previous.checks_digest
+      assert command.payload.evidence_digest == PrObservation.evidence_digest(added)
+      refute command.payload.evidence_digest == previous.evidence.checks.evidence_digest
+
+      assert {:ok, []} = PrObservation.commands(ctx.run_id, ctx.pr_url, ctx.base, previous)
+    end
+
+    test "the command carries every check of the head and is stamped as the observer's", ctx do
+      assert {:ok, [_update, command]} =
+               PrObservation.commands(ctx.run_id, ctx.pr_url, ctx.base, nil)
+
+      payload = command.payload
+      assert payload.source == "watch"
+      assert payload.observation_ref == nil
+      assert payload.checks_truncated == false
+      assert payload.head_sha == ctx.base.head_sha
+      assert payload.evidence_digest == PrObservation.evidence_digest(ctx.base)
+      assert Enum.map(payload.checks, & &1.name) == ["unit", "lint"]
+
+      assert %{kind: :check_run, state: :failing, completed_at: "2026-11-12T13:58:49Z"} =
+               hd(payload.checks)
+
+      refute Enum.any?(payload.checks, &Map.has_key?(&1, :url))
+    end
+
+    test "the evidence reaches the stored event and the watch record, and the repeat is quiet",
+         ctx do
+      record = step(ctx, ctx.base, nil)
+
+      assert %{checks: %{head_sha: "sha-1", evidence_digest: evidence, items: items}} =
+               record.evidence
+
+      assert evidence == PrObservation.evidence_digest(ctx.base)
+      assert Enum.map(items, & &1["name"]) == ["unit", "lint"]
+      assert {:ok, []} = PrObservation.commands(ctx.run_id, ctx.pr_url, ctx.base, record)
+    end
+  end
+
+  describe "forced observation" do
+    setup do
+      status =
+        Support.status(checks: [Support.failing_check("unit")], checks_state: :failing)
+
+      {:ok, status: status}
+    end
+
+    test "an unchanged PR still yields the update and one forced checks command, no review",
+         ctx do
+      previous = recorded(ctx.status)
+      force = %{nonce: "n-1", now_ms: 1_700_000_000_000}
+
+      assert {:ok, [update, checks]} =
+               PrObservation.commands(ctx.run_id, ctx.pr_url, ctx.status, previous, nil,
+                 force: force
+               )
+
+      assert update.type == "run.pr.update"
+      assert checks.type == "run.pr.checks"
+
+      assert checks.command_id ==
+               "pr_checks:#{ctx.run_id}:#{PrObservation.url_hash(ctx.pr_url)}:forced:n-1"
+
+      assert checks.payload.observed_at == 1_700_000_000_000
+      assert checks.payload.observation_ref == "n-1"
+      assert checks.payload.source == "gate"
+      assert checks.payload.digest == previous.checks_digest
+      assert checks.payload.observation_seq == 2
+
+      assert {:ok, [_update, other]} =
+               PrObservation.commands(ctx.run_id, ctx.pr_url, ctx.status, previous, nil,
+                 force: %{force | nonce: "n-2"}
+               )
+
+      refute other.command_id == checks.command_id
+    end
+
+    test "a forced observation is stored as a gate event with its nonce and observation time",
+         ctx do
+      record = step(ctx, ctx.status, nil)
+      force = %{nonce: "n-3", now_ms: 42}
+
+      {:ok, commands} =
+        PrObservation.commands(ctx.run_id, ctx.pr_url, ctx.status, record, nil, force: force)
+
+      record = apply!(commands, ctx.run_id, ctx.pr_url)
+      assert record.evidence.checks.observation_ref == "n-3"
+      assert record.evidence.checks.observed_at == 42
+
+      forced =
+        ctx.run_id
+        |> Support.run_events()
+        |> Enum.filter(&(&1.event_type == "PrChecksChanged"))
+
+      assert [%{source: "watch"}, %{source: "gate", observation_ref: "n-3"}] =
+               Enum.map(forced, & &1.data)
+    end
+  end
+
   defp step(ctx, status, previous) do
     {:ok, commands} = PrObservation.commands(ctx.run_id, ctx.pr_url, status, previous)
     apply!(commands, ctx.run_id, ctx.pr_url)
