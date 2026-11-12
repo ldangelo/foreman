@@ -32,7 +32,15 @@ defmodule ForemanServer.PrCreateTest do
   setup do
     test_pid = self()
     pr_url = "https://github.com/acme/widgets/pull/#{System.unique_integer([:positive])}"
-    state = %{gh: {pr_url <> "\n", 0}, ahead: "2\n", push: {"", 0}, rev: {@head_sha <> "\n", 0}}
+
+    state = %{
+      gh: {pr_url <> "\n", 0},
+      ahead: "2\n",
+      push: {"", 0},
+      rev: {@head_sha <> "\n", 0},
+      list: [{"[]\n", 0}]
+    }
+
     {:ok, script} = Agent.start_link(fn -> state end)
 
     runner = fn cmd, args, opts ->
@@ -47,6 +55,7 @@ defmodule ForemanServer.PrCreateTest do
         {"git", ["ls-remote" | _]} -> {"", 0}
         {"git", ["rev-parse" | _]} -> reply.rev
         {"git", ["push" | _]} -> reply.push
+        {"gh", ["pr", "list" | _]} -> next_list(script)
         {"gh", ["pr", "create" | _]} -> run_gh(reply.gh, test_pid)
         other -> flunk("unexpected command #{inspect(other)}")
       end
@@ -77,6 +86,32 @@ defmodule ForemanServer.PrCreateTest do
   defp run_gh(reply, _test_pid), do: reply
 
   defp script!(script, key, value), do: Agent.update(script, &Map.put(&1, key, value))
+
+  # The answers of `gh pr list`, one per call; the last one stays.
+  defp next_list(script) do
+    Agent.get_and_update(script, fn
+      %{list: [only]} = state -> {only, state}
+      %{list: [first | rest]} = state -> {first, %{state | list: rest}}
+    end)
+  end
+
+  # What `gh pr list` answers for one PR: this repository's open PR whose head is the pushed tip,
+  # unless `attrs` say otherwise.
+  defp pr_list(url, attrs \\ %{}) do
+    pr =
+      Map.merge(
+        %{
+          "url" => url,
+          "number" => 7,
+          "state" => "OPEN",
+          "headRefOid" => @head_sha,
+          "isCrossRepository" => false
+        },
+        attrs
+      )
+
+    {Jason.encode!([pr]), 0}
+  end
 
   # A completed run on a registered project whose agent worktree branch exists.
   defp thread!(opts \\ []) do
@@ -196,7 +231,10 @@ defmodule ForemanServer.PrCreateTest do
       # git and gh run from the project checkout: the run worktree is gone
       assert push_opts[:cd] == t.repo
 
-      assert [{gh_args, gh_opts}] = ran("gh")
+      # GitHub is asked for the PR first, in the checkout; then the PR is created.
+      assert [{list_args, list_opts}, {gh_args, gh_opts}] = ran("gh")
+      assert ["pr", "list" | _] = list_args
+      assert list_opts[:cd] == t.repo
       assert gh_opts[:cd] == t.repo
       assert Enum.chunk_every(gh_args, 2, 1, :discard) |> Enum.member?(["--head", t.branch])
       assert Enum.chunk_every(gh_args, 2, 1, :discard) |> Enum.member?(["--base", @base])
@@ -231,12 +269,27 @@ defmodule ForemanServer.PrCreateTest do
 
       results = Task.await_many(tasks, 15_000)
       assert [{:ok, %{pr_url: url}}, {:ok, %{pr_url: url}}] = results
-      assert length(ran("gh")) == 1
+      assert [{["pr", "list" | _], _}, {["pr", "create" | _], _}] = ran("gh")
     end
 
-    test "a PR that already exists for the branch is adopted, not duplicated", %{script: script} do
+    test "a PR GitHub already has for the branch is adopted, not duplicated: nothing is pushed or created",
+         %{script: script} do
       t = thread!()
       existing = "https://github.com/acme/widgets/pull/7"
+      script!(script, :list, [pr_list(existing)])
+
+      assert {:ok, %{pr_url: ^existing}} = PrCreate.execute(t.run_id)
+      assert {:ok, %{pr_url: ^existing}} = ProjectionStore.pr_association(t.run_id)
+
+      assert [{["pr", "list" | _], _opts}] = ran("gh")
+      assert ran("git", &(hd(&1) == "push")) == []
+    end
+
+    test "a PR that appears between the lookup and gh pr create is adopted from the second lookup",
+         %{script: script} do
+      t = thread!()
+      existing = "https://github.com/acme/widgets/pull/7"
+      script!(script, :list, [{"[]\n", 0}, pr_list(existing)])
 
       script!(script, :gh, {
         "a pull request for branch \"#{t.branch}\" into branch \"main\" already exists:\n#{existing}\n",
@@ -245,6 +298,52 @@ defmodule ForemanServer.PrCreateTest do
 
       assert {:ok, %{pr_url: ^existing}} = PrCreate.execute(t.run_id)
       assert {:ok, %{pr_url: ^existing}} = ProjectionStore.pr_association(t.run_id)
+
+      assert [["pr", "list" | _], ["pr", "create" | _], ["pr", "list" | _]] =
+               for({args, _opts} <- ran("gh"), do: args)
+    end
+
+    test "gh's text is never read: a create that names a PR GitHub does not list is an error and associates nothing",
+         %{script: script} do
+      t = thread!()
+
+      script!(script, :gh, {
+        "a pull request for branch \"#{t.branch}\" into branch \"main\" already exists:\nhttps://github.com/acme/widgets/pull/7\n",
+        1
+      })
+
+      assert {:error, {:gh_pr_create_failed, 1, text}} = PrCreate.execute(t.run_id)
+      assert text =~ "already exists"
+      assert {:error, :not_found} = ProjectionStore.pr_association(t.run_id)
+    end
+
+    test "a PR of the branch with another head is refused with both heads, and nothing is associated",
+         %{script: script} do
+      t = thread!()
+      existing = "https://github.com/acme/widgets/pull/7"
+      other = String.duplicate("b", 40)
+      script!(script, :list, [pr_list(existing, %{"headRefOid" => other})])
+
+      script!(script, :gh, {
+        "a pull request for branch \"#{t.branch}\" into branch \"main\" already exists:\n#{existing}\n",
+        1
+      })
+
+      assert {:error, {:pr_lookup_mismatch, ^existing, @head_sha, ^other}} =
+               PrCreate.execute(t.run_id)
+
+      assert {:error, :not_found} = ProjectionStore.pr_association(t.run_id)
+    end
+
+    test "a fork's PR of the same branch name is not adopted: the PR opened is the run's own",
+         %{script: script, pr_url: pr_url} do
+      t = thread!()
+      fork = "https://github.com/acme/widgets/pull/9"
+      script!(script, :list, [pr_list(fork, %{"isCrossRepository" => true})])
+
+      assert {:ok, %{pr_url: ^pr_url}} = PrCreate.execute(t.run_id)
+      assert {:ok, %{pr_url: ^pr_url}} = ProjectionStore.pr_association(t.run_id)
+      refute pr_url == fork
     end
 
     test "any other gh failure is a typed error and records no association", %{script: script} do
@@ -255,12 +354,13 @@ defmodule ForemanServer.PrCreateTest do
       assert {:error, :not_found} = ProjectionStore.pr_association(t.run_id)
     end
 
-    test "a failed push stops before gh is called", %{script: script} do
+    test "a failed push stops before gh pr create is called", %{script: script} do
       t = thread!()
       script!(script, :push, {"rejected", 1})
 
       assert {:error, {:git_push_failed, 1, "rejected"}} = PrCreate.execute(t.run_id)
-      assert ran("gh") == []
+      # GitHub was asked for the PR before the push, and never asked to create one.
+      assert [{["pr", "list" | _], _opts}] = ran("gh")
     end
 
     test "a branch with no commits beyond the base proposes nothing", %{script: script} do
@@ -672,6 +772,39 @@ defmodule ForemanServer.PrCreateTest do
       assert EffectWorld.executed(world, :create) == 1
       assert {:ok, %{pr_url: ^url}} = ProjectionStore.pr_association(t.run_id)
       assert {:ok, :completed} = KeyStore.status(key)
+    end
+
+    test "a crash after gh pr create made the PR: once the sweep left its key unresolved, the operator's Create PR adopts the PR through the lookup",
+         %{ref: ref} do
+      world = EffectWorld.start()
+      {t, fx} = real_thread!(world)
+      key = CreateEffect.key(t.run_id, t.branch, @base)
+
+      EffectWorld.crash!(world, :create, :after, fn -> PrCreate.execute(t.run_id) end)
+      assert {:ok, :started} = KeyStore.status(key)
+      assert [%{"url" => url}] = EffectWorld.prs(world)
+      # GitHub knows the head of the PR it made: the commit that was pushed.
+      :ok =
+        EffectWorld.report_pr!(world, url,
+          head_sha: EffectWorld.local_tip(fx),
+          cross_repository: false
+        )
+
+      EffectWorld.sweep(world)
+
+      # The run is completed, so the sweep cannot block it: it marks the key unresolved.
+      assert_receive {@terminal_event, ^ref, %{count: 1},
+                      %{effect_class: "pr_create", effect_verdict: "done"}}
+
+      assert {:ok, %{status: :ambiguous, metadata: marked}} = KeyStore.get(key)
+      assert {:ok, _version} = KeyStore.unresolved_version(marked)
+
+      assert {:ok, %{pr_url: ^url}} = PrCreate.execute(t.run_id)
+
+      assert {:ok, %{pr_url: ^url}} = ProjectionStore.pr_association(t.run_id)
+      assert EffectWorld.executed(world, :create) == 1
+      assert {:ok, %{status: :completed, metadata: settled}} = KeyStore.get(key)
+      assert KeyStore.unresolved_version(settled) == :none
     end
 
     test "a crash after the push reached the remote: the sweep reports it done and nothing more is pushed",

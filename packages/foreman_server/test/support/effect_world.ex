@@ -206,6 +206,33 @@ defmodule ForemanServer.TestSupport.EffectWorld do
     end)
   end
 
+  @doc """
+  What GitHub reports about the PR at `url` beyond its number, state and url, as `gh pr list
+  --json` answers it: `:head_sha` (`headRefOid`) and `:cross_repository` (`isCrossRepository`,
+  a fork's PR). A PR is listed with a field only once it has been reported, so a PR nobody
+  reported on has no head to compare and `GitHub.PrLookup` reads the answer as unusable.
+  """
+  @spec report_pr!(world(), String.t(), keyword()) :: :ok
+  def report_pr!(world, url, report) do
+    fields = Map.new(report, fn {key, value} -> {pr_field(key), value} end)
+
+    found? =
+      Agent.get_and_update(world, fn state ->
+        prs =
+          Enum.map(state.prs, fn
+            %{"url" => ^url} = pr -> Map.merge(pr, fields)
+            pr -> pr
+          end)
+
+        {Enum.any?(state.prs, &(&1["url"] == url)), %{state | prs: prs}}
+      end)
+
+    if found?, do: :ok, else: flunk("no PR #{url} on the scripted GitHub")
+  end
+
+  defp pr_field(:head_sha), do: "headRefOid"
+  defp pr_field(:cross_repository), do: "isCrossRepository"
+
   @doc "From now on `gh pr list` fails: GitHub cannot be queried."
   @spec fail_gh_list!(world()) :: :ok
   def fail_gh_list!(world), do: Agent.update(world, &%{&1 | list_error?: true})

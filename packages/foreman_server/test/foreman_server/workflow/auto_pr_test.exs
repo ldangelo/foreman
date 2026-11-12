@@ -162,6 +162,9 @@ defmodule ForemanServer.Workflow.AutoPRTest do
         "git", ["ls-remote", "origin", _ref], _opts ->
           {"", 0}
 
+        "gh", ["pr", "list" | _], _opts ->
+          {"[]", 0}
+
         "gh", args, _opts ->
           send(parent, {:gh_args, args})
           {"https://github.com/acme/repo/pull/10\n", 0}
@@ -201,6 +204,9 @@ defmodule ForemanServer.Workflow.AutoPRTest do
 
         "git", ["ls-remote", "origin", _ref], _opts ->
           {"", 0}
+
+        "gh", ["pr", "list" | _], _opts ->
+          {"[]", 0}
 
         "gh", args, _opts ->
           send(parent, {:gh_args, args})
@@ -306,6 +312,9 @@ defmodule ForemanServer.Workflow.AutoPRTest do
 
         "git", ["ls-remote", "origin", _ref], _opts ->
           {"", 0}
+
+        "gh", ["pr", "list" | _], _opts ->
+          {"[]", 0}
 
         "gh", args, _opts ->
           send(parent, {:gh_args, args})
@@ -434,6 +443,9 @@ defmodule ForemanServer.Workflow.AutoPRTest do
         "git", ["ls-remote", "origin", _ref], _opts ->
           {"", 0}
 
+        "gh", ["pr", "list" | _], _opts ->
+          {"[]", 0}
+
         "gh", args, _opts ->
           send(parent, {:gh_args, args})
           {"https://github.com/acme/repo/pull/13\n", 0}
@@ -527,13 +539,17 @@ defmodule ForemanServer.Workflow.AutoPREffectsTest do
   defp undecided!(_key, :started), do: :ok
   defp undecided!(key, :ambiguous), do: :ok = KeyStore.mark_ambiguous(key, "orphaned_started_key")
 
-  # The commands the reconcilers issued: `git ls-remote` and `gh pr list` are asked only
-  # for the intent (before the push) and by the reconcilers.
+  # The commands asked of the world. `git ls-remote` is asked by the push's intent (once per
+  # attempt, before the PR lookup) and by the reconciler; `gh pr list` by AutoPR's lookups
+  # (`--state open`) and by the reconciler (`--state all`).
   defp calls(world, "git", subcommand),
     do: for({"git", [^subcommand | _] = args, opts} <- EffectWorld.calls(world), do: {args, opts})
 
-  defp pr_list_calls(world),
-    do: for({"gh", ["pr", "list" | _] = args, opts} <- EffectWorld.calls(world), do: {args, opts})
+  defp pr_list_calls(world, state) do
+    for {"gh", ["pr", "list" | _] = args, opts} <- EffectWorld.calls(world),
+        ["--state", state] in Enum.chunk_every(args, 2, 1, :discard),
+        do: {args, opts}
+  end
 
   describe "the effects run through Effect.run" do
     test "the push intent holds both SHAs and the cwd before the push, and the key completes",
@@ -643,7 +659,7 @@ defmodule ForemanServer.Workflow.AutoPREffectsTest do
     end
 
     test "a PR create that runs and fails keeps its error and marks its key failed",
-         %{ctx: ctx, push_key: push_key, create_key: create_key} do
+         %{ctx: ctx, world: world, push_key: push_key, create_key: create_key} do
       world_runner = ctx.command_runner
 
       runner = fn
@@ -654,6 +670,8 @@ defmodule ForemanServer.Workflow.AutoPREffectsTest do
       assert {:error, {:gh_pr_create_failed, 1, "boom"}} =
                AutoPR.maybe_create_pr(%{ctx | command_runner: runner})
 
+      # GitHub was asked before the create and once more after its failure, and had no PR.
+      assert [_before, _after] = pr_list_calls(world, "open")
       assert {:ok, %{status: :completed}} = KeyStore.get(push_key)
       assert {:ok, %{status: :failed}} = KeyStore.get(create_key)
     end
@@ -680,7 +698,7 @@ defmodule ForemanServer.Workflow.AutoPREffectsTest do
       assert :not_found = KeyStore.get(create_key)
     end
 
-    test "a remote head that cannot be read means the push does not run",
+    test "a remote head that cannot be read means the push does not run, and there is no tip to look a PR up by",
          %{ctx: ctx, fx: fx, world: world, push_key: push_key} do
       EffectWorld.break_origin!(fx)
 
@@ -689,6 +707,7 @@ defmodule ForemanServer.Workflow.AutoPREffectsTest do
 
       assert EffectWorld.executed(world, :push) == 0
       assert EffectWorld.executed(world, :create) == 0
+      assert pr_list_calls(world, "open") == []
       assert :not_found = KeyStore.get(push_key)
     end
   end
@@ -833,7 +852,7 @@ defmodule ForemanServer.Workflow.AutoPREffectsTest do
       assert {:ok, :ambiguous} = KeyStore.status(key)
 
       # The query names the head and base, covers every state and runs in the key's cwd.
-      assert [{args, opts}] = pr_list_calls(world)
+      assert [{args, opts}] = pr_list_calls(world, "all")
       assert Enum.chunk_every(args, 2, 1, :discard) |> Enum.member?(["--state", "all"])
       assert Enum.chunk_every(args, 2, 1, :discard) |> Enum.member?(["--head", fx.head])
       assert Enum.chunk_every(args, 2, 1, :discard) |> Enum.member?(["--base", fx.base])
@@ -883,6 +902,309 @@ defmodule ForemanServer.Workflow.AutoPREffectsTest do
       assert EffectWorld.status(run_id) == "blocked"
       assert EffectWorld.block_reason(run_id) == "effect_outcome_ambiguous"
       assert {:ok, :ambiguous} = KeyStore.status(key)
+    end
+  end
+
+  # --- a PR GitHub already has for the run's head (TRD-004) ----------------------------------
+
+  # An open PR of this repository for the run's head and base, as GitHub reports it: its head is
+  # the local tip unless `report` says otherwise.
+  defp open_pr!(world, fx, report \\ []) do
+    url = EffectWorld.add_pr!(world, fx.head, fx.base)
+
+    :ok =
+      EffectWorld.report_pr!(
+        world,
+        url,
+        Keyword.merge([head_sha: EffectWorld.local_tip(fx), cross_repository: false], report)
+      )
+
+    url
+  end
+
+  # GitHub refuses a second open PR for a head and base that already have one: `gh pr create`
+  # exits 1 and says where the PR is. Every attempt is told to the test.
+  defp refusing_duplicates(world, fx) do
+    test = self()
+    world_runner = EffectWorld.runner(world)
+
+    fn
+      "gh", ["pr", "create" | _] = args, opts ->
+        send(test, {:create_attempt, args})
+
+        existing =
+          Enum.find(
+            EffectWorld.prs(world),
+            &(&1["state"] == "OPEN" and &1["head"] == fx.head and &1["base"] == fx.base)
+          )
+
+        case existing do
+          %{"url" => url} ->
+            {"a pull request for branch \"#{fx.head}\" into branch \"#{fx.base}\" already exists:\n#{url}\n",
+             1}
+
+          nil ->
+            world_runner.("gh", args, opts)
+        end
+
+      executable, args, opts ->
+        world_runner.(executable, args, opts)
+    end
+  end
+
+  defp create_meta(ctx, fx) do
+    %{
+      "run_id" => ctx.run_id,
+      "effect_class" => "pr_create",
+      "head_branch" => fx.head,
+      "base_branch" => fx.base,
+      "cwd" => fx.repo
+    }
+  end
+
+  # What an earlier attempt left on the PR-create key: `started` as a dead process leaves it,
+  # `ambiguous` as the sweep marks it, `decided` once it has decided `not_done`, `unresolved`
+  # once it could not resolve it (a `done` verdict on a run it cannot block).
+  defp leave_create_key!(_c, :absent), do: :ok
+
+  defp leave_create_key!(%{ctx: ctx, fx: fx, create_key: key}, status) do
+    :ok = KeyStore.mark_started(key, create_meta(ctx, fx))
+    settle_key!(key, status)
+  end
+
+  defp settle_key!(_key, :started), do: :ok
+
+  defp settle_key!(key, :ambiguous),
+    do: :ok = KeyStore.mark_ambiguous(key, "orphaned_started_key")
+
+  defp settle_key!(key, :decided) do
+    :ok = KeyStore.mark_ambiguous(key, "orphaned_started_key")
+    :ok = KeyStore.mark_decided(key, :not_done)
+  end
+
+  defp settle_key!(key, :unresolved) do
+    :ok = KeyStore.mark_ambiguous(key, "orphaned_started_key")
+    :ok = KeyStore.mark_unresolved(key, 5, "effect_already_done")
+  end
+
+  defp settle_key!(key, :completed), do: :ok = KeyStore.mark_completed(key)
+  defp settle_key!(key, :failed), do: :ok = KeyStore.mark_failed(key, "boom")
+
+  defp assert_adopted_key(key, :absent), do: assert(:not_found = KeyStore.get(key))
+
+  defp assert_adopted_key(key, _left_by_an_earlier_attempt) do
+    assert {:ok, %{status: :completed, metadata: metadata}} = KeyStore.get(key)
+    # What recovery wrote on the key goes with it, so a later attempt does not inherit it.
+    assert KeyStore.unresolved_version(metadata) == :none
+    assert KeyStore.decision(metadata) == :none
+  end
+
+  describe "a PR GitHub already has for the run's head" do
+    for status <- [:absent, :started, :ambiguous, :decided, :unresolved] do
+      test "the open PR whose head is the local tip is the answer, with no preflight, push or gh pr create (create key: #{status})",
+           %{ctx: ctx, fx: fx, world: world, create_key: create_key, push_key: push_key} = c do
+        url = open_pr!(world, fx)
+        leave_create_key!(c, unquote(status))
+
+        log = capture_log(fn -> assert {:ok, ^url} = AutoPR.maybe_create_pr(ctx) end)
+
+        assert log =~ "adopted #{url}"
+        assert EffectWorld.executed(world, :push) == 0
+        assert EffectWorld.executed(world, :create) == 0
+        assert :not_found = KeyStore.get(push_key)
+        assert_adopted_key(create_key, unquote(status))
+
+        # GitHub is asked once, in the checkout, among the open PRs for this head and base.
+        assert [{args, opts}] = pr_list_calls(world, "open")
+        pairs = Enum.chunk_every(args, 2, 1, :discard)
+        assert ["--head", fx.head] in pairs
+        assert ["--base", fx.base] in pairs
+        assert opts[:cd] == fx.repo
+      end
+    end
+
+    for status <- [:completed, :failed] do
+      test "a settled create key (#{status}) is left as it is",
+           %{ctx: ctx, fx: fx, world: world, create_key: create_key} = c do
+        url = open_pr!(world, fx)
+        leave_create_key!(c, unquote(status))
+        {:ok, before_key} = KeyStore.get(create_key)
+
+        assert {:ok, ^url} = AutoPR.maybe_create_pr(ctx)
+
+        assert {:ok, ^before_key} = KeyStore.get(create_key)
+      end
+    end
+
+    test "the PR a dead attempt made is adopted by the next one, before any sweep has decided its key",
+         %{ctx: ctx, fx: fx, world: world, create_key: create_key} do
+      EffectWorld.crash!(world, :create, :after, fn -> AutoPR.maybe_create_pr(ctx) end)
+      assert {:ok, :started} = KeyStore.status(create_key)
+      assert [%{"url" => url}] = EffectWorld.prs(world)
+
+      # GitHub knows the head of the PR it made: the commit that was pushed.
+      :ok =
+        EffectWorld.report_pr!(world, url,
+          head_sha: EffectWorld.local_tip(fx),
+          cross_repository: false
+        )
+
+      assert {:ok, ^url} = AutoPR.maybe_create_pr(ctx)
+
+      assert {:ok, :completed} = KeyStore.status(create_key)
+      assert EffectWorld.executed(world, :push) == 1
+      assert EffectWorld.executed(world, :create) == 1
+    end
+
+    test "a fork's PR of the same branch name is not adopted, though its head is the tip: the run gets a PR of its own",
+         %{ctx: ctx, fx: fx, world: world, push_key: push_key, create_key: create_key} do
+      fork_url = open_pr!(world, fx, cross_repository: true)
+
+      assert {:ok, url} = AutoPR.maybe_create_pr(ctx)
+
+      refute url == fork_url
+      assert [%{"url" => ^fork_url}, %{"url" => ^url}] = EffectWorld.prs(world)
+      assert EffectWorld.executed(world, :push) == 1
+      assert EffectWorld.executed(world, :create) == 1
+      assert {:ok, :completed} = KeyStore.status(push_key)
+      assert {:ok, :completed} = KeyStore.status(create_key)
+    end
+
+    test "a closed PR of the head is not adopted: only an open one is the run's, so it gets a PR of its own",
+         %{ctx: ctx, fx: fx, world: world} do
+      closed_url = EffectWorld.add_pr!(world, fx.head, fx.base, "CLOSED")
+
+      :ok =
+        EffectWorld.report_pr!(world, closed_url,
+          head_sha: EffectWorld.local_tip(fx),
+          cross_repository: false
+        )
+
+      assert {:ok, url} = AutoPR.maybe_create_pr(ctx)
+
+      refute url == closed_url
+      assert EffectWorld.executed(world, :create) == 1
+    end
+
+    test "a PR of this repository with another head is not adopted: GitHub refuses the duplicate and the typed mismatch names the PR and both heads",
+         %{ctx: ctx, fx: fx, world: world, create_key: create_key} do
+      other = String.duplicate("a", 40)
+      url = open_pr!(world, fx, head_sha: other)
+      tip = EffectWorld.local_tip(fx)
+      runner = refusing_duplicates(world, fx)
+
+      log =
+        capture_log(fn ->
+          assert {:error, {:pr_lookup_mismatch, ^url, ^tip, ^other}} =
+                   AutoPR.maybe_create_pr(%{ctx | command_runner: runner})
+        end)
+
+      assert log =~ "not adopted"
+      assert_received {:create_attempt, _args}
+      assert [%{"url" => ^url}] = EffectWorld.prs(world)
+      assert EffectWorld.executed(world, :push) == 1
+      assert [_before, _after] = pr_list_calls(world, "open")
+      assert {:ok, %{status: :failed}} = KeyStore.get(create_key)
+    end
+
+    test "a push that moves the PR's head to the tip: the duplicate create is refused and the second lookup adopts the PR, the key completed",
+         %{ctx: ctx, fx: fx, world: world, create_key: create_key} do
+      url = open_pr!(world, fx, head_sha: String.duplicate("a", 40))
+      tip = EffectWorld.local_tip(fx)
+      refuser = refusing_duplicates(world, fx)
+
+      runner = fn
+        "git", ["push" | _] = args, opts ->
+          result = refuser.("git", args, opts)
+          # Pushing the branch moves the head of the PR that is open for it.
+          :ok = EffectWorld.report_pr!(world, url, head_sha: tip)
+          result
+
+        executable, args, opts ->
+          refuser.(executable, args, opts)
+      end
+
+      assert {:ok, ^url} = AutoPR.maybe_create_pr(%{ctx | command_runner: runner})
+
+      assert_received {:create_attempt, _args}
+      assert EffectWorld.executed(world, :push) == 1
+      assert EffectWorld.executed(world, :create) == 0
+      assert {:ok, :completed} = KeyStore.status(create_key)
+    end
+
+    test "gh pr create exits non-zero because the PR appeared since the lookup: the second lookup adopts it and the key settles completed, not failed",
+         %{ctx: ctx, fx: fx, world: world, create_key: create_key} do
+      test = self()
+      world_runner = ctx.command_runner
+
+      runner = fn
+        "gh", ["pr", "create" | _], _opts ->
+          # Another attempt's create reached GitHub between this one's lookup and its create.
+          url = open_pr!(world, fx)
+          send(test, {:made_meanwhile, url})
+
+          {"a pull request for branch \"#{fx.head}\" into branch \"#{fx.base}\" already exists:\n#{url}\n",
+           1}
+
+        executable, args, opts ->
+          world_runner.(executable, args, opts)
+      end
+
+      assert {:ok, url} = AutoPR.maybe_create_pr(%{ctx | command_runner: runner})
+
+      assert_received {:made_meanwhile, ^url}
+      assert [_before, _after] = pr_list_calls(world, "open")
+      assert EffectWorld.executed(world, :create) == 0
+      assert {:ok, :completed} = KeyStore.status(create_key)
+    end
+
+    @unusable_answers [
+      {"a non-zero exit", {"error connecting to api.github.com\n", 1}},
+      {"text that is not JSON", {"gh: something odd\n", 0}},
+      {"JSON that is not a list", {~s({"message": "Not Found"}), 0}},
+      {"PRs listed without their head",
+       {~s([{"url": "https://github.com/acme/widgets/pull/1", "number": 1, "state": "OPEN"}]), 0}}
+    ]
+
+    for {name, reply} <- @unusable_answers do
+      test "a lookup that gets #{name} is a failed lookup, never a PR: gh pr create runs and has its say",
+           %{ctx: ctx, world: world, create_key: create_key} do
+        reply = unquote(Macro.escape(reply))
+        world_runner = ctx.command_runner
+
+        runner = fn
+          "gh", ["pr", "list" | _], _opts -> reply
+          executable, args, opts -> world_runner.(executable, args, opts)
+        end
+
+        log =
+          capture_log(fn ->
+            assert {:ok, url} = AutoPR.maybe_create_pr(%{ctx | command_runner: runner})
+            assert [%{"url" => ^url}] = EffectWorld.prs(world)
+          end)
+
+        assert log =~ "no PR adopted"
+        assert EffectWorld.executed(world, :push) == 1
+        assert EffectWorld.executed(world, :create) == 1
+        assert {:ok, :completed} = KeyStore.status(create_key)
+      end
+    end
+
+    test "a lookup that fails twice leaves gh pr create's own error, and the key failed",
+         %{ctx: ctx, world: world, create_key: create_key} do
+      EffectWorld.fail_gh_list!(world)
+      world_runner = ctx.command_runner
+
+      runner = fn
+        "gh", ["pr", "create" | _], _opts -> {"boom", 1}
+        executable, args, opts -> world_runner.(executable, args, opts)
+      end
+
+      assert {:error, {:gh_pr_create_failed, 1, "boom"}} =
+               AutoPR.maybe_create_pr(%{ctx | command_runner: runner})
+
+      assert [_before, _after] = pr_list_calls(world, "open")
+      assert {:ok, %{status: :failed}} = KeyStore.get(create_key)
     end
   end
 end
