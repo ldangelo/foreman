@@ -124,6 +124,34 @@ defmodule ForemanServer.ProjectionStorePrWatchTest do
     assert Enum.map(ProjectionStore.watched_prs(), & &1.pr_url) |> Enum.sort() == [@a, @b]
   end
 
+  test "PrReadyFailed holds evidence.delivery_issue in the record; the next PrReady clears it, and a replay agrees" do
+    failed =
+      ev("PrReadyFailed", %{
+        pr_url: @a,
+        stage: "ready_dispatch",
+        reason: "not_found",
+        failed_at: 99
+      })
+
+    :ok = ProjectionStore.apply_events(events() ++ [failed])
+    assert [%{evidence: %{delivery_issue: issue}}] = ProjectionStore.pr_watch("r1")
+    assert issue == %{stage: "ready_dispatch", reason: "not_found", failed_at: 99}
+    live = ProjectionStore.pr_watch("r1")
+
+    json_events =
+      (events() ++ [failed])
+      |> Jason.encode!()
+      |> Jason.decode!()
+      |> Enum.map(&%{event_type: &1["event_type"], payload: &1["payload"]})
+
+    ProjectionStoreReset.reset!()
+    assert :ok = ProjectionStore.apply_events(json_events)
+    assert ProjectionStore.pr_watch("r1") == live
+
+    :ok = ProjectionStore.apply_events([ev("PrReady", %{pr_url: @a, head_sha: "h1"})])
+    assert [%{evidence: %{delivery_issue: nil}}] = ProjectionStore.pr_watch("r1")
+  end
+
   test "replay from the JSON event log (string keys) rebuilds the identical state" do
     :ok = ProjectionStore.apply_events(events())
     live = ProjectionStore.pr_watch("r1")
