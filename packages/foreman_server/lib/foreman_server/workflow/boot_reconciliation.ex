@@ -1108,7 +1108,7 @@ defmodule ForemanServer.Workflow.BootReconciliation do
   end
 
   # The one place stored metadata is normalised: `Effect` writes string keys while
-  # `KeyStore.mark_ambiguous/2` and `mark_failed/2` add an atom-keyed `reason` on the
+  # `KeyStore.mark_ambiguous/2` adds an atom-keyed `reason` on the
   # ETS path. Past this point the effect step and the reconcilers read string keys only.
   defp read_effect_key(key) do
     case KeyStore.get(key) do

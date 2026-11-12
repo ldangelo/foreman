@@ -112,6 +112,33 @@ defmodule ForemanServer.Idempotency.KeyStoreDurabilityTest do
     on_exit(fn -> :telemetry.detach(handler_id) end)
   end
 
+  describe "mark_failed/3 metadata keys" do
+    defp assert_failed_reason(key) do
+      assert {:ok, [%{key: ^key, status: :failed, metadata: meta}]} =
+               KeyStore.list_records_checked(:failed)
+
+      assert meta["reason"] == "boom"
+      assert meta["unresolved_reason"] == nil
+      assert Map.has_key?(meta, "decision")
+      refute Map.has_key?(meta, :reason)
+    end
+
+    test "the ETS path stores a string-keyed reason, atom-keyed meta included" do
+      :ok = KeyStore.mark_started("k-f", %{run_id: "r1"})
+      :ok = KeyStore.mark_failed("k-f", "boom", KeyStore.recovery_fields_cleared())
+      assert_failed_reason("k-f")
+    end
+
+    test "the repo path reads the same key after a restart" do
+      use_fake_repo()
+      :ok = KeyStore.mark_started("k-f", %{run_id: "r1"})
+      :ok = KeyStore.mark_failed("k-f", "boom", KeyStore.recovery_fields_cleared())
+      assert_failed_reason("k-f")
+      restart_key_store()
+      assert_failed_reason("k-f")
+    end
+  end
+
   describe "ETS fallback (no repo)" do
     test "is not durable, and the note names the production switches" do
       assert KeyStore.durability() == {:not_durable, :no_repo}

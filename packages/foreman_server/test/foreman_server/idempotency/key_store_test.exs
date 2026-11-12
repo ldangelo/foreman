@@ -58,7 +58,7 @@ defmodule ForemanServer.Idempotency.KeyStoreTest do
       :ok = KeyStore.mark_failed("k2f", "worker_timeout")
       assert {:ok, :failed} = KeyStore.status("k2f")
 
-      assert {:ok, %{status: :failed, metadata: %{run_id: "r1", reason: "worker_timeout"}}} =
+      assert {:ok, %{status: :failed, metadata: %{:run_id => "r1", "reason" => "worker_timeout"}}} =
                KeyStore.get("k2f")
 
       assert ["k2f"] = KeyStore.list_by_status(:failed)

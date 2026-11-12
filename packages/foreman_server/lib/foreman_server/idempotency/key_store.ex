@@ -81,7 +81,10 @@ defmodule ForemanServer.Idempotency.KeyStore do
   run's failure path owns it. Returns `:ok` on success.
   """
   def mark_failed(key, reason \\ "failed", meta \\ %{}) do
-    GenServer.call(__MODULE__, {:record, key, :failed, Map.put(meta, :reason, reason)})
+    # String keys, as `Effect` writes metadata and as the repo returns it, so the ETS copy and
+    # the stored row carry the same `"reason"` (and the same cleared recovery fields).
+    meta = meta |> Map.new(fn {k, v} -> {to_string(k), v} end) |> Map.put("reason", reason)
+    GenServer.call(__MODULE__, {:record, key, :failed, meta})
   end
 
   @doc """
