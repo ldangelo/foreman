@@ -300,7 +300,7 @@ defmodule ForemanServer.Workflow.BootReconciliation do
   @impl true
   def handle_cast(:scan_ambiguous_keys, state) do
     coalesce_ambiguous_scan_requests()
-    state = reconcile_ambiguous_keys(state)
+    state = reconcile_ambiguous_keys(state, :on_demand)
     {:noreply, state}
   end
 
@@ -324,8 +324,17 @@ defmodule ForemanServer.Workflow.BootReconciliation do
 
   @impl true
   def handle_info(:scan_ambiguous_keys, state) do
+    # Not coalesced: this is the deferred BOOT sweep, and an on-demand request must not
+    # stand in for it (an on-demand scan never blocks on an unknown verdict).
+    state = reconcile_ambiguous_keys(state, :boot)
+    {:noreply, state}
+  end
+
+  # A deferred on-demand scan keeps its origin: it must not become a boot sweep on the retry.
+  @impl true
+  def handle_info({:scan_ambiguous_keys, :on_demand}, state) do
     coalesce_ambiguous_scan_requests()
-    state = reconcile_ambiguous_keys(state)
+    state = reconcile_ambiguous_keys(state, :on_demand)
     {:noreply, state}
   end
 
@@ -746,22 +755,24 @@ defmodule ForemanServer.Workflow.BootReconciliation do
   # Runs once at boot via handle_continue(:reconcile, ...). Deferred if the
   # CommandRouter is not yet registered.
   @doc false
-  def reconcile_ambiguous_keys(state) do
+  def reconcile_ambiguous_keys(state, origin \\ :boot) when origin in [:boot, :on_demand] do
     case scan_branch() do
       :schedule_not_ready ->
-        schedule_ambiguous_scan(:not_ready)
+        schedule_ambiguous_scan(origin)
         state
 
       _ ->
         # :schedule_worker_registry or :scan
-        do_reconcile_ambiguous_keys()
+        do_reconcile_ambiguous_keys(&CrashRecovery.has_no_side_effects?/1, origin: origin)
         %{state | ambiguous_reconciled?: true}
     end
   end
 
-  defp schedule_ambiguous_scan(_reason) do
-    Process.send_after(self(), :scan_ambiguous_keys, @scan_retry_ms)
-  end
+  defp schedule_ambiguous_scan(:boot),
+    do: Process.send_after(self(), :scan_ambiguous_keys, @scan_retry_ms)
+
+  defp schedule_ambiguous_scan(:on_demand),
+    do: Process.send_after(self(), {:scan_ambiguous_keys, :on_demand}, @scan_retry_ms)
 
   # Every request already queued is answered by the scan about to start, which lists the
   # keys afresh: a refusal that arrived while the previous scan ran is in the mailbox now,
@@ -770,7 +781,7 @@ defmodule ForemanServer.Workflow.BootReconciliation do
   defp coalesce_ambiguous_scan_requests do
     receive do
       {:"$gen_cast", :scan_ambiguous_keys} -> coalesce_ambiguous_scan_requests()
-      :scan_ambiguous_keys -> coalesce_ambiguous_scan_requests()
+      {:scan_ambiguous_keys, :on_demand} -> coalesce_ambiguous_scan_requests()
     after
       0 -> :ok
     end
@@ -1030,7 +1041,8 @@ defmodule ForemanServer.Workflow.BootReconciliation do
           on_terminal_run: 0,
           unresolved: unread,
           skipped: 0,
-          audit_failed: 0
+          audit_failed: 0,
+          deferred_unknown: 0
         },
         fn key, counts -> Map.update!(counts, reconcile_effect_key(key, opts), &(&1 + 1)) end
       )
@@ -1092,7 +1104,8 @@ defmodule ForemanServer.Workflow.BootReconciliation do
       # `unknown` verdict may block the run.
       traits = %{
         repeatable?: Reconciler.repeatable?(class, metadata, classes),
-        blocks_run?: Reconciler.blocks_run?(class, metadata, classes)
+        blocks_run?: Reconciler.blocks_run?(class, metadata, classes),
+        origin: Keyword.get(opts, :origin, :boot)
       }
 
       handle_effect_verdict(key, run_id, class, verdict, reason, traits)
@@ -1193,6 +1206,24 @@ defmodule ForemanServer.Workflow.BootReconciliation do
     )
 
     :skipped
+  end
+
+  # An `unknown` verdict is a gh/network call that timed out or failed, not evidence about the
+  # effect. The boot sweep decides it anyway (marker and block: nothing else will look at the
+  # key until an operator does). An ON-DEMAND scan (the cast of an `effect_undecided` refusal,
+  # which can fire during an unrelated run's refusal) must not mark a key unresolved or block a
+  # live run on a blip: the key stays ambiguous without a decision, so it stays refused, and the
+  # next scan asks its reconciler again.
+  defp handle_effect_verdict(key, run_id, class, "unknown" = verdict, _reason, %{
+         origin: :on_demand
+       }) do
+    Logger.warning(
+      "BootReconciliation: effect #{inspect(key)} (#{class}) of run #{run_id} has verdict #{verdict} on an on-demand scan; key left undecided for the next scan, run not blocked",
+      key: key,
+      run_id: run_id
+    )
+
+    :deferred_unknown
   end
 
   defp handle_effect_verdict(key, run_id, class, verdict, reason, %{repeatable?: repeatable?}) do

@@ -70,6 +70,15 @@ defmodule ForemanServer.Workflow.BootReconciliationEffectKeysTest do
     def blocks_run?(_metadata), do: false
   end
 
+  defmodule Flaky do
+    @moduledoc false
+    @behaviour ForemanServer.Idempotency.Reconciler
+
+    # Answers what the test process scripted (the sweep runs the reconciler in its caller).
+    @impl true
+    def reconcile(_metadata), do: Process.get(:flaky_verdict, :unknown)
+  end
+
   @project_id "project-effect-keys"
   @classes %{"branch_push" => Fake, "pr_create" => Fake}
   @probe_classes %{"probe" => Probe}
@@ -731,6 +740,75 @@ defmodule ForemanServer.Workflow.BootReconciliationEffectKeysTest do
       BootReconciliation.do_reconcile_ambiguous_keys(fn _key -> true end, classes: @classes)
 
       assert {:ok, :ambiguous} = KeyStore.status("agent-live-key")
+    end
+  end
+
+  describe "an unknown verdict from an on-demand scan (foreman-ulg5y.3.13)" do
+    @flaky %{"branch_push" => Flaky}
+
+    defp scan(origin),
+      do:
+        BootReconciliation.do_reconcile_ambiguous_keys(fn _key -> true end,
+          classes: @flaky,
+          origin: origin
+        )
+
+    test "leaves the key undecided and the run running; a later healthy scan decides it",
+         %{run_id: run_id, ref: ref} do
+      key = plant(run_id, "branch_push", "feature/blip", "unknown")
+      before_events = events(run_id)
+      Process.put(:flaky_verdict, :unknown)
+
+      scan(:on_demand)
+
+      assert status(run_id) == "awaiting_worker"
+      assert events(run_id) == before_events
+      assert RunControl.intent(run_id) == nil
+      assert {:ok, :ambiguous} = KeyStore.status(key)
+      assert {:ok, %{metadata: metadata}} = KeyStore.get(key)
+      assert KeyStore.unresolved_version(metadata) == :none
+      assert KeyStore.decision(metadata) == :none
+      assert_receive {@effect_event, ^ref, %{deferred_unknown: 1, blocked: 0, unresolved: 0}, _}
+
+      # Still refused: nobody decided it.
+      assert {:error, {:effect_undecided, ^key}} =
+               Effect.run(
+                 :branch_push,
+                 key,
+                 fn -> flunk("repeated") end,
+                 push_meta(run_id, "feature/blip")
+               )
+
+      Process.put(:flaky_verdict, :not_done)
+      scan(:on_demand)
+
+      assert KeyStore.decision(elem(KeyStore.get(key), 1).metadata) == :not_done
+      assert status(run_id) == "awaiting_worker"
+      assert_receive {@effect_event, ^ref, %{retried: 1, deferred_unknown: 0}, _}
+    end
+
+    test "the boot sweep still marks the key and blocks the run on the same verdict",
+         %{run_id: run_id, ref: ref} do
+      key = plant(run_id, "branch_push", "feature/blip-boot", "unknown")
+      Process.put(:flaky_verdict, :unknown)
+
+      scan(:boot)
+
+      assert status(run_id) == "blocked"
+      assert get(List.last(events(run_id)).payload, :reason) == "effect_outcome_ambiguous"
+      assert {:ok, %{metadata: metadata}} = KeyStore.get(key)
+      assert KeyStore.unresolved_version(metadata) != :none
+      assert_receive {@effect_event, ^ref, %{blocked: 1, deferred_unknown: 0}, _}
+    end
+
+    test "a done verdict from an on-demand scan still blocks", %{run_id: run_id} do
+      plant(run_id, "branch_push", "feature/done-od", "done")
+      Process.put(:flaky_verdict, :done)
+
+      scan(:on_demand)
+
+      assert status(run_id) == "blocked"
+      assert get(List.last(events(run_id)).payload, :reason) == "effect_already_done"
     end
   end
 
