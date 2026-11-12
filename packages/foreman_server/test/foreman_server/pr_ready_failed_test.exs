@@ -252,4 +252,86 @@ defmodule ForemanServer.PrReadyFailedTest do
       assert replayed[run.run_id][@pr_url].evidence.delivery_issue == live
     end
   end
+
+  describe "a failure for a PR that never had a PrReady (an unseen PR)" do
+    test "yields a watch record in both folds: status nil, watching true, delivery_issue set, equal" do
+      failed = %{
+        run_id: "r1",
+        project_id: "p1",
+        task_id: "t1",
+        pr_url: @pr_url,
+        stage: "head_read",
+        reason: "gh_failed:1",
+        failed_at: 7
+      }
+
+      issue = %{stage: "head_read", reason: "gh_failed:1", failed_at: 7}
+
+      aggregate =
+        %{event_type: "RunStarted", run_id: "r1", task_id: "t1", project_id: "p1", sequence: 1}
+        |> then(&Run.apply_event(Run.initial_state(), &1))
+        |> Run.apply_event(%{event_type: "PrReadyFailed", payload: failed})
+
+      assert %{status: nil, watching: true, evidence: %{delivery_issue: ^issue}} =
+               aggregate.pr_watch[@pr_url]
+
+      assert %{"r1" => %{@pr_url => projected}} = PrWatchFold.fold(%{}, "PrReadyFailed", failed)
+      assert %{status: nil, watching: true, evidence: %{delivery_issue: ^issue}} = projected
+      assert projected.evidence == aggregate.pr_watch[@pr_url].evidence
+    end
+
+    test "the Observer selects it exactly as it selects a PR with no record", %{run: run} do
+      alias ForemanServer.PrAssociate
+      alias ForemanServer.PrWatcher.Observer
+
+      unseen = run
+      recorded = Support.start_run!(complete: true)
+
+      for r <- [unseen, recorded], do: {:ok, _} = PrAssociate.store(r.run_id, r.pr_url)
+
+      assert {:ok, _} =
+               CommandGateway.dispatch_system(
+                 failed_command(recorded, %{pr_url: recorded.pr_url})
+               )
+
+      assert [] = ProjectionStore.pr_watch(unseen.run_id)
+      assert [%{status: nil, watching: true}] = ProjectionStore.pr_watch(recorded.run_id)
+
+      for r <- [unseen, recorded] do
+        assert {:ok, %{runs: runs}} =
+                 Observer.observe(r.pr_url,
+                   fetch_fun: fn _url -> {:ok, Support.status()} end,
+                   auto_fix: false
+                 )
+
+        assert runs == [r.run_id]
+      end
+    end
+  end
+
+  describe "failed_at reaches the command id at the signal" do
+    test "two failed signals at different times are two events", %{run: run} do
+      PrReadyGithub.install!(fn _url -> {:error, 1} end)
+
+      assert {:error, _} = PrReadySignal.signal(attrs(run))
+      assert [%{data: %{failed_at: first}}] = failed_events(run.run_id)
+
+      # the clock is the wall clock in milliseconds: wait for it to move, never a fixed sleep
+      wait_until(fn -> System.system_time(:millisecond) > first end)
+
+      assert {:error, _} = PrReadySignal.signal(attrs(run))
+
+      assert [%{data: %{failed_at: ^first}}, %{data: %{failed_at: second}}] =
+               failed_events(run.run_id)
+
+      assert second > first
+    end
+  end
+
+  defp wait_until(fun) do
+    unless fun.() do
+      Process.sleep(1)
+      wait_until(fun)
+    end
+  end
 end
