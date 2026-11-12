@@ -39,7 +39,8 @@ defmodule ForemanServer.Workflow.PhasePR do
   `:unparsable_pr_list`; any other failed lookup (a non-zero exit, a timeout after
   `lookup_timeout_ms`, `gh` not run) is `%Error{reason: :pr_lookup_failed}` (`state` and
   `reason` in `details`): only the answer "no PR" lets creation go ahead. A `gh pr create`
-  that fails is followed by one more lookup, as in `AutoPR`: the PR with the tip is adopted.
+  that fails is followed by one more open-PR lookup, as in `AutoPR` (it too reads a lagging head
+  again, three tries): the PR with the tip is adopted.
   """
 
   alias ForemanServer.GitHub.PrLookup
@@ -219,8 +220,26 @@ defmodule ForemanServer.Workflow.PhasePR do
   # An unreadable tip has nothing to compare a PR's head with: the sequence reports it at the push.
   defp adopt_open_pr(request, {:ok, %{pushed_local_sha: tip}}) do
     case lookup(request, :open, tip) do
-      {:ok, %PrLookup.Pr{state: :open} = pr} -> {:ok, reuse(request, pr)}
-      _no_adoption -> :continue
+      {:ok, %PrLookup.Pr{state: :open} = pr} ->
+        {:ok, reuse(request, pr)}
+
+      :none ->
+        :continue
+
+      # Not adopted, and said so: the keyed sequence below looks the PR up again after the push
+      # and surfaces a lookup that still fails as its typed error.
+      {:error, reason} ->
+        Logger.warning(
+          "PhasePR.run_id=#{request.run_id} no PR adopted for #{request.head_branch} into #{request.base_branch} (#{inspect(reason)}); going on to the keyed sequence",
+          run_id: request.run_id,
+          base_branch: request.base_branch,
+          head_branch: request.head_branch,
+          operation: "phase_pr.lookup",
+          outcome: "not_adopted",
+          reason: inspect(reason)
+        )
+
+        :continue
     end
   end
 
@@ -357,7 +376,10 @@ defmodule ForemanServer.Workflow.PhasePR do
   # caller opened it between the lookups (it refuses a duplicate open PR). Ask once more before
   # the key settles `failed`, as `AutoPR` does: the open PR with the tip is the run's (the key
   # settles `completed`); a PR of this repository with another head is the typed mismatch; none,
-  # or a lookup that failed, keeps the create's own error.
+  # or a lookup that failed, keeps the create's own error. The lookup is `find_open_pr/2`, which
+  # reads a head that lags behind the push again (up to three tries, `lookup_retry_sleep_ms`
+  # apart) while the key is still `started`: deliberate, because a create that failed right
+  # after the push meets the same asynchronous head update as the lookup after the push.
   defp after_failed_create(request, tip, failure) do
     case find_open_pr(request, tip) do
       {:ok, %PrLookup.Pr{} = pr} ->

@@ -291,6 +291,24 @@ defmodule ForemanServer.Workflow.PhasePRTest do
                )
     end
 
+    test "a failed lookup before the effects is logged as not adopted, and the flow still reaches the lookup after the push" do
+      import ExUnit.CaptureLog
+      runner = scripted_runner(open: {"error connecting to api.github.com", 1})
+
+      log =
+        capture_log(fn ->
+          assert {:error, %PhasePR.Error{reason: :pr_lookup_failed}} =
+                   PhasePR.maybe_create(request(%{command_runner: runner}))
+        end)
+
+      assert log =~ "no PR adopted for foreman/run-1 into main"
+      assert log =~ "gh_failed"
+      # The lookup before the effects, and the one after the push that surfaces the error.
+      assert_received {:gh_pr_list, "open", _args, _opts}
+      assert_received {:gh_pr_list, "open", _args, _opts}
+      refute_received {:gh_pr_create, _args}
+    end
+
     for lookup <- [:open, :closed] do
       test "a #{lookup} lookup that exits non-zero is the typed :pr_lookup_failed: no PR is created over a PR that could not be looked up" do
         runner = scripted_runner([{unquote(lookup), {"error connecting to api.github.com", 1}}])
