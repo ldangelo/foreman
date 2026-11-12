@@ -184,7 +184,7 @@ defmodule ForemanServer.Notifier.Mapping do
     },
     %{
       event_type: "PrChecksChanged",
-      match: %{"checks_state" => ["failing"]},
+      match: %{"checks_state" => ["failing"], "source" => ["watch"]},
       class: :failure,
       severity: :warning,
       level: :blocked,

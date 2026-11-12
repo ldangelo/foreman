@@ -67,7 +67,9 @@ defmodule ForemanServer.GitHub.PrStatus do
           state: check_state(),
           conclusion: String.t() | nil,
           url: String.t() | nil,
-          workflow: String.t() | nil
+          workflow: String.t() | nil,
+          started_at: String.t() | nil,
+          completed_at: String.t() | nil
         }
 
   @type review :: %{
@@ -131,6 +133,11 @@ defmodule ForemanServer.GitHub.PrStatus do
   @json_fields "state,mergeable,headRefOid,headRefName,baseRefName,statusCheckRollup,reviewDecision,reviews,comments,mergeStateStatus"
 
   @max_list 100
+
+  @doc "The most checks (and comments, reviews) one reading keeps."
+  @spec max_list() :: pos_integer()
+  def max_list, do: @max_list
+
   @max_body 2000
 
   @threads_query "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100){nodes{id isResolved isOutdated path line originalLine comments(first:20){nodes{databaseId author{login} body createdAt url}}}}}}}"
@@ -142,6 +149,7 @@ defmodule ForemanServer.GitHub.PrStatus do
 
   @fail_conclusions ~w(FAILURE TIMED_OUT CANCELLED ACTION_REQUIRED STARTUP_FAILURE STALE)
   @pass_conclusions ~w(SUCCESS NEUTRAL SKIPPED)
+  @zero_time "0001-01-01T00:00:00Z"
   @pending_check_status ~w(IN_PROGRESS QUEUED PENDING WAITING REQUESTED)
   @merge_states %{
     "CLEAN" => :clean,
@@ -389,7 +397,8 @@ defmodule ForemanServer.GitHub.PrStatus do
        when is_binary(name) do
     conclusion = Map.get(item, "conclusion")
 
-    with {:ok, state} <- check_run_state(status, conclusion) do
+    with {:ok, state} <- check_run_state(status, conclusion),
+         {:ok, completed_at} <- completed_at(status, Map.get(item, "completedAt")) do
       {:ok,
        %{
          name: name,
@@ -397,7 +406,9 @@ defmodule ForemanServer.GitHub.PrStatus do
          state: state,
          conclusion: blank_to_nil(conclusion),
          url: blank_to_nil(Map.get(item, "detailsUrl")),
-         workflow: blank_to_nil(Map.get(item, "workflowName"))
+         workflow: blank_to_nil(Map.get(item, "workflowName")),
+         started_at: reported_time(Map.get(item, "startedAt")),
+         completed_at: completed_at
        }}
     end
   end
@@ -412,12 +423,33 @@ defmodule ForemanServer.GitHub.PrStatus do
          state: check_state,
          conclusion: state,
          url: blank_to_nil(Map.get(item, "targetUrl")),
-         workflow: nil
+         workflow: nil,
+         started_at: reported_time(Map.get(item, "startedAt")),
+         completed_at: nil
        }}
     end
   end
 
   defp check(_other), do: :error
+
+  # A completed run must say when it completed (GitHub reports the zero date for a run that
+  # has not); anything else is a payload this parser does not understand, never a default.
+  # The order of `startedAt` and `completedAt` is not assumed: skipped jobs report a
+  # `completedAt` before their `startedAt`.
+  defp completed_at("COMPLETED", value) do
+    case reported_time(value) do
+      nil -> :error
+      time -> if iso8601?(time), do: {:ok, time}, else: :error
+    end
+  end
+
+  defp completed_at(_status, value), do: {:ok, reported_time(value)}
+
+  defp reported_time(value) when value in [nil, "", @zero_time], do: nil
+  defp reported_time(value) when is_binary(value), do: value
+  defp reported_time(_value), do: nil
+
+  defp iso8601?(value), do: match?({:ok, _datetime, _offset}, DateTime.from_iso8601(value))
 
   defp check_run_state("COMPLETED", conclusion) when conclusion in @fail_conclusions,
     do: {:ok, :failing}

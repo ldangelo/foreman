@@ -37,6 +37,7 @@ defmodule ForemanServer.PrObservation do
           {:run_not_found, String.t()} | {:run_projection_missing_ids, String.t()}
 
   @max_failing 50
+  @max_text 200
 
   @doc "Content digest of the checks side of `status` (16 hex characters)."
   @spec checks_digest(PrStatus.t()) :: String.t()
@@ -48,6 +49,23 @@ defmodule ForemanServer.PrObservation do
       |> Enum.sort()
 
     digest({:checks, status.head_sha, status.checks_state, failing})
+  end
+
+  @doc """
+  Digest of the evidence side of `status`: the head, whether the check list was cut, the
+  policy version (`nil` until a policy supplies one) and EVERY check as
+  `{name, kind, workflow, state, conclusion, completed_at}` in sorted order. Unlike
+  `checks_digest/1` it moves when a passing check is added, removed or re-run; the Notifier
+  never sees it, so it cannot make a notification repeat.
+  """
+  @spec evidence_digest(PrStatus.t(), term()) :: String.t()
+  def evidence_digest(%PrStatus{} = status, policy_version \\ nil) do
+    checks =
+      status.checks
+      |> Enum.map(&{&1.name, &1.kind, &1.workflow, &1.state, &1.conclusion, &1.completed_at})
+      |> Enum.sort()
+
+    digest({:evidence, status.head_sha, status.checks_truncated, policy_version, checks})
   end
 
   @doc """
@@ -90,18 +108,41 @@ defmodule ForemanServer.PrObservation do
   `previous` is the stored watch record (or `nil`). `repo_id` is the effective id of
   the repository that opened the PR (E12; `nil` == the run's primary); every command
   of a non-primary PR carries it, a primary's carry `repo_id: nil` as before.
+
+  `opts`: `force: %{nonce: binary, now_ms: integer}` makes a forced observation for the
+  approval gate: the `run.pr.update` is always in the batch (its deterministic id makes it a
+  no-op for an unchanged PR), followed by exactly one `run.pr.checks` whatever the digests
+  say, with id `pr_checks:<run_id>:<url_hash>:forced:<nonce>`, `observed_at: now_ms`,
+  `observation_ref: nonce` and `source: "gate"`, and no `run.pr.review`. Every other
+  `run.pr.checks` is stamped `source: "watch"`.
   """
-  @spec commands(String.t(), String.t(), PrStatus.t(), previous(), String.t() | nil) ::
-          {:ok, [map()]} | {:error, error()}
-  def commands(run_id, pr_url, %PrStatus{} = status, previous, repo_id \\ nil)
-      when is_binary(run_id) and is_binary(pr_url) do
+  @spec commands(
+          String.t(),
+          String.t(),
+          PrStatus.t(),
+          previous(),
+          String.t() | nil,
+          keyword()
+        ) :: {:ok, [map()]} | {:error, error()}
+  def commands(run_id, pr_url, %PrStatus{} = status, previous, repo_id \\ nil, opts \\ [])
+      when is_binary(run_id) and is_binary(pr_url) and is_list(opts) do
+    force = Keyword.get(opts, :force)
+
     with {:ok, update} <- update_command(run_id, pr_url, status, repo_id) do
       base = base_payload(update.payload, status)
 
-      {:ok,
-       update_commands(update, status, previous) ++
-         checks_commands(run_id, pr_url, status, previous, base) ++
-         review_commands(run_id, pr_url, status, previous, base)}
+      case force do
+        nil ->
+          {:ok,
+           update_commands(update, status, previous) ++
+             checks_commands(run_id, pr_url, status, previous, base) ++
+             review_commands(run_id, pr_url, status, previous, base)}
+
+        %{nonce: nonce, now_ms: now_ms}
+        when is_binary(nonce) and nonce != "" and is_integer(now_ms) ->
+          {:ok,
+           [update, forced_checks_command(run_id, pr_url, status, previous, base, nonce, now_ms)]}
+      end
     end
   end
 
@@ -134,30 +175,115 @@ defmodule ForemanServer.PrObservation do
   defp checks_commands(run_id, pr_url, status, previous, base) do
     digest = checks_digest(status)
     baseline = previous_value(previous, :checks_digest) || empty_checks_digest(status)
+    evidence = evidence_digest(status)
+    evidence_baseline = stored_evidence_digest(previous) || empty_evidence_digest(status)
 
-    if digest == baseline do
+    if digest == baseline and evidence == evidence_baseline do
       []
     else
-      seq = (previous_value(previous, :checks_seq) || 0) + 1
+      seq = next_checks_seq(previous)
 
       [
-        %{
-          type: "run.pr.checks",
-          command_id: "pr_checks:#{run_id}:#{url_hash(pr_url)}:#{digest}:#{seq}",
-          aggregate_id: "run:#{run_id}",
-          payload:
-            Map.merge(base, %{
-              run_id: run_id,
-              pr_url: pr_url,
-              checks_state: Atom.to_string(status.checks_state),
-              failing: failing(status),
-              digest: digest,
-              observation_seq: seq
-            })
-        }
+        checks_command(
+          "pr_checks:#{run_id}:#{url_hash(pr_url)}:#{digest}:#{seq}",
+          run_id,
+          pr_url,
+          status,
+          base,
+          digest,
+          evidence,
+          seq,
+          nil,
+          "watch"
+        )
       ]
     end
   end
+
+  # A forced observation is built whatever the digests say: an unchanged PR returns nothing from
+  # `checks_commands/5`, so its `observed_at` and `observation_ref` would stay old. It carries
+  # the unchanged notification `digest` and `source: "gate"`, so the Notifier ignores it.
+  defp forced_checks_command(run_id, pr_url, status, previous, base, nonce, now_ms) do
+    checks_command(
+      "pr_checks:#{run_id}:#{url_hash(pr_url)}:forced:#{nonce}",
+      run_id,
+      pr_url,
+      status,
+      %{base | observed_at: now_ms},
+      checks_digest(status),
+      evidence_digest(status),
+      next_checks_seq(previous),
+      nonce,
+      "gate"
+    )
+  end
+
+  defp next_checks_seq(previous), do: (previous_value(previous, :checks_seq) || 0) + 1
+
+  defp checks_command(
+         command_id,
+         run_id,
+         pr_url,
+         status,
+         base,
+         digest,
+         evidence,
+         seq,
+         observation_ref,
+         source
+       ) do
+    %{
+      type: "run.pr.checks",
+      command_id: command_id,
+      aggregate_id: "run:#{run_id}",
+      payload:
+        Map.merge(base, %{
+          run_id: run_id,
+          pr_url: pr_url,
+          checks_state: Atom.to_string(status.checks_state),
+          failing: failing(status),
+          checks: evidence_checks(status),
+          checks_truncated: status.checks_truncated,
+          digest: digest,
+          evidence_digest: evidence,
+          observation_ref: observation_ref,
+          source: source,
+          observation_seq: seq
+        })
+    }
+  end
+
+  defp stored_evidence_digest(previous) do
+    with %{} = record <- previous,
+         %{} = evidence <- Map.get(record, :evidence),
+         %{} = checks <- Map.get(evidence, :checks) do
+      Map.get(checks, :evidence_digest)
+    else
+      _ -> nil
+    end
+  end
+
+  defp empty_evidence_digest(status),
+    do: evidence_digest(%{status | checks: [], checks_truncated: false})
+
+  defp evidence_checks(status) do
+    status.checks
+    |> Enum.take(-PrStatus.max_list())
+    |> Enum.map(fn check ->
+      %{
+        name: cut(check.name),
+        kind: check.kind,
+        state: check.state,
+        conclusion: cut(check.conclusion),
+        workflow: cut(check.workflow),
+        started_at: check.started_at,
+        completed_at: check.completed_at
+      }
+    end)
+  end
+
+  defp cut(nil), do: nil
+  defp cut(text), do: String.slice(text, 0, @max_text)
 
   defp review_commands(run_id, pr_url, status, previous, base) do
     digest = review_digest(status)

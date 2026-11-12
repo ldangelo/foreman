@@ -65,10 +65,11 @@ defmodule ForemanServer.Notifier.MappingTest do
   end
 
   test "CI notifies only when failing and review only when changes are requested" do
-    assert {:failure, :blocked} = class_level("PrChecksChanged", %{checks_state: "failing"})
+    assert {:failure, :blocked} =
+             class_level("PrChecksChanged", %{checks_state: "failing", source: "watch"})
 
     for state <- ~w(none pending passing) do
-      assert :ignore = lookup("PrChecksChanged", %{checks_state: state})
+      assert :ignore = lookup("PrChecksChanged", %{checks_state: state, source: "watch"})
     end
 
     assert {:action_needed, :blocked} =

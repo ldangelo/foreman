@@ -27,6 +27,7 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
   """
 
   alias ForemanServer.Aggregate
+  alias ForemanServer.PrEvidence
 
   @kinds %{
     "run.pr.fix_ci" => "ci",
@@ -162,18 +163,68 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
 
   # -- observations ----------------------------------------------------------
 
+  # Who made the observation: the observer (`watch`) or a forced one for the approval gate
+  # (`gate`). Absent is accepted (an observation built before this field existed).
+  defp checks_source(source) when source in [nil, "watch", "gate"], do: {:ok, source}
+  defp checks_source(_source), do: {:error, {:missing_or_invalid, :source}}
+
+  # The evidence a checks observation carries, validated and normalised once here so the live
+  # fold and the replayed fold read identical values. `checks` absent stays `nil` (no list).
+  defp checks_evidence(payload) do
+    with {:ok, checks} <- optional_checks(Aggregate.get(payload, :checks)),
+         {:ok, truncated} <- boolean(Aggregate.get(payload, :checks_truncated), :checks_truncated),
+         {:ok, required} <-
+           validated(PrEvidence.validate_required(Aggregate.get(payload, :required)), :required),
+         {:ok, policy_version} <- text_field(payload, :policy_version),
+         {:ok, evidence_digest} <- text_field(payload, :evidence_digest),
+         {:ok, observation_ref} <- text_field(payload, :observation_ref) do
+      {:ok,
+       %{
+         checks: checks,
+         checks_truncated: truncated,
+         required: required,
+         policy_version: policy_version,
+         evidence_digest: evidence_digest,
+         observation_ref: observation_ref
+       }}
+    end
+  end
+
+  defp optional_checks(nil), do: {:ok, nil}
+  defp optional_checks(checks), do: validated(PrEvidence.validate_checks(checks), :checks)
+
+  defp text_field(payload, key),
+    do: validated(PrEvidence.validate_text(Aggregate.get(payload, key)), key)
+
+  defp validated({:ok, value}, _key), do: {:ok, value}
+  defp validated(:error, key), do: {:error, {:missing_or_invalid, key}}
+
+  defp boolean(nil, _key), do: {:ok, false}
+  defp boolean(value, _key) when is_boolean(value), do: {:ok, value}
+  defp boolean(_value, key), do: {:error, {:missing_or_invalid, key}}
+
   defp do_handle("run.pr.checks", state, run_id, pr_url, payload) do
     with {:ok, ids} <- identity(state, payload),
          {:ok, head_sha} <-
            Aggregate.required_binary(Aggregate.get(payload, :head_sha), :head_sha),
          {:ok, digest} <- Aggregate.required_binary(Aggregate.get(payload, :digest), :digest),
          {:ok, checks_state} <-
-           one_of(Aggregate.get(payload, :checks_state), @checks_states, :checks_state) do
-      event("run.pr.checks", run_id, pr_url, payload, ids, %{
-        head_sha: head_sha,
-        digest: digest,
-        checks_state: checks_state
-      })
+           one_of(Aggregate.get(payload, :checks_state), @checks_states, :checks_state),
+         {:ok, source} <- checks_source(Aggregate.get(payload, :source)),
+         {:ok, evidence} <- checks_evidence(payload) do
+      event(
+        "run.pr.checks",
+        run_id,
+        pr_url,
+        payload,
+        ids,
+        Map.merge(evidence, %{
+          head_sha: head_sha,
+          digest: digest,
+          checks_state: checks_state,
+          source: source
+        })
+      )
     end
   end
 
@@ -514,9 +565,22 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
   @spec apply_event(struct(), String.t(), map()) :: struct()
   def apply_event(state, type, payload) do
     case Aggregate.get(payload, :pr_url) do
-      url when is_binary(url) and url != "" -> fold(state, type, url, payload)
-      _none -> state
+      url when is_binary(url) and url != "" ->
+        state
+        |> fold_evidence(type, url, payload)
+        |> then(&fold(&1, type, url, payload))
+
+      _none ->
+        state
     end
+  end
+
+  # The evidence record and the head reset come from `PrEvidence`, which the projection fold
+  # (`PrWatchFold`) also calls first, so the two cannot disagree.
+  defp fold_evidence(state, type, url, payload) do
+    if type in PrEvidence.events(),
+      do: watch(state, url, &PrEvidence.apply_event(&1, type, payload)),
+      else: state
   end
 
   defp fold(state, type, url, payload) when type in ["PrUpdated", "PrReady"] do
@@ -635,7 +699,8 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
       checks_digest: nil,
       review_digest: nil,
       review_decision: nil,
-      watching: true
+      watching: true,
+      evidence: PrEvidence.empty()
     }
   end
 

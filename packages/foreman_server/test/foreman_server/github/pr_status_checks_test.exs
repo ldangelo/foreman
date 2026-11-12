@@ -80,13 +80,19 @@ defmodule ForemanServer.GitHub.PrStatusChecksTest do
   end
 
   describe "checks_state derivation" do
-    defp run(conclusion, status \\ "COMPLETED"),
-      do: %{
+    defp run(conclusion, status \\ "COMPLETED") do
+      item = %{
         "__typename" => "CheckRun",
         "name" => "n",
         "status" => status,
         "conclusion" => conclusion
       }
+
+      # GitHub reports when a completed run completed.
+      if status == "COMPLETED",
+        do: Map.put(item, "completedAt", "2026-11-12T13:58:49Z"),
+        else: item
+    end
 
     test "no checks is :none" do
       assert {:ok, %{checks_state: :none, checks: []}} =

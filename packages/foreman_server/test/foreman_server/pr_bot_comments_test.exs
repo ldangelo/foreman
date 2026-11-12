@@ -31,7 +31,9 @@ defmodule ForemanServer.PrBotCommentsTest do
     state: :pending,
     conclusion: "PENDING",
     url: "https://coderabbit.ai",
-    workflow: nil
+    workflow: nil,
+    started_at: "2026-11-12T22:48:23Z",
+    completed_at: nil
   }
 
   setup do
