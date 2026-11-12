@@ -121,20 +121,43 @@ defmodule ForemanServerWeb.MCP.Tools.Doctor do
   The Phase 1 gating line (P-3), printed next to `store_line/0`: whether a durable store is
   required to gate a project (`KeyStore.durable_store_required?/0`) and, if so, whether it is met
   (`KeyStore.require_durable/0`). `✓` when not required or met, `✗` when required and not met.
+  A switch that is not a boolean never raises out of the report: it is read as the documented
+  default (on), and the line says so (`✗`, with the value and whether the store is durable).
   """
   @spec gating_line() :: String.t()
   def gating_line do
-    if KeyStore.durable_store_required?() do
-      case KeyStore.require_durable() do
-        :ok ->
-          "✓ Phase 1 gating: durable store required and met"
+    case gating_switch() do
+      {:ok, true} ->
+        case KeyStore.require_durable() do
+          :ok ->
+            "✓ Phase 1 gating: durable store required and met"
 
-        {:error, {:store_not_durable, note}} ->
-          "✗ Phase 1 gating: durable store required and NOT met: " <> note
-      end
-    else
-      "✓ Phase 1 gating: durable store not required " <>
-        "(config :foreman_server, :require_durable_store_for_gating is false)"
+          {:error, {:store_not_durable, note}} ->
+            "✗ Phase 1 gating: durable store required and NOT met: " <> note
+        end
+
+      {:ok, false} ->
+        "✓ Phase 1 gating: durable store not required " <>
+          "(config :foreman_server, :require_durable_store_for_gating is false)"
+
+      {:invalid, value} ->
+        "✗ Phase 1 gating: config :foreman_server, :require_durable_store_for_gating must be " <>
+          "a boolean, got #{inspect(value, limit: 5)}; read as on (the default): " <>
+          invalid_switch_durability()
+    end
+  end
+
+  defp gating_switch do
+    {:ok, KeyStore.durable_store_required?()}
+  rescue
+    ArgumentError ->
+      {:invalid, Application.get_env(:foreman_server, :require_durable_store_for_gating)}
+  end
+
+  defp invalid_switch_durability do
+    case KeyStore.durability_note() do
+      nil -> "durable store required and met"
+      note -> "durable store required and NOT met: " <> note
     end
   end
 

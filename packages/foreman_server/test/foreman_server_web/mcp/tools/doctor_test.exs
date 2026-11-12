@@ -481,6 +481,19 @@ defmodule ForemanServerWeb.MCP.Tools.DoctorTest do
       assert output =~ "JIDO_CHECKPOINT_DATABASE_URL"
     end
 
+    test "gating line: a switch that is not a boolean does not crash the report: read as on, with a ✗ note" do
+      put_gating("yes")
+
+      assert {:ok, output} = Doctor.run()
+
+      assert output =~
+               "✗ Phase 1 gating: config :foreman_server, :require_durable_store_for_gating"
+
+      assert output =~ ~s(must be a boolean, got "yes"; read as on)
+      assert output =~ "durable store required and NOT met: "
+      assert output =~ "JIDO_CHECKPOINT_DATABASE_URL"
+    end
+
     test "gating line: required and the store is durable says met" do
       put_gating(true)
       Application.put_env(:foreman_server, @config, repo: AnsweringRepo)

@@ -169,6 +169,15 @@ defmodule ForemanServerWeb.DoctorControllerTest do
       assert detail =~ "JIDO_CHECKPOINT_DATABASE_URL"
     end
 
+    test "a gating switch that is not a boolean is a line in the report, not a crash of /api/doctor" do
+      put_gating(:maybe)
+      %{"checks" => checks} = get_json("/api/doctor", 200)
+
+      assert %{"detail" => detail} = effect_check(checks)
+      assert detail =~ "✗ Phase 1 gating: config :foreman_server"
+      assert detail =~ "must be a boolean, got :maybe; read as on"
+    end
+
     test "the gating line is also shown when the keys cannot be read" do
       put_gating(true)
       Application.put_env(:foreman_server, @config, repo: DownRepo)
