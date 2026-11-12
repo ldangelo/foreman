@@ -80,8 +80,18 @@ defmodule ForemanServer.Idempotency.KeyStore do
   The phase ended in an observed error and may have left side effects; the
   run's failure path owns it. Returns `:ok` on success.
   """
-  def mark_failed(key, reason \\ "failed") do
-    GenServer.call(__MODULE__, {:record, key, :failed, %{reason: reason}})
+  def mark_failed(key, reason \\ "failed", meta \\ %{}) do
+    GenServer.call(__MODULE__, {:record, key, :failed, Map.put(meta, :reason, reason)})
+  end
+
+  @doc """
+  The metadata that clears what recovery wrote on a key (the unresolved marker and the
+  decision). The store merges metadata over what it holds, so a settle or a re-mark that
+  does not name these fields leaves a marker or decision written by a scan in between.
+  """
+  @spec recovery_fields_cleared() :: %{String.t() => nil}
+  def recovery_fields_cleared do
+    %{"unresolved_at_run_version" => nil, "unresolved_reason" => nil, "decision" => nil}
   end
 
   @doc """

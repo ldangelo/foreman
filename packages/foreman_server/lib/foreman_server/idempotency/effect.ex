@@ -292,11 +292,14 @@ defmodule ForemanServer.Idempotency.Effect do
   defp present?(nil), do: false
   defp present?(_v), do: true
 
-  # Every re-mark names the decision as nil: the store merges new metadata over the
-  # stored, so a decision left on the key by an earlier crash would survive the re-mark
-  # and make the next crash look decided when the sweep has not yet looked at it.
+  # Every re-mark clears what recovery wrote (the decision and the unresolved marker): the
+  # store merges new metadata over the stored, so either left on the key by an earlier
+  # crash would survive the re-mark and make the next crash look decided or unresolved
+  # when the sweep has not yet looked at it.
   defp record_intent(key, typed, :clear) do
-    key |> KeyStore.mark_started(Map.put(typed, "decision", nil)) |> intent_result()
+    key
+    |> KeyStore.mark_started(Map.merge(typed, KeyStore.recovery_fields_cleared()))
+    |> intent_result()
   catch
     :exit, reason -> {:error, {:key_store_unavailable, reason}}
   end
@@ -364,13 +367,15 @@ defmodule ForemanServer.Idempotency.Effect do
 
   # The effect already ran, so a failure to record its outcome is logged, never
   # allowed to change the effect's result; the key stays `started` and boot
-  # reconciliation treats it as ambiguous.
+  # reconciliation treats it as ambiguous. A scan that ran while the effect was in flight
+  # may have marked the key and written a marker or decision: the outcome supersedes them
+  # (the PRD says a settled key carries neither).
   defp settle(key, status, reason) do
     outcome =
       try do
         case status do
-          :completed -> KeyStore.mark_completed(key)
-          :failed -> KeyStore.mark_failed(key, reason)
+          :completed -> KeyStore.mark_completed(key, KeyStore.recovery_fields_cleared())
+          :failed -> KeyStore.mark_failed(key, reason, KeyStore.recovery_fields_cleared())
         end
       catch
         :exit, exit_reason -> {:error, exit_reason}

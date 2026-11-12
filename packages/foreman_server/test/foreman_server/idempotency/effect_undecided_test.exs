@@ -638,6 +638,51 @@ defmodule ForemanServer.Idempotency.EffectUndecidedTest do
         assert {:ok, %{status: unquote(ends)}} = KeyStore.get(key)
         assert :ok = Effect.preflight(:probe_not_done, key, probe_meta())
       end
+
+      test "an effect that #{what} leaves neither the decision nor the unresolved marker the scan wrote" do
+        key = probe_key(:probe_not_done)
+
+        assert unquote(result) ==
+                 Effect.run(
+                   :probe_not_done,
+                   key,
+                   fn ->
+                     scan()
+                     :ok = KeyStore.mark_unresolved(key, 7, "effect_already_done")
+                     unquote(result)
+                   end,
+                   probe_meta()
+                 )
+
+        assert {:ok, %{status: unquote(ends), metadata: settled}} = KeyStore.get(key)
+        assert KeyStore.decision(settled) == :none
+        assert KeyStore.unresolved_version(settled) == :none
+      end
+    end
+
+    test "a re-mark of a settled key that carries a marker clears it" do
+      key = probe_key(:probe_not_done)
+      :ok = KeyStore.mark_unresolved(key, 7, "effect_already_done")
+      # The scan marked the key while its effect was in flight; the settle left the marker.
+      :ok = KeyStore.mark_completed(key)
+      assert {:ok, %{metadata: stale}} = KeyStore.get(key)
+      assert KeyStore.unresolved_version(stale) == {:ok, 7}
+
+      test_pid = self()
+
+      assert :ran ==
+               Effect.run(
+                 :probe_not_done,
+                 key,
+                 fn ->
+                   send(test_pid, {:in_flight, KeyStore.get(key)})
+                   :ran
+                 end,
+                 probe_meta()
+               )
+
+      assert_received {:in_flight, {:ok, %{status: :started, metadata: started}}}
+      assert KeyStore.unresolved_version(started) == :none
     end
   end
 end

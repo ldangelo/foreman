@@ -345,15 +345,6 @@ defmodule ForemanServer.Workflow.AutoPR do
     end
   end
 
-  # What recovery wrote on a key is cleared with it: `KeyStore` merges metadata, so a marker or a
-  # decision left on a settled key would come back with the next attempt's re-mark and make the
-  # key look unresolved or decided when nobody has looked at it.
-  @recovery_fields %{
-    "unresolved_at_run_version" => nil,
-    "unresolved_reason" => nil,
-    "decision" => nil
-  }
-
   # GitHub has answered for the run's PR create, so a key an earlier attempt left `started` or
   # `ambiguous` is settled: the doctor does not list it, and a later Create PR after the PR was
   # closed is not refused for good. A key that is absent or already settled is left alone.
@@ -379,7 +370,7 @@ defmodule ForemanServer.Workflow.AutoPR do
   defp read_and_settle(key) do
     case KeyStore.get(key) do
       {:ok, %{status: status}} when status in [:started, :ambiguous] ->
-        KeyStore.mark_completed(key, @recovery_fields)
+        KeyStore.mark_completed(key, KeyStore.recovery_fields_cleared())
 
       :not_found ->
         :ok
