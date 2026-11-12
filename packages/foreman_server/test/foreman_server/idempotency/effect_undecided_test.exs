@@ -8,6 +8,10 @@ defmodule ForemanServer.Idempotency.EffectUndecidedTest do
   `ambiguous` with the decision `not_done` the boot sweep wrote, or of a class whose
   reconciler declares `repeatable?/1`. Re-marking a key `started` clears its decision, and
   of two callers that read the same decision only one runs the effect.
+
+  Each such refusal asks the boot sweep to run (`BootReconciliation.scan_ambiguous_keys/0`),
+  once, whether or not a sweep is running; no other refusal does. A scan that flips the key
+  of an effect still in flight is overwritten by the effect's own outcome.
   """
 
   use ExUnit.Case, async: false
@@ -16,6 +20,7 @@ defmodule ForemanServer.Idempotency.EffectUndecidedTest do
 
   alias ForemanServer.Idempotency.{Effect, KeyStore, Reconciler}
   alias ForemanServer.TestSupport.KeyStoreReset
+  alias ForemanServer.Workflow.BootReconciliation
 
   @run_id "run-undecided"
 
@@ -60,6 +65,14 @@ defmodule ForemanServer.Idempotency.EffectUndecidedTest do
     def repeatable?(_metadata), do: raise("callback down")
   end
 
+  defmodule NotDone do
+    @moduledoc false
+    @behaviour ForemanServer.Idempotency.Reconciler
+
+    @impl true
+    def reconcile(_metadata), do: :not_done
+  end
+
   setup do
     KeyStoreReset.reset!()
     original_classes = Application.get_env(:foreman_server, Reconciler)
@@ -71,7 +84,8 @@ defmodule ForemanServer.Idempotency.EffectUndecidedTest do
           "probe_repeatable" => Repeatable,
           "probe_not_repeatable" => NotRepeatable,
           "probe_no_callbacks" => NoCallbacks,
-          "probe_raising" => RaisingCallback
+          "probe_raising" => RaisingCallback,
+          "probe_not_done" => NotDone
         })
     )
 
@@ -476,6 +490,153 @@ defmodule ForemanServer.Idempotency.EffectUndecidedTest do
         assert {:error, {:effect_undecided, ^key}} = attempt(class, key, probe_meta())
         assert {:error, {:effect_undecided, ^key}} = Effect.preflight(class, key, probe_meta())
         refute_received :ran
+      end
+    end
+  end
+
+  describe "an undecided refusal asks the boot sweep to run" do
+    # No BootReconciliation runs in the test environment, so this process stands in for it:
+    # the request production sends to the sweep's name arrives in this mailbox.
+    setup do
+      true = Process.register(self(), BootReconciliation)
+      :ok
+    end
+
+    for class <- [:branch_push, :pr_create] do
+      test "#{class}: run/4 and preflight/3 each cast one scan request for a started key" do
+        class = unquote(class)
+        {key, meta} = subject(class)
+        crash_mid_effect!(class, key, meta)
+        refute_received {:"$gen_cast", :scan_ambiguous_keys}
+
+        assert {:error, {:effect_undecided, ^key}} = attempt(class, key, meta)
+        assert_received {:"$gen_cast", :scan_ambiguous_keys}
+        refute_received {:"$gen_cast", :scan_ambiguous_keys}
+
+        assert {:error, {:effect_undecided, ^key}} = Effect.preflight(class, key, meta)
+        assert_received {:"$gen_cast", :scan_ambiguous_keys}
+        refute_received {:"$gen_cast", :scan_ambiguous_keys}
+      end
+    end
+
+    test "an ambiguous key with no marker and no decision casts too" do
+      key = push_key()
+      crash_mid_effect!(:branch_push, key, push_meta())
+      orphan!(key)
+
+      assert {:error, {:effect_undecided, ^key}} = attempt(:branch_push, key, push_meta())
+      assert_received {:"$gen_cast", :scan_ambiguous_keys}
+    end
+
+    test "every refusal casts: coalescing is the sweep's work, not the caller's" do
+      key = push_key()
+      crash_mid_effect!(:branch_push, key, push_meta())
+
+      for _refusal <- 1..3 do
+        assert {:error, {:effect_undecided, ^key}} = attempt(:branch_push, key, push_meta())
+      end
+
+      for _request <- 1..3, do: assert_received({:"$gen_cast", :scan_ambiguous_keys})
+      refute_received {:"$gen_cast", :scan_ambiguous_keys}
+    end
+
+    test "the other refusals ask for nothing" do
+      # unresolved
+      unresolved = push_key()
+      crash_mid_effect!(:branch_push, unresolved, push_meta())
+      orphan!(unresolved)
+      :ok = KeyStore.mark_unresolved(unresolved, 4, "effect_outcome_ambiguous")
+
+      assert {:error, {:effect_unresolved, ^unresolved}} =
+               attempt(:branch_push, unresolved, push_meta())
+
+      # a marker that is not a version
+      malformed = Effect.key(:branch_push, @run_id, "feature/malformed")
+      :ok = KeyStore.mark_started(malformed, %{"unresolved_at_run_version" => "garbage"})
+      :ok = KeyStore.mark_ambiguous(malformed, "orphaned_started_key")
+
+      assert {:error, {:effect_marker_malformed, ^malformed}} =
+               attempt(:branch_push, malformed, %{push_meta() | head_branch: "feature/malformed"})
+
+      # a record that cannot be read
+      garbage = Effect.key(:branch_push, @run_id, "feature/garbage")
+      :ets.insert(:foreman_idempotency_keys, {garbage, :started, "garbage"})
+
+      assert {:error, {:effect_check_failed, {:metadata_not_a_map, "garbage"}}} =
+               attempt(:branch_push, garbage, %{push_meta() | head_branch: "feature/garbage"})
+
+      # an intent that cannot be recorded
+      assert {:error, {:intent_not_recorded, :cwd_missing}} =
+               attempt(:branch_push, push_key(), Map.delete(push_meta(), :cwd))
+
+      refute_received {:"$gen_cast", :scan_ambiguous_keys}
+    end
+
+    test "a key that is decided, or repeatable, is not refused and asks for nothing" do
+      decided = push_key()
+      crash_mid_effect!(:branch_push, decided, push_meta())
+      orphan!(decided)
+      :ok = KeyStore.mark_decided(decided, :not_done)
+      assert :ran == attempt(:branch_push, decided, push_meta())
+
+      repeatable = probe_key(:probe_repeatable)
+      crash_mid_effect!(:probe_repeatable, repeatable, probe_meta())
+      assert :ran == attempt(:probe_repeatable, repeatable, probe_meta())
+
+      refute_received {:"$gen_cast", :scan_ambiguous_keys}
+    end
+
+    test "the refusal is the same when no sweep is running" do
+      key = push_key()
+      crash_mid_effect!(:branch_push, key, push_meta())
+      Process.unregister(BootReconciliation)
+      refute Process.whereis(BootReconciliation)
+
+      assert {:error, {:effect_undecided, ^key}} = attempt(:branch_push, key, push_meta())
+
+      assert {:error, {:effect_undecided, ^key}} =
+               Effect.preflight(:branch_push, key, push_meta())
+
+      refute_received :ran
+      refute_received {:"$gen_cast", :scan_ambiguous_keys}
+    end
+  end
+
+  describe "a scan that flips the key of an effect in flight" do
+    # The sweep orphans the `started` key of a run with no live executor, and a terminal run
+    # has none, so the key of an effect that runs outside the executor (the operator's Create
+    # PR, `run.pr.retry`, the comment publisher) can be flipped to `ambiguous` while the effect
+    # is still running, and the same scan reconciles the flipped key at once. The effect's own
+    # settle then overwrites the status: the key ends in the effect's outcome.
+    defp scan, do: BootReconciliation.do_reconcile_ambiguous_keys(fn _key -> true end)
+
+    for {what, result, ends} <- [
+          {"completes", :ran, :completed},
+          {"fails", {:error, :boom}, :failed}
+        ] do
+      test "an effect that #{what} ends #{ends}, whatever the scan did to its key meanwhile" do
+        key = probe_key(:probe_not_done)
+        test_pid = self()
+
+        assert unquote(result) ==
+                 Effect.run(
+                   :probe_not_done,
+                   key,
+                   fn ->
+                     scan()
+                     send(test_pid, {:in_flight, KeyStore.get(key)})
+                     unquote(result)
+                   end,
+                   probe_meta()
+                 )
+
+        # Flipped while the effect was running, and decided by the same scan ...
+        assert_received {:in_flight, {:ok, %{status: :ambiguous, metadata: flipped}}}
+        assert KeyStore.decision(flipped) == :not_done
+
+        # ... and then the effect's own outcome overwrote both.
+        assert {:ok, %{status: unquote(ends)}} = KeyStore.get(key)
+        assert :ok = Effect.preflight(:probe_not_done, key, probe_meta())
       end
     end
   end
