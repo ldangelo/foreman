@@ -22,6 +22,22 @@ defmodule ForemanServer.Idempotency.Effect do
   `cwd` is the directory the reconcilers run `git`/`gh` in; a push or PR create
   without one records no intent.
 
+  ## Which keys are refused
+
+  An effect runs again only when its key is decided: not found, `completed` or
+  `failed` (a settled effect may run again), `ambiguous` with the decision `not_done`
+  that the boot sweep recorded once the class's reconciler found the effect did not
+  happen (`KeyStore.mark_decided/2`), or of a class whose reconciler declares
+  `repeatable?/1` true (`Reconciler.repeatable?/2`: repeating it is harmless, so it is
+  never undecided). Any other `started` or `ambiguous` key is undecided: an earlier
+  attempt may have happened, or still be running, and nobody has said which, so
+  `run/4` and `preflight/3` return `{:error, {:effect_undecided, key}}`, without
+  calling `fun` and without touching the key, and ask the boot sweep to run again
+  (`BootReconciliation.scan_ambiguous_keys/0`, once per refusal; best effort, so a
+  sweep that is not running leaves the refusal as it is, and the sweep coalesces the
+  requests), because a decision can only come from it. A key recovery could not
+  resolve is refused as `effect_unresolved` until an operator `run.reset`.
+
   The key is marked with `KeyStore.mark_started/2` directly;
   `HeartbeatLease.acquire/4` arms a live-worker expiry timer and is not used.
   """
@@ -29,6 +45,8 @@ defmodule ForemanServer.Idempotency.Effect do
   alias ForemanServer.Aggregate
   alias ForemanServer.EventStore
   alias ForemanServer.Idempotency.KeyStore
+  alias ForemanServer.Idempotency.Reconciler
+  alias ForemanServer.Workflow.BootReconciliation
 
   require Logger
 
@@ -43,6 +61,7 @@ defmodule ForemanServer.Idempotency.Effect do
   @type refusal ::
           {:error, {:intent_not_recorded, intent_error()}}
           | {:error, {:effect_unresolved, String.t()}}
+          | {:error, {:effect_undecided, String.t()}}
           | {:error, {:effect_marker_malformed, String.t()}}
           | {:error, {:effect_check_failed, term()}}
 
@@ -67,9 +86,12 @@ defmodule ForemanServer.Idempotency.Effect do
   Returns `fun`'s own result unchanged. Returns
   `{:error, {:intent_not_recorded, reason}}` without calling `fun` when the
   metadata is incomplete or the `started` key cannot be written;
-  `{:error, {:effect_unresolved, key}}` (also without calling `fun`, key and
-  metadata untouched) when recovery left the key unresolved and the run has not
-  been reset since; `{:error, {:effect_marker_malformed, key}}` when the key's
+  `{:error, {:effect_undecided, key}}` (also without calling `fun`, key and
+  metadata untouched) when the key is `started`, or `ambiguous` with no decision,
+  and its class is not repeatable (see "Which keys are refused");
+  `{:error, {:effect_unresolved, key}}` (likewise) when recovery left the key
+  unresolved and the run has not been reset since;
+  `{:error, {:effect_marker_malformed, key}}` when the key's
   unresolved marker is present but not a version (no reset clears it: an operator
   must repair the stored key); and `{:error, {:effect_check_failed, reason}}` when that
   could not be established (an unreadable run stream, a stored record that cannot
@@ -83,7 +105,7 @@ defmodule ForemanServer.Idempotency.Effect do
     with {:ok, class_name} <- class_name(class),
          :ok <- check_key(key, class_name),
          {:ok, typed} <- typed_meta(class_name, meta),
-         {:ok, mode} <- check_unresolved(key, typed["run_id"]),
+         {:ok, mode} <- check_unresolved(class_name, key, typed["run_id"]),
          :ok <- record_intent(key, typed, mode) do
       execute(key, fun)
     else
@@ -105,7 +127,7 @@ defmodule ForemanServer.Idempotency.Effect do
          :ok <- check_key(key, class_name),
          run_id = meta |> Map.new(fn {k, v} -> {to_string(k), v} end) |> Map.get("run_id"),
          true <- present?(run_id) || {:error, {:missing_metadata, "run_id"}},
-         {:ok, _mode} <- check_unresolved(key, run_id) do
+         {:ok, _mode} <- check_unresolved(class_name, key, run_id) do
       :ok
     else
       {:error, reason} -> {:error, {:intent_not_recorded, reason}}
@@ -114,6 +136,15 @@ defmodule ForemanServer.Idempotency.Effect do
   end
 
   defp refusal_error({:unresolved, key}), do: {:error, {:effect_unresolved, key}}
+
+  # An undecided key waits for a decision that only the boot sweep writes, and the sweep runs
+  # at boot: ask it to run now. The cast cannot fail the refusal (a `BootReconciliation` that
+  # is not running drops it).
+  defp refusal_error({:undecided, key}) do
+    BootReconciliation.scan_ambiguous_keys()
+    {:error, {:effect_undecided, key}}
+  end
+
   defp refusal_error({:malformed, key}), do: {:error, {:effect_marker_malformed, key}}
   defp refusal_error({:check_failed, reason}), do: {:error, {:effect_check_failed, reason}}
 
@@ -146,6 +177,16 @@ defmodule ForemanServer.Idempotency.Effect do
     end
   end
 
+  # A key is attempted again only when it is decided. `{:ok, mode}` says how it is
+  # re-marked: `:clear` (not found, `completed` or `failed`: a settled effect may run
+  # again; or a key of a repeatable class, `Reconciler.repeatable?/2`: repeating it is
+  # harmless, so it is never undecided), `{:decided, decision}` (`ambiguous` with the
+  # decision the boot sweep wrote once its reconciler found the effect did not happen)
+  # or `{:lifted, version}` (a reset followed the key's unresolved marker). Any other
+  # `started` or `ambiguous` key is undecided: the earlier attempt may have happened,
+  # or still be running, and nobody has said which, so it is not repeated and the key
+  # stays as it is.
+  #
   # A key recovery could not resolve (`KeyStore.mark_unresolved/3`: a reconciler
   # blocked the run, or the run was terminal and could not be blocked) is never
   # repeated: the earlier attempt may have happened, and re-marking the key
@@ -154,24 +195,26 @@ defmodule ForemanServer.Idempotency.Effect do
   # after the version the marker recorded. Any other event (a terminal run still
   # takes PR events) leaves the refusal in place. A marker that is malformed, a
   # record that cannot be read and a stream that cannot be read all refuse: not
-  # repeating is the safe side. Returns `{:ok, :clear}` (no marker to honour),
-  # `{:ok, :lifted}` (a reset followed the marker) or a refusal.
-  defp check_unresolved(key, run_id) do
+  # repeating is the safe side.
+  defp check_unresolved(class_name, key, run_id) do
     case KeyStore.get(key) do
       :not_found ->
         {:ok, :clear}
 
       {:ok, %{status: :ambiguous, metadata: metadata}} when is_map(metadata) ->
         case KeyStore.unresolved_version(metadata) do
-          :none -> {:ok, :clear}
+          :none -> check_decided(class_name, key, :ambiguous, metadata)
           {:ok, version} -> lift_if_reset(key, run_id, version)
           {:error, :malformed} -> {:malformed, key}
         end
 
-      {:ok, %{status: :ambiguous, metadata: other}} ->
+      {:ok, %{status: :started, metadata: metadata}} when is_map(metadata) ->
+        check_decided(class_name, key, :started, metadata)
+
+      {:ok, %{status: undecided, metadata: other}} when undecided in [:started, :ambiguous] ->
         {:check_failed, {:metadata_not_a_map, other}}
 
-      {:ok, %{status: _not_ambiguous}} ->
+      {:ok, %{status: _settled}} ->
         {:ok, :clear}
 
       other ->
@@ -179,6 +222,23 @@ defmodule ForemanServer.Idempotency.Effect do
     end
   catch
     :exit, reason -> {:error, {:key_store_unavailable, reason}}
+  end
+
+  # A `started` key, or an `ambiguous` one with no marker. Metadata is handed to the
+  # reconciler string-keyed, as `Reconciler` documents.
+  defp check_decided(class_name, key, status, metadata) do
+    stored = Map.new(metadata, fn {k, v} -> {to_string(k), v} end)
+
+    cond do
+      Reconciler.repeatable?(class_name, stored) ->
+        {:ok, :clear}
+
+      status == :ambiguous and KeyStore.decision(stored) == :not_done ->
+        {:ok, {:decided, :not_done}}
+
+      true ->
+        {:undecided, key}
+    end
   end
 
   defp lift_if_reset(key, run_id, version) do
@@ -232,8 +292,14 @@ defmodule ForemanServer.Idempotency.Effect do
   defp present?(nil), do: false
   defp present?(_v), do: true
 
+  # Every re-mark clears what recovery wrote (the decision and the unresolved marker): the
+  # store merges new metadata over the stored, so either left on the key by an earlier
+  # crash would survive the re-mark and make the next crash look decided or unresolved
+  # when the sweep has not yet looked at it.
   defp record_intent(key, typed, :clear) do
-    key |> KeyStore.mark_started(typed) |> intent_result()
+    key
+    |> KeyStore.mark_started(Map.merge(typed, KeyStore.recovery_fields_cleared()))
+    |> intent_result()
   catch
     :exit, reason -> {:error, {:key_store_unavailable, reason}}
   end
@@ -243,11 +309,32 @@ defmodule ForemanServer.Idempotency.Effect do
   # caller observed, so of two callers that both saw the reset only one runs the effect,
   # and a marker rewritten after the check is not lifted on the earlier decision.
   defp record_intent(key, typed, {:lifted, observed_version}) do
-    cleared = Map.merge(typed, %{"unresolved_at_run_version" => nil, "unresolved_reason" => nil})
+    cleared =
+      Map.merge(typed, %{
+        "unresolved_at_run_version" => nil,
+        "unresolved_reason" => nil,
+        "decision" => nil
+      })
 
     case KeyStore.lift_unresolved(key, observed_version, cleared) do
       :lifted -> :ok
       :not_unresolved -> {:unresolved, key}
+      other -> intent_result(other)
+    end
+  catch
+    :exit, reason -> {:error, {:key_store_unavailable, reason}}
+  end
+
+  # A decided key is re-marked `started` with its decision cleared, atomically in the
+  # store: the write succeeds only while the key still carries the decision this caller
+  # read, so of two callers that both read it only one runs the effect; the other finds
+  # the key `started` and is refused as undecided.
+  defp record_intent(key, typed, {:decided, observed}) do
+    cleared = Map.put(typed, "decision", nil)
+
+    case KeyStore.consume_decision(key, observed, cleared) do
+      :consumed -> :ok
+      :not_decided -> {:undecided, key}
       other -> intent_result(other)
     end
   catch
@@ -280,13 +367,15 @@ defmodule ForemanServer.Idempotency.Effect do
 
   # The effect already ran, so a failure to record its outcome is logged, never
   # allowed to change the effect's result; the key stays `started` and boot
-  # reconciliation treats it as ambiguous.
+  # reconciliation treats it as ambiguous. A scan that ran while the effect was in flight
+  # may have marked the key and written a marker or decision: the outcome supersedes them
+  # (the PRD says a settled key carries neither).
   defp settle(key, status, reason) do
     outcome =
       try do
         case status do
-          :completed -> KeyStore.mark_completed(key)
-          :failed -> KeyStore.mark_failed(key, reason)
+          :completed -> KeyStore.mark_completed(key, KeyStore.recovery_fields_cleared())
+          :failed -> KeyStore.mark_failed(key, reason, KeyStore.recovery_fields_cleared())
         end
       catch
         :exit, exit_reason -> {:error, exit_reason}

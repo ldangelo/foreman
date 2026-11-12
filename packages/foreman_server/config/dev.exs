@@ -38,6 +38,11 @@ config :foreman_server, :operator_timeout, enabled: true
 # disabled (calls return {:error, :repo_not_configured}).
 config :foreman_server, :jido_ecto, enabled: false
 
+# Phase 1 (P-3): config.exs turns the durable-store requirement for gating on; development
+# runs the ETS-only store (`:jido_ecto` is off above), so without this line every
+# required_checks update here would be refused `store_not_durable`.
+config :foreman_server, :require_durable_store_for_gating, false
+
 config :foreman_server, ForemanServer.Agents.JidoCheckpointStore.Repo,
   url:
     System.get_env(

@@ -206,6 +206,33 @@ defmodule ForemanServer.TestSupport.EffectWorld do
     end)
   end
 
+  @doc """
+  What GitHub reports about the PR at `url` beyond its number, state and url, as `gh pr list
+  --json` answers it: `:head_sha` (`headRefOid`) and `:cross_repository` (`isCrossRepository`,
+  a fork's PR). A PR is listed with a field only once it has been reported, so a PR nobody
+  reported on has no head to compare and `GitHub.PrLookup` reads the answer as unusable.
+  """
+  @spec report_pr!(world(), String.t(), keyword()) :: :ok
+  def report_pr!(world, url, report) do
+    fields = Map.new(report, fn {key, value} -> {pr_field(key), value} end)
+
+    found? =
+      Agent.get_and_update(world, fn state ->
+        prs =
+          Enum.map(state.prs, fn
+            %{"url" => ^url} = pr -> Map.merge(pr, fields)
+            pr -> pr
+          end)
+
+        {Enum.any?(state.prs, &(&1["url"] == url)), %{state | prs: prs}}
+      end)
+
+    if found?, do: :ok, else: flunk("no PR #{url} on the scripted GitHub")
+  end
+
+  defp pr_field(:head_sha), do: "headRefOid"
+  defp pr_field(:cross_repository), do: "isCrossRepository"
+
   @doc "From now on `gh pr list` fails: GitHub cannot be queried."
   @spec fail_gh_list!(world()) :: :ok
   def fail_gh_list!(world), do: Agent.update(world, &%{&1 | list_error?: true})
@@ -254,9 +281,19 @@ defmodule ForemanServer.TestSupport.EffectWorld do
 
   defp run(_world, "git", args, opts), do: System.cmd("git", args, opts)
 
-  defp run(world, "gh", ["pr", "create" | _] = args, _opts) do
+  defp run(world, "gh", ["pr", "create" | _] = args, opts) do
     park(world, :create, :before)
-    url = add_pr!(world, flag(args, "--head"), flag(args, "--base"))
+    head = flag(args, "--head")
+    url = add_pr!(world, head, flag(args, "--base"))
+    # Like GitHub, the PR it made knows the remote tip of its head branch and that it is no
+    # fork's PR. A branch origin does not have leaves the head unreported.
+    report =
+      case remote_head_sha(head, opts) do
+        nil -> [cross_repository: false]
+        sha -> [head_sha: sha, cross_repository: false]
+      end
+
+    :ok = report_pr!(world, url, report)
     Agent.update(world, &update_in(&1.executed.create, fn n -> n + 1 end))
     park(world, :create, :after)
     {url <> "\n", 0}
@@ -269,11 +306,26 @@ defmodule ForemanServer.TestSupport.EffectWorld do
     end)
   end
 
+  defp remote_head_sha(head, opts) do
+    with cwd when is_binary(cwd) <- Keyword.get(opts, :cd),
+         {output, 0} <-
+           System.cmd("git", ["ls-remote", "origin", "refs/heads/" <> head],
+             cd: cwd,
+             stderr_to_stdout: true
+           ),
+         [sha | _] <- String.split(output) do
+      sha
+    else
+      _ -> nil
+    end
+  end
+
   defp list(prs, args) do
     states =
       case flag(args, "--state") do
         "all" -> ["OPEN", "CLOSED", "MERGED"]
-        "closed" -> ["CLOSED"]
+        # Like the real gh (2.103.3), `--state closed` lists the merged PRs too.
+        "closed" -> ["CLOSED", "MERGED"]
         "merged" -> ["MERGED"]
         # `gh pr list` lists only open PRs unless told otherwise.
         _ -> ["OPEN"]

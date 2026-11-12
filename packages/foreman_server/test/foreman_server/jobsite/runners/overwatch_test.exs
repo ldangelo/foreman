@@ -240,7 +240,7 @@ defmodule ForemanServer.Jobsite.Runners.OverwatchTest do
       Runners.Overwatch.run(%Agent{provider: :claude, model: "m"}, "x", nil, launch: launch)
     end
 
-    assert {:ok, %{status: :failed, metadata: %{reason: reason}}} =
+    assert {:ok, %{status: :failed, metadata: %{"reason" => reason}}} =
              ForemanServer.Idempotency.KeyStore.get(key)
 
     assert reason =~ "driver exploded"

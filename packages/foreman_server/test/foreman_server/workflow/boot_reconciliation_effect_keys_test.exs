@@ -5,6 +5,11 @@ defmodule ForemanServer.Workflow.BootReconciliationEffectKeysTest do
   never to `CrashRecovery.reconcile/2`; a verdict that blocks does so through
   `RunRecoveryAttempted`, `run.block` and the `RunControl` cancel, in that
   order, only for a run that is not terminal.
+
+  A `not_done` verdict (TRD-003) decides the key first (`KeyStore.mark_decided/2`) and
+  records `effect_retried` after, best effort: a rejected or failed audit command is counted
+  `audit_failed` and does not undo the decision, a decision that cannot be written is
+  counted `unresolved` and sends no command, and a key that carries the decision is skipped.
   """
 
   use ExUnit.Case, async: false
@@ -14,7 +19,7 @@ defmodule ForemanServer.Workflow.BootReconciliationEffectKeysTest do
   alias ForemanServer.Aggregate
   alias ForemanServer.Aggregates.Run
   alias ForemanServer.{CommandGateway, CommandRouter, EventStore, RunControl}
-  alias ForemanServer.Idempotency.{Effect, KeyStore}
+  alias ForemanServer.Idempotency.{Effect, KeyStore, Reconciler}
   alias ForemanServer.TelemetryTest.Handler
   alias ForemanServer.TestSupport.{Eventually, KeyStoreReset, MeckScope, UniqueIds}
   alias ForemanServer.Workflow.BootReconciliation
@@ -37,8 +42,38 @@ defmodule ForemanServer.Workflow.BootReconciliationEffectKeysTest do
     def reconcile(%{"fake_verdict" => verdict}), do: String.to_existing_atom(verdict)
   end
 
+  defmodule Probe do
+    @moduledoc false
+    @behaviour ForemanServer.Idempotency.Reconciler
+
+    # A class whose reconciler answers `repeatable?/1` from each key's own metadata.
+    @impl true
+    def reconcile(%{"fake_verdict" => verdict}), do: String.to_existing_atom(verdict)
+
+    @impl true
+    def repeatable?(%{"repeatable" => answer}), do: answer
+  end
+
+  defmodule Advisory do
+    @moduledoc false
+    @behaviour ForemanServer.Idempotency.Reconciler
+
+    # What the PR comment class declares: repeating it is harmless and its verdict never
+    # decides the fate of a run.
+    @impl true
+    def reconcile(%{"fake_verdict" => verdict}), do: String.to_existing_atom(verdict)
+
+    @impl true
+    def repeatable?(_metadata), do: true
+
+    @impl true
+    def blocks_run?(_metadata), do: false
+  end
+
   @project_id "project-effect-keys"
   @classes %{"branch_push" => Fake, "pr_create" => Fake}
+  @probe_classes %{"probe" => Probe}
+  @advisory_classes %{"advisory" => Advisory}
 
   setup_all do
     MeckScope.new_once!([Jido.Harness.Run, KeyStore, CommandGateway])
@@ -139,9 +174,7 @@ defmodule ForemanServer.Workflow.BootReconciliationEffectKeysTest do
         {key, :weird, %{"run_id" => run_id, "effect_class" => "branch_push"}}
       )
 
-      :meck.expect(KeyStore, :list_by_status, fn status ->
-        if status == :ambiguous, do: [key], else: []
-      end)
+      list_only_ambiguous(key)
 
       sweep()
 
@@ -155,9 +188,7 @@ defmodule ForemanServer.Workflow.BootReconciliationEffectKeysTest do
         key = plant(run_id, "branch_push", "feature/moved", "done")
         :ets.insert(:foreman_idempotency_keys, {key, unquote(moved_on), meta(run_id)})
 
-        :meck.expect(KeyStore, :list_by_status, fn status ->
-          if status == :ambiguous, do: [key], else: []
-        end)
+        list_only_ambiguous(key)
 
         before_events = events(run_id)
 
@@ -177,9 +208,7 @@ defmodule ForemanServer.Workflow.BootReconciliationEffectKeysTest do
     test "a listed key that no longer exists is skipped", %{run_id: run_id, ref: ref} do
       key = Effect.key("branch_push", run_id, "feature/gone")
 
-      :meck.expect(KeyStore, :list_by_status, fn status ->
-        if status == :ambiguous, do: [key], else: []
-      end)
+      list_only_ambiguous(key)
 
       before_events = events(run_id)
 
@@ -219,9 +248,13 @@ defmodule ForemanServer.Workflow.BootReconciliationEffectKeysTest do
       end
     end
 
-    test "a :not_done effect records `effect_retried`, blocks nothing and the key stays ambiguous so the next Effect.run re-marks it",
-         %{run_id: run_id} do
+    test "a :not_done effect is decided and recorded `effect_retried`: it blocks nothing and the next Effect.run runs",
+         %{run_id: run_id, ref: ref} do
       key = plant(run_id, "branch_push", "feature/n", "not_done")
+      meta = push_meta(run_id, "feature/n")
+
+      # nobody has decided the key yet: it is refused
+      assert {:error, {:effect_undecided, ^key}} = Effect.preflight(:branch_push, key, meta)
 
       sweep()
 
@@ -233,9 +266,14 @@ defmodule ForemanServer.Workflow.BootReconciliationEffectKeysTest do
       assert is_integer(get(record, :elapsed_since_boot_ms))
       assert recovery_record(run_id, "effect_blocked") == nil
       assert RunControl.intent(run_id) == nil
-      assert {:ok, :ambiguous} = KeyStore.status(key)
+      assert_receive {@effect_event, ^ref, %{retried: 1, audit_failed: 0, unresolved: 0}, _}
 
-      meta = %{"run_id" => run_id, "head_branch" => "feature/n", "cwd" => System.tmp_dir!()}
+      # The key stays ambiguous, now with the decision, so the next Effect.run runs and
+      # re-marks it.
+      assert {:ok, %{status: :ambiguous, metadata: decided}} = KeyStore.get(key)
+      assert KeyStore.decision(decided) == :not_done
+      assert :ok = Effect.preflight(:branch_push, key, meta)
+
       ran = self()
 
       assert :ok =
@@ -412,16 +450,30 @@ defmodule ForemanServer.Workflow.BootReconciliationEffectKeysTest do
       end
     end
 
-    test "a :not_done verdict on a terminal run retries nothing", %{run_id: run_id, ref: ref} do
-      key = plant(run_id, "branch_push", "feature/tn", "not_done")
-      end_run(run_id, "failed")
-      before_events = events(run_id)
+    for terminal <- ["failed", "completed"] do
+      test "a :not_done verdict on a #{terminal} run decides the key first: the audit command is rejected and counted audit_failed",
+           %{run_id: run_id, ref: ref} do
+        key = plant(run_id, "branch_push", "feature/tn-#{unquote(terminal)}", "not_done")
+        meta = push_meta(run_id, "feature/tn-#{unquote(terminal)}")
+        end_run(run_id, unquote(terminal))
+        before_events = events(run_id)
 
-      sweep()
+        sweep()
 
-      assert events(run_id) == before_events
-      assert_receive {@terminal_event, ^ref, _, %{effect_verdict: "not_done", reason: nil}}
-      assert {:ok, :ambiguous} = KeyStore.status(key)
+        # The rejected command appended nothing, and the key is decided all the same.
+        assert events(run_id) == before_events
+
+        assert_receive {@terminal_event, ^ref, %{count: 1},
+                        %{effect_verdict: "not_done", reason: nil, status: unquote(terminal)}}
+
+        assert_receive {@effect_event, ^ref,
+                        %{audit_failed: 1, retried: 0, on_terminal_run: 0, unresolved: 0}, _}
+
+        assert {:ok, %{status: :ambiguous, metadata: decided}} = KeyStore.get(key)
+        assert KeyStore.decision(decided) == :not_done
+        assert :ran == Effect.run(:branch_push, key, fn -> :ran end, meta)
+        assert {:ok, :completed} = KeyStore.status(key)
+      end
     end
 
     test "a run already blocked by the effect step is not decided again: its marked key is skipped",
@@ -444,6 +496,174 @@ defmodule ForemanServer.Workflow.BootReconciliationEffectKeysTest do
       sweep()
 
       assert_receive {@terminal_event, ^ref, _, %{run_id: ^ghost, status: "absent"}}
+    end
+  end
+
+  describe "a :not_done verdict decides the key before the audit command is dispatched" do
+    test "the key already carries the decision when `effect_retried` is dispatched",
+         %{run_id: run_id} do
+      key = plant(run_id, "branch_push", "feature/order", "not_done")
+      test_pid = self()
+
+      :meck.expect(CommandGateway, :dispatch_system, fn
+        %{payload: %{outcome: "effect_retried"}} = command ->
+          send(test_pid, {:at_dispatch, KeyStore.get(key)})
+          :meck.passthrough([command])
+
+        command ->
+          :meck.passthrough([command])
+      end)
+
+      sweep()
+
+      assert_received {:at_dispatch, {:ok, %{status: :ambiguous, metadata: at_dispatch}}}
+      assert KeyStore.decision(at_dispatch) == :not_done
+      assert %{payload: _record} = recovery_record(run_id, "effect_retried")
+    end
+
+    test "a decision that cannot be written leaves the key refused, sends no audit command and counts it unresolved",
+         %{run_id: run_id, ref: ref} do
+      key = plant(run_id, "branch_push", "feature/nodecide", "not_done")
+      meta = push_meta(run_id, "feature/nodecide")
+      test_pid = self()
+      :meck.expect(KeyStore, :mark_decided, fn _key, _decision -> {:error, :down} end)
+
+      :meck.expect(CommandGateway, :dispatch_system, fn command ->
+        send(test_pid, {:dispatched, command.type})
+        :meck.passthrough([command])
+      end)
+
+      sweep()
+
+      assert_receive {@effect_event, ^ref, %{unresolved: 1, retried: 0, audit_failed: 0}, _}
+      refute_received {:dispatched, "run.recovery_attempt"}
+      assert recovery_record(run_id, "effect_retried") == nil
+      assert {:ok, %{status: :ambiguous, metadata: metadata}} = KeyStore.get(key)
+      assert KeyStore.decision(metadata) == :none
+
+      assert {:error, {:effect_undecided, ^key}} =
+               Effect.run(:branch_push, key, fn -> flunk("repeated") end, meta)
+    end
+
+    test "a store that exits while the decision is written is counted unresolved too",
+         %{run_id: run_id, ref: ref} do
+      key = plant(run_id, "branch_push", "feature/exit", "not_done")
+      :meck.expect(KeyStore, :mark_decided, fn _key, _decision -> exit(:noproc) end)
+
+      sweep()
+
+      assert_receive {@effect_event, ^ref, %{unresolved: 1, retried: 0, audit_failed: 0}, _}
+      assert recovery_record(run_id, "effect_retried") == nil
+      assert {:ok, %{metadata: metadata}} = KeyStore.get(key)
+      assert KeyStore.decision(metadata) == :none
+    end
+
+    test "a key that settled before it could be decided is skipped, with no audit command",
+         %{run_id: run_id, ref: ref} do
+      key = plant(run_id, "branch_push", "feature/settled", "not_done")
+      :meck.expect(KeyStore, :mark_decided, fn _key, _decision -> :not_decidable end)
+
+      sweep()
+
+      assert_receive {@effect_event, ^ref, %{skipped: 1, retried: 0, unresolved: 0}, _}
+      assert recovery_record(run_id, "effect_retried") == nil
+
+      # Nothing was written: the key is as the sweep found it.
+      assert {:ok, %{status: :ambiguous, metadata: metadata}} = KeyStore.get(key)
+      assert KeyStore.decision(metadata) == :none
+    end
+
+    test "a failed audit command leaves the decision standing; the next scan skips the key and sends no second command",
+         %{run_id: run_id, ref: ref} do
+      key = plant(run_id, "branch_push", "feature/audit", "not_done")
+      meta = push_meta(run_id, "feature/audit")
+      test_pid = self()
+
+      :meck.expect(CommandGateway, :dispatch_system, fn
+        %{payload: %{outcome: "effect_retried"}} ->
+          send(test_pid, :audit_dispatched)
+          {:error, {:dispatch_exit, :timeout}}
+
+        command ->
+          :meck.passthrough([command])
+      end)
+
+      sweep()
+
+      assert_receive {@effect_event, ^ref, %{audit_failed: 1, retried: 0, unresolved: 0}, _}
+      assert_received :audit_dispatched
+      assert recovery_record(run_id, "effect_retried") == nil
+      assert {:ok, %{status: :ambiguous, metadata: decided}} = KeyStore.get(key)
+      assert KeyStore.decision(decided) == :not_done
+      assert :ok = Effect.preflight(:branch_push, key, meta)
+
+      sweep()
+
+      assert_receive {@effect_event, ^ref, %{skipped: 1, audit_failed: 0, retried: 0}, _}
+      refute_received :audit_dispatched
+      assert recovery_record(run_id, "effect_retried") == nil
+      assert {:ok, %{metadata: still_decided}} = KeyStore.get(key)
+      assert KeyStore.decision(still_decided) == :not_done
+    end
+
+    test "a key that already carries the decision is skipped without asking its reconciler",
+         %{run_id: run_id, ref: ref} do
+      # The reconciler would say `done` and block the run, were it asked.
+      key = plant(run_id, "branch_push", "feature/decided", "done")
+      :ok = KeyStore.mark_decided(key, :not_done)
+      before_events = events(run_id)
+
+      sweep()
+
+      assert events(run_id) == before_events
+      assert RunControl.intent(run_id) == nil
+      assert_receive {@effect_event, ^ref, %{skipped: 1, blocked: 0, retried: 0}, _}
+      assert {:ok, %{status: :ambiguous, metadata: metadata}} = KeyStore.get(key)
+      assert KeyStore.decision(metadata) == :not_done
+    end
+  end
+
+  describe "a scan that runs while an effect of a terminal run is in flight" do
+    # The operator's Create PR runs on a completed run, which has no executor: a scan orphans
+    # the `started` key of the effect while it is still running and, the reconciler saying
+    # `not_done`, decides it at once (the audit command is rejected). The effect's own settle
+    # overwrites the status, so the key ends in the effect's outcome; a caller that read the
+    # flipped key decided starts a second attempt, which is accepted (no grace window).
+    for {what, result, ends} <- [
+          {"completes", :pushed, :completed},
+          {"fails", {:error, :boom}, :failed}
+        ] do
+      test "an effect that #{what} ends #{ends}, and a second caller that read the decided key ran too",
+           %{run_id: run_id} do
+        end_run(run_id, "completed")
+        key = Effect.key("branch_push", run_id, "feature/inflight-#{unquote(ends)}")
+
+        meta =
+          run_id
+          |> push_meta("feature/inflight-#{unquote(ends)}")
+          |> Map.put("fake_verdict", "not_done")
+
+        test_pid = self()
+
+        assert unquote(result) ==
+                 Effect.run(
+                   "branch_push",
+                   key,
+                   fn ->
+                     sweep()
+                     send(test_pid, {:in_flight, KeyStore.get(key)})
+                     second = Effect.run("branch_push", key, fn -> :second end, meta)
+                     send(test_pid, {:second_attempt, second})
+                     unquote(result)
+                   end,
+                   meta
+                 )
+
+        assert_received {:in_flight, {:ok, %{status: :ambiguous, metadata: flipped}}}
+        assert KeyStore.decision(flipped) == :not_done
+        assert_received {:second_attempt, :second}
+        assert {:ok, %{status: unquote(ends)}} = KeyStore.get(key)
+      end
     end
   end
 
@@ -483,6 +703,14 @@ defmodule ForemanServer.Workflow.BootReconciliationEffectKeysTest do
       assert {:ok, :started} = KeyStore.status(key)
       assert status(run_id) == "awaiting_worker"
       assert RunControl.intent(run_id) == nil
+
+      # Not orphaned, so nothing decided it: the effect is still refused.
+      meta = %{"run_id" => run_id, "head_branch" => "feature/live", "cwd" => "/w"}
+
+      assert {:error, {:effect_undecided, ^key}} =
+               Effect.run(:branch_push, key, fn -> flunk("repeated") end, meta)
+
+      assert {:ok, :started} = KeyStore.status(key)
 
       ref = Process.monitor(pid)
       send(pid, :stop)
@@ -564,9 +792,161 @@ defmodule ForemanServer.Workflow.BootReconciliationEffectKeysTest do
     end
   end
 
+  describe "the sweep reads the reconciler's definition of repeatable" do
+    for {verdict, reason} <- [
+          {"done", "effect_already_done"},
+          {"unknown", "effect_outcome_ambiguous"}
+        ] do
+      test "a #{verdict} verdict of a repeatable key blocks the run but does not mark the key unresolved",
+           %{run_id: run_id} do
+        key = plant_probe(run_id, unquote(verdict), true)
+
+        sweep_with(@probe_classes)
+
+        assert status(run_id) == "blocked"
+        assert get(List.last(events(run_id)).payload, :reason) == unquote(reason)
+        assert {:ok, %{status: :ambiguous, metadata: metadata}} = KeyStore.get(key)
+        assert KeyStore.unresolved_version(metadata) == :none
+      end
+
+      test "a #{verdict} verdict of a key that is not repeatable marks it unresolved, as before",
+           %{run_id: run_id} do
+        key = plant_probe(run_id, unquote(verdict), false)
+
+        sweep_with(@probe_classes)
+
+        assert status(run_id) == "blocked"
+        assert {:ok, %{status: :ambiguous, metadata: metadata}} = KeyStore.get(key)
+        assert {:ok, _version} = KeyStore.unresolved_version(metadata)
+        assert metadata["unresolved_reason"] == unquote(reason)
+      end
+    end
+
+    test "the answer is read for each key: of two keys of one class only the repeatable one stays unmarked",
+         %{run_id: held_run} do
+      repeatable_run = UniqueIds.unique_run_id("effect-repeatable")
+      start_run(repeatable_run)
+      on_exit(fn -> RunControl.clear(repeatable_run) end)
+
+      repeatable = plant_probe(repeatable_run, "done", true)
+      held = plant_probe(held_run, "done", false)
+
+      sweep_with(@probe_classes)
+
+      assert {:ok, %{metadata: repeatable_meta}} = KeyStore.get(repeatable)
+      assert KeyStore.unresolved_version(repeatable_meta) == :none
+      assert {:ok, %{metadata: held_meta}} = KeyStore.get(held)
+      assert {:ok, _version} = KeyStore.unresolved_version(held_meta)
+    end
+  end
+
+  describe "the sweep reads whether the class may block a run (TRD-039)" do
+    setup do
+      # `Effect.run/4` reads the configured registry, not the sweep's option.
+      original = Application.fetch_env(:foreman_server, Reconciler)
+
+      Application.put_env(:foreman_server, Reconciler,
+        classes: Map.put(Reconciler.classes(), "advisory", Advisory)
+      )
+
+      on_exit(fn ->
+        case original do
+          {:ok, value} -> Application.put_env(:foreman_server, Reconciler, value)
+          :error -> Application.delete_env(:foreman_server, Reconciler)
+        end
+      end)
+
+      :ok
+    end
+
+    for verdict <- ["done", "unknown"] do
+      test "a #{verdict} verdict of an advisory key on a live run blocks nothing, cancels nothing and marks nothing: it is counted skipped and the effect is not refused",
+           %{run_id: run_id, ref: ref} do
+        key = plant(run_id, "advisory", "comment", unquote(verdict))
+        before_events = events(run_id)
+
+        sweep_with(@advisory_classes)
+
+        assert events(run_id) == before_events
+        assert status(run_id) == "awaiting_worker"
+        assert RunControl.intent(run_id) == nil
+
+        assert_receive {@effect_event, ^ref,
+                        %{
+                          skipped: 1,
+                          blocked: 0,
+                          on_terminal_run: 0,
+                          unresolved: 0,
+                          retried: 0,
+                          audit_failed: 0
+                        }, _}
+
+        refute_received {@terminal_event, ^ref, _, _}
+        assert {:ok, %{status: :ambiguous, metadata: metadata}} = KeyStore.get(key)
+        assert KeyStore.unresolved_version(metadata) == :none
+        assert KeyStore.decision(metadata) == :none
+
+        assert :ran == Effect.run("advisory", key, fn -> :ran end, %{run_id: run_id})
+        assert {:ok, :completed} = KeyStore.status(key)
+      end
+    end
+
+    test "a verdict of an advisory key on a run that has ended is skipped too, and is not counted on_terminal_run",
+         %{run_id: run_id, ref: ref} do
+      end_run(run_id, "completed")
+      key = plant(run_id, "advisory", "comment", "done")
+
+      sweep_with(@advisory_classes)
+
+      assert_receive {@effect_event, ^ref, %{skipped: 1, on_terminal_run: 0, blocked: 0}, _}
+      refute_received {@terminal_event, ^ref, _, _}
+      assert {:ok, %{status: :ambiguous, metadata: metadata}} = KeyStore.get(key)
+      assert KeyStore.unresolved_version(metadata) == :none
+    end
+
+    test "a not_done verdict of an advisory key decides it like any other",
+         %{run_id: run_id, ref: ref} do
+      key = plant(run_id, "advisory", "comment", "not_done")
+
+      sweep_with(@advisory_classes)
+
+      assert_receive {@effect_event, ^ref, %{retried: 1, skipped: 0, blocked: 0}, _}
+      assert {:ok, %{status: :ambiguous, metadata: decided}} = KeyStore.get(key)
+      assert KeyStore.decision(decided) == :not_done
+      assert recovery_record(run_id, "effect_retried") != nil
+    end
+
+    test "the answer is the class's: in one sweep the advisory key's run is left running and the run of a push key is blocked",
+         %{run_id: push_run, ref: ref} do
+      advisory_run = UniqueIds.unique_run_id("effect-advisory")
+      start_run(advisory_run)
+      on_exit(fn -> RunControl.clear(advisory_run) end)
+
+      plant(advisory_run, "advisory", "comment", "done")
+      plant(push_run, "branch_push", "feature/blocks", "done")
+
+      sweep_with(Map.merge(@classes, @advisory_classes))
+
+      assert_receive {@effect_event, ^ref, %{skipped: 1, blocked: 1}, _}
+      assert status(advisory_run) == "awaiting_worker"
+      assert status(push_run) == "blocked"
+    end
+  end
+
   # --- helpers ---
 
   defp meta(run_id), do: %{"run_id" => run_id, "effect_class" => "branch_push"}
+
+  defp push_meta(run_id, identity),
+    do: %{"run_id" => run_id, "head_branch" => identity, "cwd" => System.tmp_dir!()}
+
+  # The sweep's reads, scripted: only `key` is listed `ambiguous` and nothing is `started`.
+  defp list_only_ambiguous(key) do
+    :meck.expect(KeyStore, :list_records_checked, fn
+      :ambiguous -> {:ok, [%{key: key, status: :ambiguous, metadata: %{}}]}
+      _status -> {:ok, []}
+    end)
+  end
 
   defp sweep,
     do: BootReconciliation.do_reconcile_ambiguous_keys(fn _key -> true end, classes: @classes)
@@ -584,6 +964,24 @@ defmodule ForemanServer.Workflow.BootReconciliationEffectKeysTest do
     :ok = KeyStore.mark_ambiguous(key, "orphaned_started_key")
     key
   end
+
+  defp plant_probe(run_id, verdict, repeatable?) do
+    key = Effect.key("probe", run_id, "probe")
+
+    :ok =
+      KeyStore.mark_started(key, %{
+        "run_id" => run_id,
+        "effect_class" => "probe",
+        "fake_verdict" => verdict,
+        "repeatable" => repeatable?
+      })
+
+    :ok = KeyStore.mark_ambiguous(key, "orphaned_started_key")
+    key
+  end
+
+  defp sweep_with(classes),
+    do: BootReconciliation.do_reconcile_ambiguous_keys(fn _key -> true end, classes: classes)
 
   # The start command id derives from the workflow snapshot, so a restart after a reset
   # carries a different one: the same snapshot would be replayed, not started again.
@@ -613,6 +1011,15 @@ defmodule ForemanServer.Workflow.BootReconciliationEffectKeysTest do
         command_id: "block-#{run_id}",
         aggregate_id: "run:#{run_id}",
         payload: %{"run_id" => run_id, "reason" => "test"}
+      })
+  end
+
+  defp end_run(run_id, "completed") do
+    {:ok, _} =
+      CommandRouter.dispatch(%{
+        type: "run.complete",
+        payload: %{run_id: run_id},
+        aggregate_id: "run:#{run_id}"
       })
   end
 

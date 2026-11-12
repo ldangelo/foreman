@@ -699,8 +699,11 @@ Source of truth: `docs/TRD/TRD-2026-a804d1c7-phase-0-durable-execution.md`.
   keys (`KeyStore.effect_key?/1`) go to the class reconciler and NEVER to
   `CrashRecovery` (whose side-effects-present branch marks the key completed and
   retries, the opposite of what a push needs). Verdict `:not_done` records
-  `RunRecoveryAttempted{outcome: "effect_retried"}` and the key stays ambiguous so
-  the next `Effect.run` re-marks it; `:done`, `:unknown` and an unregistered class
+  `RunRecoveryAttempted{outcome: "effect_retried"}` and the key stays ambiguous with
+  `decision: "not_done"` written FIRST, so the next `Effect.run` consumes it
+  (`KeyStore.consume_decision/3`) and re-marks the key; an `Effect.run` or
+  `Effect.preflight` that meets a `started` or `ambiguous` key with no decision is
+  refused `{:error, {:effect_undecided, key}}`. `:done`, `:unknown` and an unregistered class
   record `effect_blocked` and then dispatch `run.block` with reason
   `effect_already_done`, `effect_outcome_ambiguous` or `effect_class_unregistered`,
   cancelling the live executor and agent. A terminal or absent run cannot be

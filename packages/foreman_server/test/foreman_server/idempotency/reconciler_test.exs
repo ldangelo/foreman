@@ -44,6 +44,29 @@ defmodule ForemanServer.Idempotency.ReconcilerTest do
     def reconcile(_metadata), do: exit(:noproc)
   end
 
+  # The answers of the optional callbacks come from the metadata, so one module shows every
+  # case: a boolean, something that is not one, and a callback that fails.
+  defmodule Callbacks do
+    @moduledoc false
+    @behaviour ForemanServer.Idempotency.Reconciler
+
+    @impl true
+    def reconcile(_metadata), do: :unknown
+
+    @impl true
+    def repeatable?(%{"repeatable" => answer}), do: answer(answer)
+
+    @impl true
+    def blocks_run?(%{"blocks" => answer}), do: answer(answer)
+
+    defp answer("true"), do: true
+    defp answer("false"), do: false
+    defp answer("garbage"), do: :maybe
+    defp answer("raise"), do: raise("callback down")
+    defp answer("throw"), do: throw(:ball)
+    defp answer("exit"), do: exit(:noproc)
+  end
+
   @classes %{
     "branch_push" => Answering,
     "garbage" => Garbage,
@@ -81,6 +104,55 @@ defmodule ForemanServer.Idempotency.ReconcilerTest do
              }
 
       assert Reconciler.verdict("annotate", %{}) == :unregistered
+    end
+  end
+
+  describe "repeatable?/3 and blocks_run?/3 (the optional callbacks)" do
+    @optional_classes %{"declared" => Callbacks, "bare" => Answering}
+
+    test "a class that declares neither callback is not repeatable and blocks the run" do
+      refute Reconciler.repeatable?("bare", %{}, classes: @optional_classes)
+      assert Reconciler.blocks_run?("bare", %{}, classes: @optional_classes)
+    end
+
+    test "a class with no reconciler is not repeatable and blocks the run" do
+      refute Reconciler.repeatable?("unregistered", %{}, classes: @optional_classes)
+      assert Reconciler.blocks_run?("unregistered", %{}, classes: @optional_classes)
+      refute Reconciler.repeatable?("declared", %{}, classes: %{})
+      assert Reconciler.blocks_run?("declared", %{}, classes: %{})
+    end
+
+    test "a declared answer is read from the stored metadata" do
+      opts = [classes: @optional_classes]
+
+      assert Reconciler.repeatable?("declared", %{"repeatable" => "true"}, opts)
+      refute Reconciler.repeatable?("declared", %{"repeatable" => "false"}, opts)
+      assert Reconciler.blocks_run?("declared", %{"blocks" => "true"}, opts)
+      refute Reconciler.blocks_run?("declared", %{"blocks" => "false"}, opts)
+    end
+
+    test "an answer that is not a boolean and a callback that fails take the default" do
+      opts = [classes: @optional_classes]
+
+      for how <- ["garbage", "raise", "throw", "exit"] do
+        refute Reconciler.repeatable?("declared", %{"repeatable" => how}, opts), how
+        assert Reconciler.blocks_run?("declared", %{"blocks" => how}, opts), how
+      end
+
+      # metadata the callback has no clause for raises inside it: the same default
+      refute Reconciler.repeatable?("declared", %{}, opts)
+      assert Reconciler.blocks_run?("declared", %{}, opts)
+    end
+
+    test "the configured registry: only a task-provider reopen is repeatable and none stops blocking" do
+      refute Reconciler.repeatable?("branch_push", %{})
+      refute Reconciler.repeatable?("pr_create", %{})
+      refute Reconciler.repeatable?("task_provider", %{"op" => "claim"})
+      assert Reconciler.repeatable?("task_provider", %{"op" => "reopen"})
+
+      for class <- ["branch_push", "pr_create", "task_provider"] do
+        assert Reconciler.blocks_run?(class, %{"op" => "reopen"}), class
+      end
     end
   end
 

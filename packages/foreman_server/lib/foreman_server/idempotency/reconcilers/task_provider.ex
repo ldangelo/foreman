@@ -91,10 +91,14 @@ defmodule ForemanServer.Idempotency.Reconcilers.TaskProvider do
 
   @doc """
   True when repeating the call is harmless: a `reopen` only moves an `in_progress`
-  issue to `open`. Recovery does not mark such a key unresolved (the marker stops
-  a repeated push or PR create), so the boot scan can reopen the issue again.
+  issue to `open`. `Effect.run/4` never refuses such a key as undecided (a `started` or
+  unmarked `ambiguous` one) and recovery does not mark it unresolved (the marker stops
+  a repeated push or PR create), so the boot scan can reopen the issue again. The
+  class's `Reconciler.repeatable?/1` callback; `claim`, `complete` and `fail` are not
+  repeatable and stay refused while undecided.
   """
   @spec repeatable?(map()) :: boolean()
+  @impl Reconciler
   def repeatable?(%{"op" => "reopen"}), do: true
   def repeatable?(_metadata), do: false
 

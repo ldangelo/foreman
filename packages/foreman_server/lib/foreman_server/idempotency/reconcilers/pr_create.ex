@@ -32,6 +32,7 @@ defmodule ForemanServer.Idempotency.Reconcilers.PrCreate do
   @behaviour ForemanServer.Idempotency.Reconciler
 
   alias ForemanServer.Idempotency.Effect
+  alias ForemanServer.Idempotency.KeyStore
   alias ForemanServer.Idempotency.Reconciler
   alias ForemanServer.Idempotency.Reconcilers.Command
 
@@ -56,6 +57,31 @@ defmodule ForemanServer.Idempotency.Reconcilers.PrCreate do
   @spec intent(String.t(), String.t(), String.t(), String.t() | nil) :: map()
   def intent(run_id, head_branch, base_branch, cwd),
     do: %{run_id: run_id, head_branch: head_branch, base_branch: base_branch, cwd: cwd}
+
+  @doc """
+  GitHub has answered for the run's PR create (the run adopted the PR it found), so a key an
+  earlier attempt left `started` or `ambiguous` is settled `completed`, with what recovery
+  wrote on it (the unresolved marker, the decision) cleared: the doctor does not list it, and
+  a later Create PR after the PR was closed is not refused for good. A key that is absent or
+  already settled is left alone.
+  """
+  @spec settle_adopted(String.t(), String.t(), String.t()) :: :ok | {:error, term()}
+  def settle_adopted(run_id, head_branch, base_branch) do
+    key = key(run_id, head_branch, base_branch)
+
+    case KeyStore.get(key) do
+      {:ok, %{status: status}} when status in [:started, :ambiguous] ->
+        KeyStore.mark_completed(key, KeyStore.recovery_fields_cleared())
+
+      :not_found ->
+        :ok
+
+      {:ok, %{status: _settled}} ->
+        :ok
+    end
+  catch
+    :exit, reason -> {:error, {:key_store_unavailable, reason}}
+  end
 
   @impl Reconciler
   def reconcile(metadata), do: reconcile(metadata, [])

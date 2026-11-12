@@ -182,10 +182,24 @@ defmodule ForemanServer.Workflow.BootReconciliation do
   Scan every idempotency key with status `:ambiguous` and apply
   `CrashRecovery.reconcile/1` to each. Keys already marked `:completed`
   are skipped; keys whose side-effect check reports no side effects are
-  retried.
+  retried. An effect key (`Idempotency.Effect`) is asked of its class's
+  `Idempotency.Reconciler` instead: a verdict that the effect did not happen
+  decides the key (`KeyStore.mark_decided/2`), after which the effect may run
+  again. A verdict that it happened, or that nobody can tell, marks the key unresolved and
+  blocks the run; a run that has ended cannot be blocked, so there the key only stays
+  refused (`Effect` answers `effect_unresolved`) and the operator's way out is on GitHub; a
+  class that never blocks a run (`Reconciler.blocks_run?/3`) is left as it is (TRD-039).
+  The scan first marks the `started` keys of runs with no live executor
+  `ambiguous`.
 
   Dispatches as a cast so the scan runs inside the `BootReconciliation`
-  process. Returns `:ok` once the cast is enqueued.
+  process. Returns `:ok` once the cast is enqueued, whether or not the process
+  is running: a cast to a process that is not running is dropped.
+
+  Beside the boot pass, `Idempotency.Effect` casts this once for every refusal
+  of an undecided key (`{:error, {:effect_undecided, key}}`), so a decision can
+  arrive without a restart. The requests are coalesced: those queued while a
+  scan runs are answered by one further scan, not one each.
   """
   @spec scan_ambiguous_keys() :: :ok
   def scan_ambiguous_keys do
@@ -285,6 +299,7 @@ defmodule ForemanServer.Workflow.BootReconciliation do
 
   @impl true
   def handle_cast(:scan_ambiguous_keys, state) do
+    coalesce_ambiguous_scan_requests()
     state = reconcile_ambiguous_keys(state)
     {:noreply, state}
   end
@@ -309,6 +324,7 @@ defmodule ForemanServer.Workflow.BootReconciliation do
 
   @impl true
   def handle_info(:scan_ambiguous_keys, state) do
+    coalesce_ambiguous_scan_requests()
     state = reconcile_ambiguous_keys(state)
     {:noreply, state}
   end
@@ -747,23 +763,52 @@ defmodule ForemanServer.Workflow.BootReconciliation do
     Process.send_after(self(), :scan_ambiguous_keys, @scan_retry_ms)
   end
 
+  # Every request already queued is answered by the scan about to start, which lists the
+  # keys afresh: a refusal that arrived while the previous scan ran is in the mailbox now,
+  # so one further scan serves all of them. A request that arrives after this point is not
+  # lost: it queues behind the running scan and gets one of its own.
+  defp coalesce_ambiguous_scan_requests do
+    receive do
+      {:"$gen_cast", :scan_ambiguous_keys} -> coalesce_ambiguous_scan_requests()
+      :scan_ambiguous_keys -> coalesce_ambiguous_scan_requests()
+    after
+      0 -> :ok
+    end
+  end
+
   @doc false
   def do_reconcile_ambiguous_keys(
         side_effects_check \\ &CrashRecovery.has_no_side_effects?/1,
         opts \\ []
       ) do
-    orphaned = mark_orphaned_started_keys()
+    orphans = mark_orphaned_started_keys()
+    ambiguous = list_ambiguous_keys()
 
-    if orphaned > 0 do
-      Logger.warning(
-        "BootReconciliation: #{orphaned} orphaned started idempotency key(s) marked ambiguous"
-      )
+    case orphans do
+      {:ok, orphaned, _unread} when orphaned > 0 ->
+        Logger.warning(
+          "BootReconciliation: #{orphaned} orphaned started idempotency key(s) marked ambiguous"
+        )
+
+      _none_or_unread ->
+        :ok
     end
 
+    # A read that failed is not a store with no such keys: it is counted `unresolved` with
+    # the effect keys, nothing is marked or decided from it, and every undecided key stays
+    # refused (the refusal in `Effect.run/4` does not depend on the sweep having listed it).
+    unread =
+      Enum.count([orphans, ambiguous], &match?({:error, _}, &1)) +
+        case orphans do
+          {:ok, _marked, unread_keys} -> unread_keys
+          {:error, _reason} -> 0
+        end
+
     {effect_keys, agent_keys} =
-      :ambiguous
-      |> KeyStore.list_by_status()
-      |> Enum.split_with(&KeyStore.effect_key?/1)
+      case ambiguous do
+        {:ok, keys} -> Enum.split_with(keys, &KeyStore.effect_key?/1)
+        {:error, _reason} -> {[], []}
+      end
 
     {skipped, retried} =
       Enum.reduce(agent_keys, {0, 0}, fn key, {skipped, retried} ->
@@ -782,7 +827,7 @@ defmodule ForemanServer.Workflow.BootReconciliation do
         end
       end)
 
-    reconcile_effect_keys(effect_keys, opts)
+    reconcile_effect_keys(effect_keys, unread, opts)
     emit_ambiguous_reconciled(skipped, retried)
   end
 
@@ -800,11 +845,49 @@ defmodule ForemanServer.Workflow.BootReconciliation do
   # re-armed while a run is mid-effect, so `started` alone is not evidence of
   # orphanhood. Keys without a run_id cannot be attributed to a run, so they are
   # left untouched and logged.
+  #
+  # `{:ok, marked, unread}`, or `{:error, reason}` when the `started` keys could not be read, in
+  # which case no key is marked. The listing is the checked read; each key is read again when it
+  # is judged, so a key that settled in between is not marked. A key whose read or mark failed
+  # (an error answer, a store that exits) is logged and counted `unread`: it stays `started`,
+  # which `Effect` refuses, and the sweep goes on with the other keys.
   defp mark_orphaned_started_keys do
-    :started
-    |> KeyStore.list_by_status()
-    |> Enum.count(&orphaned_started_key?/1)
+    case KeyStore.list_records_checked(:started) do
+      {:ok, records} ->
+        judged = Enum.map(records, &orphaned_started_key?(&1.key))
+        {:ok, Enum.count(judged, &(&1 == true)), Enum.count(judged, &(&1 == :unread))}
+
+      {:error, reason} ->
+        unread_keys(:started, reason)
+    end
   end
+
+  defp list_ambiguous_keys do
+    case KeyStore.list_records_checked(:ambiguous) do
+      {:ok, records} -> {:ok, Enum.map(records, & &1.key)}
+      {:error, reason} -> unread_keys(:ambiguous, reason)
+    end
+  end
+
+  # Both reads are the checked one: `KeyStore.list_by_status/1` answers a repo error from the
+  # ETS copy, which is empty after a restart, so an outage would read as "no such keys".
+  defp unread_keys(status, reason) do
+    Logger.error(
+      "BootReconciliation: the #{status} idempotency keys could not be read (#{inspect(reason)}); " <>
+        unread_consequence(status),
+      status: status
+    )
+
+    {:error, reason}
+  end
+
+  defp unread_consequence(:started),
+    do:
+      "no started key was checked for an orphaned run, so none was marked and every effect " <>
+        "key still started stays refused"
+
+  defp unread_consequence(:ambiguous),
+    do: "no ambiguous key was reconciled or decided, so every undecided effect key stays refused"
 
   defp orphaned_started_key?(key) do
     case KeyStore.get(key) do
@@ -814,9 +897,24 @@ defmodule ForemanServer.Workflow.BootReconciliation do
           :none -> skip_unattributable_started_key(key)
         end
 
+      {:error, reason} ->
+        unread_started_key(key, reason)
+
       _changed_or_missing ->
         false
     end
+  catch
+    :exit, reason -> unread_started_key(key, reason)
+  end
+
+  defp unread_started_key(key, reason) do
+    Logger.error(
+      "BootReconciliation: started idempotency key #{inspect(key)} could not be read or marked (#{inspect(reason)}); " <>
+        "it is counted unresolved and stays started, so its effect stays refused",
+      key: key
+    )
+
+    :unread
   end
 
   defp started_key_run_id(%{"run_id" => run_id}) when is_binary(run_id) and run_id != "",
@@ -828,8 +926,10 @@ defmodule ForemanServer.Workflow.BootReconciliation do
     if run_executor_alive?(key, run_id) do
       false
     else
-      :ok = KeyStore.mark_ambiguous(key, "orphaned_started_key")
-      true
+      case KeyStore.mark_ambiguous(key, "orphaned_started_key") do
+        :ok -> true
+        {:error, reason} -> unread_started_key(key, reason)
+      end
     end
   end
 
@@ -866,11 +966,16 @@ defmodule ForemanServer.Workflow.BootReconciliation do
   # completed and retries: the opposite of what a push or PR create needs. The
   # class's `Idempotency.Reconciler` is asked instead, and the verdict maps to:
   #
-  #   * `:not_done`          -> record `effect_retried`; the key stays ambiguous
-  #                             so the next `Effect.run` for the identity re-marks it
+  #   * `:not_done`          -> decide the key (`KeyStore.mark_decided/2`: the next
+  #                             `Effect.run/4` may repeat the effect), THEN record
+  #                             `effect_retried` as an audit event. The key stays ambiguous,
+  #                             decision and all, until that attempt re-marks it
   #   * `:done`              -> block `effect_already_done`
   #   * `:unknown`, or an unexpected store status -> block `effect_outcome_ambiguous`
   #   * unregistered class   -> block `effect_class_unregistered` (fail closed)
+  #   * `:done` or `:unknown` of a class that never blocks a run (`Reconciler.blocks_run?/3`
+  #     false: an advisory effect such as a PR comment) -> nothing: no marker, no block, no
+  #     cancel, and the key is counted `skipped`
   #
   # A block appends the `effect_blocked` record first (a terminal run rejects it,
   # and that rejection decides the terminal-run branch), then `run.block`, then
@@ -879,19 +984,54 @@ defmodule ForemanServer.Workflow.BootReconciliation do
   # A terminal (or absent) run cannot be blocked: the verdict is logged and
   # counted and the key stays ambiguous, which is how `foreman_doctor` lists it.
   # No path marks the key completed.
+  #
+  # The decision comes first and the audit event is best effort: the decision is what gates the
+  # effect and the event is a record. A terminal run rejects the event (`run.recovery_attempt`
+  # takes no record once the run ended), an absent run does too, and a dispatch can fail; each
+  # is logged and counted `audit_failed`, the decision stands, and the next scan skips a key
+  # that carries it, so the event is not sent again. A decision that cannot be written leaves
+  # the key refused, sends no event and is counted `unresolved`.
+  #
+  # The keys of a terminal run have a path for each verdict (TRD-039). A run that has ended takes
+  # neither `run.recovery_attempt` nor `run.block`, and a `completed`, `cancelled` or `deleted`
+  # run cannot be reset either (`run.reset` is accepted from `failed`, `stuck`, `blocked` and
+  # `paused` only). The operator's Create PR (`PrCreate.execute/1`) is the caller of a
+  # `pr_create` key:
+  #
+  #   * `:not_done` -> decided first, as above: the rejected audit event is counted
+  #     `audit_failed` and the next Create PR runs the effect;
+  #   * `:done`, `:unknown` -> the key is marked unresolved at the run stream's version BEFORE
+  #     the block is dispatched, so the rejected block (counted `on_terminal_run`) leaves it
+  #     `ambiguous` with its marker, and `Effect.run/4` refuses it `effect_unresolved`: an
+  #     operator `run.reset` lifts that for a `failed`, `stuck` or `blocked` run and never for
+  #     a `completed` or `cancelled` one. The way out is on GitHub and not in the key: Create PR
+  #     asks GitHub for the run's PR before its preflight and adopts the one whose head is the
+  #     pushed tip (`AutoPR`, TRD-004), so a PR that exists, or that the operator opens by hand,
+  #     is adopted. A `branch_push` key stays refused the same way (the operator pushes the
+  #     branch by hand).
+  #
+  # Until a scan has looked at such a key it is refused `effect_undecided`, and that refusal
+  # casts this scan (`scan_ambiguous_keys/0`).
   @effect_block_reasons %{
     done: "effect_already_done",
     unknown: "effect_outcome_ambiguous",
     unregistered: "effect_class_unregistered"
   }
 
-  defp reconcile_effect_keys([], _opts), do: :ok
+  defp reconcile_effect_keys([], 0, _opts), do: :ok
 
-  defp reconcile_effect_keys(keys, opts) do
+  defp reconcile_effect_keys(keys, unread, opts) do
     counts =
       Enum.reduce(
         keys,
-        %{blocked: 0, retried: 0, on_terminal_run: 0, unresolved: 0, skipped: 0},
+        %{
+          blocked: 0,
+          retried: 0,
+          on_terminal_run: 0,
+          unresolved: unread,
+          skipped: 0,
+          audit_failed: 0
+        },
         fn key, counts -> Map.update!(counts, reconcile_effect_key(key, opts), &(&1 + 1)) end
       )
 
@@ -909,16 +1049,7 @@ defmodule ForemanServer.Workflow.BootReconciliation do
       {:ok, %{run_id: run_id, class: class, metadata: metadata, status: status}} ->
         case KeyStore.unresolved_version(metadata) do
           :none ->
-            {verdict, reason} = effect_verdict(status, class, metadata, opts)
-
-            handle_effect_verdict(
-              key,
-              run_id,
-              class,
-              verdict,
-              reason,
-              repeatable_effect?(class, metadata)
-            )
+            reconcile_unmarked_effect_key(key, run_id, class, metadata, status, opts)
 
           # The outcome was decided at an earlier boot (the key carries its marker):
           # `Effect.run/4` refuses it until an operator `run.reset`, and honours the
@@ -946,6 +1077,28 @@ defmodule ForemanServer.Workflow.BootReconciliation do
     end
   end
 
+  defp reconcile_unmarked_effect_key(key, run_id, class, metadata, status, opts) do
+    # A key that carries the decision was decided by an earlier scan and has not been attempted
+    # since (an attempt re-marks it `started` and clears the decision). Its reconciler is not
+    # asked again and no second audit event is sent, whether or not the first was recorded.
+    if status == :ambiguous and KeyStore.decision(metadata) == :not_done do
+      skip_effect_key(key, "already carries the decision not_done")
+    else
+      {verdict, reason} = effect_verdict(status, class, metadata, opts)
+      classes = Keyword.take(opts, [:classes])
+
+      # The two answers about the class that `Effect` and this sweep read from one definition
+      # (`Reconciler`): whether the key is ever marked unresolved, and whether a `done` or
+      # `unknown` verdict may block the run.
+      traits = %{
+        repeatable?: Reconciler.repeatable?(class, metadata, classes),
+        blocks_run?: Reconciler.blocks_run?(class, metadata, classes)
+      }
+
+      handle_effect_verdict(key, run_id, class, verdict, reason, traits)
+    end
+  end
+
   defp skip_effect_key(key, what) do
     Logger.info("BootReconciliation: effect key #{inspect(key)} #{what}; not reconciled",
       key: key
@@ -955,7 +1108,7 @@ defmodule ForemanServer.Workflow.BootReconciliation do
   end
 
   # The one place stored metadata is normalised: `Effect` writes string keys while
-  # `KeyStore.mark_ambiguous/2` and `mark_failed/2` add an atom-keyed `reason` on the
+  # `KeyStore.mark_ambiguous/2` adds an atom-keyed `reason` on the
   # ETS path. Past this point the effect step and the reconcilers read string keys only.
   defp read_effect_key(key) do
     case KeyStore.get(key) do
@@ -1005,7 +1158,90 @@ defmodule ForemanServer.Workflow.BootReconciliation do
   defp effect_verdict(_status, _class, _metadata, _opts),
     do: {"unknown", @effect_block_reasons.unknown}
 
-  defp handle_effect_verdict(key, run_id, class, "not_done" = verdict, nil, _repeatable?) do
+  # `not_done`: the key is decided first and the audit event recorded after, best effort. The
+  # decision is what gates the effect (`Effect.run/4` refuses a key nobody has decided) and the
+  # event is a record. Sending the event first would leave the key of a terminal run undecided
+  # and the effect refused for good, because the aggregate rejects `run.recovery_attempt` once
+  # the run has ended.
+  defp handle_effect_verdict(key, run_id, class, "not_done" = verdict, nil, _traits) do
+    case decide_not_done(key) do
+      :ok ->
+        record_effect_retried(key, run_id, class, verdict)
+
+      :not_decidable ->
+        skip_effect_key(key, "is no longer an ambiguous key without a marker; not decided")
+
+      {:error, reason} ->
+        Logger.error(
+          "BootReconciliation: effect #{inspect(key)} of run #{run_id} did not happen but could not be decided (#{inspect(reason)}); key left undecided, effect_retried not recorded",
+          key: key,
+          run_id: run_id
+        )
+
+        :unresolved
+    end
+  end
+
+  # A class that never blocks a run (`Reconciler.blocks_run?/3` false, such as a PR comment) has
+  # no `done` or `unknown` verdict worth a block: nothing is marked, blocked or cancelled, and
+  # the key is counted `skipped`. It is left as it is, so the effect (a repeatable class is never
+  # refused) may run again, and a terminal run's key is handled the same way.
+  defp handle_effect_verdict(key, _run_id, class, verdict, _reason, %{blocks_run?: false}) do
+    Logger.info(
+      "BootReconciliation: effect #{inspect(key)} (#{class}) has verdict #{verdict}, but its class never blocks a run; nothing marked, blocked or cancelled",
+      key: key
+    )
+
+    :skipped
+  end
+
+  defp handle_effect_verdict(key, run_id, class, verdict, reason, %{repeatable?: repeatable?}) do
+    fields = %{effect_class: class, effect_key: key, effect_verdict: verdict}
+    {_state, version} = load_run_stream(run_id)
+
+    # The key is marked unresolved BEFORE anything is dispatched, at the stream
+    # version as it stands: from here on `Effect.run/4` refuses it, so no failed or
+    # slow dispatch below leaves an unmarked ambiguous key that a retry would
+    # repeat. A marker that cannot be written leaves the key unresolved and the run
+    # untouched (`:unresolved`), never counted as a block.
+    #
+    # A repeatable effect (`Reconciler.repeatable?/3`, the one definition `Effect` reads
+    # too: a task-provider `reopen`, TRD-015, or any class whose reconciler declares it) is
+    # never marked: the marker exists to stop a repeated push or PR create, and repeating
+    # a reopen is harmless. A marked reopen key would refuse the next boot's reopen of an
+    # issue whose run is terminal (so the block below is rejected) until an operator
+    # reset a run that cannot be reset.
+    with :ok <- mark_unless_repeatable(key, version, reason, repeatable?) do
+      block_for_effect(key, run_id, class, verdict, reason, fields, version)
+    else
+      {:error, marker_error} ->
+        Logger.error(
+          "BootReconciliation: effect #{inspect(key)} of run #{run_id} has verdict #{verdict} but could not be marked unresolved (#{inspect(marker_error)}); run not blocked, key left ambiguous",
+          key: key,
+          run_id: run_id
+        )
+
+        :unresolved
+    end
+  end
+
+  # `:ok`, `:not_decidable` (the key is no longer an `ambiguous` key without a marker: its
+  # effect settled, an attempt re-marked it, or recovery marked it unresolved, so there is
+  # nothing to decide) or `{:error, reason}` (the write failed and the key is as it was).
+  defp decide_not_done(key) do
+    case KeyStore.mark_decided(key, :not_done) do
+      :ok -> :ok
+      :not_decidable -> :not_decidable
+      {:error, _reason} = error -> error
+      other -> {:error, {:unexpected, other}}
+    end
+  catch
+    :exit, exit_reason -> {:error, {:key_store_unavailable, exit_reason}}
+  end
+
+  # The audit record of a key that is already decided, so nothing here can undo the decision:
+  # a rejected or failed command is logged and counted `audit_failed`.
+  defp record_effect_retried(key, run_id, class, verdict) do
     fields = %{effect_class: class, effect_key: key, effect_verdict: verdict}
 
     command =
@@ -1028,46 +1264,43 @@ defmodule ForemanServer.Workflow.BootReconciliation do
         :retried
 
       {:error, rejection} ->
-        effect_not_recorded(key, run_id, class, verdict, nil, rejection)
+        audit_not_recorded(key, run_id, class, verdict, rejection)
     end
   end
 
-  defp handle_effect_verdict(key, run_id, class, verdict, reason, repeatable?) do
-    fields = %{effect_class: class, effect_key: key, effect_verdict: verdict}
-    {_state, version} = load_run_stream(run_id)
+  defp audit_not_recorded(key, run_id, class, verdict, {:run_terminal, status}),
+    do: audit_on_terminal_run(key, run_id, class, verdict, status)
 
-    # The key is marked unresolved BEFORE anything is dispatched, at the stream
-    # version as it stands: from here on `Effect.run/4` refuses it, so no failed or
-    # slow dispatch below leaves an unmarked ambiguous key that a retry would
-    # repeat. A marker that cannot be written leaves the key unresolved and the run
-    # untouched (`:unresolved`), never counted as a block.
-    #
-    # A repeatable effect (a task-provider `reopen`, TRD-015) is never marked: the
-    # marker exists to stop a repeated push or PR create, and repeating a reopen
-    # is harmless. A marked reopen key would refuse the next boot's reopen of an
-    # issue whose run is terminal (so the block below is rejected) until an
-    # operator reset a run that cannot be reset.
-    with :ok <- mark_unless_repeatable(key, version, reason, repeatable?) do
-      block_for_effect(key, run_id, class, verdict, reason, fields, version)
-    else
-      {:error, marker_error} ->
-        Logger.error(
-          "BootReconciliation: effect #{inspect(key)} of run #{run_id} has verdict #{verdict} but could not be marked unresolved (#{inspect(marker_error)}); run not blocked, key left ambiguous",
-          key: key,
-          run_id: run_id
-        )
+  defp audit_not_recorded(key, run_id, class, verdict, {:not_found, :run, _}),
+    do: audit_on_terminal_run(key, run_id, class, verdict, "absent")
 
-        :unresolved
-    end
+  defp audit_not_recorded(key, run_id, _class, _verdict, rejection) do
+    Logger.error(
+      "BootReconciliation: effect #{inspect(key)} of run #{run_id} is decided but its effect_retried record was not recorded: #{inspect(rejection)}; the decision stands",
+      key: key,
+      run_id: run_id
+    )
+
+    :audit_failed
+  end
+
+  defp audit_on_terminal_run(key, run_id, class, verdict, status) do
+    metadata = terminal_run_metadata(key, run_id, class, verdict, nil, status)
+
+    Logger.warning(
+      "BootReconciliation: effect #{inspect(key)} (#{class}) of run #{run_id} did not happen and its key is decided, " <>
+        "but the run is #{status}, so the effect_retried record cannot be recorded (audit_failed)",
+      Map.to_list(metadata)
+    )
+
+    :telemetry.execute(@effect_on_terminal_run_event, %{count: 1}, metadata)
+    :audit_failed
   end
 
   defp mark_unless_repeatable(_key, _version, _reason, true), do: :ok
 
   defp mark_unless_repeatable(key, version, reason, false),
     do: mark_effect_unresolved(key, version, reason)
-
-  defp repeatable_effect?("task_provider", metadata), do: TaskProviderEffect.repeatable?(metadata)
-  defp repeatable_effect?(_class, _metadata), do: false
 
   defp block_for_effect(key, run_id, class, verdict, reason, fields, version) do
     # The ids carry the run stream's version, so a block after an operator
@@ -1117,7 +1350,20 @@ defmodule ForemanServer.Workflow.BootReconciliation do
   end
 
   defp effect_on_terminal_run(key, run_id, class, verdict, reason, status) do
-    metadata = %{
+    metadata = terminal_run_metadata(key, run_id, class, verdict, reason, status)
+
+    Logger.warning(
+      "BootReconciliation: effect #{inspect(key)} (#{class}) of run #{run_id} has verdict #{verdict} " <>
+        "but the run is #{status} and cannot be blocked (reason #{inspect(reason)}); key stays ambiguous",
+      Map.to_list(metadata)
+    )
+
+    :telemetry.execute(@effect_on_terminal_run_event, %{count: 1}, metadata)
+    :on_terminal_run
+  end
+
+  defp terminal_run_metadata(key, run_id, class, verdict, reason, status) do
+    %{
       run_id: run_id,
       status: status,
       effect_key: key,
@@ -1125,23 +1371,6 @@ defmodule ForemanServer.Workflow.BootReconciliation do
       effect_verdict: verdict,
       reason: reason
     }
-
-    if reason do
-      Logger.warning(
-        "BootReconciliation: effect #{inspect(key)} (#{class}) of run #{run_id} has verdict #{verdict} " <>
-          "but the run is #{status} and cannot be blocked (reason #{inspect(reason)}); key stays ambiguous",
-        Map.to_list(metadata)
-      )
-    else
-      Logger.warning(
-        "BootReconciliation: effect #{inspect(key)} (#{class}) of run #{run_id} did not happen " <>
-          "but the run is #{status}, so the retry cannot be recorded; key stays ambiguous",
-        Map.to_list(metadata)
-      )
-    end
-
-    :telemetry.execute(@effect_on_terminal_run_event, %{count: 1}, metadata)
-    :on_terminal_run
   end
 
   # An unresolved key (a verdict that blocks, whether or not the block could be

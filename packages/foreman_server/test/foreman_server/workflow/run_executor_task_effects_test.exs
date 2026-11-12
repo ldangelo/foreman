@@ -342,6 +342,62 @@ defmodule ForemanServer.Workflow.RunExecutorTaskEffectsTest do
     end
   end
 
+  describe "an undecided task-provider key is refused" do
+    for {op, start_status} <- [claim: "open", complete: "in_progress"],
+        status <- [:started, :ambiguous] do
+      test "#{op}: a #{status} key is refused `effect_undecided`: the provider is not called and the key is untouched" do
+        op = unquote(op)
+        %{db: db, task_id: task_id, run_id: run_id} = w = world("#{op}-undecided")
+        FakeTaskProvider.put_issue(db, task_id, unquote(start_status), @actor)
+
+        crash_in_call(w, op, :before)
+        key = TaskProviderEffect.key(run_id, op, task_id)
+
+        if unquote(status) == :ambiguous,
+          do: :ok = KeyStore.mark_ambiguous(key, "orphaned_started_key")
+
+        {:ok, before_key} = KeyStore.get(key)
+
+        assert {:error, {:effect_undecided, ^key}} = call(w, op)
+
+        assert FakeTaskProvider.calls(db) == [{op, task_id}]
+        assert FakeTaskProvider.status(db, task_id) == unquote(start_status)
+        assert {:ok, ^before_key} = KeyStore.get(key)
+      end
+    end
+  end
+
+  describe "an undecided complete fails the finalize" do
+    test "the provider is not asked, the run fails naming the refusal and the key, the task stays open" do
+      %{db: db, task_id: task_id, run_id: run_id} = w = full_world("complete-undecided")
+      FakeTaskProvider.put_issue(db, task_id, "open")
+      key = start_key!(w, :complete)
+      {:ok, before_key} = KeyStore.get(key)
+
+      log =
+        capture_log([level: :error], fn ->
+          start_executor!(w)
+          await_status(run_id, "failed")
+
+          await(fn ->
+            if RunExecutor.pid_for(run_id) == nil, do: {:ok, :stopped}, else: :waiting
+          end)
+        end)
+
+      # The claim went through; the provider was never asked to complete, so the task is
+      # still in progress, and the run did not complete over it.
+      assert FakeTaskProvider.calls(db) == [{:claim, task_id}]
+      assert FakeTaskProvider.status(db, task_id) == "in_progress"
+      assert {:ok, ^before_key} = KeyStore.get(key)
+      refute Enum.any?(events(run_id), &match?({"RunCompleted", _}, &1))
+
+      assert failure_reason(run_id) =~ "effect_undecided"
+      assert failure_reason(run_id) =~ key
+      assert log =~ "effect_undecided"
+      assert log =~ key
+    end
+  end
+
   # --- fail, attempt 1, through a real RunExecutor ---
 
   describe "fail is keyed on attempt 1 only" do
@@ -426,6 +482,33 @@ defmodule ForemanServer.Workflow.RunExecutorTaskEffectsTest do
       assert log =~ "task-provider fail"
       assert log =~ "was not attempted"
       assert log =~ "effect_unresolved"
+      refute log =~ "phase.fail dispatch"
+    end
+
+    test "an undecided attempt 1 does not call the provider and is reported as a refusal; the run still fails" do
+      %{db: db, task_id: task_id, run_id: run_id} = w = full_world("fail-undecided")
+      FakeTaskProvider.put_issue(db, task_id, "open")
+      key = start_key!(w, :fail)
+
+      log =
+        capture_log([level: :error], fn ->
+          start_executor!(w)
+          await_status(run_id, "failed")
+
+          await(fn ->
+            if RunExecutor.pid_for(run_id) == nil, do: {:ok, :stopped}, else: :waiting
+          end)
+        end)
+
+      refute {:fail, task_id} in FakeTaskProvider.calls(db)
+      assert {:ok, :started} = KeyStore.status(key)
+
+      # The log says the provider call was not attempted and names the key; it does not
+      # blame the `phase.fail` dispatch, which went through.
+      assert log =~ "task-provider fail"
+      assert log =~ "was not attempted"
+      assert log =~ "effect_undecided"
+      assert log =~ key
       refute log =~ "phase.fail dispatch"
     end
 
@@ -631,6 +714,22 @@ defmodule ForemanServer.Workflow.RunExecutorTaskEffectsTest do
       assert {:ok, :completed} = KeyStore.status(key)
     end
 
+    test "a started reopen key is not refused: no sweep has decided it and the next boot scan reopens" do
+      %{db: db, task_id: task_id, run_id: run_id} = world("reopen-started")
+      end_run!(run_id)
+      FakeTaskProvider.put_issue(db, task_id, "in_progress", @actor)
+      crash_in_reopen(db, :before)
+
+      key = TaskProviderEffect.key(run_id, :reopen, task_id)
+      assert {:ok, :started} = KeyStore.status(key)
+
+      FakeTaskProvider.clear_crash(db, :reopen)
+      assert :ok = BootReconciliation.reconcile()
+
+      assert FakeTaskProvider.status(db, task_id) == "open"
+      assert {:ok, :completed} = KeyStore.status(key)
+    end
+
     test "a crash during the reopen of a paused run: :done blocks it `effect_already_done`" do
       %{db: db, task_id: task_id, run_id: run_id} = world("reopen-paused")
       pause_run!(run_id)
@@ -641,6 +740,36 @@ defmodule ForemanServer.Workflow.RunExecutorTaskEffectsTest do
 
       assert status(run_id) == "blocked"
       assert block_reason(run_id) == "effect_already_done"
+    end
+
+    test "a :done verdict on a paused run blocks it and leaves the reopen key unmarked" do
+      %{db: db, task_id: task_id, run_id: run_id} = world("reopen-paused-unmarked")
+      pause_run!(run_id)
+      FakeTaskProvider.put_issue(db, task_id, "in_progress", @actor)
+      crash_in_reopen(db, :after)
+
+      key = TaskProviderEffect.key(run_id, :reopen, task_id)
+      sweep()
+
+      assert status(run_id) == "blocked"
+      assert block_reason(run_id) == "effect_already_done"
+      assert {:ok, %{status: :ambiguous, metadata: meta}} = KeyStore.get(key)
+      assert KeyStore.unresolved_version(stringify(meta)) == :none
+    end
+
+    test "a :done verdict on a paused run still blocks and cancels it: a repeatable reopen is not an advisory effect (TRD-039)" do
+      %{db: db, task_id: task_id, run_id: run_id} = world("reopen-paused-cancel")
+      on_exit(fn -> ForemanServer.RunControl.clear(run_id) end)
+      pause_run!(run_id)
+      FakeTaskProvider.put_issue(db, task_id, "in_progress", @actor)
+      crash_in_reopen(db, :after)
+
+      sweep()
+
+      assert status(run_id) == "blocked"
+      assert block_reason(run_id) == "effect_already_done"
+      assert recovery_outcome(run_id, "effect_blocked")
+      assert ForemanServer.RunControl.intent(run_id) == :cancel
     end
 
     test "a provider that cannot be reached blocks a paused run `effect_outcome_ambiguous`" do
@@ -688,6 +817,21 @@ defmodule ForemanServer.Workflow.RunExecutorTaskEffectsTest do
   end
 
   defp stringify(meta), do: Map.new(meta, fn {k, v} -> {to_string(k), v} end)
+
+  # The key of a provider call whose process died inside it: `started`, with the metadata
+  # `Effect.run/4` writes, and nobody has said whether the call happened.
+  defp start_key!(%{project_id: project_id, task_id: task_id, run_id: run_id}, op) do
+    key = TaskProviderEffect.key(run_id, op, task_id)
+
+    meta =
+      run_id
+      |> TaskProviderEffect.intent(project_id, op, task_id)
+      |> Map.put(:effect_class, "task_provider")
+      |> stringify()
+
+    :ok = KeyStore.mark_started(key, meta)
+    key
+  end
 
   # A project registered with the fake provider (through the real `project.register`
   # command and the projector that feeds the registry) and a started run on it.
@@ -917,6 +1061,13 @@ defmodule ForemanServer.Workflow.RunExecutorTaskEffectsTest do
   defp block_reason(run_id) do
     case Enum.find(events(run_id), &match?({"RunBlocked", _}, &1)) do
       {"RunBlocked", payload} -> Aggregate.get(payload, :reason)
+      nil -> nil
+    end
+  end
+
+  defp failure_reason(run_id) do
+    case Enum.find(events(run_id), &match?({"RunFailed", _}, &1)) do
+      {"RunFailed", payload} -> Aggregate.get(payload, :reason)
       nil -> nil
     end
   end

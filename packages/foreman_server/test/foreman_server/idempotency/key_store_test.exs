@@ -58,7 +58,7 @@ defmodule ForemanServer.Idempotency.KeyStoreTest do
       :ok = KeyStore.mark_failed("k2f", "worker_timeout")
       assert {:ok, :failed} = KeyStore.status("k2f")
 
-      assert {:ok, %{status: :failed, metadata: %{run_id: "r1", reason: "worker_timeout"}}} =
+      assert {:ok, %{status: :failed, metadata: %{:run_id => "r1", "reason" => "worker_timeout"}}} =
                KeyStore.get("k2f")
 
       assert ["k2f"] = KeyStore.list_by_status(:failed)
@@ -235,5 +235,141 @@ defmodule ForemanServer.Idempotency.KeyStoreTest do
       assert :not_unresolved = KeyStore.lift_unresolved(key, 2, clear)
       assert :not_unresolved = KeyStore.lift_unresolved("effect:branch_push:r2:absent", 2, clear)
     end
+  end
+
+  describe "the decision on an ambiguous effect key (fallback)" do
+    setup do
+      Application.put_env(:foreman_server, ForemanServer.Agents.JidoCheckpointStore, [])
+      ForemanServer.TestSupport.KeyStoreReset.reset!()
+    end
+
+    test "mark_decided/2 decides an ambiguous key without a marker and keeps the rest of its metadata" do
+      key = "effect:branch_push:r3:feature/z"
+      ambiguous_key(key)
+
+      assert :ok = KeyStore.mark_decided(key, :not_done)
+
+      assert {:ok, %{status: :ambiguous, metadata: metadata}} = KeyStore.get(key)
+
+      assert %{"run_id" => "r3", "pushed_local_sha" => "abc", "decision" => "not_done"} = metadata
+      assert KeyStore.decision(metadata) == :not_done
+
+      # deciding a decided key is not an error
+      assert :ok = KeyStore.mark_decided(key, :not_done)
+      assert {:ok, %{status: :ambiguous, metadata: ^metadata}} = KeyStore.get(key)
+    end
+
+    test "mark_decided/2 refuses every key that is not an ambiguous key without a marker" do
+      absent = "effect:branch_push:r3:absent"
+      assert :not_decidable = KeyStore.mark_decided(absent, :not_done)
+      assert :not_found = KeyStore.get(absent)
+
+      for {name, prepare} <- [
+            {"started", fn key -> :ok = KeyStore.mark_started(key, %{"run_id" => "r3"}) end},
+            {"completed", fn key -> :ok = KeyStore.mark_completed(key) end},
+            {"failed", fn key -> :ok = KeyStore.mark_failed(key, "boom") end},
+            {"unresolved",
+             fn key ->
+               ambiguous_key(key)
+               :ok = KeyStore.mark_unresolved(key, 4, "effect_already_done")
+             end}
+          ] do
+        key = "effect:branch_push:r3:#{name}"
+        prepare.(key)
+        {:ok, before_key} = KeyStore.get(key)
+
+        assert :not_decidable = KeyStore.mark_decided(key, :not_done), name
+        assert {:ok, ^before_key} = KeyStore.get(key)
+      end
+
+      # a marker that is present but malformed is not "no marker"
+      malformed = "effect:branch_push:r3:malformed"
+      ambiguous_key(malformed, %{"unresolved_at_run_version" => "4"})
+      {:ok, before_malformed} = KeyStore.get(malformed)
+      assert :not_decidable = KeyStore.mark_decided(malformed, :not_done)
+      assert {:ok, ^before_malformed} = KeyStore.get(malformed)
+    end
+
+    test "a key its effect settled in the meantime is not decided on a stale read" do
+      key = "effect:branch_push:r3:settled"
+      ambiguous_key(key)
+      :ok = KeyStore.mark_completed(key)
+
+      assert :not_decidable = KeyStore.mark_decided(key, :not_done)
+      assert {:ok, %{status: :completed, metadata: metadata}} = KeyStore.get(key)
+      assert KeyStore.decision(metadata) == :none
+    end
+
+    test "decision/1 is :not_done only for the string-keyed value not_done" do
+      assert KeyStore.decision(%{"decision" => "not_done"}) == :not_done
+
+      for undecided <- [
+            %{},
+            %{"decision" => nil},
+            %{"decision" => "done"},
+            %{"decision" => "unknown"},
+            %{"decision" => :not_done},
+            %{"decision" => 1},
+            %{decision: "not_done"},
+            nil,
+            "not_done"
+          ] do
+        assert KeyStore.decision(undecided) == :none, inspect(undecided)
+      end
+    end
+
+    test "consume_decision/3 moves a decided key to started only while it is decided; the second caller loses" do
+      key = "effect:branch_push:r4:feature/y"
+      cleared = %{"decision" => nil}
+      assert :not_decided = KeyStore.consume_decision(key, :not_done, cleared)
+      ambiguous_key(key)
+      assert :not_decided = KeyStore.consume_decision(key, :not_done, cleared)
+      assert {:ok, %{status: :ambiguous}} = KeyStore.get(key)
+
+      :ok = KeyStore.mark_decided(key, :not_done)
+      assert :consumed = KeyStore.consume_decision(key, :not_done, Map.put(cleared, "cwd", "/w"))
+
+      assert {:ok, %{status: :started, metadata: %{"run_id" => "r3", "cwd" => "/w"} = metadata}} =
+               KeyStore.get(key)
+
+      assert KeyStore.decision(metadata) == :none
+      assert metadata["decision"] == nil
+      assert :not_decided = KeyStore.consume_decision(key, :not_done, cleared)
+    end
+
+    test "consume_decision/3 is refused for settled, unresolved and malformed keys" do
+      cleared = %{"decision" => nil}
+
+      for {name, prepare} <- [
+            {"started",
+             fn key -> :ok = KeyStore.mark_started(key, %{"decision" => "not_done"}) end},
+            {"completed",
+             fn key -> :ok = KeyStore.mark_completed(key, %{"decision" => "not_done"}) end},
+            {"failed", fn key -> :ok = KeyStore.mark_failed(key, "boom") end},
+            {"unresolved",
+             fn key ->
+               ambiguous_key(key, %{"decision" => "not_done"})
+               :ok = KeyStore.mark_unresolved(key, 4, "effect_already_done")
+             end},
+            {"malformed",
+             fn key ->
+               ambiguous_key(key, %{"decision" => "not_done", "unresolved_at_run_version" => "4"})
+             end}
+          ] do
+        key = "effect:branch_push:r5:#{name}"
+        prepare.(key)
+        {:ok, before_key} = KeyStore.get(key)
+
+        assert :not_decided = KeyStore.consume_decision(key, :not_done, cleared), name
+        assert {:ok, ^before_key} = KeyStore.get(key)
+      end
+    end
+  end
+
+  # A key the boot sweep flipped to `ambiguous`; `extra` is written with its intent.
+  defp ambiguous_key(key, extra \\ %{}) do
+    intent = Map.merge(%{"run_id" => "r3", "pushed_local_sha" => "abc"}, extra)
+    :ok = KeyStore.mark_started(key, intent)
+    :ok = KeyStore.mark_ambiguous(key, "orphaned_started_key")
   end
 end

@@ -46,6 +46,15 @@ defmodule ForemanServer.Idempotency.EffectTest do
       end
     end
 
+    # The boot sweep reads `list_records_checked/1`: the rows of the status the query pins
+    # (`where: k.status == ^status`, no `select`). Any other query is `list_by_status/1`'s
+    # key listing.
+    def all(%{select: nil, wheres: [%{params: [{status, _type}]}]}) do
+      for {key, ^status, metadata} <- :ets.tab2list(@rows), is_binary(key) do
+        %IdempotencyKey{key: key, status: status, metadata: metadata}
+      end
+    end
+
     def all(_query),
       do: for({key, _status, _meta} <- :ets.tab2list(@rows), is_binary(key), do: key)
 
@@ -132,7 +141,7 @@ defmodule ForemanServer.Idempotency.EffectTest do
       assert {:error, :rejected} ==
                Effect.run(:branch_push, key, fn -> {:error, :rejected} end, push_meta())
 
-      assert {:ok, %{status: :failed, metadata: %{"run_id" => @run_id, reason: reason}}} =
+      assert {:ok, %{status: :failed, metadata: %{"run_id" => @run_id, "reason" => reason}}} =
                KeyStore.get(key)
 
       assert reason =~ "rejected"
@@ -322,13 +331,98 @@ defmodule ForemanServer.Idempotency.EffectTest do
       assert {:ok, ^stored} = KeyStore.get(key)
     end
 
-    test "a key without a marker is not refused" do
+    test "a key without a marker is not refused as unresolved: it is undecided until it is decided" do
       key = push_key()
       :ok = KeyStore.mark_started(key, %{"run_id" => @run_id})
       :ok = KeyStore.mark_ambiguous(key, "orphaned_started_key")
 
+      assert {:error, {:effect_undecided, ^key}} =
+               Effect.run(:branch_push, key, fn -> :ran end, push_meta())
+
+      :ok = KeyStore.mark_decided(key, :not_done)
       assert :ran == Effect.run(:branch_push, key, fn -> :ran end, push_meta())
       assert {:ok, %{status: :completed}} = KeyStore.get(key)
+    end
+  end
+
+  describe "the decision on the repo path" do
+    test "is written to the stored row, survives restarts with string keys and decides the key" do
+      use_fake_repo()
+      key = push_key()
+      stored = %{"run_id" => @run_id, "effect_class" => "branch_push", "cwd" => "/w"}
+
+      :ok = KeyStore.mark_started(key, stored)
+      :ok = KeyStore.mark_ambiguous(key, "orphaned_started_key")
+      restart_key_store()
+      assert [] = :ets.lookup(@table, key)
+
+      # The compare-and-set reads the repo when ETS has no copy of the key.
+      assert :ok = KeyStore.mark_decided(key, :not_done)
+      restart_key_store()
+      assert [] = :ets.lookup(@table, key)
+
+      assert {:ok, %{status: :ambiguous, metadata: metadata}} = KeyStore.get(key)
+      assert %{"run_id" => @run_id, "cwd" => "/w", "decision" => "not_done"} = metadata
+      assert KeyStore.decision(metadata) == :not_done
+    end
+
+    test "a second consume of the same decision loses, from the stored row" do
+      use_fake_repo()
+      key = push_key()
+
+      :ok = KeyStore.mark_started(key, %{"run_id" => @run_id})
+      :ok = KeyStore.mark_ambiguous(key, "orphaned_started_key")
+      :ok = KeyStore.mark_decided(key, :not_done)
+      restart_key_store()
+
+      cleared = %{"decision" => nil}
+      assert :consumed = KeyStore.consume_decision(key, :not_done, cleared)
+      assert :not_decided = KeyStore.consume_decision(key, :not_done, cleared)
+      assert {:ok, %{status: :started}} = KeyStore.get(key)
+    end
+
+    test "the re-mark clears it in the stored row: a second crash is undecided again" do
+      use_fake_repo()
+      key = push_key()
+      test_pid = self()
+      stored = %{"run_id" => @run_id, "effect_class" => "branch_push", "cwd" => "/w"}
+
+      :ok = KeyStore.mark_started(key, stored)
+      :ok = KeyStore.mark_ambiguous(key, "orphaned_started_key")
+      :ok = KeyStore.mark_decided(key, :not_done)
+      restart_key_store()
+
+      # The decided attempt starts, consuming the decision from the stored row, and dies.
+      pid =
+        spawn(fn ->
+          Effect.run(
+            :branch_push,
+            key,
+            fn ->
+              send(test_pid, :in_effect)
+              Process.sleep(:infinity)
+            end,
+            push_meta()
+          )
+        end)
+
+      monitor = Process.monitor(pid)
+      assert_receive :in_effect
+      Process.exit(pid, :kill)
+      assert_receive {:DOWN, ^monitor, :process, ^pid, :killed}
+      restart_key_store()
+      assert [] = :ets.lookup(@table, key)
+
+      assert {:ok, %{status: :started, metadata: started}} = KeyStore.get(key)
+      assert started["decision"] == nil
+      assert KeyStore.decision(started) == :none
+
+      :ok = KeyStore.mark_ambiguous(key, "orphaned_started_key")
+
+      assert {:error, {:effect_undecided, ^key}} =
+               Effect.run(:branch_push, key, fn -> send(test_pid, :ran) end, push_meta())
+
+      refute_received :ran
     end
   end
 end

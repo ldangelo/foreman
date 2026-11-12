@@ -6,6 +6,10 @@ defmodule ForemanServer.Idempotency.KeyStore do
   - `completed`: phase finished successfully.
   - `ambiguous`: outcome unknown (lease expired / worker died); crash recovery
     inspects side effects before retry.
+    An effect key (`effect:<class>:...`, written by `Idempotency.Effect`) stays
+    `ambiguous` until the boot sweep decides it: `mark_decided/2` records that the
+    effect did not happen (it may run again) and `mark_unresolved/3` that recovery
+    could not resolve it (it is never repeated).
   - `failed`: phase ended in an observed error and may have left side effects;
     its run's failure path owns it. Crash recovery does not re-inspect it.
 
@@ -76,8 +80,21 @@ defmodule ForemanServer.Idempotency.KeyStore do
   The phase ended in an observed error and may have left side effects; the
   run's failure path owns it. Returns `:ok` on success.
   """
-  def mark_failed(key, reason \\ "failed") do
-    GenServer.call(__MODULE__, {:record, key, :failed, %{reason: reason}})
+  def mark_failed(key, reason \\ "failed", meta \\ %{}) do
+    # String keys, as `Effect` writes metadata and as the repo returns it, so the ETS copy and
+    # the stored row carry the same `"reason"` (and the same cleared recovery fields).
+    meta = meta |> Map.new(fn {k, v} -> {to_string(k), v} end) |> Map.put("reason", reason)
+    GenServer.call(__MODULE__, {:record, key, :failed, meta})
+  end
+
+  @doc """
+  The metadata that clears what recovery wrote on a key (the unresolved marker and the
+  decision). The store merges metadata over what it holds, so a settle or a re-mark that
+  does not name these fields leaves a marker or decision written by a scan in between.
+  """
+  @spec recovery_fields_cleared() :: %{String.t() => nil}
+  def recovery_fields_cleared do
+    %{"unresolved_at_run_version" => nil, "unresolved_reason" => nil, "decision" => nil}
   end
 
   @doc """
@@ -147,6 +164,60 @@ defmodule ForemanServer.Idempotency.KeyStore do
     GenServer.call(__MODULE__, {:lift_unresolved, key, observed_version, meta})
   end
 
+  @decision_field "decision"
+
+  @typedoc "What the boot sweep records on an `ambiguous` effect key once its reconciler has spoken."
+  @type decision :: :not_done
+
+  @doc """
+  Record on an `ambiguous` effect key the decision that its effect did not happen
+  (`:not_done`): the metadata gains `"decision" => "not_done"` and
+  `Idempotency.Effect.run/4` may attempt the effect again (an `ambiguous` key with no
+  decision is refused as undecided). A compare-and-set inside the store: only a key that
+  is `ambiguous` and carries no unresolved marker (`mark_unresolved/3`) takes it, so a
+  key its effect settled in the meantime is not decided on a stale read, and neither is
+  a key recovery marked unresolved. Deciding a decided key again is `:ok`.
+
+  Returns `:ok`, `:not_decidable` (no such key, or it is not an `ambiguous` key without a
+  marker) or `{:error, reason}` (the write failed; the key is as it was).
+  """
+  @spec mark_decided(String.t(), decision()) :: :ok | :not_decidable | {:error, term()}
+  def mark_decided(key, :not_done = decision) do
+    GenServer.call(__MODULE__, {:mark_decided, key, decision})
+  end
+
+  @doc """
+  The decision recorded in a key's metadata (string key): `:not_done` once
+  `mark_decided/2` wrote it, `:none` when the key carries none (absent or nil: re-marking
+  a key `started` clears it) and for any other value, which decides nothing.
+  """
+  @spec decision(term()) :: decision() | :none
+  def decision(metadata) when is_map(metadata) do
+    case Map.get(metadata, @decision_field) do
+      "not_done" -> :not_done
+      _undecided -> :none
+    end
+  end
+
+  def decision(_metadata), do: :none
+
+  @doc """
+  Atomically move a decided key to `started` and clear its decision: only when the key
+  is `ambiguous`, carries no unresolved marker and still carries `observed`, the decision
+  the caller read before deciding to run the effect. So of two concurrent callers that
+  both read the decision only one wins; the other finds the key `started`. `meta` is
+  merged like any record call; it must clear the decision (`"decision" => nil`), because
+  the merge cannot delete a field.
+
+  Returns `:consumed`, `:not_decided` (the key no longer carries that decision) or
+  `{:error, reason}`.
+  """
+  @spec consume_decision(String.t(), decision(), map()) ::
+          :consumed | :not_decided | {:error, term()}
+  def consume_decision(key, :not_done = observed, meta) when is_map(meta) do
+    GenServer.call(__MODULE__, {:consume_decision, key, observed, meta})
+  end
+
   @doc """
   Return the current status of an idempotency key.
   Returns `{:ok, status}` when found, `:not_found` otherwise.
@@ -183,8 +254,8 @@ defmodule ForemanServer.Idempotency.KeyStore do
   fallback would show an outage as an empty list); a repo that is down, or a
   `KeyStore` that is not running, is `{:error, reason}`. Without a repo it
   scans the ETS table. Metadata keys are strings when read from the repo
-  (JSON round trip) and as written when read from ETS. `list_by_status/1`
-  keeps its ETS fallback: boot reconciliation reads it and is not changed here.
+  (JSON round trip) and as written when read from ETS. Boot reconciliation reads this
+  checked list; `list_by_status/1` keeps its ETS fallback and has no production caller.
   """
   @spec list_records_checked(atom()) :: {:ok, [stored_record()]} | {:error, term()}
   def list_records_checked(status) do
@@ -222,20 +293,56 @@ defmodule ForemanServer.Idempotency.KeyStore do
   doctor. `nil` when the store is durable.
   """
   @spec durability_note() :: String.t() | nil
-  def durability_note do
-    case durability() do
-      :durable ->
-        nil
+  def durability_note, do: note_for(durability())
 
-      {:not_durable, :no_repo} ->
-        "idempotency store is not durable: no repo is configured (ETS fallback), so effect keys " <>
-          "do not survive a restart and crash recovery cannot reconcile effects; set " <>
-          @production_switches
+  defp note_for(:durable), do: nil
 
-      {:not_durable, {:unreachable, reason}} ->
-        "idempotency store is configured but unreachable (#{inspect(reason, limit: 5)}): " <>
-          "keys written now do not survive a restart and crash recovery cannot reconcile " <>
-          "effects; check " <> @production_switches
+  defp note_for({:not_durable, :no_repo}) do
+    "idempotency store is not durable: no repo is configured (ETS fallback), so effect keys " <>
+      "do not survive a restart and crash recovery cannot reconcile effects; set " <>
+      @production_switches
+  end
+
+  defp note_for({:not_durable, {:unreachable, reason}}) do
+    "idempotency store is configured but unreachable (#{inspect(reason, limit: 5)}): " <>
+      "keys written now do not survive a restart and crash recovery cannot reconcile " <>
+      "effects; check " <> @production_switches
+  end
+
+  @doc """
+  Whether `config :foreman_server, :require_durable_store_for_gating` is on
+  (true in `config.exs`, false in `dev.exs` and `test.exs`). Anything but a boolean
+  raises: the guard must never read a mistyped switch as "off".
+  """
+  @spec durable_store_required?() :: boolean()
+  def durable_store_required? do
+    case Application.get_env(:foreman_server, :require_durable_store_for_gating, true) do
+      flag when is_boolean(flag) ->
+        flag
+
+      other ->
+        raise ArgumentError,
+              "config :foreman_server, :require_durable_store_for_gating must be a boolean, " <>
+                "got: #{inspect(other)}"
+    end
+  end
+
+  @doc """
+  The Phase 1 gating precondition (P-3): `:ok` when the store is durable or when
+  `:require_durable_store_for_gating` is false; otherwise
+  `{:error, {:store_not_durable, note}}` with the `durability_note/0` text, so a gated
+  project is never set up or approved while keys would not survive a restart (the
+  note names the switches to turn on, whether the repo is missing or unreachable).
+  """
+  @spec require_durable() :: :ok | {:error, {:store_not_durable, String.t()}}
+  def require_durable do
+    if durable_store_required?() do
+      case durability() do
+        :durable -> :ok
+        not_durable -> {:error, {:store_not_durable, note_for(not_durable)}}
+      end
+    else
+      :ok
     end
   end
 
@@ -340,6 +447,51 @@ defmodule ForemanServer.Idempotency.KeyStore do
 
       _no_marker ->
         {:reply, :not_unresolved, state}
+    end
+  rescue
+    err -> {:reply, {:error, err}, state}
+  end
+
+  # Compare-and-set for `mark_decided/2`: runs inside the server, so the status and
+  # marker check and the write cannot interleave with another caller.
+  @impl true
+  def handle_call({:mark_decided, key, decision}, from, state) do
+    case current_record(state, key) do
+      {:ok, :ambiguous, stored} when is_map(stored) ->
+        if unresolved_version(stored) == :none do
+          handle_call(
+            {:record, key, :ambiguous, %{@decision_field => Atom.to_string(decision)}},
+            from,
+            state
+          )
+        else
+          {:reply, :not_decidable, state}
+        end
+
+      _not_decidable ->
+        {:reply, :not_decidable, state}
+    end
+  rescue
+    err -> {:reply, {:error, err}, state}
+  end
+
+  # Compare-and-set for `consume_decision/3`: runs inside the server, so the decision
+  # check and the `started` write cannot interleave with another caller.
+  @impl true
+  def handle_call({:consume_decision, key, observed, meta}, from, state) do
+    case current_record(state, key) do
+      {:ok, :ambiguous, stored} when is_map(stored) ->
+        if decision(stored) == observed and unresolved_version(stored) == :none do
+          case handle_call({:record, key, :started, meta}, from, state) do
+            {:reply, :ok, state} -> {:reply, :consumed, state}
+            other -> other
+          end
+        else
+          {:reply, :not_decided, state}
+        end
+
+      _not_decided ->
+        {:reply, :not_decided, state}
     end
   rescue
     err -> {:reply, {:error, err}, state}

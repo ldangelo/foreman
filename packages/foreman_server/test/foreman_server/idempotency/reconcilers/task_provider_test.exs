@@ -321,4 +321,84 @@ defmodule ForemanServer.Idempotency.Reconcilers.TaskProviderTest do
       assert Effect.key(:task_provider, "run-1", "complete:#{@issue}") == key
     end
   end
+
+  describe "repeatable?/1: the class's optional Reconciler callback" do
+    test "a reopen is repeatable; claim, complete, fail, an unknown op and no op are not" do
+      assert TaskProviderEffect.repeatable?(%{"op" => "reopen"})
+
+      for op <- ["claim", "complete", "fail", "annotate"] do
+        refute TaskProviderEffect.repeatable?(%{"op" => op}), op
+      end
+
+      refute TaskProviderEffect.repeatable?(%{})
+    end
+
+    test "the reader finds it through the registry; blocks_run?/1 is not declared, so a reopen still blocks",
+         %{project_id: project_id} do
+      assert Reconciler.repeatable?("task_provider", metadata(project_id, "reopen"))
+      refute Reconciler.repeatable?("task_provider", metadata(project_id, "claim"))
+
+      for op <- ["claim", "complete", "fail", "reopen"] do
+        assert Reconciler.blocks_run?("task_provider", metadata(project_id, op)), op
+      end
+    end
+  end
+
+  describe "run/6 and a key nobody has decided" do
+    for status <- [:started, :ambiguous] do
+      test "a #{status} reopen runs again: repeating it is harmless", %{project_id: project_id} do
+        key = left_by_dead_process(project_id, :reopen, unquote(status))
+        test_pid = self()
+
+        assert {:ok, :reopened} =
+                 TaskProviderEffect.run("run-1", project_id, :reopen, @issue, fn ->
+                   send(test_pid, :provider_called)
+                   {:ok, :reopened}
+                 end)
+
+        assert_received :provider_called
+        assert {:ok, :completed} = KeyStore.status(key)
+      end
+
+      for op <- [:claim, :complete, :fail] do
+        test "a #{status} #{op} is refused as undecided and the provider is not called",
+             %{project_id: project_id} do
+          op = unquote(op)
+          key = left_by_dead_process(project_id, op, unquote(status))
+          {:ok, before_key} = KeyStore.get(key)
+          test_pid = self()
+
+          assert {:error, {:effect_undecided, ^key}} =
+                   TaskProviderEffect.run("run-1", project_id, op, @issue, fn ->
+                     send(test_pid, :provider_called)
+                     {:ok, :done}
+                   end)
+
+          refute_received :provider_called
+          assert {:ok, ^before_key} = KeyStore.get(key)
+        end
+      end
+    end
+
+    test "an ambiguous call decided not_done runs", %{project_id: project_id} do
+      key = left_by_dead_process(project_id, :complete, :ambiguous)
+      :ok = KeyStore.mark_decided(key, :not_done)
+
+      assert {:ok, :closed} =
+               TaskProviderEffect.run("run-1", project_id, :complete, @issue, fn ->
+                 {:ok, :closed}
+               end)
+
+      assert {:ok, :completed} = KeyStore.status(key)
+    end
+  end
+
+  # A key an earlier process left `started`; `:ambiguous` is what the boot sweep makes of it.
+  defp left_by_dead_process(project_id, op, status) do
+    key = TaskProviderEffect.key("run-1", op, @issue)
+    intent = TaskProviderEffect.intent("run-1", project_id, op, @issue)
+    :ok = KeyStore.mark_started(key, Map.put(intent, :effect_class, "task_provider"))
+    if status == :ambiguous, do: :ok = KeyStore.mark_ambiguous(key, "orphaned_started_key")
+    key
+  end
 end

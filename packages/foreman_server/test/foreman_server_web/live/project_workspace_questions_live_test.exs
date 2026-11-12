@@ -14,11 +14,14 @@ defmodule ForemanServerWeb.ProjectWorkspaceQuestionsLiveTest do
   alias ForemanServer.Aggregates.OperatorQuestion
   alias ForemanServer.Aggregates.Run
   alias ForemanServer.Approvals.Dispatch
+  alias ForemanServer.Idempotency.KeyStore
+  alias ForemanServer.Idempotency.Reconcilers.PrCreate, as: CreateEffect
   alias ForemanServer.Questions.Deliverer
   alias ForemanServer.TelemetryTest.Handler
+  alias ForemanServer.TestSupport.PrFixSupport, as: Fix
   alias ForemanServer.TestSupport.PrWatchSupport, as: Support
-  alias ForemanServer.TestSupport.ProjectionStoreReset
-  alias ForemanServer.{CommandGateway, EventStore, ProjectionStore, ProjectStore}
+  alias ForemanServer.TestSupport.{EffectWorld, KeyStoreReset, ProjectionStoreReset}
+  alias ForemanServer.{CommandGateway, EventStore, PrCreate, ProjectionStore, ProjectStore}
   alias ForemanServerWeb.Workspace.Actions
 
   @endpoint ForemanServerWeb.Endpoint
@@ -206,6 +209,55 @@ defmodule ForemanServerWeb.ProjectWorkspaceQuestionsLiveTest do
   # `run.steer` message) minus the prefix naming the question.
   defp answer_limit(q),
     do: Run.steer_text_max_chars() - String.length("Answer to your question #{q.question_id}: ")
+
+  # A completed run whose branch has a commit the remote lacks, in a real checkout behind the
+  # scripted GitHub of `EffectWorld`: what the operator's Create PR (`run.pr.create`) opens a
+  # PR for.
+  defp pr_thread!(world) do
+    repo = Fix.git_repo!()
+    project_id = "qst-undecided-#{System.unique_integer([:positive])}"
+    assert {:ok, _} = ProjectStore.save(%{project_id: project_id, path: repo, name: "Undecided"})
+
+    run = Support.start_run!(project_id: project_id, complete: true)
+    branch = "foreman/#{run.run_id}/implement"
+
+    :ok =
+      ProjectionStore.apply_events([
+        %{
+          event_type: "TaskCreated",
+          payload: %{
+            task_id: run.task_id,
+            project_id: project_id,
+            title: "Add widgets",
+            description: "Adds the widget screen",
+            status: "open",
+            task_type: "implement"
+          }
+        },
+        %{
+          event_type: "RunBaseBranchRecorded",
+          payload: %{run_id: run.run_id, base_branch: "main"}
+        },
+        %{
+          event_type: "WorktreeCreated",
+          payload: %{
+            operation_id: "wt-#{run.run_id}-implement",
+            project_id: project_id,
+            run_id: run.run_id,
+            phase_id: "implement",
+            repo_path: repo,
+            worktree_path: "/gone/#{run.run_id}",
+            branch: branch,
+            base_ref: "main",
+            cleanup: "remove"
+          }
+        }
+      ])
+
+    EffectWorld.adopt!(repo, branch)
+    PrCreate.set_command_runner(EffectWorld.runner(world))
+    Map.merge(run, %{repo: repo, branch: branch})
+  end
 
   describe "the questions pane" do
     test "lists the project's open question with its text, asker and a labelled answer form",
@@ -533,6 +585,83 @@ defmodule ForemanServerWeb.ProjectWorkspaceQuestionsLiveTest do
 
       assert Actions.describe({:question_not_open, "expired"}) ==
                "the question expired before it was answered"
+    end
+  end
+
+  describe "Create PR while an earlier attempt's effect key is undecided" do
+    test "the wording names the key, says the attempt may be in flight or may have happened, and points to GitHub and the doctor" do
+      key = "effect:pr_create:run-1:foreman/run-1/implement:main"
+      message = Actions.describe({:effect_undecided, key})
+
+      assert message =~ key
+      assert message =~ "may still be in flight"
+      assert message =~ "may already have happened"
+      assert message =~ "The boot sweep is asked to decide it"
+      assert message =~ "Check GitHub and foreman_doctor"
+      refute message =~ ":effect_undecided"
+    end
+
+    test "the wording does not promise a retry that works while the run's executor is alive" do
+      message = Actions.describe({:effect_undecided, "effect:pr_create:run-1:h:main"})
+
+      assert message =~ "While the run's executor is still alive"
+      assert message =~ "stays refused"
+      assert message =~ "once that run has ended or the server has restarted"
+      refute message =~ "try again once it has"
+    end
+
+    test "an open PR whose head is not the pushed commit is worded with the PR and both heads, not as raw inspect" do
+      message =
+        Actions.describe(
+          {:pr_lookup_mismatch, "https://github.com/acme/widgets/pull/7", "aaa111", "bbb222"}
+        )
+
+      assert message =~ "https://github.com/acme/widgets/pull/7"
+      assert message =~ "bbb222"
+      assert message =~ "aaa111"
+      assert message =~ "no second one is opened"
+      refute message =~ ":pr_lookup_mismatch"
+    end
+
+    @tag :capture_log
+    test "the operator's Create PR is refused with that wording: nothing is pushed or opened" do
+      KeyStoreReset.reset!()
+
+      on_exit(fn ->
+        PrCreate.clear_command_runner()
+        KeyStoreReset.reset!()
+      end)
+
+      world = EffectWorld.start()
+      run = pr_thread!(world)
+      key = CreateEffect.key(run.run_id, run.branch, "main")
+
+      # An earlier Create PR died inside `gh pr create`: its key is `started` and nobody
+      # has said whether the PR was opened.
+      EffectWorld.crash!(world, :create, :before, fn -> PrCreate.execute(run.run_id) end)
+      assert {:ok, :started} = KeyStore.status(key)
+      assert EffectWorld.executed(world, :push) == 1
+
+      {view, _html} = mount_view(run.project_id)
+
+      render_click(view, "pr_action", %{
+        "kind" => "create_pr",
+        "thread-id" => "run:" <> run.run_id
+      })
+
+      assert has_element?(view, "#notice.ws-error")
+      html = render(view)
+      assert html =~ key
+      assert html =~ "may still be in flight"
+      assert html =~ "may already have happened"
+      assert html =~ "The boot sweep is asked to decide it"
+      assert html =~ "Check GitHub and foreman_doctor"
+
+      assert EffectWorld.executed(world, :push) == 1
+      assert EffectWorld.executed(world, :create) == 0
+      assert EffectWorld.prs(world) == []
+      assert {:ok, :started} = KeyStore.status(key)
+      refute "PrCreated" in Support.run_event_types(run.run_id)
     end
   end
 end
