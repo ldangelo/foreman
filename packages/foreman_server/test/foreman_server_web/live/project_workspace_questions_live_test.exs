@@ -601,6 +601,28 @@ defmodule ForemanServerWeb.ProjectWorkspaceQuestionsLiveTest do
       refute message =~ ":effect_undecided"
     end
 
+    test "the wording does not promise a retry that works while the run's executor is alive" do
+      message = Actions.describe({:effect_undecided, "effect:pr_create:run-1:h:main"})
+
+      assert message =~ "While the run's executor is still alive"
+      assert message =~ "stays refused"
+      assert message =~ "once that run has ended or the server has restarted"
+      refute message =~ "try again once it has"
+    end
+
+    test "an open PR whose head is not the pushed commit is worded with the PR and both heads, not as raw inspect" do
+      message =
+        Actions.describe(
+          {:pr_lookup_mismatch, "https://github.com/acme/widgets/pull/7", "aaa111", "bbb222"}
+        )
+
+      assert message =~ "https://github.com/acme/widgets/pull/7"
+      assert message =~ "bbb222"
+      assert message =~ "aaa111"
+      assert message =~ "no second one is opened"
+      refute message =~ ":pr_lookup_mismatch"
+    end
+
     @tag :capture_log
     test "the operator's Create PR is refused with that wording: nothing is pushed or opened" do
       KeyStoreReset.reset!()

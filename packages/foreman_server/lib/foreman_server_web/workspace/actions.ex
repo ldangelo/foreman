@@ -778,8 +778,15 @@ defmodule ForemanServerWeb.Workspace.Actions do
     do:
       "an earlier push or pull request attempt (#{key}) may still be in flight or may already " <>
         "have happened, and nothing has decided which, so it is not repeated. The boot sweep is " <>
-        "asked to decide it: try again once it has. Check GitHub and foreman_doctor, " <>
-        "Unresolved effect keys"
+        "asked to decide it. While the run's executor is still alive the sweep leaves the key " <>
+        "alone and the effect stays refused: a retry is possible once that run has ended or the " <>
+        "server has restarted. Check GitHub and foreman_doctor, Unresolved effect keys"
+
+  def describe({:pr_lookup_mismatch, url, expected, actual}),
+    do:
+      "a pull request already exists for this branch (#{url}) but its head is #{actual}, not the " <>
+        "commit that was pushed (#{expected}), so it was not reused and no second one is opened. " <>
+        "Close it or bring its head to #{expected}, then try again"
 
   def describe({:effect_marker_malformed, key}),
     do:
