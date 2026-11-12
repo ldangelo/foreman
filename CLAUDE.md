@@ -681,9 +681,10 @@ Source of truth: `docs/TRD/TRD-2026-a804d1c7-phase-0-durable-execution.md`.
 - **Keyed effects.** `Idempotency.Effect.run/4` records an intent key
   `effect:<class>:<run_id>:<identity>` (`started`) before the external effect and
   `completed`/`failed` after it; if the intent cannot be written the effect does
-  not run, and it refuses unless `KeyStore.durable?/0` (`FOREMAN_JIDO_ECTO_ENABLED=true`
-  or `config :foreman_server, :jido_ecto, enabled: true`, plus
-  `JIDO_CHECKPOINT_DATABASE_URL`). Classes: `branch_push`, `pr_create` (AutoPR,
+  not run, and it refuses unless `KeyStore.durable?/0` (`config :foreman_server,
+  :jido_ecto, enabled: true`, read by `maybe_jido_checkpoint_repo_child/0`, plus
+  `JIDO_CHECKPOINT_DATABASE_URL` for the Repo url; the `FOREMAN_JIDO_ECTO_ENABLED`
+  env var named in older docs and a `prod.exs` comment is not wired). Classes: `branch_push`, `pr_create` (AutoPR,
   PhasePR) and `task_provider` (`Idempotency.Reconcilers.TaskProvider`; ops `claim`,
   `complete`, `fail`, `reopen`; key `effect:task_provider:<run_id>:<op>:<issue_id>`).
   A crash mid-effect leaves the key `started`; boot marks it `ambiguous`.
