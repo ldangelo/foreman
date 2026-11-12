@@ -324,7 +324,7 @@ defmodule ForemanServer.Idempotency.EffectUnresolvedTest do
 
   describe "a retry that is legitimate" do
     for complete <- [false, true] do
-      test "a :not_done verdict leaves no marker and the retry runs (run completed: #{complete})" do
+      test "a :not_done verdict leaves no marker, and once the key is decided the retry runs (run completed: #{complete})" do
         world = EffectWorld.start()
         {t, _fx} = thread!(world, unquote(complete))
         key = key_of(t)
@@ -335,6 +335,10 @@ defmodule ForemanServer.Idempotency.EffectUnresolvedTest do
         assert {:ok, %{status: :ambiguous, metadata: metadata}} = KeyStore.get(key)
         assert KeyStore.unresolved_version(metadata) == :none
         assert EffectWorld.executed(world, :create) == 0
+
+        # The verdict said the PR was not created: the key carries that decision, which is
+        # what lets the retry run (deciding an already decided key is a no-op).
+        :ok = KeyStore.mark_decided(key, :not_done)
 
         assert {:ok, %{pr_url: url}} = PrCreate.execute(t.run_id)
         assert [%{"url" => ^url}] = EffectWorld.prs(world)
