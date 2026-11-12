@@ -17,7 +17,14 @@ defmodule ForemanServer.NotifierDeliveryTest do
   alias ForemanServer.{CommandGateway, EventStore, Notifier}
   alias ForemanServer.Messaging.{Dispatcher, HttpResponse}
   alias ForemanServer.TestSupport.CoordinatorHelpers, as: H
-  alias ForemanServer.TestSupport.{PrWatchSupport, ProjectionStoreReset, StaticHostResolver}
+
+  alias ForemanServer.TestSupport.{
+    PrReadyGithub,
+    PrWatchSupport,
+    ProjectionStoreReset,
+    StaticHostResolver
+  }
+
   alias ForemanServer.Workflow.{MergeGate, RunExecutor}
 
   @slack_url "https://hooks.slack.com/services/T000/B000/DELIVERYSECRET"
@@ -171,6 +178,8 @@ defmodule ForemanServer.NotifierDeliveryTest do
 
     setup %{project_id: project_id, tmp_dir: dir} do
       MergeGate.clear()
+      # the head of record is GitHub's (TRD-008): the PR's `gh pr view` is scripted
+      PrReadyGithub.install!(%{@pr_url => PrReadyGithub.sha("notifier delivery head")})
       set_preference(project_id, "every_turn")
       {:ok, run_id: run_with_branch(project_id, dir)}
     end
