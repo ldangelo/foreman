@@ -68,11 +68,18 @@ defmodule ForemanServer.Idempotency.KeyStore do
   end
 
   @doc """
-  Mark an idempotency key as ambiguous with a reason (default: "timeout").
-  Returns `:ok` on success.
+  Mark an idempotency key as ambiguous with a reason (default: "timeout"), stored under the
+  string key `"reason"` like `mark_failed/3`.
+
+  Compare-and-set inside the store: the key is written only when it is `started`,
+  `ambiguous` or absent (a first write, as a lease timeout or a legacy caller makes). A key
+  that has settled (`completed`, `failed`) is left exactly as it is and the answer is
+  `:status_changed`: a verdict or a timeout that arrives after the effect finished must not
+  turn the outcome back into doubt. Returns `:ok`, `:status_changed` or `{:error, reason}`.
   """
+  @spec mark_ambiguous(String.t(), String.t()) :: :ok | :status_changed | {:error, term()}
   def mark_ambiguous(key, reason \\ "timeout") do
-    GenServer.call(__MODULE__, {:record, key, :ambiguous, %{reason: reason}})
+    GenServer.call(__MODULE__, {:mark_ambiguous, key, reason})
   end
 
   @doc """
@@ -115,16 +122,17 @@ defmodule ForemanServer.Idempotency.KeyStore do
   that moment (`unresolved_at_run_version`) and the reason
   (`unresolved_reason`). `Idempotency.Effect.run/4` refuses to repeat a key that
   carries the marker until the run has been reset. String keys, merged with the
-  stored metadata like every record call. Returns `:ok` or `{:error, reason}`.
+  stored metadata like every record call.
+
+  Compare-and-set inside the store: only a `started` or `ambiguous` key takes the marker. A
+  key that settled (`completed`, `failed`) or is gone is left as it is and the answer is
+  `:status_changed`. Returns `:ok`, `:status_changed` or `{:error, reason}`.
   """
-  @spec mark_unresolved(String.t(), non_neg_integer(), String.t()) :: :ok | {:error, term()}
+  @spec mark_unresolved(String.t(), non_neg_integer(), String.t()) ::
+          :ok | :status_changed | {:error, term()}
   def mark_unresolved(key, run_version, reason)
       when is_integer(run_version) and run_version >= 0 do
-    GenServer.call(
-      __MODULE__,
-      {:record, key, :ambiguous,
-       %{@unresolved_version_field => run_version, "unresolved_reason" => reason}}
-    )
+    GenServer.call(__MODULE__, {:mark_unresolved, key, run_version, reason})
   end
 
   @doc """
@@ -428,6 +436,44 @@ defmodule ForemanServer.Idempotency.KeyStore do
     merged = Map.merge(existing_meta, meta)
     :ets.insert(@table, {key, status, merged})
     {:reply, :ok, state}
+  end
+
+  # Compare-and-set for `mark_ambiguous/2`: runs inside the server, so a key that settled
+  # between the caller's read and this write is not flipped back to `ambiguous`.
+  @impl true
+  def handle_call({:mark_ambiguous, key, reason}, from, state) do
+    case current_record(state, key) do
+      {:ok, status, _stored} when status in [:started, :ambiguous] ->
+        handle_call({:record, key, :ambiguous, %{"reason" => reason}}, from, state)
+
+      :not_found ->
+        handle_call({:record, key, :ambiguous, %{"reason" => reason}}, from, state)
+
+      _settled_or_unknown ->
+        {:reply, :status_changed, state}
+    end
+  rescue
+    err -> {:reply, {:error, err}, state}
+  end
+
+  # Compare-and-set for `mark_unresolved/3`: only a `started` or `ambiguous` key takes the
+  # marker.
+  @impl true
+  def handle_call({:mark_unresolved, key, run_version, reason}, from, state) do
+    case current_record(state, key) do
+      {:ok, status, _stored} when status in [:started, :ambiguous] ->
+        handle_call(
+          {:record, key, :ambiguous,
+           %{@unresolved_version_field => run_version, "unresolved_reason" => reason}},
+          from,
+          state
+        )
+
+      _settled_or_gone ->
+        {:reply, :status_changed, state}
+    end
+  rescue
+    err -> {:reply, {:error, err}, state}
   end
 
   # Compare-and-set for `lift_unresolved/2`: runs inside the server, so the

@@ -174,8 +174,8 @@ defmodule ForemanServer.Workflow.BootReconciliationEffectKeysTest do
       assert {:ok, :ambiguous} = KeyStore.status(key)
     end
 
-    test "a status that is not one the store writes blocks `effect_outcome_ambiguous`",
-         %{run_id: run_id} do
+    test "a status that is not one the store writes is not marked or blocked: the marker's compare-and-set refuses it",
+         %{run_id: run_id, ref: ref} do
       key = Effect.key("branch_push", run_id, "feature/s")
 
       :ets.insert(
@@ -184,11 +184,14 @@ defmodule ForemanServer.Workflow.BootReconciliationEffectKeysTest do
       )
 
       list_only_ambiguous(key)
+      before_events = events(run_id)
 
       sweep()
 
-      assert status(run_id) == "blocked"
-      assert get(List.last(events(run_id)).payload, :reason) == "effect_outcome_ambiguous"
+      assert status(run_id) == "awaiting_worker"
+      assert events(run_id) == before_events
+      assert {:ok, :weird} = KeyStore.status(key)
+      assert_receive {@effect_event, ^ref, %{skipped: 1, blocked: 0, unresolved: 0}, _}
     end
 
     for moved_on <- [:started, :completed, :failed] do
@@ -431,6 +434,27 @@ defmodule ForemanServer.Workflow.BootReconciliationEffectKeysTest do
       assert count(run_id, "RunBlocked") == 0
       assert_receive {@effect_event, ^ref, %{blocked: 0, unresolved: 1}, _}
       assert {:ok, %{status: :ambiguous}} = KeyStore.get(key)
+    end
+  end
+
+  describe "a verdict that lands after the effect settled (foreman-ulg5y.3.12)" do
+    test "the key settles between the read and the marker: it stays completed, the run is not blocked, the key is counted skipped",
+         %{run_id: run_id, ref: ref} do
+      key = plant(run_id, "branch_push", "feature/late", "done")
+
+      # The reconciler is asked while the key is ambiguous; the effect then settles, and the
+      # verdict arrives at the marker write.
+      :meck.expect(KeyStore, :mark_unresolved, fn k, _version, _reason ->
+        :ok = KeyStore.mark_completed(k)
+        :meck.passthrough([k, 1, "effect_already_done"])
+      end)
+
+      sweep()
+
+      assert {:ok, :completed} = KeyStore.status(key)
+      assert status(run_id) == "awaiting_worker"
+      assert count(run_id, "RunBlocked") == 0
+      assert_receive {@effect_event, ^ref, %{skipped: 1, blocked: 0, unresolved: 0}, _}
     end
   end
 

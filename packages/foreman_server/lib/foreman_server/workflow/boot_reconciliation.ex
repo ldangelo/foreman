@@ -939,6 +939,8 @@ defmodule ForemanServer.Workflow.BootReconciliation do
     else
       case KeyStore.mark_ambiguous(key, "orphaned_started_key") do
         :ok -> true
+        # Settled between the read and this write: the key moved on, nothing was orphaned.
+        :status_changed -> false
         {:error, reason} -> unread_started_key(key, reason)
       end
     end
@@ -1245,6 +1247,9 @@ defmodule ForemanServer.Workflow.BootReconciliation do
     with :ok <- mark_unless_repeatable(key, version, reason, repeatable?) do
       block_for_effect(key, run_id, class, verdict, reason, fields, version)
     else
+      {:error, :status_changed} ->
+        skip_effect_key(key, "settled before it could be marked unresolved; run not blocked")
+
       {:error, marker_error} ->
         Logger.error(
           "BootReconciliation: effect #{inspect(key)} of run #{run_id} has verdict #{verdict} but could not be marked unresolved (#{inspect(marker_error)}); run not blocked, key left ambiguous",
@@ -1412,6 +1417,7 @@ defmodule ForemanServer.Workflow.BootReconciliation do
   defp mark_effect_unresolved(key, version, reason) do
     case KeyStore.mark_unresolved(key, version, reason) do
       :ok -> :ok
+      :status_changed -> {:error, :status_changed}
       {:error, _} = error -> error
       other -> {:error, other}
     end

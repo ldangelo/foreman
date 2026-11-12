@@ -662,6 +662,7 @@ defmodule ForemanServer.Idempotency.EffectUndecidedTest do
 
     test "a re-mark of a settled key that carries a marker clears it" do
       key = probe_key(:probe_not_done)
+      :ok = KeyStore.mark_started(key, probe_meta())
       :ok = KeyStore.mark_unresolved(key, 7, "effect_already_done")
       # The scan marked the key while its effect was in flight; the settle left the marker.
       :ok = KeyStore.mark_completed(key)

@@ -621,7 +621,7 @@ defmodule ForemanServer.Workflow.PhasePREffectsTest do
 
   # The status an undecided key has: `started` as the dead process left it, or `ambiguous`
   # as the boot sweep marks it before it has decided it.
-  defp undecided!(_key, :started), do: :ok
+  defp undecided!(key, :started), do: :ok = KeyStore.mark_started(key, %{})
   defp undecided!(key, :ambiguous), do: :ok = KeyStore.mark_ambiguous(key, "orphaned_started_key")
 
   defp calls(world, "git", subcommand),

@@ -201,7 +201,7 @@ defmodule ForemanServer.Jobsite.Runners.OverwatchTest do
     assert {:error, %Error{details: %{reason: :worker_died_no_result}}} =
              Task.await(runner, 10_000)
 
-    assert {:ok, %{status: :ambiguous, metadata: %{reason: "worker_died_no_result"}}} =
+    assert {:ok, %{status: :ambiguous, metadata: %{"reason" => "worker_died_no_result"}}} =
              ForemanServer.Idempotency.KeyStore.get(key)
   end
 

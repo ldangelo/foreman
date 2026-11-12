@@ -132,7 +132,7 @@ defmodule ForemanServer.Workflow.BootReconciliationAmbiguousKeysTest do
       # leaves the key ambiguous for the retried dispatch to resolve).
       assert_receive {@ambiguous_event, _, %{skipped: 0, retried: 1}, _}, 5_000
       assert KeyStore.status("orphan-1") == {:ok, :ambiguous}
-      assert {:ok, %{metadata: %{reason: "orphaned_started_key"}}} = KeyStore.get("orphan-1")
+      assert {:ok, %{metadata: %{"reason" => "orphaned_started_key"}}} = KeyStore.get("orphan-1")
     end
 
     test "a started key whose run is live stays started" do
