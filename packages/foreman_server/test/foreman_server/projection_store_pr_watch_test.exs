@@ -159,6 +159,81 @@ defmodule ForemanServer.ProjectionStorePrWatchTest do
     assert [%{pr_url: @a, checks_state: "passing"}] = ProjectionStore.pr_watch("r1")
   end
 
+  test "evidence replays identically from JSON and a malformed stored checks never stops the replay" do
+    checks = [%{name: "unit", kind: "check_run", state: "failing"}]
+
+    evidence_events =
+      events() ++
+        [
+          ev("PrChecksChanged", %{
+            pr_url: @a,
+            head_sha: "h1",
+            checks_state: "failing",
+            digest: "d2",
+            observation_seq: 2,
+            checks: checks,
+            evidence_digest: "e2",
+            observation_ref: "n-1"
+          }),
+          ev("PrChecksChanged", %{
+            pr_url: @a,
+            head_sha: "h1",
+            checks_state: "failing",
+            digest: "d3",
+            observation_seq: 3,
+            checks: "not a list",
+            evidence_digest: "ignored"
+          })
+        ]
+
+    :ok = ProjectionStore.apply_events(evidence_events)
+    live = ProjectionStore.pr_watch("r1")
+
+    assert [
+             %{
+               evidence: %{
+                 checks: %{head_sha: "h1", evidence_digest: "e2", observation_ref: "n-1"}
+               }
+             }
+           ] =
+             live
+
+    json_events =
+      evidence_events
+      |> Jason.encode!()
+      |> Jason.decode!()
+      |> Enum.map(&%{event_type: &1["event_type"], payload: &1["payload"]})
+
+    ProjectionStoreReset.reset!()
+    assert :ok = ProjectionStore.apply_events(json_events)
+
+    replayed = ProjectionStore.pr_watch("r1")
+    assert Enum.map(replayed, & &1.evidence.checks.evidence_digest) == ["e2"]
+
+    assert strip(replayed) |> Enum.map(&Map.delete(&1.evidence.checks, :items)) ==
+             strip(live) |> Enum.map(&Map.delete(&1.evidence.checks, :items))
+  end
+
+  test "a new head resets the projection's current-head observation and keeps the evidence record" do
+    :ok =
+      ProjectionStore.apply_events(
+        events() ++ [ev("PrUpdated", %{pr_url: @a, pr_status: "open", head_sha: "h2"})]
+      )
+
+    assert [
+             %{
+               head_sha: "h2",
+               checks_state: nil,
+               failing: [],
+               checks_digest: nil,
+               review_decision: nil,
+               review_digest: nil,
+               checks_seq: 1,
+               comment_ids: ["IC_1"]
+             }
+           ] = ProjectionStore.pr_watch("r1")
+  end
+
   test "merged, closed and stopped PRs are not watched; a restart watch brings it back" do
     :ok =
       ProjectionStore.apply_events([

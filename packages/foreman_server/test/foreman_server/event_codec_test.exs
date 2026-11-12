@@ -337,6 +337,58 @@ defmodule ForemanServer.EventCodecTest do
     end
   end
 
+  describe "PrChecksChanged evidence fields" do
+    @checks_data %{
+      run_id: "r1",
+      project_id: "p1",
+      task_id: "t1",
+      pr_url: "https://github.com/acme/repo/pull/7",
+      head_sha: "h1",
+      checks_state: "failing",
+      digest: "d1",
+      checks: [%{"name" => "unit", "kind" => "check_run", "state" => "failing"}],
+      checks_truncated: true,
+      evidence_digest: "e1",
+      observation_ref: "n-1",
+      required: [%{"name" => "unit", "kind" => "check_run"}],
+      policy_version: "p1",
+      source: "gate"
+    }
+
+    test "round-trips through the codec and through JSON" do
+      assert %ForemanServer.Events.PrChecksChanged{} =
+               decoded = EventCodec.decode!("PrChecksChanged", @checks_data)
+
+      assert decoded.checks == @checks_data.checks
+      assert decoded.checks_truncated == true
+      assert decoded.evidence_digest == "e1"
+      assert decoded.observation_ref == "n-1"
+      assert decoded.required == @checks_data.required
+      assert decoded.policy_version == "p1"
+      assert decoded.source == "gate"
+
+      replayed = @checks_data |> Jason.encode!() |> Jason.decode!()
+      assert %{checks: checks, source: "gate"} = EventCodec.decode!("PrChecksChanged", replayed)
+      assert checks == @checks_data.checks
+    end
+
+    test "an event written before the fields existed replays as no list recorded, never zero checks" do
+      old =
+        Map.drop(@checks_data, [
+          :checks,
+          :checks_truncated,
+          :evidence_digest,
+          :observation_ref,
+          :required,
+          :policy_version,
+          :source
+        ])
+
+      assert %{checks: nil, checks_truncated: false, required: nil, source: nil} =
+               EventCodec.decode!("PrChecksChanged", old)
+    end
+  end
+
   describe "PhaseContextRecorded" do
     @data %{
       run_id: "r1",

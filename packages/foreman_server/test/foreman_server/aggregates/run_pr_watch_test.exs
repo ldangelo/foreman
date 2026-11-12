@@ -129,6 +129,77 @@ defmodule ForemanServer.Aggregates.RunPrWatchTest do
       end
     end
 
+    test "the evidence fields are validated, normalised, stored, and replay to the live fold" do
+      checks = [
+        %{
+          name: "unit",
+          kind: :check_run,
+          state: :failing,
+          conclusion: "FAILURE",
+          workflow: "ci",
+          started_at: "2026-11-12T13:58:43Z",
+          completed_at: "2026-11-12T13:58:49Z"
+        }
+      ]
+
+      payload =
+        checks_payload(%{
+          checks: checks,
+          checks_truncated: true,
+          evidence_digest: "e1",
+          observation_ref: "n-1",
+          required: [%{name: "unit", kind: "check_run"}],
+          policy_version: "p1"
+        })
+
+      {live, spec} = accept(started(), "run.pr.checks", payload)
+
+      assert %{
+               checks: [%{"name" => "unit", "kind" => "check_run", "state" => "failing"}],
+               checks_truncated: true,
+               evidence_digest: "e1",
+               observation_ref: "n-1",
+               required: [%{"name" => "unit", "kind" => "check_run"}],
+               policy_version: "p1"
+             } = spec.payload
+
+      assert %{items: [%{"name" => "unit"}], truncated: true, evidence_digest: "e1"} =
+               live.pr_watch[@url].evidence.checks
+
+      # What the actor stores is JSON; folding it back (string keys) equals the live fold.
+      replayed =
+        Run.apply_event(started(), %{
+          event_type: spec.event_type,
+          payload: spec.payload |> Jason.encode!() |> Jason.decode!()
+        })
+
+      assert replayed.pr_watch == live.pr_watch
+    end
+
+    test "a payload without checks stores no list: it is nil, never zero checks" do
+      {state, spec} = accept(started(), "run.pr.checks", checks_payload())
+      assert spec.payload.checks == nil
+      assert state.pr_watch[@url].evidence.checks == nil
+    end
+
+    test "unknown kind or state, a non-list, over 100 checks or over 20 required are refused" do
+      good = %{name: "unit", kind: "check_run", state: "failing"}
+
+      for {key, value} <- [
+            {:checks, [%{good | kind: "webhook"}]},
+            {:checks, [%{good | state: "great"}]},
+            {:checks, "nope"},
+            {:checks, List.duplicate(good, 101)},
+            {:required, List.duplicate(%{name: "a", kind: "check_run"}, 21)},
+            {:required, [%{name: "a"}]},
+            {:checks_truncated, "yes"},
+            {:policy_version, 7}
+          ] do
+        assert {:error, {:missing_or_invalid, ^key}} =
+                 reject(started(), "run.pr.checks", checks_payload(%{key => value}))
+      end
+    end
+
     test "a payload naming another project is refused" do
       assert {:error, {:missing_or_invalid, :project_id}} =
                reject(started(), "run.pr.checks", checks_payload(%{project_id: "other"}))
