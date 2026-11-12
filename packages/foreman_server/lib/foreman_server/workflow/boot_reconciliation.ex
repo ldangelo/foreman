@@ -185,7 +185,11 @@ defmodule ForemanServer.Workflow.BootReconciliation do
   retried. An effect key (`Idempotency.Effect`) is asked of its class's
   `Idempotency.Reconciler` instead: a verdict that the effect did not happen
   decides the key (`KeyStore.mark_decided/2`), after which the effect may run
-  again. The scan first marks the `started` keys of runs with no live executor
+  again. A verdict that it happened, or that nobody can tell, marks the key unresolved and
+  blocks the run; a run that has ended cannot be blocked, so there the key only stays
+  refused (`Effect` answers `effect_unresolved`) and the operator's way out is on GitHub; a
+  class that never blocks a run (`Reconciler.blocks_run?/3`) is left as it is (TRD-039).
+  The scan first marks the `started` keys of runs with no live executor
   `ambiguous`.
 
   Dispatches as a cast so the scan runs inside the `BootReconciliation`
@@ -941,6 +945,9 @@ defmodule ForemanServer.Workflow.BootReconciliation do
   #   * `:done`              -> block `effect_already_done`
   #   * `:unknown`, or an unexpected store status -> block `effect_outcome_ambiguous`
   #   * unregistered class   -> block `effect_class_unregistered` (fail closed)
+  #   * `:done` or `:unknown` of a class that never blocks a run (`Reconciler.blocks_run?/3`
+  #     false: an advisory effect such as a PR comment) -> nothing: no marker, no block, no
+  #     cancel, and the key is counted `skipped`
   #
   # A block appends the `effect_blocked` record first (a terminal run rejects it,
   # and that rejection decides the terminal-run branch), then `run.block`, then
@@ -956,6 +963,27 @@ defmodule ForemanServer.Workflow.BootReconciliation do
   # is logged and counted `audit_failed`, the decision stands, and the next scan skips a key
   # that carries it, so the event is not sent again. A decision that cannot be written leaves
   # the key refused, sends no event and is counted `unresolved`.
+  #
+  # The keys of a terminal run have a path for each verdict (TRD-039). A run that has ended takes
+  # neither `run.recovery_attempt` nor `run.block`, and a `completed`, `cancelled` or `deleted`
+  # run cannot be reset either (`run.reset` is accepted from `failed`, `stuck`, `blocked` and
+  # `paused` only). The operator's Create PR (`PrCreate.execute/1`) is the caller of a
+  # `pr_create` key:
+  #
+  #   * `:not_done` -> decided first, as above: the rejected audit event is counted
+  #     `audit_failed` and the next Create PR runs the effect;
+  #   * `:done`, `:unknown` -> the key is marked unresolved at the run stream's version BEFORE
+  #     the block is dispatched, so the rejected block (counted `on_terminal_run`) leaves it
+  #     `ambiguous` with its marker, and `Effect.run/4` refuses it `effect_unresolved`: an
+  #     operator `run.reset` lifts that for a `failed`, `stuck` or `blocked` run and never for
+  #     a `completed` or `cancelled` one. The way out is on GitHub and not in the key: Create PR
+  #     asks GitHub for the run's PR before its preflight and adopts the one whose head is the
+  #     pushed tip (`AutoPR`, TRD-004), so a PR that exists, or that the operator opens by hand,
+  #     is adopted. A `branch_push` key stays refused the same way (the operator pushes the
+  #     branch by hand).
+  #
+  # Until a scan has looked at such a key it is refused `effect_undecided`, and that refusal
+  # casts this scan (`scan_ambiguous_keys/0`).
   @effect_block_reasons %{
     done: "effect_already_done",
     unknown: "effect_outcome_ambiguous",
@@ -1029,15 +1057,17 @@ defmodule ForemanServer.Workflow.BootReconciliation do
       skip_effect_key(key, "already carries the decision not_done")
     else
       {verdict, reason} = effect_verdict(status, class, metadata, opts)
+      classes = Keyword.take(opts, [:classes])
 
-      handle_effect_verdict(
-        key,
-        run_id,
-        class,
-        verdict,
-        reason,
-        Reconciler.repeatable?(class, metadata, Keyword.take(opts, [:classes]))
-      )
+      # The two answers about the class that `Effect` and this sweep read from one definition
+      # (`Reconciler`): whether the key is ever marked unresolved, and whether a `done` or
+      # `unknown` verdict may block the run.
+      traits = %{
+        repeatable?: Reconciler.repeatable?(class, metadata, classes),
+        blocks_run?: Reconciler.blocks_run?(class, metadata, classes)
+      }
+
+      handle_effect_verdict(key, run_id, class, verdict, reason, traits)
     end
   end
 
@@ -1105,7 +1135,7 @@ defmodule ForemanServer.Workflow.BootReconciliation do
   # event is a record. Sending the event first would leave the key of a terminal run undecided
   # and the effect refused for good, because the aggregate rejects `run.recovery_attempt` once
   # the run has ended.
-  defp handle_effect_verdict(key, run_id, class, "not_done" = verdict, nil, _repeatable?) do
+  defp handle_effect_verdict(key, run_id, class, "not_done" = verdict, nil, _traits) do
     case decide_not_done(key) do
       :ok ->
         record_effect_retried(key, run_id, class, verdict)
@@ -1124,7 +1154,20 @@ defmodule ForemanServer.Workflow.BootReconciliation do
     end
   end
 
-  defp handle_effect_verdict(key, run_id, class, verdict, reason, repeatable?) do
+  # A class that never blocks a run (`Reconciler.blocks_run?/3` false, such as a PR comment) has
+  # no `done` or `unknown` verdict worth a block: nothing is marked, blocked or cancelled, and
+  # the key is counted `skipped`. It is left as it is, so the effect (a repeatable class is never
+  # refused) may run again, and a terminal run's key is handled the same way.
+  defp handle_effect_verdict(key, _run_id, class, verdict, _reason, %{blocks_run?: false}) do
+    Logger.info(
+      "BootReconciliation: effect #{inspect(key)} (#{class}) has verdict #{verdict}, but its class never blocks a run; nothing marked, blocked or cancelled",
+      key: key
+    )
+
+    :skipped
+  end
+
+  defp handle_effect_verdict(key, run_id, class, verdict, reason, %{repeatable?: repeatable?}) do
     fields = %{effect_class: class, effect_key: key, effect_verdict: verdict}
     {_state, version} = load_run_stream(run_id)
 

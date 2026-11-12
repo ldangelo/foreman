@@ -30,16 +30,20 @@ defmodule ForemanServerWeb.MCP.Tools.Doctor do
   @type provider_result :: {:provider, atom(), :installed | :not_installed, String.t()}
 
   @typedoc """
-  One unresolved effect key: the key, its effect class and run id (read from the
-  record's string-keyed metadata, `"unknown"` when a field is missing) and the
-  run's status from the projection (`"unknown"` when it could not be read,
-  `"not_found"` when the run has no projection).
+  One effect key nobody has settled: the key, its effect class and run id (read from the
+  record's string-keyed metadata, `"unknown"` when a field is missing), the run's status
+  from the projection (`"unknown"` when it could not be read, `"not_found"` when the run
+  has no projection), the key's own status `key_status` (`"started"` or `"ambiguous"`) and
+  its `decision` (`"not_done"` once the boot sweep decided that the effect did not happen,
+  so the next attempt may run it; `"none"` for a key that carries none).
   """
   @type effect_entry :: %{
           key: String.t(),
           class: String.t(),
           run_id: String.t(),
-          status: String.t()
+          status: String.t(),
+          key_status: String.t(),
+          decision: String.t()
         }
 
   @spec run(keyword()) :: {:ok, String.t()} | {:error, :provider_missing, String.t()}
@@ -69,29 +73,38 @@ defmodule ForemanServerWeb.MCP.Tools.Doctor do
   def format(results) when is_list(results), do: ReadinessCheck.format(results)
 
   @doc """
-  Every ambiguous effect key (`KeyStore.effect_key?/1`), sorted by key, with its
-  class, run id and the run's status. `{:error, :unavailable}` when the keys
-  cannot be read (the `KeyStore` is not running, or the repo is configured but
-  the read fails): an unreadable store is never an empty list.
+  Every `started` and every `ambiguous` effect key (`KeyStore.effect_key?/1`), sorted by
+  key, with its class, run id, the run's status, its `key_status` and its `decision`.
+  `{:error, :unavailable}` when the keys cannot be read (the `KeyStore` is not running, or
+  the repo is configured but a read fails): an unreadable store is never an empty list.
 
-  The list is by effect key, not by run: a key is listed whatever its run's
-  status, because the verdict of a terminal run's key is only logged. Phase 0
-  has no way to resolve or clear an ambiguous key.
+  These are the keys `Idempotency.Effect` refuses until the boot sweep has looked at them:
+  a `started` key is an effect that is running or whose process died, an `ambiguous` one an
+  effect whose outcome nobody has settled. A key with the `decision` `"not_done"` is
+  decided: the next attempt runs the effect. One with no decision is undecided or, when the
+  sweep found the effect done or could not tell, marked unresolved.
+
+  The list is by effect key, not by run: a key is listed whatever its run's status,
+  because a terminal run cannot be blocked, so its key is where the verdict stays visible.
+  The run's status says what can still be done for it: a `failed`, `stuck`, `blocked` or
+  `paused` run can be reset, a `completed` or `cancelled` one cannot.
   """
   @spec unresolved_effect_keys() :: {:ok, [effect_entry()]} | {:error, :unavailable}
   def unresolved_effect_keys do
-    case KeyStore.list_records_checked(:ambiguous) do
-      {:ok, records} ->
-        entries =
-          records
-          |> Enum.filter(&KeyStore.effect_key?(&1.key))
-          |> Enum.sort_by(& &1.key)
-          |> Enum.map(&effect_entry/1)
+    with {:ok, started} <- KeyStore.list_records_checked(:started),
+         {:ok, ambiguous} <- KeyStore.list_records_checked(:ambiguous) do
+      # Two reads, so a key that moved from `started` to `ambiguous` between them is in both:
+      # the later read (`ambiguous`) is the key as it is now, and it is listed once.
+      entries =
+        (ambiguous ++ started)
+        |> Enum.filter(&KeyStore.effect_key?(&1.key))
+        |> Enum.uniq_by(& &1.key)
+        |> Enum.sort_by(& &1.key)
+        |> Enum.map(&effect_entry/1)
 
-        {:ok, entries}
-
-      {:error, _reason} ->
-        {:error, :unavailable}
+      {:ok, entries}
+    else
+      {:error, _reason} -> {:error, :unavailable}
     end
   end
 
@@ -125,10 +138,21 @@ defmodule ForemanServerWeb.MCP.Tools.Doctor do
     end
   end
 
-  @doc "One report line for an effect entry."
+  @doc """
+  One report line for an effect entry: `<class> run=<id> status=<run status> key=<key>
+  key_status=<started|ambiguous> decision=<not_done|none>`.
+  """
   @spec effect_entry_line(effect_entry()) :: String.t()
-  def effect_entry_line(%{key: key, class: class, run_id: run_id, status: status}),
-    do: "#{class} run=#{run_id} status=#{status} key=#{key}"
+  def effect_entry_line(%{
+        key: key,
+        class: class,
+        run_id: run_id,
+        status: status,
+        key_status: key_status,
+        decision: decision
+      }),
+      do:
+        "#{class} run=#{run_id} status=#{status} key=#{key} key_status=#{key_status} decision=#{decision}"
 
   @doc """
   The entries as report lines. On the ETS fallback an empty list says so: keys
@@ -164,7 +188,7 @@ defmodule ForemanServerWeb.MCP.Tools.Doctor do
       store_line() <> "\n" <> gating_line() <> "\n\nUnresolved effect keys\n" <> body
   end
 
-  defp effect_entry(%{key: key, metadata: metadata}) do
+  defp effect_entry(%{key: key, status: key_status, metadata: metadata}) do
     metadata = if is_map(metadata), do: metadata, else: %{}
     run_id = Map.get(metadata, "run_id")
 
@@ -172,7 +196,9 @@ defmodule ForemanServerWeb.MCP.Tools.Doctor do
       key: key,
       class: text(Map.get(metadata, "effect_class")),
       run_id: text(run_id),
-      status: run_status(run_id)
+      status: run_status(run_id),
+      key_status: Atom.to_string(key_status),
+      decision: metadata |> KeyStore.decision() |> Atom.to_string()
     }
   end
 
