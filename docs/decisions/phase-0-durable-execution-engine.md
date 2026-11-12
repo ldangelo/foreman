@@ -233,35 +233,37 @@ The operator accepted "extend the current event-sourced engine; no Temporal, Con
 
 PREREQUISITE: must land before the Phase 1 code that depends on it. FOLD-IN: Phase 1 touches the same code and closes it in its own PR. INDEPENDENT: no Phase 1 path reads it. From the handoffs scout, anchors re-read here.
 
-| Item | Phase 1 path (anchor) | Disposition | Reason |
-|---|---|---|---|
-| `foreman-by6nl` undecided keys repeat | every new keyed effect, `effect.ex:82-93`, `:159-179` | PREREQUISITE (P-1) | A crash-left `started` key would double-post a comment or re-run an effect with nothing refusing it. |
-| `foreman-tnlqt` `gh pr create` "already exists" wedge | `auto_pr.ex:133-135`, `:299-351` | PREREQUISITE (P-2) | A head-change refresh or a restart between create and PR association re-enters this path. Inferred from source, not observed (limitation xvii): the fix ships with an observed block, reset, resume test. |
-| `foreman-rsbx1` dashboard offers no reset for blocked or paused | `lib/foreman_server_web/operator_dashboard.ex:168` (`reset` for `failed`, `stuck`, `needs_recovery` only) | FOLD-IN | Phase 1 builds its next-action view on this dashboard; the aggregate already accepts the reset. |
-| `foreman-87h5g` projection silently starts empty on a failed boot read | `lib/foreman_server/projection_store.ex:2184` (`rebuild_from_event_log/1`) | FOLD-IN | A projection that resets to empty would show no evidence rather than "unknown"; the Phase 1 display must fail closed. |
-| `foreman-6vlx6` claim assignee unsound | `lib/foreman_server/workflow/run_executor.ex:142` (claim) | INDEPENDENT | No Phase 1 requirement reads claim state. |
-| `foreman-t2627` Deliverer never retries steer/resume | `questions/deliverer.ex` | INDEPENDENT | The question path is not required by Phase 1; promote only if the TRD routes an operator disposition through questions. |
-| `foreman-p7asb` `question.open` failure unrecorded | `agents/operator_question_dispatcher.ex` | INDEPENDENT | Same as `foreman-t2627`. |
-| `foreman-f6zmv` invalid `on_timeout` raises in expiry | `approvals/sweeper.ex` | INDEPENDENT | Not on a Phase 1 path. |
-| `foreman-hl35p` stale comment in `aggregates/run.ex` | none | INDEPENDENT | Comment fix. |
-| `foreman-3ufry` Dispatcher dual atom/string key reads | `workflow/dispatcher.ex` resume path | INDEPENDENT | Phase 1 adds nothing to the resume reads. |
-| `foreman-ttc4i` `SkillResolver` raises when HOME is unset | kickoff skill preflight (`run_executor.ex:522`) | INDEPENDENT | Raise priority only if a server runs without HOME. |
-| `foreman-kaa9w` CLI writes pi project skills to the wrong directory | `foreman_cli` `agent_commands.go:473` (per the bead, not re-read) | INDEPENDENT | Installed skill location, not PR evidence. |
-| `foreman-mcgov` `BeadsTreeCompletion` cannot see the ensemble scaffold | bead tooling only | INDEPENDENT | A build-process hazard for dispatching the Phase 1 epic, not a runtime dependency. |
-| AC-004-2 undecided keys repeat; a terminal run cannot be blocked | `effect.ex:174-175`; `lib/foreman_server/aggregates/run.ex:801-804`; `run_executor.ex:2491-2495` | PREREQUISITE (via `foreman-by6nl`) | `run.complete` follows a failed PR step, and a completed run cannot be blocked (limitation v). Key by SHA (P-4) so a new head is a fresh key. |
-| AC-004-5 intent key durable only with the store on | `config/prod.exs:72-78`, `:119-120` | PREREQUISITE (P-3, deployment) | Without it, "evidence tied to the head across a restart" cannot hold on ETS keys. |
-| AC-005-1 inputs are "given", status DTO carries only `current_phase` | `PhaseCompleted` artifact hash | FOLD-IN (DTO half), INDEPENDENT (read tracking) | Widening the status is part of Phase 1 visibility; read tracking is not needed because evidence comes from GitHub or Foreman, never from what an agent read. |
-| AC-005-2 project-context identity not recorded for the docker jobsite | `run_executor.ex:2952`, `:3001` | INDEPENDENT; FOLD-IN if checks run on a docker jobsite | The context hash covers context text only, not a git SHA; Phase 1 evidence carries its own head SHA. |
-| AC-005-3 redaction count is not proof of no secret | recorded count at `run_executor.ex:2966-2967` | FOLD-IN | Phase 1 posts model-generated text to a PR; redaction of it is its own control. |
-| AC-006-1 profile recorded for host launches only | `lib/foreman_server/jobsite/execution_profile.ex:88` | INDEPENDENT | Phase 1 must not claim a docker-isolated check: the docker profile has no production caller. |
-| AC-006-3, AC-006-4 `:docker` tests excluded from the default run | only if checks run in the docker jobsite | INDEPENDENT | CI-environment matter. |
-| AC-007-1, AC-007-2 skill preflight `:unverifiable` on typical hosts | `run_executor.ex:522` | INDEPENDENT | Fail-safe; "skill preflight passed" must not be read as review provenance. |
-| AC-001-3 conditional decision | this record | INDEPENDENT | Resolved by the acceptance above, not by code. |
-| Limitation (xviii) refused primary PR leaves no record | `run_executor.ex:2570-2594`, `:2491` | FOLD-IN | The run completes regardless, so "ineligible" must be a Phase 1 evidence record, not run status. |
-| Limitation (xix) completed run cannot be reset | `run.reset` accepted from `failed`, `stuck`, `blocked`, `paused` only | FOLD-IN | A refreshed head after completion has no clearing command; treat a new head as a new keyed effect. |
-| Limitation (xxii) `gh pr create` non-zero exit marks the key `failed` | `auto_pr.ex:349-351`, `effect.ex:265-266` | FOLD-IN with `foreman-tnlqt` | Same fix: consult GitHub before settling. |
-| Head of record is a local `rev-parse` (new finding) | `run_executor.ex:2633`; `PrStatus` reads `headRefOid` (`lib/foreman_server/github/pr_status.ex:321`) | FOLD-IN | Evidence must take the head from GitHub, in the same response as the checks. |
-| Head-moving pushes are not keyed effects (new finding) | `lib/foreman_server/pr_fix.ex:383` (`"push" => true`); `PrWatchFold` `PrUpdated` moves `head_sha` only (`lib/foreman_server/pr_watch_fold.ex:111-118`) | FOLD-IN | Invalidation must follow the observed head. The PR monitor is opt-in (`config/runtime.exs:79-81`; `PrMonitor` default false), so Phase 1 needs the monitor or the webhook on. |
+| Item | Phase 1 path (anchor) | Disposition | Reason | Phase 1 task |
+|---|---|---|---|---|
+| `foreman-by6nl` undecided keys repeat | every new keyed effect, `effect.ex:82-93`, `:159-179` | PREREQUISITE (P-1) | A crash-left `started` key would double-post a comment or re-run an effect with nothing refusing it. | TRD-002, TRD-042, TRD-003, TRD-039 |
+| `foreman-tnlqt` `gh pr create` "already exists" wedge | `auto_pr.ex:133-135`, `:299-351` | PREREQUISITE (P-2) | A head-change refresh or a restart between create and PR association re-enters this path. Inferred from source, not observed (limitation xvii): the fix ships with an observed block, reset, resume test. | TRD-004, TRD-038 |
+| `foreman-rsbx1` dashboard offers no reset for blocked or paused | `lib/foreman_server_web/operator_dashboard.ex:168` (`reset` for `failed`, `stuck`, `needs_recovery` only) | FOLD-IN | Phase 1 builds its next-action view on this dashboard; the aggregate already accepts the reset. | TRD-024 |
+| `foreman-87h5g` projection silently starts empty on a failed boot read | `lib/foreman_server/projection_store.ex:2184` (`rebuild_from_event_log/1`) | FOLD-IN | A projection that resets to empty would show no evidence rather than "unknown"; the Phase 1 display must fail closed. | TRD-031 |
+| `foreman-6vlx6` claim assignee unsound | `lib/foreman_server/workflow/run_executor.ex:142` (claim) | INDEPENDENT | No Phase 1 requirement reads claim state. | none |
+| `foreman-t2627` Deliverer never retries steer/resume | `questions/deliverer.ex` | INDEPENDENT | The question path is not required by Phase 1; promote only if the TRD routes an operator disposition through questions. | none |
+| `foreman-p7asb` `question.open` failure unrecorded | `agents/operator_question_dispatcher.ex` | INDEPENDENT | Same as `foreman-t2627`. | none |
+| `foreman-f6zmv` invalid `on_timeout` raises in expiry | `approvals/sweeper.ex` | INDEPENDENT | Not on a Phase 1 path. | none |
+| `foreman-hl35p` stale comment in `aggregates/run.ex` | none | INDEPENDENT | Comment fix. | none |
+| `foreman-3ufry` Dispatcher dual atom/string key reads | `workflow/dispatcher.ex` resume path | INDEPENDENT | Phase 1 adds nothing to the resume reads. | none |
+| `foreman-ttc4i` `SkillResolver` raises when HOME is unset | kickoff skill preflight (`run_executor.ex:522`) | INDEPENDENT | Raise priority only if a server runs without HOME. | none |
+| `foreman-kaa9w` CLI writes pi project skills to the wrong directory | `foreman_cli` `agent_commands.go:473` (per the bead, not re-read) | INDEPENDENT | Installed skill location, not PR evidence. | none |
+| `foreman-mcgov` `BeadsTreeCompletion` cannot see the ensemble scaffold | bead tooling only | INDEPENDENT | A build-process hazard for dispatching the Phase 1 epic, not a runtime dependency. | none |
+| AC-004-2 undecided keys repeat; a terminal run cannot be blocked | `effect.ex:174-175`; `lib/foreman_server/aggregates/run.ex:801-804`; `run_executor.ex:2491-2495` | PREREQUISITE (via `foreman-by6nl`) | `run.complete` follows a failed PR step, and a completed run cannot be blocked (limitation v). Key by SHA (P-4) so a new head is a fresh key. | TRD-002, TRD-042, TRD-003, TRD-039 |
+| AC-004-5 intent key durable only with the store on | `config/prod.exs:72-78`, `:119-120` | PREREQUISITE (P-3, deployment) | Without it, "evidence tied to the head across a restart" cannot hold on ETS keys. | TRD-005, TRD-028 |
+| AC-005-1 inputs are "given", status DTO carries only `current_phase` | `PhaseCompleted` artifact hash | FOLD-IN (DTO half), INDEPENDENT (read tracking) | Widening the status is part of Phase 1 visibility; read tracking is not needed because evidence comes from GitHub or Foreman, never from what an agent read. | TRD-023 |
+| AC-005-2 project-context identity not recorded for the docker jobsite | `run_executor.ex:2952`, `:3001` | INDEPENDENT; FOLD-IN if checks run on a docker jobsite | The context hash covers context text only, not a git SHA; Phase 1 evidence carries its own head SHA. | none |
+| AC-005-3 redaction count is not proof of no secret | recorded count at `run_executor.ex:2966-2967` | FOLD-IN | Phase 1 posts model-generated text to a PR; redaction of it is its own control. | TRD-019 |
+| AC-006-1 profile recorded for host launches only | `lib/foreman_server/jobsite/execution_profile.ex:88` | INDEPENDENT | Phase 1 must not claim a docker-isolated check: the docker profile has no production caller. | none |
+| AC-006-3, AC-006-4 `:docker` tests excluded from the default run | only if checks run in the docker jobsite | INDEPENDENT | CI-environment matter. | none |
+| AC-007-1, AC-007-2 skill preflight `:unverifiable` on typical hosts | `run_executor.ex:522` | INDEPENDENT | Fail-safe; "skill preflight passed" must not be read as review provenance. | none |
+| AC-001-3 conditional decision | this record | INDEPENDENT | Resolved by the acceptance above, not by code. | none |
+| Limitation (xviii) refused primary PR leaves no record | `run_executor.ex:2570-2594`, `:2491` | FOLD-IN | The run completes regardless, so "ineligible" must be a Phase 1 evidence record, not run status. | none (stays open: a refused PR creation has no PR to attach a record to; TRD-008 and TRD-033 record a failed ready signal, which is not the same condition) |
+| Limitation (xix) completed run cannot be reset | `run.reset` accepted from `failed`, `stuck`, `blocked`, `paused` only | FOLD-IN | A refreshed head after completion has no clearing command; treat a new head as a new keyed effect. | TRD-039, TRD-020 |
+| Limitation (xxii) `gh pr create` non-zero exit marks the key `failed` | `auto_pr.ex:349-351`, `effect.ex:265-266` | FOLD-IN with `foreman-tnlqt` | Same fix: consult GitHub before settling. | TRD-004 |
+| Head of record is a local `rev-parse` (new finding) | `run_executor.ex:2633`; `PrStatus` reads `headRefOid` (`lib/foreman_server/github/pr_status.ex:321`) | FOLD-IN | Evidence must take the head from GitHub, in the same response as the checks. | TRD-008 |
+| Head-moving pushes are not keyed effects (new finding) | `lib/foreman_server/pr_fix.ex:383` (`"push" => true`); `PrWatchFold` `PrUpdated` moves `head_sha` only (`lib/foreman_server/pr_watch_fold.ex:111-118`) | FOLD-IN | Invalidation must follow the observed head. The PR monitor is opt-in (`config/runtime.exs:79-81`; `PrMonitor` default false), so Phase 1 needs the monitor or the webhook on. | TRD-007, TRD-009 |
+
+The "Phase 1 task" column was added 2026-11-12 when the Phase 1 TRD (`docs/TRD/TRD-2026-c12e5f93-phase-1-trustworthy-pr-delivery.md`) was scaffolded; it points to the TRD tasks that close or touch each row, and no other cell was edited.
 
 Limitations (i) to (xl) not named above were not classified by the scout and are not known to lie on a Phase 1 path `[UNVERIFIED]`.
 
