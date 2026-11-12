@@ -46,6 +46,15 @@ defmodule ForemanServer.Idempotency.EffectTest do
       end
     end
 
+    # The boot sweep reads `list_records_checked/1`: the rows of the status the query pins
+    # (`where: k.status == ^status`, no `select`). Any other query is `list_by_status/1`'s
+    # key listing.
+    def all(%{select: nil, wheres: [%{params: [{status, _type}]}]}) do
+      for {key, ^status, metadata} <- :ets.tab2list(@rows), is_binary(key) do
+        %IdempotencyKey{key: key, status: status, metadata: metadata}
+      end
+    end
+
     def all(_query),
       do: for({key, _status, _meta} <- :ets.tab2list(@rows), is_binary(key), do: key)
 

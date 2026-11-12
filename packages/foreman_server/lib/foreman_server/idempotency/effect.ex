@@ -32,8 +32,11 @@ defmodule ForemanServer.Idempotency.Effect do
   never undecided). Any other `started` or `ambiguous` key is undecided: an earlier
   attempt may have happened, or still be running, and nobody has said which, so
   `run/4` and `preflight/3` return `{:error, {:effect_undecided, key}}`, without
-  calling `fun` and without touching the key. A key recovery could not resolve is
-  refused as `effect_unresolved` until an operator `run.reset`.
+  calling `fun` and without touching the key, and ask the boot sweep to run again
+  (`BootReconciliation.scan_ambiguous_keys/0`, once per refusal; best effort, so a
+  sweep that is not running leaves the refusal as it is, and the sweep coalesces the
+  requests), because a decision can only come from it. A key recovery could not
+  resolve is refused as `effect_unresolved` until an operator `run.reset`.
 
   The key is marked with `KeyStore.mark_started/2` directly;
   `HeartbeatLease.acquire/4` arms a live-worker expiry timer and is not used.
@@ -43,6 +46,7 @@ defmodule ForemanServer.Idempotency.Effect do
   alias ForemanServer.EventStore
   alias ForemanServer.Idempotency.KeyStore
   alias ForemanServer.Idempotency.Reconciler
+  alias ForemanServer.Workflow.BootReconciliation
 
   require Logger
 
@@ -132,7 +136,15 @@ defmodule ForemanServer.Idempotency.Effect do
   end
 
   defp refusal_error({:unresolved, key}), do: {:error, {:effect_unresolved, key}}
-  defp refusal_error({:undecided, key}), do: {:error, {:effect_undecided, key}}
+
+  # An undecided key waits for a decision that only the boot sweep writes, and the sweep runs
+  # at boot: ask it to run now. The cast cannot fail the refusal (a `BootReconciliation` that
+  # is not running drops it).
+  defp refusal_error({:undecided, key}) do
+    BootReconciliation.scan_ambiguous_keys()
+    {:error, {:effect_undecided, key}}
+  end
+
   defp refusal_error({:malformed, key}), do: {:error, {:effect_marker_malformed, key}}
   defp refusal_error({:check_failed, reason}), do: {:error, {:effect_check_failed, reason}}
 
