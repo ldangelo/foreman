@@ -35,7 +35,8 @@ defmodule ForemanServerWeb.MCP.Tools.Doctor do
   from the projection (`"unknown"` when it could not be read, `"not_found"` when the run
   has no projection), the key's own status `key_status` (`"started"` or `"ambiguous"`) and
   its `decision` (`"not_done"` once the boot sweep decided that the effect did not happen,
-  so the next attempt may run it; `"none"` for a key that carries none).
+  so the next attempt may run it; `"none"` for a key that carries none) and its `writer`:
+  the state of the process that stamped the `started` key (`Effect.writer_state/1`).
   """
   @type effect_entry :: %{
           key: String.t(),

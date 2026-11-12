@@ -189,8 +189,12 @@ defmodule ForemanServer.Workflow.BootReconciliation do
   blocks the run; a run that has ended cannot be blocked, so there the key only stays
   refused (`Effect` answers `effect_unresolved`) and the operator's way out is on GitHub; a
   class that never blocks a run (`Reconciler.blocks_run?/3`) is left as it is (TRD-039).
-  The scan first marks the `started` keys of runs with no live executor
-  `ambiguous`.
+  The scan first marks the orphaned `started` keys `ambiguous`: a key stamped with its writer
+  (`Idempotency.Effect.writer_state/1`) is an orphan when that writer is dead, whatever executor
+  its run has now, and never while it is alive; a key without a stamp is an orphan when its run
+  has no live executor. An `unknown` verdict marks the key unresolved and blocks the run only
+  when the scan is the boot sweep; an on-demand scan (the cast below) leaves the key undecided,
+  counts it `deferred_unknown` and leaves the run running.
 
   Dispatches as a cast so the scan runs inside the `BootReconciliation`
   process. Returns `:ok` once the cast is enqueued, whether or not the process
@@ -994,7 +998,10 @@ defmodule ForemanServer.Workflow.BootReconciliation do
   #                             `effect_retried` as an audit event. The key stays ambiguous,
   #                             decision and all, until that attempt re-marks it
   #   * `:done`              -> block `effect_already_done`
-  #   * `:unknown`, or an unexpected store status -> block `effect_outcome_ambiguous`
+  #   * `:unknown`, or an unexpected store status -> block `effect_outcome_ambiguous`, in the
+  #                             boot sweep only; an on-demand scan (the cast of a refusal)
+  #                             defers `:unknown`: key left undecided, run not blocked, counted
+  #                             `deferred_unknown`, asked again by the next scan
   #   * unregistered class   -> block `effect_class_unregistered` (fail closed)
   #   * `:done` or `:unknown` of a class that never blocks a run (`Reconciler.blocks_run?/3`
   #     false: an advisory effect such as a PR comment) -> nothing: no marker, no block, no
@@ -1133,8 +1140,9 @@ defmodule ForemanServer.Workflow.BootReconciliation do
   end
 
   # The one place stored metadata is normalised: `Effect` writes string keys while
-  # `KeyStore.mark_ambiguous/2` adds an atom-keyed `reason` on the
-  # ETS path. Past this point the effect step and the reconcilers read string keys only.
+  # rows written before `mark_ambiguous/2` normalised its `reason` to a string key can still
+  # carry an atom-keyed one. Past this point the effect step and the reconcilers read string
+  # keys only.
   defp read_effect_key(key) do
     case KeyStore.get(key) do
       {:ok, %{status: status, metadata: metadata}} when is_map(metadata) ->
