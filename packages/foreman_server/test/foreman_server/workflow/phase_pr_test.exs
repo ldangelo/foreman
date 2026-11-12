@@ -223,6 +223,8 @@ defmodule ForemanServer.Workflow.PhasePREffectsTest do
 
   @moduletag :capture_log
 
+  import ExUnit.CaptureLog
+
   alias ForemanServer.Idempotency.KeyStore
   alias ForemanServer.Idempotency.Reconcilers.{BranchPush, PrCreate}
   alias ForemanServer.TestSupport.{EffectWorld, KeyStoreReset}
@@ -275,6 +277,11 @@ defmodule ForemanServer.Workflow.PhasePREffectsTest do
   # sweep and never gets here.
   defp resume_unless_blocked(run_id, request),
     do: if(EffectWorld.status(run_id) != "blocked", do: PhasePR.maybe_create(request))
+
+  # The status an undecided key has: `started` as the dead process left it, or `ambiguous`
+  # as the boot sweep marks it before it has decided it.
+  defp undecided!(_key, :started), do: :ok
+  defp undecided!(key, :ambiguous), do: :ok = KeyStore.mark_ambiguous(key, "orphaned_started_key")
 
   defp calls(world, "git", subcommand),
     do: for({"git", [^subcommand | _] = args, opts} <- EffectWorld.calls(world), do: {args, opts})
@@ -494,6 +501,57 @@ defmodule ForemanServer.Workflow.PhasePREffectsTest do
               }} = PhasePR.maybe_create(request)
 
       assert EffectWorld.executed(world, :push) == 0
+    end
+  end
+
+  describe "a key nobody has decided" do
+    for status <- [:started, :ambiguous] do
+      test "a #{status} push key is refused with a typed error naming the key: nothing runs",
+           %{request: request, world: world, push_key: push_key} do
+        EffectWorld.crash!(world, :push, :before, fn -> PhasePR.maybe_create(request) end)
+        undecided!(push_key, unquote(status))
+        {:ok, before_key} = KeyStore.get(push_key)
+
+        log =
+          capture_log(fn ->
+            assert {:error,
+                    %PhasePR.Error{
+                      reason: :effect_undecided,
+                      details: %{effect: :branch_push, key: ^push_key}
+                    }} = PhasePR.maybe_create(request)
+          end)
+
+        assert log =~ "branch_push NOT run"
+        assert log =~ push_key
+        assert EffectWorld.executed(world, :push) == 0
+        assert EffectWorld.executed(world, :create) == 0
+        assert {:ok, ^before_key} = KeyStore.get(push_key)
+      end
+
+      test "a #{status} PR-create key is refused before the push: the push is not repeated either",
+           %{request: request, world: world, create_key: create_key} do
+        # The push goes through once; the create then dies before it reaches GitHub.
+        EffectWorld.crash!(world, :create, :before, fn -> PhasePR.maybe_create(request) end)
+        assert EffectWorld.executed(world, :push) == 1
+        undecided!(create_key, unquote(status))
+        {:ok, before_key} = KeyStore.get(create_key)
+
+        log =
+          capture_log(fn ->
+            assert {:error,
+                    %PhasePR.Error{
+                      reason: :effect_undecided,
+                      details: %{effect: :pr_create, key: ^create_key}
+                    }} = PhasePR.maybe_create(request)
+          end)
+
+        assert log =~ "pr_create NOT run"
+        assert log =~ create_key
+        assert EffectWorld.executed(world, :push) == 1
+        assert EffectWorld.executed(world, :create) == 0
+        assert EffectWorld.prs(world) == []
+        assert {:ok, ^before_key} = KeyStore.get(create_key)
+      end
     end
   end
 

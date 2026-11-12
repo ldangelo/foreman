@@ -37,8 +37,21 @@ defmodule ForemanServer.Workflow.BootReconciliationEffectKeysTest do
     def reconcile(%{"fake_verdict" => verdict}), do: String.to_existing_atom(verdict)
   end
 
+  defmodule Probe do
+    @moduledoc false
+    @behaviour ForemanServer.Idempotency.Reconciler
+
+    # A class whose reconciler answers `repeatable?/1` from each key's own metadata.
+    @impl true
+    def reconcile(%{"fake_verdict" => verdict}), do: String.to_existing_atom(verdict)
+
+    @impl true
+    def repeatable?(%{"repeatable" => answer}), do: answer
+  end
+
   @project_id "project-effect-keys"
   @classes %{"branch_push" => Fake, "pr_create" => Fake}
+  @probe_classes %{"probe" => Probe}
 
   setup_all do
     MeckScope.new_once!([Jido.Harness.Run, KeyStore, CommandGateway])
@@ -564,6 +577,54 @@ defmodule ForemanServer.Workflow.BootReconciliationEffectKeysTest do
     end
   end
 
+  describe "the sweep reads the reconciler's definition of repeatable" do
+    for {verdict, reason} <- [
+          {"done", "effect_already_done"},
+          {"unknown", "effect_outcome_ambiguous"}
+        ] do
+      test "a #{verdict} verdict of a repeatable key blocks the run but does not mark the key unresolved",
+           %{run_id: run_id} do
+        key = plant_probe(run_id, unquote(verdict), true)
+
+        sweep_with(@probe_classes)
+
+        assert status(run_id) == "blocked"
+        assert get(List.last(events(run_id)).payload, :reason) == unquote(reason)
+        assert {:ok, %{status: :ambiguous, metadata: metadata}} = KeyStore.get(key)
+        assert KeyStore.unresolved_version(metadata) == :none
+      end
+
+      test "a #{verdict} verdict of a key that is not repeatable marks it unresolved, as before",
+           %{run_id: run_id} do
+        key = plant_probe(run_id, unquote(verdict), false)
+
+        sweep_with(@probe_classes)
+
+        assert status(run_id) == "blocked"
+        assert {:ok, %{status: :ambiguous, metadata: metadata}} = KeyStore.get(key)
+        assert {:ok, _version} = KeyStore.unresolved_version(metadata)
+        assert metadata["unresolved_reason"] == unquote(reason)
+      end
+    end
+
+    test "the answer is read for each key: of two keys of one class only the repeatable one stays unmarked",
+         %{run_id: held_run} do
+      repeatable_run = UniqueIds.unique_run_id("effect-repeatable")
+      start_run(repeatable_run)
+      on_exit(fn -> RunControl.clear(repeatable_run) end)
+
+      repeatable = plant_probe(repeatable_run, "done", true)
+      held = plant_probe(held_run, "done", false)
+
+      sweep_with(@probe_classes)
+
+      assert {:ok, %{metadata: repeatable_meta}} = KeyStore.get(repeatable)
+      assert KeyStore.unresolved_version(repeatable_meta) == :none
+      assert {:ok, %{metadata: held_meta}} = KeyStore.get(held)
+      assert {:ok, _version} = KeyStore.unresolved_version(held_meta)
+    end
+  end
+
   # --- helpers ---
 
   defp meta(run_id), do: %{"run_id" => run_id, "effect_class" => "branch_push"}
@@ -584,6 +645,24 @@ defmodule ForemanServer.Workflow.BootReconciliationEffectKeysTest do
     :ok = KeyStore.mark_ambiguous(key, "orphaned_started_key")
     key
   end
+
+  defp plant_probe(run_id, verdict, repeatable?) do
+    key = Effect.key("probe", run_id, "probe")
+
+    :ok =
+      KeyStore.mark_started(key, %{
+        "run_id" => run_id,
+        "effect_class" => "probe",
+        "fake_verdict" => verdict,
+        "repeatable" => repeatable?
+      })
+
+    :ok = KeyStore.mark_ambiguous(key, "orphaned_started_key")
+    key
+  end
+
+  defp sweep_with(classes),
+    do: BootReconciliation.do_reconcile_ambiguous_keys(fn _key -> true end, classes: classes)
 
   # The start command id derives from the workflow snapshot, so a restart after a reset
   # carries a different one: the same snapshot would be replayed, not started again.

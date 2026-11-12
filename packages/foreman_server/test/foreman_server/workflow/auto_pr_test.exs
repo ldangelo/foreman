@@ -474,6 +474,8 @@ defmodule ForemanServer.Workflow.AutoPREffectsTest do
 
   @moduletag :capture_log
 
+  import ExUnit.CaptureLog
+
   alias ForemanServer.Idempotency.KeyStore
   alias ForemanServer.Idempotency.Reconcilers.{BranchPush, PrCreate}
   alias ForemanServer.TestSupport.{EffectWorld, KeyStoreReset}
@@ -519,6 +521,11 @@ defmodule ForemanServer.Workflow.AutoPREffectsTest do
   # sweep and never gets here.
   defp resume_unless_blocked(run_id, ctx),
     do: if(EffectWorld.status(run_id) != "blocked", do: AutoPR.maybe_create_pr(ctx))
+
+  # The status an undecided key has: `started` as the dead process left it, or `ambiguous`
+  # as the boot sweep marks it before it has decided it.
+  defp undecided!(_key, :started), do: :ok
+  defp undecided!(key, :ambiguous), do: :ok = KeyStore.mark_ambiguous(key, "orphaned_started_key")
 
   # The commands the reconcilers issued: `git ls-remote` and `gh pr list` are asked only
   # for the intent (before the push) and by the reconcilers.
@@ -683,6 +690,87 @@ defmodule ForemanServer.Workflow.AutoPREffectsTest do
       assert EffectWorld.executed(world, :push) == 0
       assert EffectWorld.executed(world, :create) == 0
       assert :not_found = KeyStore.get(push_key)
+    end
+  end
+
+  describe "a key nobody has decided" do
+    for status <- [:started, :ambiguous] do
+      test "a #{status} push key: the refusal comes back, logged as not run and naming the key",
+           %{ctx: ctx, world: world, push_key: push_key} do
+        EffectWorld.crash!(world, :push, :before, fn -> AutoPR.maybe_create_pr(ctx) end)
+        undecided!(push_key, unquote(status))
+        {:ok, before_key} = KeyStore.get(push_key)
+
+        log =
+          capture_log(fn ->
+            assert {:error, {:effect_undecided, ^push_key}} = AutoPR.maybe_create_pr(ctx)
+          end)
+
+        assert log =~ "git push NOT run"
+        assert log =~ push_key
+        assert EffectWorld.executed(world, :push) == 0
+        assert EffectWorld.executed(world, :create) == 0
+        assert {:ok, ^before_key} = KeyStore.get(push_key)
+      end
+
+      test "a #{status} PR-create key stops the sequence before the push: the push is not repeated either",
+           %{ctx: ctx, world: world, create_key: create_key} do
+        # The push goes through once; the create then dies before it reaches GitHub.
+        EffectWorld.crash!(world, :create, :before, fn -> AutoPR.maybe_create_pr(ctx) end)
+        assert EffectWorld.executed(world, :push) == 1
+        undecided!(create_key, unquote(status))
+        {:ok, before_key} = KeyStore.get(create_key)
+
+        log =
+          capture_log(fn ->
+            assert {:error, {:effect_undecided, ^create_key}} = AutoPR.maybe_create_pr(ctx)
+          end)
+
+        assert log =~ "git push and gh pr create NOT run"
+        assert log =~ create_key
+        assert EffectWorld.executed(world, :push) == 1
+        assert EffectWorld.executed(world, :create) == 0
+        assert EffectWorld.prs(world) == []
+        assert {:ok, ^before_key} = KeyStore.get(create_key)
+      end
+    end
+
+    test "a PR-create key that turns undecided while the push runs is refused by the create itself",
+         %{ctx: ctx, fx: fx, world: world, run_id: run_id, create_key: create_key} do
+      world_runner = ctx.command_runner
+
+      # Another attempt starts the PR create while this one pushes: the preflight read a
+      # clear key, the create's own check finds it started.
+      runner = fn
+        "git", ["push" | _] = args, opts ->
+          result = world_runner.("git", args, opts)
+
+          :ok =
+            KeyStore.mark_started(create_key, %{
+              "run_id" => run_id,
+              "effect_class" => "pr_create",
+              "head_branch" => fx.head,
+              "base_branch" => fx.base,
+              "cwd" => fx.repo
+            })
+
+          result
+
+        executable, args, opts ->
+          world_runner.(executable, args, opts)
+      end
+
+      log =
+        capture_log(fn ->
+          assert {:error, {:effect_undecided, ^create_key}} =
+                   AutoPR.maybe_create_pr(%{ctx | command_runner: runner})
+        end)
+
+      assert log =~ "gh pr create NOT run"
+      assert log =~ create_key
+      assert EffectWorld.executed(world, :push) == 1
+      assert EffectWorld.executed(world, :create) == 0
+      assert EffectWorld.prs(world) == []
     end
   end
 
