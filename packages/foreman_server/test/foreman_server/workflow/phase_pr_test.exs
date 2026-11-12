@@ -837,8 +837,8 @@ defmodule ForemanServer.Workflow.PhasePREffectsTest do
 
     test "after GitHub made the PR and it was merged before recovery ran: still blocked, no second PR",
          %{request: request, world: world, run_id: run_id} do
-      # `PhasePR` itself looks for an open or closed PR only, so a merged one is invisible to
-      # a resumed attempt: only the reconciler stands between it and a second PR.
+      # The sweep blocks the run before `PhasePR` can resume it; what `PhasePR` itself does
+      # with a merged PR is the next test.
       EffectWorld.crash!(world, :create, :after, fn -> PhasePR.maybe_create(request) end)
       EffectWorld.merge_prs!(world)
 
@@ -848,6 +848,26 @@ defmodule ForemanServer.Workflow.PhasePREffectsTest do
       assert EffectWorld.executed(world, :create) == 1
       assert EffectWorld.status(run_id) == "blocked"
       assert EffectWorld.block_reason(run_id) == "effect_already_done"
+    end
+
+    test "a merged PR of the branch on GitHub refuses creation: the closed lookup lists it, no second PR is created",
+         %{request: request, world: world, fx: fx} do
+      url = EffectWorld.add_pr!(world, fx.head, fx.base, "MERGED")
+
+      :ok =
+        EffectWorld.report_pr!(world, url,
+          head_sha: EffectWorld.local_tip(fx),
+          cross_repository: false
+        )
+
+      assert {:error,
+              %PhasePR.Error{
+                reason: :matching_pr_closed,
+                details: %ForemanServer.GitHub.PrLookup.Pr{url: ^url, state: :merged}
+              }} = PhasePR.maybe_create(request)
+
+      assert EffectWorld.executed(world, :create) == 0
+      assert length(EffectWorld.prs(world)) == 1
     end
 
     test "before gh pr create ran: retried, and the PR is created once",

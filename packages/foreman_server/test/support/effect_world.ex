@@ -281,9 +281,19 @@ defmodule ForemanServer.TestSupport.EffectWorld do
 
   defp run(_world, "git", args, opts), do: System.cmd("git", args, opts)
 
-  defp run(world, "gh", ["pr", "create" | _] = args, _opts) do
+  defp run(world, "gh", ["pr", "create" | _] = args, opts) do
     park(world, :create, :before)
-    url = add_pr!(world, flag(args, "--head"), flag(args, "--base"))
+    head = flag(args, "--head")
+    url = add_pr!(world, head, flag(args, "--base"))
+    # Like GitHub, the PR it made knows the remote tip of its head branch and that it is no
+    # fork's PR. A branch origin does not have leaves the head unreported.
+    report =
+      case remote_head_sha(head, opts) do
+        nil -> [cross_repository: false]
+        sha -> [head_sha: sha, cross_repository: false]
+      end
+
+    :ok = report_pr!(world, url, report)
     Agent.update(world, &update_in(&1.executed.create, fn n -> n + 1 end))
     park(world, :create, :after)
     {url <> "\n", 0}
@@ -296,11 +306,26 @@ defmodule ForemanServer.TestSupport.EffectWorld do
     end)
   end
 
+  defp remote_head_sha(head, opts) do
+    with cwd when is_binary(cwd) <- Keyword.get(opts, :cd),
+         {output, 0} <-
+           System.cmd("git", ["ls-remote", "origin", "refs/heads/" <> head],
+             cd: cwd,
+             stderr_to_stdout: true
+           ),
+         [sha | _] <- String.split(output) do
+      sha
+    else
+      _ -> nil
+    end
+  end
+
   defp list(prs, args) do
     states =
       case flag(args, "--state") do
         "all" -> ["OPEN", "CLOSED", "MERGED"]
-        "closed" -> ["CLOSED"]
+        # Like the real gh (2.103.3), `--state closed` lists the merged PRs too.
+        "closed" -> ["CLOSED", "MERGED"]
         "merged" -> ["MERGED"]
         # `gh pr list` lists only open PRs unless told otherwise.
         _ -> ["OPEN"]

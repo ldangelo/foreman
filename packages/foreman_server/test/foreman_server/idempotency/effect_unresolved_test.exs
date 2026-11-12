@@ -139,6 +139,9 @@ defmodule ForemanServer.Idempotency.EffectUnresolvedTest do
       assert metadata["unresolved_reason"] == "effect_already_done"
       assert EffectWorld.executed(world, :create) == 1
       pushes = EffectWorld.executed(world, :push)
+      # GitHub cannot be queried now, so the operator's lookup cannot adopt the PR and the
+      # refusal is what stops Create PR.
+      EffectWorld.fail_gh_list!(world)
 
       assert {:error, {:effect_unresolved, ^key}} = PrCreate.execute(t.run_id)
 
@@ -153,6 +156,9 @@ defmodule ForemanServer.Idempotency.EffectUnresolvedTest do
       {t, _fx} = thread!(world, false)
       key = key_of(t)
       crash_and_sweep!(world, t)
+      # GitHub cannot be queried now, so the operator's lookup cannot adopt the PR and the
+      # refusal is what stops Create PR.
+      EffectWorld.fail_gh_list!(world)
 
       assert {:error, {:effect_unresolved, ^key}} =
                CommandGateway.dispatch_operator(create_command(t.run_id))
@@ -173,6 +179,9 @@ defmodule ForemanServer.Idempotency.EffectUnresolvedTest do
 
       assert {:ok, %{status: :ambiguous, metadata: metadata} = before_key} = KeyStore.get(key)
       assert KeyStore.unresolved_version(metadata) == {:ok, version(t.run_id)}
+      # GitHub cannot be queried now, so the operator's lookup cannot adopt the PR and the
+      # refusal is what stops Create PR.
+      EffectWorld.fail_gh_list!(world)
 
       assert {:error, {:effect_unresolved, ^key}} = PrCreate.execute(t.run_id)
 
@@ -191,6 +200,9 @@ defmodule ForemanServer.Idempotency.EffectUnresolvedTest do
       crash_and_sweep!(world, t)
 
       v = version(t.run_id)
+      # GitHub cannot be queried now, so the operator's lookup cannot adopt the PR and the
+      # refusal is what stops Create PR.
+      EffectWorld.fail_gh_list!(world)
 
       :ok =
         FEventStoreMod.append_to_stream("run:#{t.run_id}", v, [
