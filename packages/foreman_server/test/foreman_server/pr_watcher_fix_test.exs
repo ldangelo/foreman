@@ -266,6 +266,40 @@ defmodule ForemanServer.PrWatcherFixTest do
       assert [%{head_sha: "sha-2"}] = ProjectionStore.pr_watch(ctx.run_id)
     end
 
+    test "a fix push moves the head: the current-head observation is reset to the new head and nothing of the old head reads as current (TRD-009)",
+         tc do
+      ctx = setup_run!(tc)
+      start_watcher!(ctx, tc)
+      old_head = ctx.status.head_sha
+
+      assert [
+               %{
+                 head_sha: ^old_head,
+                 checks_state: "failing",
+                 failing: [_ | _],
+                 evidence: %{checks: %{head_sha: ^old_head} = old_checks}
+               }
+             ] = ProjectionStore.pr_watch(ctx.run_id)
+
+      request_fix!(ctx)
+      {jobsite_id, _opts} = assert_started!()
+      await_event("PrFixStarted", ctx.run_id)
+
+      # the push is not a keyed effect: only the re-read after the jobsite ends can see it
+      github!(tc.github, %{ctx.status | head_sha: "sha-2", checks_state: :passing, checks: []})
+      finish_jobsite!("JobsiteCompleted", jobsite_id)
+      assert await_event("PrFixFinished", ctx.run_id).new_head_sha == "sha-2"
+
+      assert [record] = ProjectionStore.pr_watch(ctx.run_id)
+      assert record.head_sha == "sha-2"
+      assert record.checks_state == "passing"
+      assert record.failing == []
+      # the old head's failing result is not the current head's, and the evidence record
+      # is labelled with the head it was recorded for
+      assert record.evidence.checks.head_sha == "sha-2"
+      refute record.evidence.checks.evidence_digest == old_checks.evidence_digest
+    end
+
     test "an unchanged head is `no_change`", tc do
       ctx = setup_run!(tc)
       start_watcher!(ctx, tc)

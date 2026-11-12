@@ -56,6 +56,71 @@ defmodule ForemanServerWeb.DoctorControllerTest do
     assert Enum.all?(checks, &(&1["status"] in ["ok", "warn", "fail"]))
   end
 
+  describe "pr_observation check (TRD-009)" do
+    setup do
+      keys = [:pr_watcher, :pr_monitor_enabled, :github_webhook_secret]
+      saved = Map.new(keys, &{&1, Application.fetch_env(:foreman_server, &1)})
+
+      on_exit(fn ->
+        for {key, saved} <- saved do
+          case saved do
+            {:ok, value} -> Application.put_env(:foreman_server, key, value)
+            :error -> Application.delete_env(:foreman_server, key)
+          end
+        end
+      end)
+    end
+
+    defp pr_observation_row do
+      %{"checks" => checks} = get_json("/api/doctor", 200)
+      Enum.find(checks, &(&1["id"] == "pr_observation"))
+    end
+
+    defp configure_observation(watcher, monitor, secret) do
+      Application.put_env(:foreman_server, :pr_watcher, enabled: watcher)
+      Application.put_env(:foreman_server, :pr_monitor_enabled, monitor)
+
+      if secret,
+        do: Application.put_env(:foreman_server, :github_webhook_secret, secret),
+        else: Application.delete_env(:foreman_server, :github_webhook_secret)
+    end
+
+    test "watcher on is ok and names the monitor and the webhook secret state" do
+      configure_observation(true, false, nil)
+      row = pr_observation_row()
+
+      assert row["status"] == "ok"
+      assert row["detail"] =~ "watcher: on"
+      assert row["detail"] =~ "monitor: off"
+      assert row["detail"] =~ "webhook secret: not set"
+
+      configure_observation(true, true, "s3cret-value")
+      row = pr_observation_row()
+
+      assert row["status"] == "ok"
+      assert row["detail"] =~ "monitor: on"
+      assert row["detail"] =~ "webhook secret: set"
+      # the secret itself is never reported
+      refute Jason.encode!(row) =~ "s3cret-value"
+    end
+
+    test "watcher off is a warning, and the row says the watcher is off" do
+      configure_observation(false, true, "s3cret-value")
+      row = pr_observation_row()
+
+      assert row["status"] == "warn"
+      assert row["title"] =~ "watcher is off"
+      assert row["detail"] =~ "watcher: off"
+      assert row["detail"] =~ "monitor: on"
+      assert row["detail"] =~ "webhook secret: set"
+    end
+
+    test "an empty webhook secret counts as not set" do
+      configure_observation(true, false, "")
+      assert pr_observation_row()["detail"] =~ "webhook secret: not set"
+    end
+  end
+
   describe "effect_keys check" do
     alias ForemanServer.Idempotency.{Effect, KeyStore}
     alias ForemanServer.TestSupport.{KeyStoreReset, UniqueIds}
