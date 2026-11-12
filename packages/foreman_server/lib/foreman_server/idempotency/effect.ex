@@ -35,7 +35,10 @@ defmodule ForemanServer.Idempotency.Effect do
   calling `fun` and without touching the key, and ask the boot sweep to run again
   (`BootReconciliation.scan_ambiguous_keys/0`, once per refusal; best effort, so a
   sweep that is not running leaves the refusal as it is, and the sweep coalesces the
-  requests), because a decision can only come from it. A key recovery could not
+  requests), because a decision can only come from it. That scan is an on-demand one: a
+  reconciler that cannot tell (`unknown`, such as a `gh` call that timed out) leaves the key
+  undecided and the run running, and the next refusal or the boot sweep asks again; only the
+  boot sweep marks such a key unresolved. A key recovery could not
   resolve is refused as `effect_unresolved` until an operator `run.reset`.
 
   ## The writer stamp
@@ -48,6 +51,9 @@ defmodule ForemanServer.Idempotency.Effect do
   writer is `:dead`, whatever executor its run has now, and never when it is `:alive`; the
   doctor prints it. A key without a stamp (written before the stamp existed) is `:none` and
   keeps the run-liveness rule. A settle clears the stamp (`KeyStore.recovery_fields_cleared/0`).
+  A writer that hangs forever keeps its key undecided, and a local pid recycled within one
+  incarnation (a full wrap of the pid space in one boot) would read `alive`: both are
+  accepted, since not repeating is the safe side.
 
   The key is marked with `KeyStore.mark_started/2` directly;
   `HeartbeatLease.acquire/4` arms a live-worker expiry timer and is not used.
@@ -342,11 +348,21 @@ defmodule ForemanServer.Idempotency.Effect do
 
   def writer_state(_metadata), do: :none
 
+  # `list_to_pid/1` raises `badarg` for text that is not a pid, and for a pid text with a node
+  # index this VM does not know (`"<5.1.0>"` on a VM that is not connected to that node;
+  # observed on OTP 28); on a distributed VM that knows the index it returns a remote pid, which
+  # `Process.alive?/1` would raise on, hence the `node/1` check. `String.to_charlist/1` raises
+  # `UnicodeConversionError` on invalid UTF-8. None of them may escape: an unreadable stamp is a
+  # writer that cannot be alive.
   defp local_pid(text) do
-    pid = text |> String.to_charlist() |> :erlang.list_to_pid()
-    if node(pid) == node(), do: {:ok, pid}, else: :error
+    if String.valid?(text) do
+      pid = text |> String.to_charlist() |> :erlang.list_to_pid()
+      if node(pid) == node(), do: {:ok, pid}, else: :error
+    else
+      :error
+    end
   rescue
-    ArgumentError -> :error
+    _error -> :error
   end
 
   # Every re-mark clears what recovery wrote (the decision and the unresolved marker): the

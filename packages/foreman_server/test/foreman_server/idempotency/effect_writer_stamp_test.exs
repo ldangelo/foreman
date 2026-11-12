@@ -189,7 +189,19 @@ defmodule ForemanServer.Idempotency.EffectWriterStampTest do
     end
 
     test "a pid text that cannot be read back is dead, never a raise" do
-      for text <- ["", "nonsense", "<0.1>", "#PID<0.1.0>", "<0.1.0>junk", "<0.99999999.0>x"] do
+      # "<5.1.0>" names a node index this VM does not know (`list_to_pid/1` raises `badarg`
+      # there); `<<255, 254>>` is invalid UTF-8 (`String.to_charlist/1` raises).
+      for text <- [
+            "",
+            "nonsense",
+            "<0.1>",
+            "#PID<0.1.0>",
+            "<0.1.0>junk",
+            "<0.99999999.0>x",
+            "<5.1.0>",
+            <<255, 254>>,
+            "<0.1.0>" <> <<255>>
+          ] do
         stamp = %{"writer_incarnation" => Incarnation.id(), "writer_pid" => text}
         assert Effect.writer_state(stamp) == :dead, text
       end
