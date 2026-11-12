@@ -13,6 +13,8 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
     * `pr_fixes` - `%{pr_url => %{attempts: %{kind => n}, in_flight: nil |
       :requested | jobsite_id, last_fix_head_sha, last_outcome: %{kind =>
       outcome}, last_finished_at, exhausted: %{kind => head_sha}}}`.
+    * `evidence` (inside each `pr_watch` record) - see `ForemanServer.PrEvidence`;
+      `run.pr.ready_failed` (TRD-033) sets `delivery_issue`, the next `PrReady` clears it.
 
   Commands handled (all allowed on terminal runs - a PR outlives its run):
   `run.pr.checks`, `run.pr.review` (system, from `PrWatcher`),
@@ -43,7 +45,8 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
                    "run.pr.fix_exhausted",
                    "run.pr.watch_stop",
                    "run.pr.watch_start",
-                   "run.pr.create"
+                   "run.pr.create",
+                   "run.pr.ready_failed"
                  ] ++ Map.keys(@kinds)
 
   @events %{
@@ -57,7 +60,8 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
     "run.pr.fix_exhausted" => "PrFixExhausted",
     "run.pr.watch_stop" => "PrWatchStopped",
     "run.pr.watch_start" => "PrWatchStarted",
-    "run.pr.create" => "PrCreated"
+    "run.pr.create" => "PrCreated",
+    "run.pr.ready_failed" => "PrReadyFailed"
   }
 
   @checks_states ~w(none pending failing passing)
@@ -66,6 +70,7 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
   @exhaust_reasons ~w(max_attempts no_progress)
   @watch_stop_reasons ~w(operator merged closed)
   @watch_start_reasons ~w(operator reopened)
+  @ready_failed_stages ~w(head_read ready_dispatch)
   @open_statuses ~w(open conflicted)
 
   @hard_cap 5
@@ -131,7 +136,8 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
       url when is_binary(url) and url != "" ->
         {:ok, url}
 
-      nil when type in ["run.pr.checks", "run.pr.review", "run.pr.create"] ->
+      nil
+      when type in ["run.pr.checks", "run.pr.review", "run.pr.create", "run.pr.ready_failed"] ->
         {:error, {:missing_or_invalid, :pr_url}}
 
       nil ->
@@ -388,6 +394,22 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
     end
   end
 
+  # TRD-033: the ready signal of a PR that exists failed (system-only, from `PrReadySignal`).
+  # Each attempt carries its own `failed_at` (and command id), so two attempts are two events
+  # and one attempt repeated dedupes at the gateway.
+  defp do_handle("run.pr.ready_failed", state, run_id, pr_url, payload) do
+    with {:ok, ids} <- identity(state, payload),
+         {:ok, stage} <- one_of(Aggregate.get(payload, :stage), @ready_failed_stages, :stage),
+         {:ok, reason} <- required_text(payload, :reason),
+         {:ok, failed_at} <- non_neg_integer(Aggregate.get(payload, :failed_at), :failed_at) do
+      event("run.pr.ready_failed", run_id, pr_url, payload, ids, %{
+        stage: stage,
+        reason: reason,
+        failed_at: failed_at
+      })
+    end
+  end
+
   # -- shared helpers ----------------------------------------------------------
 
   # project_id / task_id default to the run's own; a payload that names others is
@@ -400,6 +422,16 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
        %{project_id: project_id, task_id: task_id, repo_id: Aggregate.get(payload, :repo_id)}}
     end
   end
+
+  defp required_text(payload, key) do
+    case PrEvidence.validate_text(Aggregate.get(payload, key)) do
+      {:ok, text} when is_binary(text) -> {:ok, text}
+      _missing_or_invalid -> {:error, {:missing_or_invalid, key}}
+    end
+  end
+
+  defp non_neg_integer(value, _key) when is_integer(value) and value >= 0, do: {:ok, value}
+  defp non_neg_integer(_value, key), do: {:error, {:missing_or_invalid, key}}
 
   defp same(own, nil, key), do: Aggregate.required_binary(own, key)
   defp same(own, given, _key) when is_binary(own) and own == given, do: {:ok, own}

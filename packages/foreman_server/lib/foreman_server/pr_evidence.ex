@@ -26,7 +26,7 @@ defmodule ForemanServer.PrEvidence do
   """
 
   @head_events ~w(PrUpdated PrReady PrChecksChanged PrReviewChanged)
-  @events @head_events ++ ["PrEvidenceWaived"]
+  @events @head_events ++ ["PrEvidenceWaived", "PrReadyFailed"]
 
   @max_checks 100
   @max_required 20
@@ -143,6 +143,18 @@ defmodule ForemanServer.PrEvidence do
       waived_at: get(payload, :waived_at)
     })
   end
+
+  # A failed ready signal is a recorded condition (TRD-033); the next successful `PrReady`
+  # for the PR clears it.
+  defp apply_evidence(record, "PrReadyFailed", payload) do
+    put_evidence(record, :delivery_issue, %{
+      stage: get(payload, :stage),
+      reason: get(payload, :reason),
+      failed_at: get(payload, :failed_at)
+    })
+  end
+
+  defp apply_evidence(record, "PrReady", _payload), do: put_evidence(record, :delivery_issue, nil)
 
   defp apply_evidence(record, _type, _payload), do: record
 
