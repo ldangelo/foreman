@@ -5656,6 +5656,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
             {:error, {kind, _detail} = refusal}
             when kind in [
                    :effect_unresolved,
+                   :effect_undecided,
                    :effect_check_failed,
                    :effect_marker_malformed,
                    :intent_not_recorded

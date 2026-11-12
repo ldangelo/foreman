@@ -774,6 +774,13 @@ defmodule ForemanServerWeb.Workspace.Actions do
         "and let it resume: the key is lifted when the restarted run reaches that step again. " <>
         "For any other run the key stays unresolved"
 
+  def describe({:effect_undecided, key}),
+    do:
+      "an earlier push or pull request attempt (#{key}) may still be in flight or may already " <>
+        "have happened, and nothing has decided which, so it is not repeated. The boot sweep is " <>
+        "asked to decide it: try again once it has. Check GitHub and foreman_doctor, " <>
+        "Unresolved effect keys"
+
   def describe({:effect_marker_malformed, key}),
     do:
       "the unresolved marker of #{key} is malformed, so the earlier push or pull request " <>

@@ -72,6 +72,12 @@ defmodule ForemanServer.Workflow.AutoPR do
   same shape comes back when the push's remote or local head cannot be read, or the
   key cannot be written. A push or create that runs keeps its own result and error
   shapes (`{:git_push_failed, ...}`, `{:gh_pr_create_failed, ...}`).
+
+  A key nobody has decided (`started`, or `ambiguous` with no recorded decision) refuses
+  the effect: `{:error, {:effect_undecided, key}}` comes back unchanged, the push or the
+  PR create is not made and is not retried here, and the log says it did not run and names
+  the key. An undecided PR-create key stops the push too (the preflight runs first). The
+  boot sweep decides the key; this module only reports the refusal.
   """
 
   alias ForemanServer.Idempotency.Effect
@@ -369,6 +375,26 @@ defmodule ForemanServer.Workflow.AutoPR do
       operation: operation,
       outcome: "refused",
       reason: "effect_unresolved"
+    )
+
+    result
+  end
+
+  defp log_refusal(
+         {:error, {:effect_undecided, key}} = result,
+         run_id,
+         head_branch,
+         operation,
+         what
+       ) do
+    Logger.error(
+      "AutoPR.run_id=#{run_id} #{what} NOT run: #{inspect(key)} is undecided: an earlier attempt may still be in flight or may already have happened, and nothing has said which, so it is not repeated. " <>
+        "The boot sweep is asked to decide it; check GitHub and foreman_doctor, Unresolved effect keys",
+      run_id: run_id,
+      head_branch: head_branch,
+      operation: operation,
+      outcome: "refused",
+      reason: "effect_undecided"
     )
 
     result

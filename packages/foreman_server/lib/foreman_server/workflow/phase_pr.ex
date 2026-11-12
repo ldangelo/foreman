@@ -18,7 +18,10 @@ defmodule ForemanServer.Workflow.PhasePR do
   reason in `details`). A key recovery left unresolved is not repeated: the result is
   `%Error{reason: :effect_unresolved}` (the effect and key in `details`) until the run
   is reset; a refusal check that cannot be made is `%Error{reason: :effect_check_failed}`; a malformed marker
-  is `%Error{reason: :effect_marker_malformed}` (an operator repairs the stored key).
+  is `%Error{reason: :effect_marker_malformed}` (an operator repairs the stored key). A key
+  nobody has decided (`started`, or `ambiguous` with no recorded decision) is
+  `%Error{reason: :effect_undecided}` (the effect and key in `details`): the effect is not
+  run and is not retried here, and the boot sweep decides the key.
   The PR-create key is checked before the push, so a refusal stops the push too.
   """
 
@@ -311,6 +314,18 @@ defmodule ForemanServer.Workflow.PhasePR do
     )
 
     typed_error(request, :effect_unresolved, %{effect: effect, key: key})
+  end
+
+  # A key nobody has decided (`started`, or `ambiguous` with no recorded decision): an
+  # earlier attempt may be in flight or may have happened, so the effect is not run and not
+  # repeated here: `%Error{reason: :effect_undecided}`. The boot sweep decides the key.
+  defp effect_result({:error, {:effect_undecided, key}}, request, effect) do
+    Logger.error(
+      "PhasePR.run_id=#{request.run_id} #{effect} NOT run: #{inspect(key)} is undecided: an earlier attempt may still be in flight or may already have happened, and nothing has said which, so it is not repeated. " <>
+        "The boot sweep is asked to decide it; check GitHub and foreman_doctor, Unresolved effect keys"
+    )
+
+    typed_error(request, :effect_undecided, %{effect: effect, key: key})
   end
 
   defp effect_result({:error, {:effect_marker_malformed, key}}, request, effect) do

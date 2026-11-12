@@ -917,7 +917,7 @@ defmodule ForemanServer.Workflow.BootReconciliation do
               class,
               verdict,
               reason,
-              repeatable_effect?(class, metadata)
+              Reconciler.repeatable?(class, metadata, Keyword.take(opts, [:classes]))
             )
 
           # The outcome was decided at an earlier boot (the key carries its marker):
@@ -1042,11 +1042,12 @@ defmodule ForemanServer.Workflow.BootReconciliation do
     # repeat. A marker that cannot be written leaves the key unresolved and the run
     # untouched (`:unresolved`), never counted as a block.
     #
-    # A repeatable effect (a task-provider `reopen`, TRD-015) is never marked: the
-    # marker exists to stop a repeated push or PR create, and repeating a reopen
-    # is harmless. A marked reopen key would refuse the next boot's reopen of an
-    # issue whose run is terminal (so the block below is rejected) until an
-    # operator reset a run that cannot be reset.
+    # A repeatable effect (`Reconciler.repeatable?/3`, the one definition `Effect` reads
+    # too: a task-provider `reopen`, TRD-015, or any class whose reconciler declares it) is
+    # never marked: the marker exists to stop a repeated push or PR create, and repeating
+    # a reopen is harmless. A marked reopen key would refuse the next boot's reopen of an
+    # issue whose run is terminal (so the block below is rejected) until an operator
+    # reset a run that cannot be reset.
     with :ok <- mark_unless_repeatable(key, version, reason, repeatable?) do
       block_for_effect(key, run_id, class, verdict, reason, fields, version)
     else
@@ -1065,9 +1066,6 @@ defmodule ForemanServer.Workflow.BootReconciliation do
 
   defp mark_unless_repeatable(key, version, reason, false),
     do: mark_effect_unresolved(key, version, reason)
-
-  defp repeatable_effect?("task_provider", metadata), do: TaskProviderEffect.repeatable?(metadata)
-  defp repeatable_effect?(_class, _metadata), do: false
 
   defp block_for_effect(key, run_id, class, verdict, reason, fields, version) do
     # The ids carry the run stream's version, so a block after an operator
