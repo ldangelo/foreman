@@ -1,6 +1,6 @@
 # Decision: Phase 0 durable execution engine: extend the current engine, conditional on the named gaps; no Temporal, Conductor or Pi Durable adoption
 
-Status: proposed by the Phase 0 build (TRD-023, bead `foreman-83q8j.9.1`); not accepted until the operator reviews it. The operator may veto it in review, and no engine change is acted on before then (constitution §5: architecture changes need approval). This record decides nothing about migrating the engine: its decision is to keep the current engine, conditional on the operator accepting the named gaps (11 criteria are not marked passed). A veto means the comparison below is re-run with the operator's choice, not that any work already built is reverted.
+Status: ACCEPTED by the operator on 2026-11-12, with three preconditions (P-1, P-2, P-3) and one design rule (P-4) for Phase 1; see "Acceptance (2026-11-12) and what Phase 1 inherits". Originally proposed by the Phase 0 build (TRD-023, bead `foreman-83q8j.9.1`) for operator review (constitution §5: architecture changes need approval). Acceptance changes only the status: the per-criterion table, the caveats, the limitations and the conditional wording of "Decision" below stay as written, because that decision was conditional on the operator accepting the named gaps (11 criteria are not marked passed) and the operator now has, on the stated preconditions. The text below is the record as proposed and is not rewritten; where it says "proposed", "not accepted" or "the operator may veto" in the past or conditional sense, read it with this line. This record decides nothing about migrating the engine: its decision is to keep the current engine. Had the operator vetoed, the comparison below would have been re-run with the operator's choice, not any work already built reverted.
 
 Evidence base: `origin/main` at `1d316d3f` (PRs #848, #850, #851, #853, #854, #855, #856, #857 merged), PRD `PRD-2026-a804d1c7` v1.1.13, TRD `TRD-2026-a804d1c7` v1.0.17 (amendment PR #858, open at the time of writing; its limitation list (i) to (xl) is reproduced below). Paths below are relative to `packages/foreman_server/` unless they start with `docs/`. Every `file:line` was read on disk on 2026-11-11 and every test name was grep-checked against its file on the same day; nothing was re-run for this record (see "How the results were obtained").
 
@@ -213,6 +213,70 @@ Limitations PR 8 found:
 (xxxix) A refused run's terminal reason is the struct tuple (`{:capability_preflight_failed, [...]}`), the readable phrase (`PreflightFailure.summarize/1`) is in the log only.
 
 (xl) An unexpected exception from `project_env/1` propagates (no catch-all rescue, AGENTS.md 5.2): the executor crashes inside kickoff before any claim and `RunSupervisor` restarts it as for any kickoff crash; boot recovery after a repeated crash was not traced and no test raises there.
+
+## Acceptance (2026-11-12) and what Phase 1 inherits
+
+Added after merge; nothing above this section was changed except the Status line. Code anchors below were read on disk at `origin/main` `0699076a` on 2026-11-12 (paths relative to `packages/foreman_server/`); beads were read with `br show` on the same day (all 13 listed are open). Line numbers in the body above are as of `1d316d3f` and may have drifted.
+
+### What was accepted
+
+The operator accepted "extend the current event-sourced engine; no Temporal, Conductor or Pi Durable" for Phase 1 ("Trustworthy PR Delivery", PRD `PRD-2026-c12e5f93`), accepting the named gaps with these preconditions:
+
+| # | Precondition | Bead or rule | Why it matters (code) |
+|---|---|---|---|
+| P-1 | `Effect.run/4` and `Effect.preflight/3` refuse an undecided key before any Phase 1 effect exists | `foreman-by6nl` | `check_unresolved/2` refuses only an `ambiguous` key carrying the sweep's marker; every other status, including `started`, `completed` and `failed`, returns `{:ok, :clear}` (`lib/foreman_server/idempotency/effect.ex:159-179`, the clause at `:174-175`), so a key left `started` by a crash is run again. |
+| P-2 | `gh pr create` consults GitHub for an existing PR before running and before settling a key `failed` (limitations xvii, xxii); an observed block, reset, resume test | `foreman-tnlqt` | `AutoPR` calls `preflight_open_pr`, `push_head`, `open_pr` in sequence (`lib/foreman_server/workflow/auto_pr.ex:133-135`); `open_pr` wraps `gh_pr_create` in `Effect.run(:pr_create, ...)` (`:299-307`), whose non-zero exit becomes `{:error, {:gh_pr_create_failed, ...}}` (`:349-351`) and settles the key `failed` (`effect.ex:265-266`). The file has no `gh pr list`/`gh pr view` call. Reconciliation asks GitHub only at boot (`reconcilers/pr_create.ex:69`, `gh pr list --state all` at `:81-85`). |
+| P-3 | The durable store is on in any deployment before Phase 1 gating is enabled there | Deployment step; the Phase 1 TRD adds the smallest verifiable guard (no bead) | Production default is off: `config :foreman_server, :jido_ecto, enabled: false` (`config/prod.exs:78`), with the repo url from `JIDO_CHECKPOINT_DATABASE_URL`, default empty (`config/prod.exs:119-120`). Off, `KeyStore` is ETS-only and a restart loses every key (limitation iv). |
+| P-4 | Every new Phase 1 effect is keyed by head SHA (design rule) | Rule, no bead | The shipped keys carry no SHA: `pr_create` is `(run_id, head_branch, base_branch)` (`reconcilers/pr_create.ex:48-49`), `branch_push` is `(run_id, head_branch)` (`auto_pr.ex:260`). A settled key is cleared and re-run (`effect.ex:174-175`), so a per-run key would repeat on a new head and a per-run key that had completed would not distinguish heads. |
+
+### Dispositions of the Phase 0 follow-ups
+
+PREREQUISITE: must land before the Phase 1 code that depends on it. FOLD-IN: Phase 1 touches the same code and closes it in its own PR. INDEPENDENT: no Phase 1 path reads it. From the handoffs scout, anchors re-read here.
+
+| Item | Phase 1 path (anchor) | Disposition | Reason |
+|---|---|---|---|
+| `foreman-by6nl` undecided keys repeat | every new keyed effect, `effect.ex:82-93`, `:159-179` | PREREQUISITE (P-1) | A crash-left `started` key would double-post a comment or re-run an effect with nothing refusing it. |
+| `foreman-tnlqt` `gh pr create` "already exists" wedge | `auto_pr.ex:133-135`, `:299-351` | PREREQUISITE (P-2) | A head-change refresh or a restart between create and PR association re-enters this path. Inferred from source, not observed (limitation xvii): the fix ships with an observed block, reset, resume test. |
+| `foreman-rsbx1` dashboard offers no reset for blocked or paused | `lib/foreman_server_web/operator_dashboard.ex:168` (`reset` for `failed`, `stuck`, `needs_recovery` only) | FOLD-IN | Phase 1 builds its next-action view on this dashboard; the aggregate already accepts the reset. |
+| `foreman-87h5g` projection silently starts empty on a failed boot read | `lib/foreman_server/projection_store.ex:2184` (`rebuild_from_event_log/1`) | FOLD-IN | A projection that resets to empty would show no evidence rather than "unknown"; the Phase 1 display must fail closed. |
+| `foreman-6vlx6` claim assignee unsound | `lib/foreman_server/workflow/run_executor.ex:142` (claim) | INDEPENDENT | No Phase 1 requirement reads claim state. |
+| `foreman-t2627` Deliverer never retries steer/resume | `questions/deliverer.ex` | INDEPENDENT | The question path is not required by Phase 1; promote only if the TRD routes an operator disposition through questions. |
+| `foreman-p7asb` `question.open` failure unrecorded | `agents/operator_question_dispatcher.ex` | INDEPENDENT | Same as `foreman-t2627`. |
+| `foreman-f6zmv` invalid `on_timeout` raises in expiry | `approvals/sweeper.ex` | INDEPENDENT | Not on a Phase 1 path. |
+| `foreman-hl35p` stale comment in `aggregates/run.ex` | none | INDEPENDENT | Comment fix. |
+| `foreman-3ufry` Dispatcher dual atom/string key reads | `workflow/dispatcher.ex` resume path | INDEPENDENT | Phase 1 adds nothing to the resume reads. |
+| `foreman-ttc4i` `SkillResolver` raises when HOME is unset | kickoff skill preflight (`run_executor.ex:522`) | INDEPENDENT | Raise priority only if a server runs without HOME. |
+| `foreman-kaa9w` CLI writes pi project skills to the wrong directory | `foreman_cli` `agent_commands.go:473` (per the bead, not re-read) | INDEPENDENT | Installed skill location, not PR evidence. |
+| `foreman-mcgov` `BeadsTreeCompletion` cannot see the ensemble scaffold | bead tooling only | INDEPENDENT | A build-process hazard for dispatching the Phase 1 epic, not a runtime dependency. |
+| AC-004-2 undecided keys repeat; a terminal run cannot be blocked | `effect.ex:174-175`; `lib/foreman_server/aggregates/run.ex:801-804`; `run_executor.ex:2491-2495` | PREREQUISITE (via `foreman-by6nl`) | `run.complete` follows a failed PR step, and a completed run cannot be blocked (limitation v). Key by SHA (P-4) so a new head is a fresh key. |
+| AC-004-5 intent key durable only with the store on | `config/prod.exs:72-78`, `:119-120` | PREREQUISITE (P-3, deployment) | Without it, "evidence tied to the head across a restart" cannot hold on ETS keys. |
+| AC-005-1 inputs are "given", status DTO carries only `current_phase` | `PhaseCompleted` artifact hash | FOLD-IN (DTO half), INDEPENDENT (read tracking) | Widening the status is part of Phase 1 visibility; read tracking is not needed because evidence comes from GitHub or Foreman, never from what an agent read. |
+| AC-005-2 project-context identity not recorded for the docker jobsite | `run_executor.ex:2952`, `:3001` | INDEPENDENT; FOLD-IN if checks run on a docker jobsite | The context hash covers context text only, not a git SHA; Phase 1 evidence carries its own head SHA. |
+| AC-005-3 redaction count is not proof of no secret | recorded count at `run_executor.ex:2966-2967` | FOLD-IN | Phase 1 posts model-generated text to a PR; redaction of it is its own control. |
+| AC-006-1 profile recorded for host launches only | `lib/foreman_server/jobsite/execution_profile.ex:88` | INDEPENDENT | Phase 1 must not claim a docker-isolated check: the docker profile has no production caller. |
+| AC-006-3, AC-006-4 `:docker` tests excluded from the default run | only if checks run in the docker jobsite | INDEPENDENT | CI-environment matter. |
+| AC-007-1, AC-007-2 skill preflight `:unverifiable` on typical hosts | `run_executor.ex:522` | INDEPENDENT | Fail-safe; "skill preflight passed" must not be read as review provenance. |
+| AC-001-3 conditional decision | this record | INDEPENDENT | Resolved by the acceptance above, not by code. |
+| Limitation (xviii) refused primary PR leaves no record | `run_executor.ex:2570-2594`, `:2491` | FOLD-IN | The run completes regardless, so "ineligible" must be a Phase 1 evidence record, not run status. |
+| Limitation (xix) completed run cannot be reset | `run.reset` accepted from `failed`, `stuck`, `blocked`, `paused` only | FOLD-IN | A refreshed head after completion has no clearing command; treat a new head as a new keyed effect. |
+| Limitation (xxii) `gh pr create` non-zero exit marks the key `failed` | `auto_pr.ex:349-351`, `effect.ex:265-266` | FOLD-IN with `foreman-tnlqt` | Same fix: consult GitHub before settling. |
+| Head of record is a local `rev-parse` (new finding) | `run_executor.ex:2633`; `PrStatus` reads `headRefOid` (`lib/foreman_server/github/pr_status.ex:321`) | FOLD-IN | Evidence must take the head from GitHub, in the same response as the checks. |
+| Head-moving pushes are not keyed effects (new finding) | `lib/foreman_server/pr_fix.ex:383` (`"push" => true`); `PrWatchFold` `PrUpdated` moves `head_sha` only (`lib/foreman_server/pr_watch_fold.ex:111-118`) | FOLD-IN | Invalidation must follow the observed head. The PR monitor is opt-in (`config/runtime.exs:79-81`; `PrMonitor` default false), so Phase 1 needs the monitor or the webhook on. |
+
+Limitations (i) to (xl) not named above were not classified by the scout and are not known to lie on a Phase 1 path `[UNVERIFIED]`.
+
+### Verdict on the engine
+
+No Phase 1 criterion was found that the current event-sourced engine cannot close; the gaps that matter are bounded engine changes (P-1, P-2, the P-3 deployment step and the P-4 key rule). Two Phase 1 needs are not engine properties and no engine would supply them: results that cannot be forged on an unenforced host filesystem (take them from GitHub or an operator waiver, never from agent output) and a check completion time (add it to the `PrStatus` fetch). Temporal and Conductor are not required by any Phase 1 criterion.
+
+Re-open trigger: reopen the comparison only if the operator will not accept per-`(run, head_sha)` effect keys plus the P-1 and P-2 fixes.
+
+### What this record does not establish
+
+- That the `foreman-tnlqt` wedge exists: it was inferred from source (limitation xvii) and never observed. P-2 requires the observed test.
+- Anything about Temporal, Conductor or Pi Durable beyond the screening in "Alternatives considered"; no adoption assessment was made and the statements marked general knowledge remain unverified.
+- That Phase 1 code is correct: acceptance is of the engine choice and its gaps, not of any Phase 1 design.
+- Results re-observed on 2026-11-12: none. Source anchors were read and beads were shown; no test was run.
 
 ## Alternatives considered
 
