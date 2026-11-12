@@ -57,4 +57,46 @@ ExUnit.configure(
 # the module that left it. The formatter half is registered by the `test` alias in mix.exs.
 ForemanServer.TestSupport.ProjectionLeakGuard.install!()
 
+# The kickoff skill preflight (TRD-022) refuses a run whose `command:` names a skill the harness
+# cannot find. The suite's workflows invent skill names, and the developer's real ~/.pi must not
+# decide whether they pass, so `:skill_home` points the preflight at a private home whose pi agent
+# directory holds one loadable skill (pi loads a SKILL.md only with a frontmatter `description`)
+# per skill any test source, fixture or stock workflow names. The one file that means some of its
+# names to be ABSENT, run_executor_skill_preflight_test.exs, is not scanned, so the default home
+# can never create a skill that test expects to be missing; it, and any other test that needs a
+# skill absent (or present only somewhere else), overrides `:skill_home` itself.
+skill_home = Path.join(vm_tmp, "skill-home")
+
+skill_sources =
+  (Path.wildcard("test/**/*.{exs,yaml}") ++ Path.wildcard("priv/defaults/workflows/*.yaml"))
+  |> Enum.reject(&String.ends_with?(&1, "run_executor_skill_preflight_test.exs"))
+
+for path <- skill_sources,
+    [_, name] <- Regex.scan(~r{/skill:([A-Za-z0-9][A-Za-z0-9._-]*)}, File.read!(path)) do
+  dir = Path.join([skill_home, ".pi", "agent", "skills", name])
+  File.mkdir_p!(dir)
+  File.write!(Path.join(dir, "SKILL.md"), "---\nname: #{name}\ndescription: test skill\n---\n")
+end
+
+Application.put_env(:foreman_server, :skill_home, skill_home)
+
+# The kickoff provider preflight (TRD-022) requires the harness of every `command:` phase to be
+# installed, and `Jido.Harness.status(:pi)` decides that by running the `pi` found on PATH. A
+# machine (or CI runner) with no pi, or with a different one, must not change what the suite
+# does, so the pi adapter is pointed at a stand-in executable of this VM that answers the two
+# probes the adapter makes (`--version`, and `--help` which must mention `--mode`). It is the
+# REAL adapter probing a fake binary: tests that need pi absent stub `:providers` themselves
+# (as run_executor_test.exs and run_executor_skill_preflight_test.exs do).
+fake_pi = Path.join(vm_tmp, "fake-pi")
+File.write!(fake_pi, "#!/bin/sh\necho 'pi 0.0.0-test'\necho '  --mode <mode>'\n")
+File.chmod!(fake_pi, 0o755)
+
+Application.put_env(
+  :jido_harness,
+  :provider_config,
+  Map.put(Map.new(Application.get_env(:jido_harness, :provider_config, %{})), :pi, %{
+    cli_path: fake_pi
+  })
+)
+
 ExUnit.start()

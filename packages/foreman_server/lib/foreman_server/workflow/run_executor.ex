@@ -36,8 +36,16 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   alias ForemanServer.AgentRuntime
   alias ForemanServer.AgentRuntime.JidoHarness
-  alias ForemanServer.AgentRuntime.JidoHarness.{ForkSession, ModelCatalog, ReadinessCheck}
+
+  alias ForemanServer.AgentRuntime.JidoHarness.{
+    ForkSession,
+    ModelCatalog,
+    ReadinessCheck,
+    SkillResolver
+  }
+
   alias ForemanServer.CommandGateway
+  alias ForemanServer.Workflow.Validator
   alias ForemanServer.Workflow.BeadsTreeCompletion
   alias ForemanServer.Workflow.CheckoutGuard
   alias ForemanServer.Workflow.Catalog
@@ -104,7 +112,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
           plan_context: map() | nil,
           resume_from: non_neg_integer(),
           resuming?: boolean(),
-          project_settings: ForemanServer.ProjectSettings.t() | nil
+          project_settings: ForemanServer.ProjectSettings.t() | nil,
+          skill_verdicts: %{pos_integer() => SkillResolver.verdict()}
         }
   @spec start_link(String.t(), map(), keyword()) :: GenServer.on_start()
   def start_link(run_id, task_projection, opts \\ []) do
@@ -349,7 +358,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
       plan_context: plan_context,
       resume_from: resume_from,
       resuming?: Keyword.get(opts, :resume_from) != nil,
-      project_settings: latch_project_settings(task_projection)
+      project_settings: latch_project_settings(task_projection),
+      skill_verdicts: %{}
     }
 
     Process.send_after(self(), :kickoff, 0)
@@ -499,7 +509,57 @@ defmodule ForemanServer.Workflow.RunExecutor do
         finalize_terminal_and_stop(state, {:provider_model_preflight_failed, failures})
 
       :ok ->
-        handle_kickoff_ready(state)
+        kickoff_skill_preflight(state)
+    end
+  end
+
+  # TRD-022 / AC-007-2: every `command:` phase that names a skill is resolved
+  # against the provider that will launch it, after the provider/model check and
+  # before the claim, the worktree and the first phase. `:missing` refuses the
+  # run; `:unverifiable` never blocks and rides on that phase's execution
+  # profile. The terminal reason is its own tuple, never
+  # `:provider_model_preflight_failed`, so neither names the other's contents.
+  defp kickoff_skill_preflight(state) do
+    case preflight_skills(state) do
+      {:error, failures} ->
+        summaries = Enum.map_join(failures, "; ", &PreflightFailure.summarize/1)
+
+        Logger.warning(
+          "RunExecutor skill preflight for #{state.run_id} rejected: #{summaries}",
+          run_id: state.run_id,
+          task_id: task_id(state),
+          operation: "run_executor.skill_preflight",
+          outcome: "error",
+          reason: inspect(failures)
+        )
+
+        _ = dispatch_task_execution_fail(state, {:capability_preflight_failed, failures})
+        finalize_terminal_and_stop(state, {:capability_preflight_failed, failures})
+
+      {:ok, verdicts, unverifiable} ->
+        # An unverifiable skill never blocks, but the run proceeds on a promise
+        # nobody checked: say so, once per phase (AGENTS.md: warn where the
+        # consequence is merely invisible).
+        for %{phase: phase, skill: skill, provider: provider, reason: reason} <- unverifiable do
+          why = if reason, do: " (project env unresolved: #{inspect(reason)})", else: ""
+
+          Logger.warning(
+            "RunExecutor skill preflight for #{state.run_id} could not verify skill " <>
+              "#{inspect(skill)} of phase #{inspect(phase)} for provider #{inspect(provider)} " <>
+              "on the #{inspect(ExecutionProfile.host_backend())} backend#{why}; the run proceeds",
+            run_id: state.run_id,
+            task_id: task_id(state),
+            operation: "run_executor.skill_preflight",
+            outcome: "unverifiable",
+            phase: inspect(phase),
+            skill: skill,
+            provider: inspect(provider),
+            backend: inspect(ExecutionProfile.host_backend()),
+            reason: if(reason, do: "project_env_unresolved: #{inspect(reason)}")
+          )
+        end
+
+        handle_kickoff_ready(Map.put(state, :skill_verdicts, verdicts))
     end
   end
 
@@ -1051,13 +1111,13 @@ defmodule ForemanServer.Workflow.RunExecutor do
     Enum.find(ProjectionStore.worktrees_for_run(run_id), &(&1.operation_id == operation_id))
   end
 
-  # Skips entirely when a phase declares neither `provider:` nor `models:` —
-  # unmodified phases keep today's behavior exactly (readiness is still
-  # checked later, per-phase, by JidoHarnessAdapter.execute/2 as it always
-  # has been). Only phases that opt into an explicit provider or model pay
-  # for the upfront check, and a run with ANY invalid phase fails once,
-  # before phase 1, naming every bad phase — not one at a time, deep into
-  # the run.
+  # Skips entirely when a phase declares neither `provider:` nor `models:` and
+  # has no `command:` — a phase the harness launches by command needs its harness
+  # installed even on the default provider (TRD-022), so it is checked too.
+  # Unmodified non-command phases keep today's behavior exactly (readiness is
+  # still checked later, per-phase, by JidoHarnessAdapter.execute/2). A run with
+  # ANY invalid phase fails once, before phase 1, naming every bad phase — not
+  # one at a time, deep into the run.
   #
   # This runs before `handle_kickoff_ready/1`, so before any worktree, branch,
   # or phase exists: a refused run executes zero phases by construction (see
@@ -1075,11 +1135,152 @@ defmodule ForemanServer.Workflow.RunExecutor do
     if failures == [], do: :ok, else: {:error, failures}
   end
 
+  # A phase launched by a `command:` needs its harness whether or not the phase
+  # declares a provider: the default provider (`request_provider/1`) is a
+  # harness too.
+  defp command_phase?(phase_spec), do: is_binary(Map.get(phase_spec, :command))
+
+  # The provider that launches `phase_spec`: its declared one, else the default.
+  defp phase_launch_provider(phase_spec) do
+    JidoHarness.request_provider(%{context: %{"provider" => Map.get(phase_spec, :provider)}})
+  end
+
+  # What pi will read at launch. The harness inherits the server's environment
+  # overlaid with the project's environment record and secrets
+  # (`jido_harness_worker.ex` `put_env/2`, `env_mode: :overlay`); Foreman sets no
+  # `HOME` or `PI_CODING_AGENT_DIR` of its own. So the resolver's defaults (the
+  # server's `PI_CODING_AGENT_DIR`, else `~/.pi/agent`) are right unless the
+  # project's environment sets either one, and then the project's RAW value is
+  # what the launch sees: it is passed through as `agent_dir:`/`home:` and
+  # `SkillResolver` decides what it means (a relative agent dir is resolved by pi
+  # against a launch cwd that does not exist yet, so it is unverifiable there).
+  # `config :foreman_server, :skill_home` names a home to read instead of the
+  # server user's: `home` is that directory and the agent directory is
+  # `<home>/.pi/agent`, whatever the ambient environment says. The project root
+  # is the registered checkout: no worktree exists at admission.
+  #
+  # A project environment that cannot be resolved is what the launch fails on
+  # (`prepare_agent_launch/5` needs it too); the environment the launch would
+  # have had is unknown, so no home is guessed: `{:unverifiable, error_class}`.
+  # Only the error's class is kept, never its content (a value may be a secret).
+  defp skill_resolve_opts(state) do
+    case project_launch_env(state) do
+      {:ok, launch_env} ->
+        configured_home =
+          case Application.get_env(:foreman_server, :skill_home) do
+            home when is_binary(home) and home != "" -> home
+            _unset -> nil
+          end
+
+        home = env_string(launch_env, "HOME") || configured_home
+
+        agent_dir =
+          case env_string(launch_env, "PI_CODING_AGENT_DIR") do
+            nil when not is_nil(configured_home) -> Path.join(home, ".pi/agent")
+            dir -> dir
+          end
+
+        {:ok,
+         [home: home, agent_dir: agent_dir, project_root: project_path(state)]
+         |> Enum.reject(fn {_key, value} -> is_nil(value) end)}
+
+      {:error, class} ->
+        {:unverifiable, class}
+    end
+  end
+
+  defp env_string(env, name) do
+    case Map.get(env, name) do
+      value when is_binary(value) and value != "" -> value
+      _unset -> nil
+    end
+  end
+
+  # The project's environment as the launch will build it, or the CLASS of the
+  # tagged error `project_env/1` returned (never the error's content). An
+  # exception is not handled here: it propagates, as it would in the launch.
+  defp project_launch_env(state) do
+    case project_env(state) do
+      {:ok, %{env: env}} -> {:ok, env}
+      {:error, error} when is_tuple(error) and tuple_size(error) > 0 -> {:error, elem(error, 0)}
+      {:error, _other} -> {:error, :unknown}
+    end
+  end
+
+  defp unresolved_reason({:unverifiable, class}), do: class
+  defp unresolved_reason({:ok, _opts}), do: nil
+
+  # Resolves the skill each still-to-run `command:` phase names, against that
+  # phase's launching provider and the project's checkout (no worktree exists at
+  # admission). `{:ok, verdicts, unverifiable}` (`verdicts` is `%{phase_number =>
+  # :available | :unverifiable}`, `unverifiable` the phases whose skill could not
+  # be checked, for the log, each with the `reason` the environment was
+  # unresolved or `nil`) or the `:skill_not_found` failures of every phase whose
+  # skill is missing. A resumed run skips the phases it already completed: they
+  # never launch again.
+  defp preflight_skills(state) do
+    backend = ExecutionProfile.host_backend()
+    resolution = skill_resolve_opts(state)
+
+    {failures, verdicts, unverifiable} =
+      state.phase_specs
+      |> Enum.with_index()
+      |> Enum.drop(state.resume_from)
+      |> Enum.reduce({[], %{}, []}, fn {phase_spec, index}, {failures, verdicts, unverifiable} ->
+        with skill when is_binary(skill) <-
+               Validator.skill_from_command(Map.get(phase_spec, :command)),
+             provider = phase_launch_provider(phase_spec),
+             verdict = skill_verdict(resolution, provider, skill, backend) do
+          name = phase_spec_name(phase_spec)
+          verdicts = Map.put(verdicts, phase_number(phase_spec, index), verdict)
+
+          case verdict do
+            :missing ->
+              failure = %PreflightFailure{
+                phase: name,
+                provider: provider,
+                class: :skill_not_found,
+                backend: backend,
+                skill: skill
+              }
+
+              {[failure | failures], verdicts, unverifiable}
+
+            :unverifiable ->
+              note = %{
+                phase: name,
+                skill: skill,
+                provider: provider,
+                reason: unresolved_reason(resolution)
+              }
+
+              {failures, verdicts, [note | unverifiable]}
+
+            :available ->
+              {failures, verdicts, unverifiable}
+          end
+        else
+          _no_skill -> {failures, verdicts, unverifiable}
+        end
+      end)
+
+    if failures == [],
+      do: {:ok, verdicts, Enum.reverse(unverifiable)},
+      else: {:error, Enum.reverse(failures)}
+  end
+
+  # An unresolved launch environment is never guessed at: the resolver is not
+  # asked, whatever it would have said for the server's own home.
+  defp skill_verdict({:ok, opts}, provider, skill, backend),
+    do: SkillResolver.resolve(provider, skill, backend, opts)
+
+  defp skill_verdict({:unverifiable, _class}, _provider, _skill, _backend), do: :unverifiable
+
   defp phase_provider_and_model_check(phase_spec, state, cache) do
     declared_provider = Map.get(phase_spec, :provider)
     %ModelResolution{model: model, source: model_source} = resolve_phase_model(phase_spec, state)
 
-    if is_nil(declared_provider) and is_nil(model) do
+    if is_nil(declared_provider) and is_nil(model) and not command_phase?(phase_spec) do
       {:ok, cache}
     else
       name = phase_spec_name(phase_spec)
@@ -1104,7 +1305,9 @@ defmodule ForemanServer.Workflow.RunExecutor do
               model: model,
               model_source: model_source,
               class: :provider_not_installed,
-              detail: ReadinessCheck.install_hint(provider)
+              detail: ReadinessCheck.install_hint(provider),
+              backend: ExecutionProfile.host_backend(),
+              skill: Validator.skill_from_command(Map.get(phase_spec, :command))
             }}, cache}
 
         true ->
@@ -1561,7 +1764,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
         attempt: 1,
         artifact_template: Map.get(phase_spec, :artifact_template) || %{},
         input_artifacts: phase_input_artifacts(state.run_id, phase_index),
-        execution_profile: launch_execution_profile(state)
+        execution_profile: launch_execution_profile(state, phase_index)
       }
       |> Map.merge(
         ForemanServer.Workflow.StallPolicy.payload_fields(Map.get(phase_spec, :stall_detection))
@@ -1581,7 +1784,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # RunExecutor launch is a host workflow launch; the backend value is
   # `ExecutionProfile`'s, not named here. Cleanup follows the workflow's
   # `worktree:` block (a run whose workflow disables it has no worktree).
-  defp launch_execution_profile(state) do
+  defp launch_execution_profile(state, phase_index) do
     cleanup =
       case state.worktree_spec do
         %{enabled: false} ->
@@ -1595,7 +1798,10 @@ defmodule ForemanServer.Workflow.RunExecutor do
       end
 
     ExecutionProfile.host_backend()
-    |> ExecutionProfile.resolve(cleanup: cleanup)
+    |> ExecutionProfile.resolve(
+      cleanup: cleanup,
+      skill: state |> Map.get(:skill_verdicts, %{}) |> Map.get(phase_index)
+    )
     |> ExecutionProfile.to_map()
   end
 
