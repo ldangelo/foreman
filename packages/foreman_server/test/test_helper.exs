@@ -80,4 +80,23 @@ end
 
 Application.put_env(:foreman_server, :skill_home, skill_home)
 
+# The kickoff provider preflight (TRD-022) requires the harness of every `command:` phase to be
+# installed, and `Jido.Harness.status(:pi)` decides that by running the `pi` found on PATH. A
+# machine (or CI runner) with no pi, or with a different one, must not change what the suite
+# does, so the pi adapter is pointed at a stand-in executable of this VM that answers the two
+# probes the adapter makes (`--version`, and `--help` which must mention `--mode`). It is the
+# REAL adapter probing a fake binary: tests that need pi absent stub `:providers` themselves
+# (as run_executor_test.exs and run_executor_skill_preflight_test.exs do).
+fake_pi = Path.join(vm_tmp, "fake-pi")
+File.write!(fake_pi, "#!/bin/sh\necho 'pi 0.0.0-test'\necho '  --mode <mode>'\n")
+File.chmod!(fake_pi, 0o755)
+
+Application.put_env(
+  :jido_harness,
+  :provider_config,
+  Map.put(Map.new(Application.get_env(:jido_harness, :provider_config, %{})), :pi, %{
+    cli_path: fake_pi
+  })
+)
+
 ExUnit.start()
