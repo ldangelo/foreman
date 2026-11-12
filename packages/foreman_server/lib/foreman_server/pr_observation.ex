@@ -34,7 +34,9 @@ defmodule ForemanServer.PrObservation do
   @type previous :: map() | nil
 
   @type error ::
-          {:run_not_found, String.t()} | {:run_projection_missing_ids, String.t()}
+          {:run_not_found, String.t()}
+          | {:run_projection_missing_ids, String.t()}
+          | {:invalid_force, term()}
 
   @max_failing 50
   @max_text 200
@@ -128,7 +130,8 @@ defmodule ForemanServer.PrObservation do
       when is_binary(run_id) and is_binary(pr_url) and is_list(opts) do
     force = Keyword.get(opts, :force)
 
-    with {:ok, update} <- update_command(run_id, pr_url, status, repo_id) do
+    with :ok <- check_force(force),
+         {:ok, update} <- update_command(run_id, pr_url, status, repo_id) do
       base = base_payload(update.payload, status)
 
       case force do
@@ -145,6 +148,14 @@ defmodule ForemanServer.PrObservation do
       end
     end
   end
+
+  defp check_force(nil), do: :ok
+
+  defp check_force(%{nonce: nonce, now_ms: now_ms})
+       when is_binary(nonce) and nonce != "" and is_integer(now_ms),
+       do: :ok
+
+  defp check_force(other), do: {:error, {:invalid_force, other}}
 
   defp update_command(run_id, pr_url, status, repo_id),
     do: PrUpdate.command(run_id, pr_url, status, repo_id)
@@ -194,12 +205,19 @@ defmodule ForemanServer.PrObservation do
           evidence,
           seq,
           nil,
-          "watch"
+          "watch",
+          if(digest == baseline, do: "evidence", else: "digest")
         )
       ]
     end
   end
 
+  # `change` says what moved: `digest` (the notification digest: a new failing set, state or
+  # head, the one the Notifier dedupes on) or `evidence` (only the passing checks or a time
+  # moved, or a forced observation). Only a `digest` change may notify: an evidence-only event
+  # carries the same failing set and digest, and after the dedupe window it would send "CI
+  # failed" a second time for the same failure.
+  #
   # A forced observation is built whatever the digests say: an unchanged PR returns nothing from
   # `checks_commands/5`, so its `observed_at` and `observation_ref` would stay old. It carries
   # the unchanged notification `digest` and `source: "gate"`, so the Notifier ignores it.
@@ -214,7 +232,8 @@ defmodule ForemanServer.PrObservation do
       evidence_digest(status),
       next_checks_seq(previous),
       nonce,
-      "gate"
+      "gate",
+      "evidence"
     )
   end
 
@@ -230,7 +249,8 @@ defmodule ForemanServer.PrObservation do
          evidence,
          seq,
          observation_ref,
-         source
+         source,
+         change
        ) do
     %{
       type: "run.pr.checks",
@@ -248,6 +268,7 @@ defmodule ForemanServer.PrObservation do
           evidence_digest: evidence,
           observation_ref: observation_ref,
           source: source,
+          change: change,
           observation_seq: seq
         })
     }
@@ -287,7 +308,13 @@ defmodule ForemanServer.PrObservation do
 
   defp review_commands(run_id, pr_url, status, previous, base) do
     digest = review_digest(status)
-    baseline = previous_value(previous, :review_digest) || empty_review_digest(status)
+    # A head move resets the stored review observation (`PrEvidence`), so the baseline this
+    # batch must differ from is the reset one: an unchanged review is re-recorded in the same
+    # batch instead of reading as nothing until the next poll.
+    baseline =
+      if head_moved?(previous, status),
+        do: empty_review_digest(status),
+        else: previous_value(previous, :review_digest) || empty_review_digest(status)
 
     if digest == baseline do
       []
@@ -315,6 +342,11 @@ defmodule ForemanServer.PrObservation do
         }
       ]
     end
+  end
+
+  defp head_moved?(previous, status) do
+    head = previous_value(previous, :head_sha)
+    is_binary(head) and head != "" and head != status.head_sha
   end
 
   defp empty_checks_digest(status),

@@ -18,7 +18,9 @@ defmodule ForemanServer.Events.PrChecksChanged do
   says the PR has more, and `evidence_digest` is the digest of exactly that evidence (it moves
   when a passing check is added, removed or re-run; `digest` does not). `observation_ref` is
   `nil` for an observer reading and the nonce of a forced observation. `source` is `"watch"`
-  for the observer and `"gate"` for a forced observation; only `"watch"` notifies (a gate
+  for the observer and `"gate"` for a forced observation; `change` is `"digest"` when the
+  notification `digest` moved and `"evidence"` when only the evidence did (or the observation was
+  forced), and only `source` `"watch"` with `change` `"digest"` notifies; only `"watch"` notifies (a gate
   observation must not notify), and an event without a `source` no longer maps.
   """
   @enforce_keys [:run_id, :project_id, :task_id, :pr_url, :head_sha, :checks_state, :digest]
@@ -41,6 +43,7 @@ defmodule ForemanServer.Events.PrChecksChanged do
           required: [map()] | nil,
           policy_version: String.t() | nil,
           source: String.t() | nil,
+          change: String.t() | nil,
           digest: String.t(),
           observation_seq: non_neg_integer(),
           observed_at: non_neg_integer() | nil
@@ -62,6 +65,7 @@ defmodule ForemanServer.Events.PrChecksChanged do
     :evidence_digest,
     :observation_ref,
     :source,
+    :change,
     :required,
     :policy_version,
     :checks,

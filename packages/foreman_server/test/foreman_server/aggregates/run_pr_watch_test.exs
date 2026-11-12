@@ -200,6 +200,18 @@ defmodule ForemanServer.Aggregates.RunPrWatchTest do
       end
     end
 
+    test "change is stored as given: digest, evidence or absent; any other value is refused" do
+      for change <- ["digest", "evidence", nil] do
+        {_state, spec} = accept(started(), "run.pr.checks", checks_payload(%{change: change}))
+        assert spec.payload.change == change
+      end
+
+      for bad <- ["both", "", :digest, 1] do
+        assert {:error, {:missing_or_invalid, :change}} =
+                 reject(started(), "run.pr.checks", checks_payload(%{change: bad}))
+      end
+    end
+
     test "a payload naming another project is refused" do
       assert {:error, {:missing_or_invalid, :project_id}} =
                reject(started(), "run.pr.checks", checks_payload(%{project_id: "other"}))
@@ -516,6 +528,89 @@ defmodule ForemanServer.Aggregates.RunPrWatchTest do
     end
   end
 
+  describe "run.pr.ready_failed (TRD-033)" do
+    defp ready_failed(extra \\ %{}) do
+      Map.merge(
+        %{pr_url: @url, stage: "head_read", reason: "gh_failed:1", failed_at: 5},
+        extra
+      )
+    end
+
+    for type <- ["RunCompleted", "RunFailed", "RunCancelled"] do
+      test "is accepted on a #{type} run and folds into evidence.delivery_issue" do
+        {state, spec} = accept(terminal(unquote(type)), "run.pr.ready_failed", ready_failed())
+
+        assert spec.event_type == "PrReadyFailed"
+        assert spec.stream_id == "run:r1"
+
+        assert %{
+                 run_id: "r1",
+                 project_id: "p1",
+                 task_id: "t1",
+                 pr_url: @url,
+                 stage: "head_read",
+                 reason: "gh_failed:1",
+                 failed_at: 5
+               } = spec.payload
+
+        assert state.pr_watch[@url].evidence.delivery_issue ==
+                 %{stage: "head_read", reason: "gh_failed:1", failed_at: 5}
+      end
+    end
+
+    test "carries the repo_id it is given and nothing else outside its fields" do
+      {_state, spec} =
+        accept(
+          started(),
+          "run.pr.ready_failed",
+          ready_failed(%{repo_id: "b", gh_output: "secret"})
+        )
+
+      assert spec.payload.repo_id == "b"
+      refute Map.has_key?(spec.payload, :gh_output)
+    end
+
+    test "needs an explicit pr_url, even when the run watches exactly one PR" do
+      state = watched()
+
+      assert {:error, {:missing_or_invalid, :pr_url}} =
+               reject(state, "run.pr.ready_failed", Map.delete(ready_failed(), :pr_url))
+    end
+
+    test "refuses a stage outside head_read | ready_dispatch, a missing reason and a bad failed_at" do
+      for stage <- ["push", "", nil, "HEAD_READ"] do
+        assert {:error, {:missing_or_invalid, :stage}} =
+                 reject(started(), "run.pr.ready_failed", ready_failed(%{stage: stage}))
+      end
+
+      assert {:error, {:missing_or_invalid, :reason}} =
+               reject(started(), "run.pr.ready_failed", ready_failed(%{reason: nil}))
+
+      assert {:error, {:missing_or_invalid, :failed_at}} =
+               reject(started(), "run.pr.ready_failed", ready_failed(%{failed_at: "now"}))
+    end
+
+    test "a project or task the run does not own is refused" do
+      assert {:error, {:missing_or_invalid, :project_id}} =
+               reject(started(), "run.pr.ready_failed", ready_failed(%{project_id: "other"}))
+    end
+
+    test "a later PrReady clears the condition; a PrReady for another PR does not" do
+      {state, _} = accept(started(), "run.pr.ready_failed", ready_failed())
+      other = "https://github.com/acme/repo/pull/9"
+
+      ready = fn state, url ->
+        Run.apply_event(state, %{
+          event_type: "PrReady",
+          payload: %{run_id: "r1", pr_url: url, head_sha: "h", base_branch: "main"}
+        })
+      end
+
+      assert ready.(state, other).pr_watch[@url].evidence.delivery_issue != nil
+      assert ready.(state, @url).pr_watch[@url].evidence.delivery_issue == nil
+    end
+  end
+
   test "PrUpdated and PrMerged keep the watch record's status current" do
     state = started()
 
@@ -543,6 +638,8 @@ defmodule ForemanServer.Aggregates.RunPrWatchTest do
     other = "https://github.com/acme/repo/pull/8"
 
     steps = [
+      {"run.pr.ready_failed",
+       %{pr_url: @url, stage: "head_read", reason: "gh_failed:1", failed_at: 5}},
       {"run.pr.checks", checks_payload()},
       {"run.pr.review",
        %{

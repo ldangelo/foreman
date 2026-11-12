@@ -209,6 +209,16 @@ defmodule ForemanServer.GitHub.PrStatusChecksTest do
       assert check.completed_at == "2026-11-12T13:58:53Z"
     end
 
+    test "a check without a name is a typed payload error, not a placeholder" do
+      for item <- [
+            Map.put(@completed_run, "name", ""),
+            Map.put(@status_context, "context", "")
+          ] do
+        assert {:error, {:gh_unexpected_payload, ^item}} =
+                 fetch_payload(base(%{"statusCheckRollup" => [@completed_run, item]}))
+      end
+    end
+
     for {label, value} <- [
           missing: :missing,
           empty: "",

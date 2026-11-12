@@ -174,6 +174,10 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
   defp checks_source(source) when source in [nil, "watch", "gate"], do: {:ok, source}
   defp checks_source(_source), do: {:error, {:missing_or_invalid, :source}}
 
+  # What moved: the notification digest (`digest`) or only the evidence (`evidence`).
+  defp checks_change(change) when change in [nil, "digest", "evidence"], do: {:ok, change}
+  defp checks_change(_change), do: {:error, {:missing_or_invalid, :change}}
+
   # The evidence a checks observation carries, validated and normalised once here so the live
   # fold and the replayed fold read identical values. `checks` absent stays `nil` (no list).
   defp checks_evidence(payload) do
@@ -217,6 +221,7 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
          {:ok, checks_state} <-
            one_of(Aggregate.get(payload, :checks_state), @checks_states, :checks_state),
          {:ok, source} <- checks_source(Aggregate.get(payload, :source)),
+         {:ok, change} <- checks_change(Aggregate.get(payload, :change)),
          {:ok, evidence} <- checks_evidence(payload) do
       event(
         "run.pr.checks",
@@ -228,7 +233,8 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
           head_sha: head_sha,
           digest: digest,
           checks_state: checks_state,
-          source: source
+          source: source,
+          change: change
         })
       )
     end

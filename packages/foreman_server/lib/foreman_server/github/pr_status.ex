@@ -393,8 +393,10 @@ defmodule ForemanServer.GitHub.PrStatus do
 
   defp checks(other), do: {:error, {:gh_unexpected_payload, other}}
 
+  # A check without a name has no identity the evidence can carry (`PrEvidence` refuses it), so
+  # it is a typed payload error here, not a placeholder.
   defp check(%{"__typename" => "CheckRun", "name" => name, "status" => status} = item)
-       when is_binary(name) do
+       when is_binary(name) and name != "" do
     conclusion = Map.get(item, "conclusion")
 
     with {:ok, state} <- check_run_state(status, conclusion),
@@ -414,7 +416,7 @@ defmodule ForemanServer.GitHub.PrStatus do
   end
 
   defp check(%{"__typename" => "StatusContext", "context" => name, "state" => state} = item)
-       when is_binary(name) do
+       when is_binary(name) and name != "" do
     with {:ok, check_state} <- status_context_state(state) do
       {:ok,
        %{

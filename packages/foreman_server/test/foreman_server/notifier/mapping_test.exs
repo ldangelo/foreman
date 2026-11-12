@@ -66,10 +66,15 @@ defmodule ForemanServer.Notifier.MappingTest do
 
   test "CI notifies only when failing and review only when changes are requested" do
     assert {:failure, :blocked} =
-             class_level("PrChecksChanged", %{checks_state: "failing", source: "watch"})
+             class_level("PrChecksChanged", %{
+               checks_state: "failing",
+               source: "watch",
+               change: "digest"
+             })
 
     for state <- ~w(none pending passing) do
-      assert :ignore = lookup("PrChecksChanged", %{checks_state: state, source: "watch"})
+      assert :ignore =
+               lookup("PrChecksChanged", %{checks_state: state, source: "watch", change: "digest"})
     end
 
     assert {:action_needed, :blocked} =
@@ -81,9 +86,27 @@ defmodule ForemanServer.Notifier.MappingTest do
 
   test "only an observer reading of failing checks notifies; a forced (gate) observation or one without a source is ignored" do
     assert {:failure, :blocked} =
-             class_level("PrChecksChanged", %{checks_state: "failing", source: "watch"})
+             class_level("PrChecksChanged", %{
+               checks_state: "failing",
+               source: "watch",
+               change: "digest"
+             })
 
-    assert :ignore = lookup("PrChecksChanged", %{checks_state: "failing", source: "gate"})
+    assert :ignore =
+             lookup("PrChecksChanged", %{
+               checks_state: "failing",
+               source: "gate",
+               change: "digest"
+             })
+
+    assert :ignore =
+             lookup("PrChecksChanged", %{
+               checks_state: "failing",
+               source: "watch",
+               change: "evidence"
+             })
+
+    assert :ignore = lookup("PrChecksChanged", %{checks_state: "failing", source: "watch"})
     assert :ignore = lookup("PrChecksChanged", %{checks_state: "failing"})
     assert :ignore = lookup("PrChecksChanged", %{checks_state: "passing", source: "watch"})
   end
