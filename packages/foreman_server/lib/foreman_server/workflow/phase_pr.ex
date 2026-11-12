@@ -23,8 +23,18 @@ defmodule ForemanServer.Workflow.PhasePR do
   `%Error{reason: :effect_undecided}` (the effect and key in `details`): the effect is not
   run and is not retried here, and the boot sweep decides the key.
   The PR-create key is checked before the push, so a refusal stops the push too.
+
+  The PR that already exists is asked of GitHub through `ForemanServer.GitHub.PrLookup`
+  (TRD-038): an open PR of this repository whose head is the tip just pushed is reused
+  (`existing`); an open PR of this repository with another head is
+  `%Error{reason: :pr_lookup_mismatch}` (url, `expected_head`, `actual_head` in `details`);
+  a fork's PR of the same branch name is not this run's and is ignored; a closed or merged
+  PR of this repository is `%Error{reason: :matching_pr_closed}` (the `PrLookup.Pr` in
+  `details`); an answer that cannot be read is `:unexpected_pr_list_payload` or
+  `:unparsable_pr_list`; a lookup `gh` did not answer lets creation go ahead.
   """
 
+  alias ForemanServer.GitHub.PrLookup
   alias ForemanServer.Idempotency.Effect
   alias ForemanServer.Idempotency.Reconcilers.BranchPush
   alias ForemanServer.Idempotency.Reconcilers.PrCreate, as: PrCreateEffect
@@ -185,15 +195,15 @@ defmodule ForemanServer.Workflow.PhasePR do
 
   defp create_or_reuse(request) do
     with :ok <- preflight_open_pr(request),
-         :ok <- push_head(request),
-         :none <- matching_pr(request, "open"),
-         :none <- matching_pr(request, "closed") do
+         {:ok, tip} <- push_head(request),
+         :none <- find_pr(request, :open, tip),
+         :none <- find_pr(request, :closed, nil) do
       open_pr(request)
     else
-      {:ok, %{state: "open"} = pr} ->
+      {:ok, %PrLookup.Pr{state: :open} = pr} ->
         {:ok, record(request, :existing, pr_url: pr.url, pr_number: pr.number)}
 
-      {:ok, %{state: "closed"} = pr} ->
+      {:ok, %PrLookup.Pr{state: state} = pr} when state in [:closed, :merged] ->
         typed_error(request, :matching_pr_closed, pr)
 
       {:error, %Error{} = error} ->
@@ -216,7 +226,9 @@ defmodule ForemanServer.Workflow.PhasePR do
   # and the local tip are read BEFORE the push and recorded in the `started`
   # key, so a crash around the push is reconciled against the remote at boot
   # (`Reconcilers.BranchPush`) instead of the push being repeated blind. An
-  # intent that cannot be recorded means the push did not run.
+  # intent that cannot be recorded means the push did not run. The pushed tip
+  # (`pushed_local_sha` of the intent) is returned: it is the head the run's open
+  # PR must have.
   defp push_head(request) do
     with {:ok, meta} <-
            BranchPush.intent(runner(request), request.run_id, request.head_branch, request.cwd) do
@@ -226,9 +238,13 @@ defmodule ForemanServer.Workflow.PhasePR do
         fn -> git_push(request) end,
         meta
       )
+      |> pushed_tip(meta.pushed_local_sha)
     end
     |> effect_result(request, :branch_push)
   end
+
+  defp pushed_tip(:ok, tip), do: {:ok, tip}
+  defp pushed_tip(other, _tip), do: other
 
   defp git_push(request) do
     Logger.info("PhasePR.run_id=#{request.run_id} git push -u origin #{request.head_branch}")
@@ -346,41 +362,46 @@ defmodule ForemanServer.Workflow.PhasePR do
 
   defp effect_result(result, _request, _effect), do: result
 
-  defp matching_pr(request, state) do
-    args = [
-      "pr",
-      "list",
-      "--state",
-      state,
-      "--head",
-      request.head_branch,
-      "--base",
-      request.base_branch,
-      "--json",
-      "url,number",
-      "--limit",
-      "1"
-    ]
+  # The PR GitHub already has for the head and base, asked through `GitHub.PrLookup`
+  # (TRD-038, precondition P-2): this repository's PR only (a fork's PR of the same branch
+  # name is dropped there). The open lookup passes the tip just pushed, so an open PR is
+  # reused only when its head is that tip; a PR of this repository with another head is
+  # `:pr_lookup_mismatch`, never reused and never created over. The closed lookup (merged
+  # PRs included) passes none: any closed or merged PR of this repository is
+  # `:matching_pr_closed`. An answer that cannot be read stays a typed error. A lookup
+  # `gh` did not answer (a non-zero exit, `gh` not run) is best-effort reconciliation:
+  # creation remains the loud authority and will surface provider failures with command
+  # output.
+  defp find_pr(request, state, expected_head) do
+    opts =
+      [cwd: request.cwd, command_runner: runner(request)] ++
+        if(expected_head, do: [expected_head: expected_head], else: [])
 
-    case run(request, "gh", args) do
-      {output, 0} ->
-        case Jason.decode(output) do
-          {:ok, [%{"url" => url} = pr | _]} ->
-            {:ok, %{state: state, url: url, number: pr["number"]}}
+    case PrLookup.find(state, request.head_branch, request.base_branch, opts) do
+      {:ok, %PrLookup.Pr{}} = found ->
+        found
 
-          {:ok, []} ->
-            :none
+      :none ->
+        :none
 
-          {:ok, other} ->
-            typed_error(request, :unexpected_pr_list_payload, other)
+      {:error, {:pr_lookup_mismatch, url, expected, actual}} ->
+        typed_error(request, :pr_lookup_mismatch, %{
+          url: url,
+          expected_head: expected,
+          actual_head: actual
+        })
 
-          {:error, error} ->
-            typed_error(request, :unparsable_pr_list, inspect(error))
-        end
+      {:error, {:unexpected_pr_list_payload, payload}} ->
+        typed_error(request, :unexpected_pr_list_payload, payload)
 
-      {_output, _exit_code} ->
-        # `gh pr list` is best-effort reconciliation. Creation remains the loud
-        # authority and will surface provider failures with command output.
+      {:error, {:unparsable_pr_list, text}} ->
+        typed_error(request, :unparsable_pr_list, text)
+
+      {:error, reason} ->
+        Logger.warning(
+          "PhasePR.run_id=#{request.run_id} no #{state} PR found for #{request.head_branch} into #{request.base_branch} (#{inspect(reason)}); going on"
+        )
+
         :none
     end
   end
