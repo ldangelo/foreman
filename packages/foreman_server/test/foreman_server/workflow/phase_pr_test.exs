@@ -1,16 +1,21 @@
 defmodule ForemanServer.Workflow.PhasePRTest do
   use ExUnit.Case, async: true
 
+  @moduletag :capture_log
+
+  alias ForemanServer.GitHub.PrLookup
   alias ForemanServer.Workflow.PhasePR
 
   @sha "0123456789abcdef0123456789abcdef01234567"
+  @other_sha "fedcba9876543210fedcba9876543210fedcba98"
 
   defp request(overrides \\ %{}) do
     struct!(
       PhasePR.Request,
       Map.merge(
         %{
-          run_id: "run-1",
+          # Unique per request: the keyed effects of async tests must not meet.
+          run_id: "run-#{System.unique_integer([:positive])}",
           phase_id: "phase-1",
           phase_index: 1,
           phase_name: "implement",
@@ -42,7 +47,7 @@ defmodule ForemanServer.Workflow.PhasePRTest do
   end
 
   test "reuses an existing open head/base PR after pushing head" do
-    open_json = ~s([{"url":"https://github.com/acme/repo/pull/7","number":7}])
+    open_json = Jason.encode!([pr_item()])
     {:ok, calls} = Agent.start_link(fn -> [] end)
 
     runner = fn
@@ -109,20 +114,192 @@ defmodule ForemanServer.Workflow.PhasePRTest do
              ])
   end
 
-  test "closed matching PR is a typed error" do
-    closed_json = ~s([{"url":"https://github.com/acme/repo/pull/8","number":8}])
+  describe "the PR GitHub already has (GitHub.PrLookup)" do
+    test "an open PR of this repository whose head is the pushed tip is reused and no PR is created" do
+      runner = scripted_runner(open: answer([pr_item()]))
 
-    runner = fn
-      "git", ["rev-list", "--count", _], _opts -> {"1\n", 0}
-      "git", ["rev-parse", "--verify", _ref], _opts -> {@sha <> "\n", 0}
-      "git", ["ls-remote", "origin", _ref], _opts -> {"", 0}
-      "git", ["push", "-u", "origin", "foreman/run-1"], _opts -> {"", 0}
-      "gh", ["pr", "list", "--state", "open" | _], _opts -> {"[]", 0}
-      "gh", ["pr", "list", "--state", "closed" | _], _opts -> {closed_json, 0}
+      assert {:ok, record} = PhasePR.maybe_create(request(%{command_runner: runner}))
+      assert record.status == "existing"
+      assert record.pr_url == "https://github.com/acme/repo/pull/7"
+      assert record.pr_number == 7
+
+      # The lookup asked for this head and base, in the checkout.
+      assert_received {:gh_pr_list, "open", list_args, list_opts}
+
+      assert Enum.chunk_every(list_args, 2, 1, :discard)
+             |> Enum.member?(["--head", "foreman/run-1"])
+
+      assert Enum.chunk_every(list_args, 2, 1, :discard) |> Enum.member?(["--base", "main"])
+      assert list_opts[:cd] == "/repo"
+
+      refute_received {:gh_pr_create, _args}
+      refute_received {:gh_pr_list, "closed", _args, _opts}
     end
 
-    assert {:error, %PhasePR.Error{reason: :matching_pr_closed}} =
-             PhasePR.maybe_create(request(%{command_runner: runner}))
+    test "an open PR of this repository with another head is a typed mismatch naming the PR and both heads: nothing is reused or created" do
+      runner = scripted_runner(open: answer([pr_item(%{"headRefOid" => @other_sha})]))
+
+      assert {:error,
+              %PhasePR.Error{
+                reason: :pr_lookup_mismatch,
+                phase_id: "phase-1",
+                base_branch: "main",
+                head_branch: "foreman/run-1",
+                details: %{
+                  url: "https://github.com/acme/repo/pull/7",
+                  expected_head: @sha,
+                  actual_head: @other_sha
+                }
+              }} = PhasePR.maybe_create(request(%{command_runner: runner}))
+
+      refute_received {:gh_pr_create, _args}
+      refute_received {:gh_pr_list, "closed", _args, _opts}
+    end
+
+    test "a fork's open PR of the same branch name is not reused, though its head is the tip: the run gets a PR of its own" do
+      runner = scripted_runner(open: answer([pr_item(%{"isCrossRepository" => true})]))
+
+      assert {:ok, record} = PhasePR.maybe_create(request(%{command_runner: runner}))
+      assert record.status == "created"
+      assert record.pr_url == "https://github.com/acme/repo/pull/42"
+      assert_received {:gh_pr_create, _args}
+    end
+
+    test "a fork's open PR with another head is no mismatch either: it is dropped before heads are compared" do
+      runner =
+        scripted_runner(
+          open: answer([pr_item(%{"isCrossRepository" => true, "headRefOid" => @other_sha})])
+        )
+
+      assert {:ok, %PhasePR.Record{status: "created"}} =
+               PhasePR.maybe_create(request(%{command_runner: runner}))
+    end
+
+    test "this repository's open PR is found behind a fork's PR of the same branch name" do
+      runner =
+        scripted_runner(
+          open:
+            answer([
+              pr_item(%{
+                "number" => 9,
+                "url" => "https://github.com/acme/repo/pull/9",
+                "isCrossRepository" => true
+              }),
+              pr_item()
+            ])
+        )
+
+      assert {:ok, %PhasePR.Record{status: "existing", pr_number: 7}} =
+               PhasePR.maybe_create(request(%{command_runner: runner}))
+
+      refute_received {:gh_pr_create, _args}
+    end
+
+    for {state, expected} <- [{"CLOSED", :closed}, {"MERGED", :merged}] do
+      test "a #{String.downcase(state)} PR of this repository is the typed :matching_pr_closed error carrying the PR: no PR is created over it" do
+        runner =
+          scripted_runner(
+            closed:
+              answer([
+                pr_item(%{
+                  "number" => 8,
+                  "url" => "https://github.com/acme/repo/pull/8",
+                  "state" => unquote(state)
+                })
+              ])
+          )
+
+        assert {:error,
+                %PhasePR.Error{
+                  reason: :matching_pr_closed,
+                  phase_id: "phase-1",
+                  details: %PrLookup.Pr{
+                    url: "https://github.com/acme/repo/pull/8",
+                    number: 8,
+                    state: unquote(expected),
+                    head_sha: @sha
+                  }
+                }} = PhasePR.maybe_create(request(%{command_runner: runner}))
+
+        assert_received {:gh_pr_list, "open", _args, _opts}
+        assert_received {:gh_pr_list, "closed", _args, _opts}
+        refute_received {:gh_pr_create, _args}
+      end
+    end
+
+    test "the closed lookup compares no head: a closed PR with another head still refuses creation" do
+      runner =
+        scripted_runner(
+          closed: answer([pr_item(%{"state" => "CLOSED", "headRefOid" => @other_sha})])
+        )
+
+      assert {:error, %PhasePR.Error{reason: :matching_pr_closed}} =
+               PhasePR.maybe_create(request(%{command_runner: runner}))
+
+      refute_received {:gh_pr_create, _args}
+    end
+
+    test "only a fork's closed PR does not refuse creation: it is not this repository's" do
+      runner =
+        scripted_runner(
+          closed: answer([pr_item(%{"state" => "CLOSED", "isCrossRepository" => true})])
+        )
+
+      assert {:ok, %PhasePR.Record{status: "created"}} =
+               PhasePR.maybe_create(request(%{command_runner: runner}))
+
+      assert_received {:gh_pr_create, _args}
+    end
+
+    for {description, reply, reason} <- [
+          {"text that is not JSON", {"not json at all", 0}, :unparsable_pr_list},
+          {"an empty answer", {"", 0}, :unparsable_pr_list},
+          {"JSON that is not a list", {~s({"message":"Not Found"}), 0},
+           :unexpected_pr_list_payload},
+          {"a PR without a head or a repository flag (the shape of the former lookup)",
+           {~s([{"url":"https://github.com/acme/repo/pull/7","number":7}]), 0},
+           :unexpected_pr_list_payload}
+        ],
+        lookup <- [:open, :closed] do
+      test "#{description} from the #{lookup} lookup is the typed #{reason} error and nothing is created" do
+        answers = [{unquote(lookup), unquote(Macro.escape(reply))}]
+        runner = scripted_runner(answers)
+
+        assert {:error, %PhasePR.Error{reason: unquote(reason), phase_id: "phase-1"}} =
+                 PhasePR.maybe_create(request(%{command_runner: runner}))
+
+        refute_received {:gh_pr_create, _args}
+      end
+    end
+
+    test "the unexpected payload and the unparsable text are carried in the error details" do
+      assert {:error,
+              %PhasePR.Error{
+                reason: :unexpected_pr_list_payload,
+                details: %{"message" => "Not Found"}
+              }} =
+               PhasePR.maybe_create(
+                 request(%{
+                   command_runner: scripted_runner(open: {~s({"message":"Not Found"}), 0})
+                 })
+               )
+
+      assert {:error, %PhasePR.Error{reason: :unparsable_pr_list, details: "not json at all"}} =
+               PhasePR.maybe_create(
+                 request(%{command_runner: scripted_runner(open: {"not json at all", 0})})
+               )
+    end
+
+    for lookup <- [:open, :closed] do
+      test "a #{lookup} lookup that exits non-zero lets creation go ahead: gh pr create stays the loud authority" do
+        runner = scripted_runner([{unquote(lookup), {"error connecting to api.github.com", 1}}])
+
+        assert {:ok, %PhasePR.Record{status: "created"}} =
+                 PhasePR.maybe_create(request(%{command_runner: runner}))
+
+        assert_received {:gh_pr_create, _args}
+      end
+    end
   end
 
   test "missing head branch is typed" do
@@ -176,9 +353,12 @@ defmodule ForemanServer.Workflow.PhasePRTest do
       "git", args, opts ->
         System.cmd("git", args, opts)
 
-      "gh", ["pr", "list", "--state", "open" | _], _opts ->
+      "gh", ["pr", "list", "--state", "open" | _], opts ->
         if Agent.get(gh_state, & &1.open?) do
-          {~s([{"url":"https://github.com/acme/repo/pull/7","number":7}]), 0}
+          # GitHub's PR follows the branch: after each push its head is the pushed tip.
+          {tip, 0} = System.cmd("git", ["rev-parse", "refs/heads/foreman/run-1"], cd: opts[:cd])
+
+          {Jason.encode!([pr_item(%{"headRefOid" => String.trim(tip)})]), 0}
         else
           {"[]", 0}
         end
@@ -207,6 +387,41 @@ defmodule ForemanServer.Workflow.PhasePRTest do
 
   defp runner("gh", ["pr", "create" | _], _opts),
     do: {"https://github.com/acme/repo/pull/42\n", 0}
+
+  # A `gh pr list` item as `PrLookup` asks for it: this repository's open PR for the tip.
+  defp pr_item(attrs \\ %{}) do
+    Map.merge(
+      %{
+        "url" => "https://github.com/acme/repo/pull/7",
+        "number" => 7,
+        "state" => "OPEN",
+        "headRefOid" => @sha,
+        "isCrossRepository" => false
+      },
+      attrs
+    )
+  end
+
+  defp answer(items), do: {Jason.encode!(items), 0}
+
+  # The runner of `runner/3` with `gh pr list` answers scripted per state (`open: reply`,
+  # `closed: reply`, default `[]`). It tells the test every `gh pr list` and `gh pr create`.
+  defp scripted_runner(replies) do
+    test = self()
+
+    fn
+      "gh", ["pr", "list", "--state", state | _] = args, opts ->
+        send(test, {:gh_pr_list, state, args, opts})
+        Keyword.get(replies, String.to_existing_atom(state), {"[]", 0})
+
+      "gh", ["pr", "create" | _] = args, opts ->
+        send(test, {:gh_pr_create, args})
+        runner("gh", args, opts)
+
+      executable, args, opts ->
+        runner(executable, args, opts)
+    end
+  end
 end
 
 defmodule ForemanServer.Workflow.PhasePREffectsTest do
