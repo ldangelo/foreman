@@ -30,6 +30,7 @@ defmodule ForemanServer.PrReadySignal do
 
   alias ForemanServer.CommandGateway
   alias ForemanServer.GitHub.PrStatus
+  alias ForemanServer.Idempotency.Reconcilers.Command
   alias ForemanServer.Identity
 
   require Logger
@@ -47,7 +48,8 @@ defmodule ForemanServer.PrReadySignal do
         }
 
   @type error ::
-          {:head_read_failed, term()}
+          {:head_read_failed,
+           PrStatus.error() | {:timeout, non_neg_integer()} | {:read_crashed, term()}}
           | {:ready_dispatch_failed, term()}
 
   @doc "Route the `gh` read of this module through `fun`, a 3-arity `(cmd, args, opts)` runner."
@@ -64,7 +66,9 @@ defmodule ForemanServer.PrReadySignal do
   @doc """
   Read the head of `attrs.pr_url` from GitHub and dispatch `run.pr.ready` with it.
 
-  `attrs.repo_id` is `nil`/absent for a run's primary repository.
+  `attrs.repo_id` is `nil`/absent for a run's primary repository. `opts[:timeout_ms]` bounds the
+  read (`Command.default_timeout_ms/0` by default); a read that runs out of time is
+  `{:head_read_failed, {:timeout, timeout_ms}}`.
   """
   @spec signal(attrs(), keyword()) :: :ok | {:error, error()}
   def signal(%{run_id: run_id, pr_url: pr_url} = attrs, opts \\ [])
@@ -72,20 +76,31 @@ defmodule ForemanServer.PrReadySignal do
     repo_id = Map.get(attrs, :repo_id)
 
     result =
-      case PrStatus.fetch(pr_url, runner_opts(opts)) do
-        {:ok, %PrStatus{head_sha: head_sha}} when is_binary(head_sha) and head_sha != "" ->
-          dispatch(attrs, repo_id, String.downcase(head_sha))
-
-        {:ok, %PrStatus{head_sha: other}} ->
-          {:error, {:head_read_failed, {:empty_head_sha, other}}}
-
-        {:error, reason} ->
-          {:error, {:head_read_failed, reason}}
+      case read_head(pr_url, opts) do
+        {:ok, head_sha} -> dispatch(attrs, repo_id, String.downcase(head_sha))
+        {:error, reason} -> {:error, {:head_read_failed, reason}}
       end
 
     with {:error, error} <- result do
       record_failure(attrs, repo_id, error)
       result
+    end
+  end
+
+  # One `gh pr view`, bounded: a hung `gh` would otherwise hold the caller (a run's finalisation,
+  # the operator's Create PR inside its serialising lock, a repository's PR). The read runs in
+  # a task that is killed when the time is up (the wait is on the Elixir side only, as in
+  # `Reconcilers.Command`). `PrStatus` guarantees a non-empty head on success.
+  defp read_head(pr_url, opts) do
+    timeout_ms = Keyword.get(opts, :timeout_ms, Command.default_timeout_ms())
+    fetch_opts = runner_opts(opts)
+    task = Task.async(fn -> PrStatus.fetch(pr_url, fetch_opts) end)
+
+    case Task.yield(task, timeout_ms) || Task.shutdown(task, :brutal_kill) do
+      {:ok, {:ok, %PrStatus{head_sha: head_sha}}} -> {:ok, head_sha}
+      {:ok, {:error, reason}} -> {:error, reason}
+      {:exit, reason} -> {:error, {:read_crashed, reason}}
+      nil -> {:error, {:timeout, timeout_ms}}
     end
   end
 

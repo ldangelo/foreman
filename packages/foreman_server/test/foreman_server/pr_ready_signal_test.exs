@@ -65,6 +65,21 @@ defmodule ForemanServer.PrReadySignalTest do
     assert [] = ready_events(run.run_id)
   end
 
+  test "a hung gh is {:head_read_failed, {:timeout, ms}} within the bound and appends no PrReady",
+       %{run: run} do
+    PrReadySignal.set_command_runner(fn "gh", ["pr", "view" | _], _opts ->
+      Process.sleep(:infinity)
+    end)
+
+    started = System.monotonic_time(:millisecond)
+
+    assert {:error, {:head_read_failed, {:timeout, 100}}} =
+             PrReadySignal.signal(attrs(run), timeout_ms: 100)
+
+    assert System.monotonic_time(:millisecond) - started < 5_000
+    assert [] = ready_events(run.run_id)
+  end
+
   test "a repeat is the same command: one PrReady, the head it first recorded", %{run: run} do
     PrReadyGithub.install!(%{@pr_url => PrReadyGithub.sha("first")})
     assert :ok = PrReadySignal.signal(attrs(run))
