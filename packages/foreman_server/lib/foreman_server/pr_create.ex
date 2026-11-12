@@ -16,9 +16,12 @@ defmodule ForemanServer.PrCreate do
   `{:run_not_found, id}`, `{:unsupported_subject, :jobsite}` (a jobsite thread has no
   run stream; spike E9-SP1), `{:pr_already_associated, url}`, `:no_head_branch`,
   `:no_base_branch`, `:no_commits_to_propose`, `{:project_unresolved, id}` and AutoPR's
-  own errors. A PR that already exists for the branch (a retry after the association
-  write failed) is adopted, not duplicated; an association whose `PrCreated` was never
-  recorded (the dispatch after `execute/1` failed) is resumed by the retry, not refused.
+  own errors (`{:pr_lookup_mismatch, url, expected, actual}` among them). A PR that already
+  exists for the branch (a retry after the association write failed) is adopted, not
+  duplicated: `AutoPR` asks GitHub for it before anything is pushed or created
+  (`GitHub.PrLookup`: this repository's PR whose head is the pushed tip) and never reads
+  `gh`'s text. An association whose `PrCreated` was never recorded (the dispatch after
+  `execute/1` failed) is resumed by the retry, not refused.
 
   The PR enters the merge gate exactly as the PR of a run's own AutoPR does: once it is
   opened and associated, `execute/1` signals `run.pr.ready` (`PrReady`: the PR url, its
@@ -212,19 +215,7 @@ defmodule ForemanServer.PrCreate do
     case AutoPR.maybe_create_pr(context) do
       {:ok, pr_url} -> {:ok, pr_url}
       :noop -> {:error, :no_commits_to_propose}
-      {:error, {:gh_pr_create_failed, _code, output} = error} -> adopt_existing(output, error)
       {:error, _} = error -> error
-    end
-  end
-
-  # `gh` answers "a pull request for branch X already exists: <url>" when a previous
-  # attempt opened it but the association was never recorded.
-  defp adopt_existing(output, error) do
-    with true <- String.contains?(output, "already exists"),
-         [url] <- Regex.run(~r{https://\S+/pull/\d+}, output) do
-      {:ok, url}
-    else
-      _ -> {:error, error}
     end
   end
 
