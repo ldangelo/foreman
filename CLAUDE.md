@@ -710,14 +710,18 @@ Source of truth: `docs/TRD/TRD-2026-a804d1c7-phase-0-durable-execution.md`.
   blocked: the verdict is logged and counted (`[:foreman_server, :workflow,
   :boot_reconciliation, :effect_on_terminal_run]`) and the key stays ambiguous. The
   sweep reports `[…, :effect_reconciled]` (`blocked`, `retried`, `on_terminal_run`,
-  `unresolved`, `skipped`). An undecided key (the sweep could not decide) is marked
+  `unresolved`, `skipped`; `audit_failed` when the `effect_retried` audit write failed).
+  A key the sweep could not decide is marked
   unresolved (`unresolved_at_run_version`, `unresolved_reason`) and
   `Effect.preflight/3` refuses it (`{:effect_unresolved, key}`,
   `{:effect_check_failed, _}`, `{:effect_marker_malformed, key}`) until `run.reset`
-  lifts it (`KeyStore.lift_unresolved/3`). No path marks an ambiguous effect key
-  completed. `foreman_doctor` / `GET /api/doctor` list ambiguous keys in the
-  `effect_keys` check (store durability line plus class, run id and
-  status per key); `foreman doctor` prints its id, title and detail. The check is
+  lifts it (`KeyStore.lift_unresolved/3`). A key with no decision yet (`started`, or
+  `ambiguous` without `decision`) is refused `{:effect_undecided, key}` (Phase 1 PR 2).
+  No sweep verdict marks an ambiguous effect key
+  completed; only the PR adoption path does (`PrCreate.settle_adopted/3`, when GitHub
+  holds an open PR at the local tip). `foreman_doctor` / `GET /api/doctor` list `started` and ambiguous keys in the
+  `effect_keys` check (store durability line, a `Phase 1 gating` line, then class, run id,
+  status, `key_status` and `decision` per key); `foreman doctor` prints its id, title and detail. The check is
   `ok` whatever the key count, so listed keys never affect `--strict`; it is `warn`
   only when the store does not answer ("Unresolved effect keys could not be read"),
   and `doctorExit` fails any warn under `--strict`. Phase 0 has no verb that clears a key for a completed, cancelled
