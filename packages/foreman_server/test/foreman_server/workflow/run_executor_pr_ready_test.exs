@@ -7,6 +7,7 @@ defmodule ForemanServer.Workflow.RunExecutorPrReadyTest do
   # observable that matters: whether the gate is engaged for the run.
   use ExUnit.Case, async: false
 
+  alias ForemanServer.TestSupport.PrReadyGithub
   alias ForemanServer.Workflow.MergeGate
   alias ForemanServer.Workflow.RunExecutor
 
@@ -23,6 +24,10 @@ defmodule ForemanServer.Workflow.RunExecutorPrReadyTest do
     git!(repo, ["add", "."])
     git!(repo, ["commit", "--no-gpg-sign", "-m", "seed", "--quiet"])
     git!(repo, ["branch", "foreman/run-branch"])
+
+    PrReadyGithub.install!(%{
+      "https://github.com/acme/repo/pull/42" => PrReadyGithub.sha("github head")
+    })
 
     run_id = "run-pr-ready-#{System.unique_integer([:positive])}"
     started = %{run_id: run_id, project_id: "project-pr-ready"}
@@ -43,6 +48,8 @@ defmodule ForemanServer.Workflow.RunExecutorPrReadyTest do
   end
 
   @pr_url "https://github.com/acme/repo/pull/42"
+  # The head GitHub names: never a local tip (TRD-008).
+  @github_head PrReadyGithub.sha("github head")
 
   test "a finished run's PR engages the merge gate", %{repo: repo, run_id: run_id} do
     refute MergeGate.pending_for_key?("run:#{run_id}")
@@ -103,17 +110,16 @@ defmodule ForemanServer.Workflow.RunExecutorPrReadyTest do
            "a repeated signal must not append a second PrReady (it would re-pend an approved gate)"
   end
 
-  test "PrReady records the head AutoPR resolves from the artifact's FOREMAN_BRANCH override", %{
-    repo: repo,
-    run_id: run_id
-  } do
+  test "PrReady names the branch AutoPR resolves from the artifact's FOREMAN_BRANCH override and GitHub's head",
+       %{
+         repo: repo,
+         run_id: run_id
+       } do
     git!(repo, ["branch", "agent/chosen"])
     git!(repo, ["checkout", "--quiet", "agent/chosen"])
     File.write!(Path.join(repo, "chosen.txt"), "x")
     git!(repo, ["add", "."])
     git!(repo, ["commit", "--no-gpg-sign", "-m", "on chosen", "--quiet"])
-    chosen_sha = git!(repo, ["rev-parse", "agent/chosen"]) |> String.trim()
-    refute chosen_sha == git!(repo, ["rev-parse", "foreman/run-branch"]) |> String.trim()
 
     artifact = Path.join(repo, "artifact.md")
     File.write!(artifact, "done\nFOREMAN_BRANCH=agent/chosen\n")
@@ -126,22 +132,21 @@ defmodule ForemanServer.Workflow.RunExecutorPrReadyTest do
     [ready] = Enum.filter(events, &(&1.event_type == "PrReady"))
 
     assert ready.data.branch_name == "agent/chosen"
-    assert ready.data.head_sha == chosen_sha
+    assert ready.data.head_sha == @github_head
   end
 
-  test "an unresolvable head branch fails loudly and never engages the gate", %{
+  test "a branch absent from the local checkout still signals GitHub's head", %{
     repo: repo,
     run_id: run_id
   } do
-    bad = put_in(state(repo, run_id), [:last_worktree, :branch], "no/such/branch")
+    gone = put_in(state(repo, run_id), [:last_worktree, :branch], "no/such/branch")
 
-    log =
-      ExUnit.CaptureLog.capture_log(fn ->
-        RunExecutor.__signal_pr_ready_for_test__(bad, @pr_url)
-      end)
+    assert :ok = RunExecutor.__signal_pr_ready_for_test__(gone, @pr_url)
 
-    assert log =~ "run.pr.ready was NOT signalled"
-    refute MergeGate.pending_for_key?("run:#{run_id}")
+    {:ok, events} = ForemanServer.EventStore.read_stream_forward("run:#{run_id}", 0, 1_000)
+    [ready] = Enum.filter(events, &(&1.event_type == "PrReady"))
+    assert ready.data.head_sha == @github_head
+    assert MergeGate.pending_for_key?("run:#{run_id}")
   end
 
   test "a run whose base branch was never recorded fails loudly and never engages the gate", %{

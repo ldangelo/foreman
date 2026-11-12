@@ -9,7 +9,7 @@ defmodule ForemanServer.Workflow.MultiRepoPrRetryTest do
   use ExUnit.Case, async: false
 
   alias ForemanServer.{CommandGateway, MultiRepoRuns, ProjectionStore}
-  alias ForemanServer.TestSupport.ProjectionStoreReset
+  alias ForemanServer.TestSupport.{PrReadyGithub, ProjectionStoreReset}
   alias ForemanServer.Workflow.RunExecutor
   alias ForemanServerWeb.OperatorDashboard
 
@@ -17,6 +17,7 @@ defmodule ForemanServer.Workflow.MultiRepoPrRetryTest do
     cleanup = Map.get(context, :cleanup, "always")
     ProjectionStoreReset.reset!()
     MultiRepoRuns.enable!()
+    PrReadyGithub.install!(&PrReadyGithub.sha/1)
 
     root = Path.join(System.tmp_dir!(), "multi-repo-retry-#{System.unique_integer([:positive])}")
     File.mkdir_p!(root)

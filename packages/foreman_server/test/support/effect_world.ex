@@ -299,6 +299,29 @@ defmodule ForemanServer.TestSupport.EffectWorld do
     {url <> "\n", 0}
   end
 
+  # `gh pr view <url> --json ...`, as `PrReadySignal` reads the head GitHub names: the PR's
+  # reported head (`report_pr!/3`), or a failure for a PR that is unknown or has none.
+  defp run(world, "gh", ["pr", "view", url | _], _opts) do
+    case Enum.find(prs(world), &(&1["url"] == url)) do
+      %{"headRefOid" => sha, "head" => head, "base" => base, "state" => state} ->
+        {Jason.encode!(%{
+           "state" => state,
+           "mergeable" => "MERGEABLE",
+           "headRefOid" => sha,
+           "headRefName" => head,
+           "baseRefName" => base,
+           "statusCheckRollup" => [],
+           "reviewDecision" => "",
+           "reviews" => [],
+           "comments" => [],
+           "mergeStateStatus" => "CLEAN"
+         }), 0}
+
+      _ ->
+        {"GraphQL: Could not resolve to a PullRequest with the number given.\n", 1}
+    end
+  end
+
   defp run(world, "gh", ["pr", "list" | _] = args, _opts) do
     Agent.get(world, fn
       %{list_error?: true} -> {"error connecting to api.github.com\n", 1}

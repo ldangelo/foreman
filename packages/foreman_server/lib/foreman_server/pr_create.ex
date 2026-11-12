@@ -36,7 +36,7 @@ defmodule ForemanServer.PrCreate do
   `{output, exit_code}`); without it the installed `git`/`gh` run.
   """
 
-  alias ForemanServer.{CommandGateway, EventStore, Identity, PrAssociate, ProjectionStore}
+  alias ForemanServer.{EventStore, PrAssociate, PrReadySignal, ProjectionStore}
   alias ForemanServer.Workflow.AutoPR
 
   @runner_key {__MODULE__, :command_runner}
@@ -103,52 +103,28 @@ defmodule ForemanServer.PrCreate do
   end
 
   # `RunExecutor` and `RepoPr` signal the same command for the PRs they open, with the same
-  # deterministic id, so a repeat (a retry, a PR that already had its gate) is a no-op.
-  defp signal_ready(run, run_id, pr_url, project, head, base) do
-    with {:ok, head_sha} <- head_sha(project, head),
-         {:ok, _spec} <-
-           CommandGateway.dispatch_system(%{
-             type: "run.pr.ready",
-             command_id: Identity.run_pr_ready_command_id(run_id),
-             aggregate_id: "run:#{run_id}",
-             payload: %{
-               run_id: run_id,
-               project_id: run.project_id,
-               task_id: run.task_id,
-               pr_url: pr_url,
-               branch_name: head,
-               head_sha: head_sha,
-               base_branch: base
-             }
-           }) do
-      :ok
-    else
+  # deterministic id, so a repeat (a retry, a PR that already had its gate) is a no-op. The head
+  # recorded is the one GitHub names (`PrReadySignal`), never a local revision.
+  defp signal_ready(run, run_id, pr_url, _project, head, base) do
+    attrs = %{
+      run_id: run_id,
+      project_id: run.project_id,
+      task_id: run.task_id,
+      pr_url: pr_url,
+      branch_name: head,
+      base_branch: base
+    }
+
+    case PrReadySignal.signal(attrs, runner_opts()) do
+      :ok -> :ok
       {:error, reason} -> {:error, {:pr_ready_signal_failed, reason}}
     end
   end
 
-  # The commit the head branch points at in the project checkout (the branch was just pushed
-  # from there): the head `PrReady` records, from which the merge pin starts.
-  defp head_sha(project, branch) do
-    case run_command("git", ["rev-parse", "--verify", branch <> "^{commit}"],
-           stderr_to_stdout: true,
-           cd: project
-         ) do
-      {output, 0} ->
-        case output |> String.trim() |> String.downcase() do
-          "" -> {:error, :empty_revision}
-          sha -> {:ok, sha}
-        end
-
-      {output, _code} ->
-        {:error, {:unresolvable_revision, String.trim(output)}}
-    end
-  end
-
-  defp run_command(cmd, args, opts) do
+  defp runner_opts do
     case :persistent_term.get(@runner_key, :unset) do
-      :unset -> System.cmd(cmd, args, opts)
-      fun -> fun.(cmd, args, opts)
+      :unset -> []
+      fun -> [command_runner: fun]
     end
   end
 

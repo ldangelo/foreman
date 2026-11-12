@@ -20,6 +20,7 @@ defmodule ForemanServer.Workflow.RepoPr do
 
   alias ForemanServer.CommandGateway
   alias ForemanServer.Identity
+  alias ForemanServer.PrReadySignal
   alias ForemanServer.PrAssociate
   alias ForemanServer.ProjectionStore
   alias ForemanServer.Workflow.AutoPR
@@ -252,45 +253,27 @@ defmodule ForemanServer.Workflow.RepoPr do
   end
 
   defp signal_ready(%RepoPrContext{run_id: run_id} = ctx, url) do
-    %{base_branch: base_branch, head_branch: head_branch, cwd: cwd} = ctx.auto_pr
-    repo_id = event_repo_id(ctx)
+    %{base_branch: base_branch, head_branch: head_branch} = ctx.auto_pr
 
-    payload =
-      %{
-        run_id: run_id,
-        project_id: ctx.project_id,
-        task_id: ctx.task_id,
-        pr_url: url,
-        branch_name: head_branch,
-        head_sha: nil,
-        base_branch: base_branch
-      }
-      |> then(&if(repo_id, do: Map.put(&1, :repo_id, repo_id), else: &1))
+    attrs = %{
+      run_id: run_id,
+      project_id: ctx.project_id,
+      task_id: ctx.task_id,
+      pr_url: url,
+      branch_name: head_branch,
+      base_branch: base_branch,
+      repo_id: event_repo_id(ctx)
+    }
 
-    with {:ok, head_sha} <- head_sha(cwd, head_branch),
-         {:ok, _} <-
-           CommandGateway.dispatch_system(%{
-             type: "run.pr.ready",
-             command_id: Identity.run_pr_ready_command_id(run_id, repo_id),
-             aggregate_id: "run:#{run_id}",
-             payload: %{payload | head_sha: head_sha}
-           }) do
-      :ok
-    else
+    case PrReadySignal.signal(attrs) do
+      :ok ->
+        :ok
+
       {:error, reason} ->
         Logger.error(
           "RepoPr #{run_id} repository #{ctx.repo_id}: PR #{url} created but run.pr.ready " <>
             "was NOT signalled, so its merge gate never engages: #{inspect(reason)}"
         )
-    end
-  end
-
-  defp head_sha(cwd, branch) do
-    case System.cmd("git", ["-C", cwd, "rev-parse", "--verify", "#{branch}^{commit}"],
-           stderr_to_stdout: true
-         ) do
-      {sha, 0} -> {:ok, sha |> String.trim() |> String.downcase()}
-      {output, _} -> {:error, {:unresolvable_revision, String.trim(output)}}
     end
   end
 end

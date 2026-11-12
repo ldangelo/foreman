@@ -7,12 +7,13 @@ defmodule ForemanServer.Workflow.RunExecutorMultiRepoPrTest do
   use ExUnit.Case, async: false
 
   alias ForemanServer.{Identity, MultiRepoRuns, PrAssociate, ProjectionStore}
-  alias ForemanServer.TestSupport.ProjectionStoreReset
+  alias ForemanServer.TestSupport.{PrReadyGithub, ProjectionStoreReset}
   alias ForemanServer.Workflow.{RepoPr, RepoPrContext, RunExecutor}
 
   setup do
     ProjectionStoreReset.reset!()
     MultiRepoRuns.enable!()
+    PrReadyGithub.install!(&PrReadyGithub.sha/1)
 
     root = Path.join(System.tmp_dir!(), "multi-repo-pr-#{System.unique_integer([:positive])}")
     File.mkdir_p!(root)

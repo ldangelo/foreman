@@ -24,7 +24,7 @@ defmodule ForemanServer.PrCreateTest do
   alias ForemanServer.Idempotency.Reconcilers.BranchPush
   alias ForemanServer.Idempotency.Reconcilers.PrCreate, as: CreateEffect
   alias ForemanServer.TelemetryTest.Handler
-  alias ForemanServer.TestSupport.{EffectWorld, KeyStoreReset}
+  alias ForemanServer.TestSupport.{EffectWorld, KeyStoreReset, PrReadyGithub}
   alias ForemanServerWeb.MCP.Tools.Doctor
 
   @base "main"
@@ -38,7 +38,7 @@ defmodule ForemanServer.PrCreateTest do
       gh: {pr_url <> "\n", 0},
       ahead: "2\n",
       push: {"", 0},
-      rev: {@head_sha <> "\n", 0},
+      view: PrReadyGithub.view_reply(@head_sha),
       list: [{"[]\n", 0}]
     }
 
@@ -50,11 +50,11 @@ defmodule ForemanServer.PrCreateTest do
 
       case {cmd, args} do
         {"git", ["rev-list" | _]} -> {reply.ahead, 0}
-        # The push's intent reads the branch tip and the remote head before pushing; the
-        # gate signal's `rev-parse` (`script.rev`) is a different command.
+        # The push's intent reads the branch tip and the remote head before pushing. The gate
+        # signal reads no local revision: the head is GitHub's (`gh pr view`, `script.view`).
         {"git", ["rev-parse", "--verify", "refs/heads/" <> _]} -> {@head_sha <> "\n", 0}
         {"git", ["ls-remote" | _]} -> {"", 0}
-        {"git", ["rev-parse" | _]} -> reply.rev
+        {"gh", ["pr", "view" | _]} -> reply.view
         {"git", ["push" | _]} -> reply.push
         {"gh", ["pr", "list" | _]} -> next_list(script)
         {"gh", ["pr", "create" | _]} -> run_gh(reply.gh, test_pid)
@@ -175,17 +175,34 @@ defmodule ForemanServer.PrCreateTest do
     Map.merge(run, %{repo: repo, branch: branch})
   end
 
-  defp ran(cmd, pattern_fun \\ fn _ -> true end) do
-    Stream.repeatedly(fn ->
-      receive do
-        {:ran, ^cmd, args, opts} -> {args, opts}
-      after
-        0 -> :done
-      end
-    end)
-    |> Enum.take_while(&(&1 != :done))
-    |> Enum.filter(fn {args, _} -> pattern_fun.(args) end)
+  # What the runner was asked, oldest first. The gate signal's one `gh pr view` (GitHub's head,
+  # TRD-008) is left out unless a `pattern_fun` is given: `view_ran/0` reads exactly those.
+  defp ran(cmd, pattern_fun \\ fn args -> not match?(["pr", "view" | _], args) end) do
+    calls =
+      Stream.repeatedly(fn ->
+        receive do
+          {:ran, ^cmd, args, opts} -> {args, opts}
+        after
+          0 -> :done
+        end
+      end)
+      |> Enum.take_while(&(&1 != :done))
+
+    {taken, left} = Enum.split_with(calls, fn {args, _} -> pattern_fun.(args) end)
+    # what this read did not take stays readable by the next one
+    Enum.each(left, fn {args, opts} -> send(self(), {:ran, cmd, args, opts}) end)
+    taken
   end
+
+  defp drain_ran do
+    receive do
+      {:ran, _cmd, _args, _opts} -> drain_ran()
+    after
+      0 -> :ok
+    end
+  end
+
+  defp view_ran, do: ran("gh", &match?(["pr", "view" | _], &1))
 
   defp create_command(run_id, payload \\ %{}) do
     %{
@@ -246,13 +263,15 @@ defmodule ForemanServer.PrCreateTest do
          %{pr_url: pr_url} do
       t = thread!()
       assert {:ok, _} = PrCreate.execute(t.run_id)
-      _ = {ran("gh"), ran("git")}
+      drain_ran()
 
       assert {:ok, %{pr_url: ^pr_url, head_branch: head}} = PrCreate.execute(t.run_id)
       assert head == t.branch
+      # only the head of the gate signal is read again (from GitHub, one `gh pr view`): nothing
+      # is pushed, opened or resolved locally
       assert ran("gh") == []
-      # only the head of the gate signal is resolved again: nothing is pushed or counted
-      assert [{["rev-parse" | _], _opts}] = ran("git")
+      assert [{["pr", "view", ^pr_url | _], _opts}] = view_ran()
+      assert ran("git") == []
       # ...and the repeated signal is the same deterministic command: still ONE PrReady
       assert Enum.count(Support.run_event_types(t.run_id), &(&1 == "PrReady")) == 1
     end
@@ -448,7 +467,7 @@ defmodule ForemanServer.PrCreateTest do
     test "repeating the command is refused and opens no second PR", %{pr_url: pr_url} do
       t = thread!()
       assert {:ok, _} = CommandGateway.dispatch_operator(create_command(t.run_id))
-      _ = {ran("gh"), ran("git")}
+      drain_ran()
 
       assert {:error, {:pr_already_associated, ^pr_url}} =
                CommandGateway.dispatch_operator(create_command(t.run_id))
@@ -463,7 +482,7 @@ defmodule ForemanServer.PrCreateTest do
       # the PR was opened and associated, but the command never reached the aggregate
       assert {:ok, _} = PrCreate.execute(t.run_id)
       refute "PrCreated" in Support.run_event_types(t.run_id)
-      _ = {ran("gh"), ran("git")}
+      drain_ran()
 
       assert {:ok, _} = CommandGateway.dispatch_operator(create_command(t.run_id))
 
@@ -483,7 +502,7 @@ defmodule ForemanServer.PrCreateTest do
 
       # the first click got as far as opening, associating and gating the PR ...
       assert {:ok, _} = PrCreate.execute(t.run_id)
-      _ = {ran("gh"), ran("git")}
+      drain_ran()
 
       # ... and then the append of its PrCreated fails inside the real router
       on_exit(fn -> release!(stream) end)
@@ -571,16 +590,15 @@ defmodule ForemanServer.PrCreateTest do
       {state, _version} = Aggregate.load(Run, "run:#{t.run_id}")
       assert Run.merge_gate(state) == :pending
 
-      # the head is resolved from the pushed branch, in the project checkout (the push's own
-      # intent read the branch tip too, as `refs/heads/<branch>`: a different command)
-      assert [{["rev-parse", "--verify", rev], opts}] =
-               ran(
-                 "git",
-                 &(hd(&1) == "rev-parse" and String.ends_with?(List.last(&1), "^{commit}"))
-               )
+      # the head is read from GitHub, never from the local checkout (the push's own intent
+      # read the branch tip as `refs/heads/<branch>`: a different command)
+      assert [{["pr", "view", ^pr_url | _], _opts}] = view_ran()
 
-      assert rev == t.branch <> "^{commit}"
-      assert opts[:cd] == t.repo
+      assert ran(
+               "git",
+               &(hd(&1) == "rev-parse" and String.ends_with?(List.last(&1), "^{commit}"))
+             ) ==
+               []
     end
 
     test "the operator can approve and merge the PR it opened, pinned to its head",
@@ -652,11 +670,11 @@ defmodule ForemanServer.PrCreateTest do
     test "a failed gate signal is an error, never a silent success, and the retry signals it again",
          %{script: script} do
       t = thread!()
-      script!(script, :rev, {"fatal: Needed a single revision", 128})
+      script!(script, :view, {"GraphQL: Could not resolve to a PullRequest", 1})
 
       assert {:error,
               {:pr_ready_signal_failed,
-               {:unresolvable_revision, "fatal: Needed a single revision"}}} =
+               {:head_read_failed, {:gh_failed, 1, "GraphQL: Could not resolve to a PullRequest"}}}} =
                CommandGateway.dispatch_operator(create_command(t.run_id))
 
       # the PR is open and associated, but neither the gate nor PrCreated was recorded
@@ -664,16 +682,17 @@ defmodule ForemanServer.PrCreateTest do
       refute "PrReady" in Support.run_event_types(t.run_id)
       refute "PrCreated" in Support.run_event_types(t.run_id)
 
-      script!(script, :rev, {@head_sha <> "\n", 0})
-      _ = {ran("gh"), ran("git")}
+      script!(script, :view, PrReadyGithub.view_reply(@head_sha))
+      drain_ran()
 
       assert {:ok, _} = CommandGateway.dispatch_operator(create_command(t.run_id))
 
       types = Support.run_event_types(t.run_id)
       assert Enum.count(types, &(&1 == "PrReady")) == 1
       assert Enum.count(types, &(&1 == "PrCreated")) == 1
-      # the retry resumed the open PR: no second push or PR
+      # the retry resumed the open PR: no second push or PR (only the head read)
       assert ran("gh") == []
+      assert [{["pr", "view" | _], _}] = view_ran()
       assert ran("git", &(hd(&1) == "push")) == []
     end
   end
