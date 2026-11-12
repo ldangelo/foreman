@@ -11,8 +11,9 @@ defmodule ForemanServer.GitHub.PrLookup do
   fork's PR of the same branch name comes back too (`isCrossRepository: true`); `--state
   closed` returns merged PRs as well (probed with gh 2.103.3). `gh` has no `owner:branch`
   form of `--head` (`gh pr list --help`), and the fork filter below runs after `gh` has
-  truncated, so the limit is gh's own maximum: so many fork PRs of one branch name that they
-  push this repository's PR out of the answer is not a case worth a second query. A PR is therefore the run's
+  truncated to the `--limit` (100; `gh pr list --help` states no maximum). Accepted residual: more
+  than 100 PRs of one branch name, so many fork PRs that they push this repository's PR out of
+  the answer, could hide it, and that is not a case worth a second query. A PR is therefore the run's
   only when it is this repository's and its head is the commit the run pushed:
 
     * `find/4` drops every PR with `isCrossRepository: true`: a fork's PR is not the run's PR
