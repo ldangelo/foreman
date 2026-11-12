@@ -19,7 +19,7 @@ defmodule ForemanServer.Workflow.BootReconciliationEffectKeysTest do
   alias ForemanServer.Aggregate
   alias ForemanServer.Aggregates.Run
   alias ForemanServer.{CommandGateway, CommandRouter, EventStore, RunControl}
-  alias ForemanServer.Idempotency.{Effect, KeyStore}
+  alias ForemanServer.Idempotency.{Effect, KeyStore, Reconciler}
   alias ForemanServer.TelemetryTest.Handler
   alias ForemanServer.TestSupport.{Eventually, KeyStoreReset, MeckScope, UniqueIds}
   alias ForemanServer.Workflow.BootReconciliation
@@ -54,9 +54,26 @@ defmodule ForemanServer.Workflow.BootReconciliationEffectKeysTest do
     def repeatable?(%{"repeatable" => answer}), do: answer
   end
 
+  defmodule Advisory do
+    @moduledoc false
+    @behaviour ForemanServer.Idempotency.Reconciler
+
+    # What the PR comment class declares: repeating it is harmless and its verdict never
+    # decides the fate of a run.
+    @impl true
+    def reconcile(%{"fake_verdict" => verdict}), do: String.to_existing_atom(verdict)
+
+    @impl true
+    def repeatable?(_metadata), do: true
+
+    @impl true
+    def blocks_run?(_metadata), do: false
+  end
+
   @project_id "project-effect-keys"
   @classes %{"branch_push" => Fake, "pr_create" => Fake}
   @probe_classes %{"probe" => Probe}
+  @advisory_classes %{"advisory" => Advisory}
 
   setup_all do
     MeckScope.new_once!([Jido.Harness.Run, KeyStore, CommandGateway])
@@ -820,6 +837,99 @@ defmodule ForemanServer.Workflow.BootReconciliationEffectKeysTest do
       assert KeyStore.unresolved_version(repeatable_meta) == :none
       assert {:ok, %{metadata: held_meta}} = KeyStore.get(held)
       assert {:ok, _version} = KeyStore.unresolved_version(held_meta)
+    end
+  end
+
+  describe "the sweep reads whether the class may block a run (TRD-039)" do
+    setup do
+      # `Effect.run/4` reads the configured registry, not the sweep's option.
+      original = Application.fetch_env(:foreman_server, Reconciler)
+
+      Application.put_env(:foreman_server, Reconciler,
+        classes: Map.put(Reconciler.classes(), "advisory", Advisory)
+      )
+
+      on_exit(fn ->
+        case original do
+          {:ok, value} -> Application.put_env(:foreman_server, Reconciler, value)
+          :error -> Application.delete_env(:foreman_server, Reconciler)
+        end
+      end)
+
+      :ok
+    end
+
+    for verdict <- ["done", "unknown"] do
+      test "a #{verdict} verdict of an advisory key on a live run blocks nothing, cancels nothing and marks nothing: it is counted skipped and the effect is not refused",
+           %{run_id: run_id, ref: ref} do
+        key = plant(run_id, "advisory", "comment", unquote(verdict))
+        before_events = events(run_id)
+
+        sweep_with(@advisory_classes)
+
+        assert events(run_id) == before_events
+        assert status(run_id) == "awaiting_worker"
+        assert RunControl.intent(run_id) == nil
+
+        assert_receive {@effect_event, ^ref,
+                        %{
+                          skipped: 1,
+                          blocked: 0,
+                          on_terminal_run: 0,
+                          unresolved: 0,
+                          retried: 0,
+                          audit_failed: 0
+                        }, _}
+
+        refute_received {@terminal_event, ^ref, _, _}
+        assert {:ok, %{status: :ambiguous, metadata: metadata}} = KeyStore.get(key)
+        assert KeyStore.unresolved_version(metadata) == :none
+        assert KeyStore.decision(metadata) == :none
+
+        assert :ran == Effect.run("advisory", key, fn -> :ran end, %{run_id: run_id})
+        assert {:ok, :completed} = KeyStore.status(key)
+      end
+    end
+
+    test "a verdict of an advisory key on a run that has ended is skipped too, and is not counted on_terminal_run",
+         %{run_id: run_id, ref: ref} do
+      end_run(run_id, "completed")
+      key = plant(run_id, "advisory", "comment", "done")
+
+      sweep_with(@advisory_classes)
+
+      assert_receive {@effect_event, ^ref, %{skipped: 1, on_terminal_run: 0, blocked: 0}, _}
+      refute_received {@terminal_event, ^ref, _, _}
+      assert {:ok, %{status: :ambiguous, metadata: metadata}} = KeyStore.get(key)
+      assert KeyStore.unresolved_version(metadata) == :none
+    end
+
+    test "a not_done verdict of an advisory key decides it like any other",
+         %{run_id: run_id, ref: ref} do
+      key = plant(run_id, "advisory", "comment", "not_done")
+
+      sweep_with(@advisory_classes)
+
+      assert_receive {@effect_event, ^ref, %{retried: 1, skipped: 0, blocked: 0}, _}
+      assert {:ok, %{status: :ambiguous, metadata: decided}} = KeyStore.get(key)
+      assert KeyStore.decision(decided) == :not_done
+      assert recovery_record(run_id, "effect_retried") != nil
+    end
+
+    test "the answer is the class's: in one sweep the advisory key's run is left running and the run of a push key is blocked",
+         %{run_id: push_run, ref: ref} do
+      advisory_run = UniqueIds.unique_run_id("effect-advisory")
+      start_run(advisory_run)
+      on_exit(fn -> RunControl.clear(advisory_run) end)
+
+      plant(advisory_run, "advisory", "comment", "done")
+      plant(push_run, "branch_push", "feature/blocks", "done")
+
+      sweep_with(Map.merge(@classes, @advisory_classes))
+
+      assert_receive {@effect_event, ^ref, %{skipped: 1, blocked: 1}, _}
+      assert status(advisory_run) == "awaiting_worker"
+      assert status(push_run) == "blocked"
     end
   end
 

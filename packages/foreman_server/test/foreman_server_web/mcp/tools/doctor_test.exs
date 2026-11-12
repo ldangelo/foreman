@@ -136,7 +136,23 @@ defmodule ForemanServerWeb.MCP.Tools.DoctorTest do
 
     defmodule AnsweringRepo do
       @moduledoc false
-      def all(_query), do: Application.get_env(:foreman_server, :doctor_test_rows, [])
+      # The rows of the status the query asks for, as a database answers; the durability probe
+      # names no status and gets every row.
+      def all(%{wheres: [%{params: [{status, _type}]}]}),
+        do: Enum.filter(rows(), &(&1.status == status))
+
+      def all(_probe), do: rows()
+
+      defp rows, do: Application.get_env(:foreman_server, :doctor_test_rows, [])
+    end
+
+    defmodule AmbiguousDownRepo do
+      @moduledoc false
+      # Answers the probe and the `started` read, and fails the `ambiguous` read.
+      def all(%{wheres: [%{params: [{:ambiguous, _type}]}]}),
+        do: raise(DBConnection.ConnectionError, "connection refused")
+
+      def all(_query), do: []
     end
 
     defmodule DownRepo do
@@ -183,9 +199,9 @@ defmodule ForemanServerWeb.MCP.Tools.DoctorTest do
       run_id
     end
 
-    # An effect key left `ambiguous` the way boot leaves it: the effect's process died after
-    # `Effect.run` recorded `started`, then the sweep marks the orphan ambiguous.
-    defp ambiguous_effect(class, run_id, identity) do
+    # An effect key left `started` the way a crash leaves it: the effect's process died inside
+    # the effect, after `Effect.run` recorded `started`.
+    defp started_effect(class, run_id, identity) do
       key = Effect.key(class, run_id, identity)
       test = self()
 
@@ -205,6 +221,12 @@ defmodule ForemanServerWeb.MCP.Tools.DoctorTest do
       assert_receive {:in_effect, ^pid}
       Process.exit(pid, :kill)
       assert {:ok, :started} = KeyStore.status(key)
+      key
+    end
+
+    # ... and `ambiguous` the way boot leaves it: the sweep marks the orphan.
+    defp ambiguous_effect(class, run_id, identity) do
+      key = started_effect(class, run_id, identity)
       :ok = KeyStore.mark_ambiguous(key, "boot_orphan")
       key
     end
@@ -214,14 +236,64 @@ defmodule ForemanServerWeb.MCP.Tools.DoctorTest do
       key = ambiguous_effect("branch_push", run_id, "feature/doctor")
 
       assert {:ok, [entry]} = Doctor.unresolved_effect_keys()
-      assert entry == %{key: key, class: "branch_push", run_id: run_id, status: "failed"}
+
+      assert entry == %{
+               key: key,
+               class: "branch_push",
+               run_id: run_id,
+               status: "failed",
+               key_status: "ambiguous",
+               decision: "none"
+             }
 
       assert {:ok, output} = Doctor.run()
       assert output =~ "Unresolved effect keys"
-      assert output =~ "branch_push run=#{run_id} status=failed key=#{key}"
+
+      assert output =~
+               "branch_push run=#{run_id} status=failed key=#{key} key_status=ambiguous decision=none"
+
       # The provider report is still the first part of the output.
       assert output =~ "Provider readiness"
       assert output =~ "✓ pi available"
+    end
+
+    test "lists a started key and an ambiguous key that carries a decision, each with its key_status and decision" do
+      run_id = failed_run()
+      started = started_effect("branch_push", run_id, "feature/started")
+      undecided = ambiguous_effect("branch_push", run_id, "feature/undecided")
+      decided = ambiguous_effect("branch_push", run_id, "feature/decided")
+      :ok = KeyStore.mark_decided(decided, :not_done)
+
+      entry = fn key, class, key_status, decision ->
+        %{
+          key: key,
+          class: class,
+          run_id: run_id,
+          status: "failed",
+          key_status: key_status,
+          decision: decision
+        }
+      end
+
+      assert {:ok, entries} = Doctor.unresolved_effect_keys()
+
+      assert entries ==
+               Enum.sort_by(
+                 [
+                   entry.(started, "branch_push", "started", "none"),
+                   entry.(undecided, "branch_push", "ambiguous", "none"),
+                   entry.(decided, "branch_push", "ambiguous", "not_done")
+                 ],
+                 & &1.key
+               )
+
+      assert {:ok, output} = Doctor.run()
+
+      assert output =~
+               "branch_push run=#{run_id} status=failed key=#{started} key_status=started decision=none"
+
+      assert output =~
+               "branch_push run=#{run_id} status=failed key=#{decided} key_status=ambiguous decision=not_done"
     end
 
     test "lists the key whatever the run's status: no projection reads not_found" do
@@ -230,7 +302,7 @@ defmodule ForemanServerWeb.MCP.Tools.DoctorTest do
       assert {:ok, [%{key: ^key, status: "not_found"}]} = Doctor.unresolved_effect_keys()
     end
 
-    test "does not list a completed or failed effect key, nor an ambiguous agent-phase key" do
+    test "does not list a completed or failed effect key, nor a started or ambiguous agent-phase key" do
       done = Effect.key("branch_push", "r-done", "a")
       :ok = KeyStore.mark_started(done, %{"run_id" => "r-done", "effect_class" => "branch_push"})
       :ok = KeyStore.mark_completed(done, %{})
@@ -239,10 +311,12 @@ defmodule ForemanServerWeb.MCP.Tools.DoctorTest do
       :ok = KeyStore.mark_failed(failed, "boom")
       :ok = KeyStore.mark_started("phase:r-phase:p1", %{"run_id" => "r-phase"})
       :ok = KeyStore.mark_ambiguous("phase:r-phase:p1", "expired")
+      :ok = KeyStore.mark_started("phase:r-live:p2", %{"run_id" => "r-live"})
 
       assert {:ok, []} = Doctor.unresolved_effect_keys()
       assert {:ok, output} = Doctor.run()
       refute output =~ "phase:r-phase:p1"
+      refute output =~ "phase:r-live:p2"
       refute output =~ done
     end
 
@@ -265,22 +339,46 @@ defmodule ForemanServerWeb.MCP.Tools.DoctorTest do
       refute output =~ "not listed"
     end
 
-    test "repo rows are listed with string-keyed metadata" do
+    test "repo rows are listed with string-keyed metadata, each status read on its own" do
       Application.put_env(:foreman_server, @config, repo: AnsweringRepo)
 
       Application.put_env(:foreman_server, :doctor_test_rows, [
         %IdempotencyKey{
           key: "effect:pr_create:run-x:feature/y",
           status: :ambiguous,
-          metadata: %{"run_id" => "run-x", "effect_class" => "pr_create"}
+          metadata: %{
+            "run_id" => "run-x",
+            "effect_class" => "pr_create",
+            "decision" => "not_done"
+          }
+        },
+        %IdempotencyKey{
+          key: "effect:branch_push:run-x:feature/z",
+          status: :started,
+          metadata: %{"run_id" => "run-x", "effect_class" => "branch_push"}
         },
         %IdempotencyKey{key: "phase:run-x:p1", status: :ambiguous, metadata: %{}}
       ])
 
       restart_key_store()
 
-      assert {:ok, [%{class: "pr_create", run_id: "run-x", status: "not_found"}]} =
-               Doctor.unresolved_effect_keys()
+      assert {:ok, [started, decided]} = Doctor.unresolved_effect_keys()
+
+      assert %{
+               class: "branch_push",
+               run_id: "run-x",
+               status: "not_found",
+               key_status: "started",
+               decision: "none"
+             } = started
+
+      assert %{
+               class: "pr_create",
+               run_id: "run-x",
+               status: "not_found",
+               key_status: "ambiguous",
+               decision: "not_done"
+             } = decided
     end
 
     test "a record with no usable run_id is listed with status unknown, never crashing" do
@@ -290,6 +388,16 @@ defmodule ForemanServerWeb.MCP.Tools.DoctorTest do
 
       assert {:ok, [%{key: ^key, class: "task_provider", run_id: "unknown", status: "unknown"}]} =
                Doctor.unresolved_effect_keys()
+    end
+
+    test "a failed read of either status is unavailable, never the keys of the status that answered" do
+      Application.put_env(:foreman_server, @config, repo: AmbiguousDownRepo)
+      restart_key_store()
+
+      assert {:error, :unavailable} = Doctor.unresolved_effect_keys()
+      assert {:ok, output} = Doctor.run()
+      assert output =~ "could not be read"
+      refute output =~ "  none"
     end
 
     test "an unreadable store gets a could-not-be-read note, never an empty list; strict is unchanged" do

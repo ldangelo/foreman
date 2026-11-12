@@ -757,6 +757,21 @@ defmodule ForemanServer.Workflow.RunExecutorTaskEffectsTest do
       assert KeyStore.unresolved_version(stringify(meta)) == :none
     end
 
+    test "a :done verdict on a paused run still blocks and cancels it: a repeatable reopen is not an advisory effect (TRD-039)" do
+      %{db: db, task_id: task_id, run_id: run_id} = world("reopen-paused-cancel")
+      on_exit(fn -> ForemanServer.RunControl.clear(run_id) end)
+      pause_run!(run_id)
+      FakeTaskProvider.put_issue(db, task_id, "in_progress", @actor)
+      crash_in_reopen(db, :after)
+
+      sweep()
+
+      assert status(run_id) == "blocked"
+      assert block_reason(run_id) == "effect_already_done"
+      assert recovery_outcome(run_id, "effect_blocked")
+      assert ForemanServer.RunControl.intent(run_id) == :cancel
+    end
+
     test "a provider that cannot be reached blocks a paused run `effect_outcome_ambiguous`" do
       %{db: db, task_id: task_id, run_id: run_id} = world("reopen-paused-down")
       pause_run!(run_id)
