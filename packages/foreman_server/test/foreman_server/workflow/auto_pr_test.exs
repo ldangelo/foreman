@@ -1190,6 +1190,38 @@ defmodule ForemanServer.Workflow.AutoPREffectsTest do
       end
     end
 
+    test "a gh pr list that hangs is a failed lookup after the context's timeout: the sequence goes on",
+         %{ctx: ctx, world: world, create_key: create_key} do
+      world_runner = ctx.command_runner
+
+      runner = fn
+        "gh", ["pr", "list" | _], _opts ->
+          Process.sleep(2_000)
+          {"[]", 0}
+
+        executable, args, opts ->
+          world_runner.(executable, args, opts)
+      end
+
+      started = System.monotonic_time(:millisecond)
+
+      log =
+        capture_log(fn ->
+          assert {:ok, url} =
+                   AutoPR.maybe_create_pr(
+                     Map.merge(ctx, %{command_runner: runner, lookup_timeout_ms: 20})
+                   )
+
+          assert [%{"url" => ^url}] = EffectWorld.prs(world)
+        end)
+
+      assert log =~ "no PR adopted"
+      assert log =~ "timeout"
+      assert System.monotonic_time(:millisecond) - started < 1_500
+      assert EffectWorld.executed(world, :create) == 1
+      assert {:ok, :completed} = KeyStore.status(create_key)
+    end
+
     test "a lookup that fails twice leaves gh pr create's own error, and the key failed",
          %{ctx: ctx, world: world, create_key: create_key} do
       EffectWorld.fail_gh_list!(world)

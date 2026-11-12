@@ -103,7 +103,7 @@ defmodule ForemanServer.Workflow.AutoPR do
 
   alias ForemanServer.GitHub.PrLookup
   alias ForemanServer.Idempotency.Effect
-  alias ForemanServer.Idempotency.KeyStore
+  alias ForemanServer.Idempotency.Reconcilers.Command
   alias ForemanServer.Idempotency.Reconcilers.BranchPush
   alias ForemanServer.Idempotency.Reconcilers.PrCreate, as: PrCreateEffect
 
@@ -308,6 +308,7 @@ defmodule ForemanServer.Workflow.AutoPR do
       PrLookup.find_open(head_branch, base_branch,
         cwd: cwd,
         command_runner: runner(context),
+        timeout_ms: lookup_timeout_ms(context),
         expected_head: tip
       )
 
@@ -345,41 +346,23 @@ defmodule ForemanServer.Workflow.AutoPR do
     end
   end
 
-  # GitHub has answered for the run's PR create, so a key an earlier attempt left `started` or
-  # `ambiguous` is settled: the doctor does not list it, and a later Create PR after the PR was
-  # closed is not refused for good. A key that is absent or already settled is left alone.
+  # GitHub has answered for the run's PR create, so the key an earlier attempt left `started` or
+  # `ambiguous` is settled (`PrCreateEffect.settle_adopted/3`).
   defp settle_adopted_key(run_id, base_branch, head_branch) do
-    key = PrCreateEffect.key(run_id, head_branch, base_branch)
-
-    case read_and_settle(key) do
+    case PrCreateEffect.settle_adopted(run_id, head_branch, base_branch) do
       :ok ->
         :ok
 
       {:error, reason} ->
         Logger.error(
-          "AutoPR.run_id=#{run_id} could not settle #{inspect(key)} after adopting the PR: #{inspect(reason)}",
+          "AutoPR.run_id=#{run_id} could not settle #{inspect(PrCreateEffect.key(run_id, head_branch, base_branch))} after adopting the PR: #{inspect(reason)}",
           run_id: run_id,
-          key: key,
+          key: PrCreateEffect.key(run_id, head_branch, base_branch),
           operation: "autopr.lookup",
           outcome: "key_not_settled",
           reason: inspect(reason)
         )
     end
-  end
-
-  defp read_and_settle(key) do
-    case KeyStore.get(key) do
-      {:ok, %{status: status}} when status in [:started, :ambiguous] ->
-        KeyStore.mark_completed(key, KeyStore.recovery_fields_cleared())
-
-      :not_found ->
-        :ok
-
-      {:ok, %{status: _settled}} ->
-        :ok
-    end
-  catch
-    :exit, reason -> {:error, {:key_store_unavailable, reason}}
   end
 
   # A PR-create key recovery left unresolved refuses the whole sequence BEFORE
@@ -520,6 +503,7 @@ defmodule ForemanServer.Workflow.AutoPR do
       PrLookup.find_open(head_branch, base_branch,
         cwd: cwd,
         command_runner: runner(context),
+        timeout_ms: lookup_timeout_ms(context),
         expected_head: tip
       )
 
@@ -744,6 +728,10 @@ defmodule ForemanServer.Workflow.AutoPR do
   defp run(context, executable, args, opts), do: runner(context).(executable, args, opts)
 
   defp runner(context), do: Map.get(context, :command_runner) || (&System.cmd/3)
+
+  # The bound on a `gh pr list` lookup: a hung `gh` must not hold the executor.
+  defp lookup_timeout_ms(context),
+    do: Map.get(context, :lookup_timeout_ms) || Command.default_timeout_ms()
 
   defp pr_url_from_output(output) do
     case Regex.run(~r"https://github\.com/[^\s]+", output) do

@@ -6,9 +6,10 @@ defmodule ForemanServer.Workflow.PhasePR do
   head branch is the Foreman run branch, and no defaults are invented. Results
   are phase records, not final run PR associations.
 
-  Phase PR reconciliation must publish the head branch before it reuses a
-  matching open PR. Otherwise a reused PR record can look successful while the
-  provider still shows an older remote head and a stale cumulative diff.
+  A matching open PR is reused only when its head is the commit the run has: a PR that
+  GitHub shows at an older head is reused only after the push moved it. Otherwise a
+  reused PR record can look successful while the provider still shows an older remote head
+  and a stale cumulative diff.
 
   The push and the PR create are keyed effects (`ForemanServer.Idempotency.Effect`,
   TRD-013): a crash around either is reconciled at boot against the remote branch
@@ -25,13 +26,20 @@ defmodule ForemanServer.Workflow.PhasePR do
   The PR-create key is checked before the push, so a refusal stops the push too.
 
   The PR that already exists is asked of GitHub through `ForemanServer.GitHub.PrLookup`
-  (TRD-038): an open PR of this repository whose head is the tip just pushed is reused
-  (`existing`); an open PR of this repository with another head is
+  (TRD-038), first of all as `AutoPR` does (before any key is consulted: an open PR with
+  the local tip is reused without a push, and settles the PR-create key an earlier attempt
+  left undecided), then again after the push: an open PR of this repository whose head is
+  the tip just pushed is reused (`existing`); GitHub updates a PR's head asynchronously, so
+  a head that is not the tip yet is looked up again (three tries, `lookup_retry_sleep_ms`
+  apart); an open PR of this repository with another head after that is
   `%Error{reason: :pr_lookup_mismatch}` (url, `expected_head`, `actual_head` in `details`);
   a fork's PR of the same branch name is not this run's and is ignored; a closed or merged
   PR of this repository is `%Error{reason: :matching_pr_closed}` (the `PrLookup.Pr` in
   `details`); an answer that cannot be read is `:unexpected_pr_list_payload` or
-  `:unparsable_pr_list`; a lookup `gh` did not answer lets creation go ahead.
+  `:unparsable_pr_list`; any other failed lookup (a non-zero exit, a timeout after
+  `lookup_timeout_ms`, `gh` not run) is `%Error{reason: :pr_lookup_failed}` (`state` and
+  `reason` in `details`): only the answer "no PR" lets creation go ahead. A `gh pr create`
+  that fails is followed by one more lookup, as in `AutoPR`: the PR with the tip is adopted.
   """
 
   alias ForemanServer.GitHub.PrLookup
@@ -63,7 +71,9 @@ defmodule ForemanServer.Workflow.PhasePR do
       :artifact_path,
       :now,
       :command_runner,
-      existing_records: []
+      existing_records: [],
+      lookup_timeout_ms: ForemanServer.Idempotency.Reconcilers.Command.default_timeout_ms(),
+      lookup_retry_sleep_ms: 700
     ]
   end
 
@@ -193,15 +203,38 @@ defmodule ForemanServer.Workflow.PhasePR do
     end
   end
 
+  # GitHub is asked first, before any effect key is consulted, as `AutoPR` does: the open PR of
+  # this repository whose head is the local tip IS the run's PR however the keys stand, so
+  # nothing is pushed or created and the PR-create key an earlier attempt left undecided is
+  # settled. Every other answer goes on into the keyed sequence, whose own lookups judge it.
   defp create_or_reuse(request) do
+    intent = BranchPush.intent(runner(request), request.run_id, request.head_branch, request.cwd)
+
+    case adopt_open_pr(request, intent) do
+      {:ok, _record} = adopted -> adopted
+      :continue -> push_and_open(request, intent)
+    end
+  end
+
+  # An unreadable tip has nothing to compare a PR's head with: the sequence reports it at the push.
+  defp adopt_open_pr(request, {:ok, %{pushed_local_sha: tip}}) do
+    case lookup(request, :open, tip) do
+      {:ok, %PrLookup.Pr{state: :open} = pr} -> {:ok, reuse(request, pr)}
+      _no_adoption -> :continue
+    end
+  end
+
+  defp adopt_open_pr(_request, {:error, _reason}), do: :continue
+
+  defp push_and_open(request, intent) do
     with :ok <- preflight_open_pr(request),
-         {:ok, tip} <- push_head(request),
-         :none <- find_pr(request, :open, tip),
+         {:ok, tip} <- push_head(request, intent),
+         :none <- find_open_pr(request, tip),
          :none <- find_pr(request, :closed, nil) do
-      open_pr(request)
+      open_pr(request, tip)
     else
       {:ok, %PrLookup.Pr{state: :open} = pr} ->
-        {:ok, record(request, :existing, pr_url: pr.url, pr_number: pr.number)}
+        {:ok, reuse(request, pr)}
 
       {:ok, %PrLookup.Pr{state: state} = pr} when state in [:closed, :merged] ->
         typed_error(request, :matching_pr_closed, pr)
@@ -209,6 +242,22 @@ defmodule ForemanServer.Workflow.PhasePR do
       {:error, %Error{} = error} ->
         {:error, error}
     end
+  end
+
+  # The open PR is the run's: the PR-create key an earlier attempt left `started` or
+  # `ambiguous` is settled (GitHub has answered for it), and the phase records the PR.
+  defp reuse(request, %PrLookup.Pr{} = pr) do
+    case PrCreateEffect.settle_adopted(request.run_id, request.head_branch, request.base_branch) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.error(
+          "PhasePR.run_id=#{request.run_id} could not settle the PR-create key after reusing #{pr.url}: #{inspect(reason)}"
+        )
+    end
+
+    record(request, :existing, pr_url: pr.url, pr_number: pr.number)
   end
 
   # A PR-create key recovery left unresolved refuses the whole sequence BEFORE
@@ -229,9 +278,8 @@ defmodule ForemanServer.Workflow.PhasePR do
   # intent that cannot be recorded means the push did not run. The pushed tip
   # (`pushed_local_sha` of the intent) is returned: it is the head the run's open
   # PR must have.
-  defp push_head(request) do
-    with {:ok, meta} <-
-           BranchPush.intent(runner(request), request.run_id, request.head_branch, request.cwd) do
+  defp push_head(request, intent) do
+    with {:ok, meta} <- intent do
       Effect.run(
         :branch_push,
         BranchPush.key(request.run_id, request.head_branch),
@@ -264,17 +312,17 @@ defmodule ForemanServer.Workflow.PhasePR do
   # `gh pr create` is a keyed effect too (`Reconcilers.PrCreate`): a crash after
   # GitHub made the PR is found by asking GitHub at boot, never by creating a
   # second PR.
-  defp open_pr(request) do
+  defp open_pr(request, tip) do
     Effect.run(
       :pr_create,
       PrCreateEffect.key(request.run_id, request.head_branch, request.base_branch),
-      fn -> gh_pr_create(request) end,
+      fn -> gh_pr_create(request, tip) end,
       PrCreateEffect.intent(request.run_id, request.head_branch, request.base_branch, request.cwd)
     )
     |> effect_result(request, :pr_create)
   end
 
-  defp gh_pr_create(request) do
+  defp gh_pr_create(request, tip) do
     title = "feat(phase): #{request.phase_name}"
 
     body =
@@ -301,10 +349,29 @@ defmodule ForemanServer.Workflow.PhasePR do
         {:ok, record(request, :created, pr_url: url, pr_number: pr_number_from_url(url))}
 
       {output, exit_code} ->
-        typed_error(request, :gh_pr_create_failed, %{
-          exit_code: exit_code,
-          output: String.trim(output)
-        })
+        after_failed_create(request, tip, %{exit_code: exit_code, output: String.trim(output)})
+    end
+  end
+
+  # A non-zero exit does not say the PR does not exist: GitHub may have made it, or a concurrent
+  # caller opened it between the lookups (it refuses a duplicate open PR). Ask once more before
+  # the key settles `failed`, as `AutoPR` does: the open PR with the tip is the run's (the key
+  # settles `completed`); a PR of this repository with another head is the typed mismatch; none,
+  # or a lookup that failed, keeps the create's own error.
+  defp after_failed_create(request, tip, failure) do
+    case find_open_pr(request, tip) do
+      {:ok, %PrLookup.Pr{} = pr} ->
+        Logger.info(
+          "PhasePR.run_id=#{request.run_id} adopted #{pr.url} after gh pr create failed: it is this run's PR for #{request.head_branch} into #{request.base_branch}"
+        )
+
+        {:ok, record(request, :existing, pr_url: pr.url, pr_number: pr.number)}
+
+      {:error, %Error{reason: :pr_lookup_mismatch}} = mismatch ->
+        mismatch
+
+      _none_or_unreadable ->
+        typed_error(request, :gh_pr_create_failed, failure)
     end
   end
 
@@ -368,42 +435,71 @@ defmodule ForemanServer.Workflow.PhasePR do
   # reused only when its head is that tip; a PR of this repository with another head is
   # `:pr_lookup_mismatch`, never reused and never created over. The closed lookup (merged
   # PRs included) passes none: any closed or merged PR of this repository is
-  # `:matching_pr_closed`. An answer that cannot be read stays a typed error. A lookup
-  # `gh` did not answer (a non-zero exit, `gh` not run) is best-effort reconciliation:
-  # creation remains the loud authority and will surface provider failures with command
-  # output.
+  # `:matching_pr_closed`. Only the documented "no PR" answer (`:none`) lets creation go
+  # ahead; every other answer is a typed error, because creating over a PR that could not be
+  # looked up is how a second PR would be opened over a closed one an operator closed.
   defp find_pr(request, state, expected_head) do
-    opts =
-      [cwd: request.cwd, command_runner: runner(request)] ++
-        if(expected_head, do: [expected_head: expected_head], else: [])
+    case lookup(request, state, expected_head) do
+      {:ok, %PrLookup.Pr{}} = found -> found
+      :none -> :none
+      {:error, reason} -> lookup_error(request, state, reason)
+    end
+  end
 
-    case PrLookup.find(state, request.head_branch, request.base_branch, opts) do
+  defp lookup(request, state, expected_head) do
+    opts =
+      [
+        cwd: request.cwd,
+        command_runner: runner(request),
+        timeout_ms: request.lookup_timeout_ms
+      ] ++ if(expected_head, do: [expected_head: expected_head], else: [])
+
+    PrLookup.find(state, request.head_branch, request.base_branch, opts)
+  end
+
+  # GitHub updates a PR's `headRefOid` asynchronously after a push, so an open PR whose head
+  # is not yet the tip just pushed is read again (three tries, `lookup_retry_sleep_ms`
+  # apart) before it is the mismatch.
+  @head_tries 3
+  defp find_open_pr(request, tip), do: find_open_pr(request, tip, @head_tries)
+
+  defp find_open_pr(request, tip, tries_left) do
+    case lookup(request, :open, tip) do
       {:ok, %PrLookup.Pr{}} = found ->
         found
 
       :none ->
         :none
 
-      {:error, {:pr_lookup_mismatch, url, expected, actual}} ->
-        typed_error(request, :pr_lookup_mismatch, %{
-          url: url,
-          expected_head: expected,
-          actual_head: actual
-        })
-
-      {:error, {:unexpected_pr_list_payload, payload}} ->
-        typed_error(request, :unexpected_pr_list_payload, payload)
-
-      {:error, {:unparsable_pr_list, text}} ->
-        typed_error(request, :unparsable_pr_list, text)
+      {:error, {:pr_lookup_mismatch, _url, _expected, _actual}} when tries_left > 1 ->
+        Process.sleep(request.lookup_retry_sleep_ms)
+        find_open_pr(request, tip, tries_left - 1)
 
       {:error, reason} ->
-        Logger.warning(
-          "PhasePR.run_id=#{request.run_id} no #{state} PR found for #{request.head_branch} into #{request.base_branch} (#{inspect(reason)}); going on"
-        )
-
-        :none
+        lookup_error(request, :open, reason)
     end
+  end
+
+  defp lookup_error(request, _state, {:pr_lookup_mismatch, url, expected, actual}) do
+    typed_error(request, :pr_lookup_mismatch, %{
+      url: url,
+      expected_head: expected,
+      actual_head: actual
+    })
+  end
+
+  defp lookup_error(request, _state, {:unexpected_pr_list_payload, payload}),
+    do: typed_error(request, :unexpected_pr_list_payload, payload)
+
+  defp lookup_error(request, _state, {:unparsable_pr_list, text}),
+    do: typed_error(request, :unparsable_pr_list, text)
+
+  defp lookup_error(request, state, reason) do
+    Logger.error(
+      "PhasePR.run_id=#{request.run_id} could not look up the #{state} PR for #{request.head_branch} into #{request.base_branch} (#{inspect(reason)}): nothing is created over a PR that cannot be looked up"
+    )
+
+    typed_error(request, :pr_lookup_failed, %{state: state, reason: reason})
   end
 
   defp record(request, status, opts) do
