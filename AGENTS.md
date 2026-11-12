@@ -94,3 +94,4 @@ CQRS/event-sourced Elixir umbrella: `foreman_server` (Phoenix is the sole HTTP i
 | `beads-workflow-legacy.md` | Older Beads narrative (historical) |
 | `run-logs-known-issues.md` | Durable run logs, MCP run status, known issues, stall detection, outbound messaging |
 | `documentation-discipline-history.md` | Why the documentation gate exists; CLI-reference corrections |
+| `executor-isolation-and-vfs.md` | What each backend enforces (execution profile, host fail-closed network check, `VfsIsolation` is not enforcement), docker cleanup routes, pi skill preflight, CI-equivalent local test runs |
