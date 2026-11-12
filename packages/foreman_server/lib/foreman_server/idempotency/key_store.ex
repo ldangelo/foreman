@@ -222,20 +222,56 @@ defmodule ForemanServer.Idempotency.KeyStore do
   doctor. `nil` when the store is durable.
   """
   @spec durability_note() :: String.t() | nil
-  def durability_note do
-    case durability() do
-      :durable ->
-        nil
+  def durability_note, do: note_for(durability())
 
-      {:not_durable, :no_repo} ->
-        "idempotency store is not durable: no repo is configured (ETS fallback), so effect keys " <>
-          "do not survive a restart and crash recovery cannot reconcile effects; set " <>
-          @production_switches
+  defp note_for(:durable), do: nil
 
-      {:not_durable, {:unreachable, reason}} ->
-        "idempotency store is configured but unreachable (#{inspect(reason, limit: 5)}): " <>
-          "keys written now do not survive a restart and crash recovery cannot reconcile " <>
-          "effects; check " <> @production_switches
+  defp note_for({:not_durable, :no_repo}) do
+    "idempotency store is not durable: no repo is configured (ETS fallback), so effect keys " <>
+      "do not survive a restart and crash recovery cannot reconcile effects; set " <>
+      @production_switches
+  end
+
+  defp note_for({:not_durable, {:unreachable, reason}}) do
+    "idempotency store is configured but unreachable (#{inspect(reason, limit: 5)}): " <>
+      "keys written now do not survive a restart and crash recovery cannot reconcile " <>
+      "effects; check " <> @production_switches
+  end
+
+  @doc """
+  Whether `config :foreman_server, :require_durable_store_for_gating` is on
+  (true in `config.exs`, false in `dev.exs` and `test.exs`). Anything but a boolean
+  raises: the guard must never read a mistyped switch as "off".
+  """
+  @spec durable_store_required?() :: boolean()
+  def durable_store_required? do
+    case Application.get_env(:foreman_server, :require_durable_store_for_gating, true) do
+      flag when is_boolean(flag) ->
+        flag
+
+      other ->
+        raise ArgumentError,
+              "config :foreman_server, :require_durable_store_for_gating must be a boolean, " <>
+                "got: #{inspect(other)}"
+    end
+  end
+
+  @doc """
+  The Phase 1 gating precondition (P-3): `:ok` when the store is durable or when
+  `:require_durable_store_for_gating` is false; otherwise
+  `{:error, {:store_not_durable, note}}` with the `durability_note/0` text, so a gated
+  project is never set up or approved while keys would not survive a restart (the
+  note names the switches to turn on, whether the repo is missing or unreachable).
+  """
+  @spec require_durable() :: :ok | {:error, {:store_not_durable, String.t()}}
+  def require_durable do
+    if durable_store_required?() do
+      case durability() do
+        :durable -> :ok
+        not_durable -> {:error, {:store_not_durable, note_for(not_durable)}}
+      end
+    else
+      :ok
     end
   end
 

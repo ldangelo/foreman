@@ -102,6 +102,10 @@ config :phoenix, Phoenix.Diagnostics, enabled: false
 # enabled: true).
 config :foreman_server, :jido_ecto, enabled: false
 
+# Phase 1 (P-3): tests run the ETS-only store; config.exs turns the requirement on. The guard
+# tests opt in per test via Application.put_env/3.
+config :foreman_server, :require_durable_store_for_gating, false
+
 config :foreman_server, ForemanServer.Agents.JidoCheckpointStore.Repo,
   url:
     System.get_env("DATABASE_URL", "postgres://postgres:postgres@localhost:55432/foreman_test"),

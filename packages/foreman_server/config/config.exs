@@ -38,6 +38,13 @@ config :foreman_server, :agent_runtime,
 # and flip run.status from awaiting_worker → in_progress. Test mode
 # overrides this to false in config/test.exs.
 config :foreman_server, ForemanServer.Overwatch, enabled: true
+# Phase 1 (P-3): gating a project on required_checks needs the durable idempotency store.
+# `KeyStore.require_durable/0` refuses (`{:store_not_durable, note}`) while this is true and
+# the store is ETS-only or unreachable. dev.exs and test.exs set it false (their store is
+# ETS-only); prod.exs leaves it true and the store off by default, so turning the store on
+# (`:jido_ecto`) stays a deployment step.
+config :foreman_server, :require_durable_store_for_gating, true
+
 # Effect reconcilers (TRD-011..013): the class of an ambiguous `effect:` key (the
 # `effect_class` its metadata carries) mapped to the module that asks the outside
 # world whether the effect happened. A class with no entry blocks the run

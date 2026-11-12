@@ -104,6 +104,27 @@ defmodule ForemanServerWeb.MCP.Tools.Doctor do
     end
   end
 
+  @doc """
+  The Phase 1 gating line (P-3), printed next to `store_line/0`: whether a durable store is
+  required to gate a project (`KeyStore.durable_store_required?/0`) and, if so, whether it is met
+  (`KeyStore.require_durable/0`). `✓` when not required or met, `✗` when required and not met.
+  """
+  @spec gating_line() :: String.t()
+  def gating_line do
+    if KeyStore.durable_store_required?() do
+      case KeyStore.require_durable() do
+        :ok ->
+          "✓ Phase 1 gating: durable store required and met"
+
+        {:error, {:store_not_durable, note}} ->
+          "✗ Phase 1 gating: durable store required and NOT met: " <> note
+      end
+    else
+      "✓ Phase 1 gating: durable store not required " <>
+        "(config :foreman_server, :require_durable_store_for_gating is false)"
+    end
+  end
+
   @doc "One report line for an effect entry."
   @spec effect_entry_line(effect_entry()) :: String.t()
   def effect_entry_line(%{key: key, class: class, run_id: run_id, status: status}),
@@ -139,7 +160,8 @@ defmodule ForemanServerWeb.MCP.Tools.Doctor do
           "  could not be read"
       end
 
-    "Idempotency store\n" <> store_line() <> "\n\nUnresolved effect keys\n" <> body
+    "Idempotency store\n" <>
+      store_line() <> "\n" <> gating_line() <> "\n\nUnresolved effect keys\n" <> body
   end
 
   defp effect_entry(%{key: key, metadata: metadata}) do
