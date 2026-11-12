@@ -211,8 +211,11 @@ defmodule ForemanServer.Idempotency.KeyStore do
   @spec durable?() :: boolean()
   def durable?, do: durability() == :durable
 
-  @production_switches "FOREMAN_JIDO_ECTO_ENABLED=true (or `config :foreman_server, :jido_ecto, " <>
-                         "enabled: true`) and JIDO_CHECKPOINT_DATABASE_URL"
+  # `config :foreman_server, :jido_ecto, enabled: true` is read at `application.ex`
+  # (`maybe_jido_checkpoint_repo_child/0`). Do not name `FOREMAN_JIDO_ECTO_ENABLED`:
+  # only a comment in `config/prod.exs` mentions it and no code reads it.
+  @production_switches "`config :foreman_server, :jido_ecto, enabled: true` and " <>
+                         "JIDO_CHECKPOINT_DATABASE_URL"
 
   @doc """
   The one-line statement of the store's durability, used by the boot log and the
