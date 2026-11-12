@@ -603,11 +603,11 @@ defmodule ForemanServer.Idempotency.EffectUndecidedTest do
   end
 
   describe "a scan that flips the key of an effect in flight" do
-    # The sweep orphans the `started` key of a run with no live executor, and a terminal run
-    # has none, so the key of an effect that runs outside the executor (the operator's Create
-    # PR, `run.pr.retry`, the comment publisher) can be flipped to `ambiguous` while the effect
-    # is still running, and the same scan reconciles the flipped key at once. The effect's own
-    # settle then overwrites the status: the key ends in the effect's outcome.
+    # A `started` key with no writer stamp (written before the stamp existed) of a run with no
+    # live executor is orphaned by the sweep, so it can be flipped to `ambiguous` while its
+    # effect is still running, and the same scan reconciles the flipped key at once. The
+    # effect's own settle then overwrites the status: the key ends in the effect's outcome.
+    # (A stamped key with a live writer is not flipped: see the writer-stamp tests.)
     defp scan, do: BootReconciliation.do_reconcile_ambiguous_keys(fn _key -> true end)
 
     for {what, result, ends} <- [
@@ -623,6 +623,8 @@ defmodule ForemanServer.Idempotency.EffectUndecidedTest do
                    :probe_not_done,
                    key,
                    fn ->
+                     # Make it a pre-stamp key.
+                     :ok = KeyStore.mark_started(key, KeyStore.recovery_fields_cleared())
                      scan()
                      send(test_pid, {:in_flight, KeyStore.get(key)})
                      unquote(result)

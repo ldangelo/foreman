@@ -24,7 +24,7 @@ defmodule ForemanServerWeb.MCP.Tools.Doctor do
   """
 
   alias ForemanServer.AgentRuntime.JidoHarness.ReadinessCheck
-  alias ForemanServer.Idempotency.KeyStore
+  alias ForemanServer.Idempotency.{Effect, KeyStore}
   alias ForemanServer.ProjectionStore
 
   @type provider_result :: {:provider, atom(), :installed | :not_installed, String.t()}
@@ -43,7 +43,8 @@ defmodule ForemanServerWeb.MCP.Tools.Doctor do
           run_id: String.t(),
           status: String.t(),
           key_status: String.t(),
-          decision: String.t()
+          decision: String.t(),
+          writer: String.t()
         }
 
   @spec run(keyword()) :: {:ok, String.t()} | {:error, :provider_missing, String.t()}
@@ -163,7 +164,10 @@ defmodule ForemanServerWeb.MCP.Tools.Doctor do
 
   @doc """
   One report line for an effect entry: `<class> run=<id> status=<run status> key=<key>
-  key_status=<started|ambiguous> decision=<not_done|none>`.
+  key_status=<started|ambiguous> decision=<not_done|none> writer=<alive|dead|none>`.
+  `writer` is the state of the process that stamped the `started` key
+  (`Effect.writer_state/1`): `alive` means a scan will not orphan it, `dead` that the next scan
+  does, `none` that the key carries no stamp (written before it existed).
   """
   @spec effect_entry_line(effect_entry()) :: String.t()
   def effect_entry_line(%{
@@ -172,10 +176,11 @@ defmodule ForemanServerWeb.MCP.Tools.Doctor do
         run_id: run_id,
         status: status,
         key_status: key_status,
-        decision: decision
+        decision: decision,
+        writer: writer
       }),
       do:
-        "#{class} run=#{run_id} status=#{status} key=#{key} key_status=#{key_status} decision=#{decision}"
+        "#{class} run=#{run_id} status=#{status} key=#{key} key_status=#{key_status} decision=#{decision} writer=#{writer}"
 
   @doc """
   The entries as report lines. On the ETS fallback an empty list says so: keys
@@ -221,7 +226,8 @@ defmodule ForemanServerWeb.MCP.Tools.Doctor do
       run_id: text(run_id),
       status: run_status(run_id),
       key_status: Atom.to_string(key_status),
-      decision: metadata |> KeyStore.decision() |> Atom.to_string()
+      decision: metadata |> KeyStore.decision() |> Atom.to_string(),
+      writer: metadata |> Effect.writer_state() |> Atom.to_string()
     }
   end
 

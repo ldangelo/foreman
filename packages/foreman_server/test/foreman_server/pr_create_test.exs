@@ -1090,7 +1090,7 @@ defmodule ForemanServer.PrCreateTest do
       assert EffectWorld.executed(world, :create) == 0
     end
 
-    test "a scan during Create PR marks the key, and the key still ends in the effect's own outcome",
+    test "a scan during Create PR leaves the key started (its writer is alive), and the key ends in the effect's own outcome",
          %{ref: ref} do
       world = EffectWorld.start()
       {t, _fx} = real_thread!(world)
@@ -1112,9 +1112,10 @@ defmodule ForemanServer.PrCreateTest do
 
       assert {:ok, %{pr_url: url}} = PrCreate.execute(t.run_id)
 
-      assert_received {:in_flight, {:ok, %{status: :ambiguous, metadata: marked}}}
-      assert {:ok, _version} = KeyStore.unresolved_version(marked)
-      assert_receive {@effect_event, ^ref, %{on_terminal_run: 1}, _}
+      assert_received {:in_flight, {:ok, %{status: :started, metadata: in_flight}}}
+      assert KeyStore.unresolved_version(in_flight) == :none
+      assert KeyStore.decision(in_flight) == :none
+      refute_received {@effect_event, ^ref, %{on_terminal_run: 1}, _}
 
       assert EffectWorld.executed(world, :create) == 1
       assert [%{"url" => ^url}] = EffectWorld.prs(world)

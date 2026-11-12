@@ -219,7 +219,9 @@ defmodule ForemanServerWeb.MCP.Tools.DoctorTest do
         end)
 
       assert_receive {:in_effect, ^pid}
+      ref = Process.monitor(pid)
       Process.exit(pid, :kill)
+      assert_receive {:DOWN, ^ref, :process, ^pid, _}
       assert {:ok, :started} = KeyStore.status(key)
       key
     end
@@ -243,18 +245,32 @@ defmodule ForemanServerWeb.MCP.Tools.DoctorTest do
                run_id: run_id,
                status: "failed",
                key_status: "ambiguous",
-               decision: "none"
+               decision: "none",
+               writer: "dead"
              }
 
       assert {:ok, output} = Doctor.run()
       assert output =~ "Unresolved effect keys"
 
       assert output =~
-               "branch_push run=#{run_id} status=failed key=#{key} key_status=ambiguous decision=none"
+               "branch_push run=#{run_id} status=failed key=#{key} key_status=ambiguous decision=none writer=dead"
 
       # The provider report is still the first part of the output.
       assert output =~ "Provider readiness"
       assert output =~ "✓ pi available"
+    end
+
+    test "names the writer of a started key: alive for a live process, none for a key with no stamp" do
+      run_id = failed_run()
+      meta = %{"run_id" => run_id, "effect_class" => "branch_push"}
+      alive = Effect.key("branch_push", run_id, "feature/alive")
+      unstamped = Effect.key("branch_push", run_id, "feature/unstamped")
+      :ok = KeyStore.mark_started(alive, Map.merge(meta, Effect.writer_stamp()))
+      :ok = KeyStore.mark_started(unstamped, meta)
+
+      assert {:ok, output} = Doctor.run()
+      assert output =~ "key=#{alive} key_status=started decision=none writer=alive"
+      assert output =~ "key=#{unstamped} key_status=started decision=none writer=none"
     end
 
     test "lists a started key and an ambiguous key that carries a decision, each with its key_status and decision" do
@@ -271,7 +287,8 @@ defmodule ForemanServerWeb.MCP.Tools.DoctorTest do
           run_id: run_id,
           status: "failed",
           key_status: key_status,
-          decision: decision
+          decision: decision,
+          writer: "dead"
         }
       end
 
@@ -290,10 +307,10 @@ defmodule ForemanServerWeb.MCP.Tools.DoctorTest do
       assert {:ok, output} = Doctor.run()
 
       assert output =~
-               "branch_push run=#{run_id} status=failed key=#{started} key_status=started decision=none"
+               "branch_push run=#{run_id} status=failed key=#{started} key_status=started decision=none writer=dead"
 
       assert output =~
-               "branch_push run=#{run_id} status=failed key=#{decided} key_status=ambiguous decision=not_done"
+               "branch_push run=#{run_id} status=failed key=#{decided} key_status=ambiguous decision=not_done writer=dead"
     end
 
     test "lists the key whatever the run's status: no projection reads not_found" do

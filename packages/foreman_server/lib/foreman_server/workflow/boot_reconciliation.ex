@@ -37,7 +37,7 @@ defmodule ForemanServer.Workflow.BootReconciliation do
   }
 
   alias ForemanServer.Aggregates.{BeadsDbLease, RunSlots}
-  alias ForemanServer.Idempotency.{CrashRecovery, KeyStore, Reconciler, RestartBackoff}
+  alias ForemanServer.Idempotency.{CrashRecovery, Effect, KeyStore, Reconciler, RestartBackoff}
   alias ForemanServer.Idempotency.Reconcilers.TaskProvider, as: TaskProviderEffect
   alias ForemanServer.Incarnation
   alias ForemanServer.TaskProvider.Issue
@@ -848,8 +848,9 @@ defmodule ForemanServer.Workflow.BootReconciliation do
   # resolves such a key and it stays `started` forever. Turn the orphans into
   # `ambiguous` so the reconcile path below inspects them.
   #
-  # A key is an orphan only when its owning run has no executor alive in this
-  # node. `RunExecutorLiveness` (in-memory, written by the jobsite runner only)
+  # A key stamped with its writer (`Effect.writer_state/1`) is an orphan exactly when that
+  # writer is dead, whatever executor its run has now. An unstamped key is an orphan only when
+  # its owning run has no executor alive in this node. `RunExecutorLiveness` (in-memory, written by the jobsite runner only)
   # has an entry for a live jobsite executor; a workflow-door `RunExecutor` has
   # none, but is registered in `RunExecutorRegistry`, which an effect key also
   # consults (agent-phase keys keep the liveness check alone). The scan can be
@@ -903,9 +904,18 @@ defmodule ForemanServer.Workflow.BootReconciliation do
   defp orphaned_started_key?(key) do
     case KeyStore.get(key) do
       {:ok, %{status: :started, metadata: metadata}} when is_map(metadata) ->
-        case started_key_run_id(string_keys(metadata)) do
-          {:ok, run_id} -> mark_if_run_not_live(key, run_id)
-          :none -> skip_unattributable_started_key(key)
+        metadata = string_keys(metadata)
+
+        # A stamped key names its writer (`Effect.writer_state/1`): the writer decides, not
+        # the run's executor. A successor executor of the same run does not protect its dead
+        # predecessor's key, and a live caller with no executor (`PrCreate.execute`,
+        # `RepoPr.retry`) is never orphaned by a scan another run's refusal triggered. A key
+        # with no stamp keeps the run-liveness rule.
+        case {Effect.writer_state(metadata), started_key_run_id(metadata)} do
+          {:alive, _run} -> false
+          {:dead, _run} -> mark_orphaned(key)
+          {:none, {:ok, run_id}} -> mark_if_run_not_live(key, run_id)
+          {:none, :none} -> skip_unattributable_started_key(key)
         end
 
       {:error, reason} ->
@@ -934,15 +944,15 @@ defmodule ForemanServer.Workflow.BootReconciliation do
   defp started_key_run_id(_metadata), do: :none
 
   defp mark_if_run_not_live(key, run_id) do
-    if run_executor_alive?(key, run_id) do
-      false
-    else
-      case KeyStore.mark_ambiguous(key, "orphaned_started_key") do
-        :ok -> true
-        # Settled between the read and this write: the key moved on, nothing was orphaned.
-        :status_changed -> false
-        {:error, reason} -> unread_started_key(key, reason)
-      end
+    if run_executor_alive?(key, run_id), do: false, else: mark_orphaned(key)
+  end
+
+  defp mark_orphaned(key) do
+    case KeyStore.mark_ambiguous(key, "orphaned_started_key") do
+      :ok -> true
+      # Settled between the read and this write: the key moved on, nothing was orphaned.
+      :status_changed -> false
+      {:error, reason} -> unread_started_key(key, reason)
     end
   end
 

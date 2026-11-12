@@ -96,12 +96,21 @@ defmodule ForemanServer.Idempotency.KeyStore do
 
   @doc """
   The metadata that clears what recovery wrote on a key (the unresolved marker and the
-  decision). The store merges metadata over what it holds, so a settle or a re-mark that
-  does not name these fields leaves a marker or decision written by a scan in between.
+  decision) and the writer stamp `Idempotency.Effect` puts on a `started` key
+  (`writer_incarnation`, `writer_pid`). The store merges metadata over what it holds, so a
+  settle or a re-mark that does not name these fields leaves a marker, a decision or a stamp
+  from an earlier attempt: a settled key carries none, and a re-mark writes a fresh stamp
+  after clearing.
   """
   @spec recovery_fields_cleared() :: %{String.t() => nil}
   def recovery_fields_cleared do
-    %{"unresolved_at_run_version" => nil, "unresolved_reason" => nil, "decision" => nil}
+    %{
+      "unresolved_at_run_version" => nil,
+      "unresolved_reason" => nil,
+      "decision" => nil,
+      "writer_incarnation" => nil,
+      "writer_pid" => nil
+    }
   end
 
   @doc """

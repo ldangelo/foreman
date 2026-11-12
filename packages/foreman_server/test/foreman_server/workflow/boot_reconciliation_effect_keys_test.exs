@@ -458,6 +458,100 @@ defmodule ForemanServer.Workflow.BootReconciliationEffectKeysTest do
     end
   end
 
+  describe "the writer stamp decides who owns a started key (foreman-ulg5y.3.11)" do
+    # An effect in flight in a process of its own: `Effect.run/4` stamps the key with this
+    # process, and the effect waits until told to finish.
+    defp effect_in_flight(run_id, identity) do
+      test = self()
+      key = Effect.key("branch_push", run_id, identity)
+      meta = Map.put(push_meta(run_id, identity), "fake_verdict", "not_done")
+
+      pid =
+        spawn(fn ->
+          result =
+            Effect.run(
+              :branch_push,
+              key,
+              fn ->
+                send(test, {:in_effect, self()})
+
+                receive do
+                  :finish -> :pushed
+                end
+              end,
+              meta
+            )
+
+          send(test, {:effect_result, self(), result})
+        end)
+
+      assert_receive {:in_effect, ^pid}
+      {key, meta, pid}
+    end
+
+    defp kill!(pid) do
+      ref = Process.monitor(pid)
+      Process.exit(pid, :kill)
+      assert_receive {:DOWN, ^ref, :process, ^pid, _}
+    end
+
+    test "an executor killed mid-effect: the successor under the same run id is refused once, the scan decides the key, the next attempt runs",
+         %{run_id: run_id} do
+      {key, meta, writer} = effect_in_flight(run_id, "feature/killed")
+      assert {:ok, :started} = KeyStore.status(key)
+
+      # The run's successor executor is registered, as after a resume: under the old rule it
+      # protected the dead predecessor's key and every attempt was refused for good.
+      live_executor(run_id)
+      kill!(writer)
+
+      assert {:error, {:effect_undecided, ^key}} =
+               Effect.run(:branch_push, key, fn -> flunk("repeated") end, meta)
+
+      sweep()
+
+      assert {:ok, %{status: :ambiguous, metadata: decided}} = KeyStore.get(key)
+      assert KeyStore.decision(decided) == :not_done
+
+      assert :pushed == Effect.run(:branch_push, key, fn -> :pushed end, meta)
+      assert {:ok, :completed} = KeyStore.status(key)
+    end
+
+    test "a live writer's key is not orphaned by a scan another run's refusal triggered, and a second caller cannot run the effect",
+         %{run_id: run_id} do
+      {key, meta, writer} = effect_in_flight(run_id, "feature/caller")
+
+      # No executor for the run: the caller is PrCreate.execute/RepoPr.retry, not a run.
+      assert ForemanServer.Workflow.RunExecutor.pid_for(run_id) == nil
+
+      sweep()
+
+      assert {:ok, :started} = KeyStore.status(key)
+      assert status(run_id) == "awaiting_worker"
+
+      assert {:error, {:effect_undecided, ^key}} =
+               Effect.run(:branch_push, key, fn -> flunk("ran twice") end, meta)
+
+      sweep()
+      assert {:ok, :started} = KeyStore.status(key)
+
+      send(writer, :finish)
+      assert_receive {:effect_result, ^writer, :pushed}
+      assert {:ok, :completed} = KeyStore.status(key)
+    end
+
+    test "a writer that dies after the scan listed the key: the verdict is not applied to a settled key",
+         %{run_id: run_id} do
+      {key, _meta, writer} = effect_in_flight(run_id, "feature/settled")
+      send(writer, :finish)
+      assert_receive {:effect_result, ^writer, :pushed}
+
+      sweep()
+
+      assert {:ok, :completed} = KeyStore.status(key)
+    end
+  end
+
   describe "a run that cannot be blocked" do
     for terminal <- ["failed", "blocked"] do
       test "a #{terminal} run is not blocked or retried: the verdict is logged and counted and the key stays ambiguous",
@@ -657,16 +751,15 @@ defmodule ForemanServer.Workflow.BootReconciliationEffectKeysTest do
   end
 
   describe "a scan that runs while an effect of a terminal run is in flight" do
-    # The operator's Create PR runs on a completed run, which has no executor: a scan orphans
-    # the `started` key of the effect while it is still running and, the reconciler saying
-    # `not_done`, decides it at once (the audit command is rejected). The effect's own settle
-    # overwrites the status, so the key ends in the effect's outcome; a caller that read the
-    # flipped key decided starts a second attempt, which is accepted (no grace window).
+    # The operator's Create PR runs on a completed run, which has no executor. Its `started`
+    # key carries the writer's stamp and the writer is alive, so the scan leaves it alone: no
+    # decision is written, a second caller is refused and the effect cannot run twice. The
+    # effect's own settle then records its outcome.
     for {what, result, ends} <- [
           {"completes", :pushed, :completed},
           {"fails", {:error, :boom}, :failed}
         ] do
-      test "an effect that #{what} ends #{ends}, and a second caller that read the decided key ran too",
+      test "an effect that #{what} ends #{ends}, and a second caller is refused while it runs",
            %{run_id: run_id} do
         end_run(run_id, "completed")
         key = Effect.key("branch_push", run_id, "feature/inflight-#{unquote(ends)}")
@@ -685,16 +778,18 @@ defmodule ForemanServer.Workflow.BootReconciliationEffectKeysTest do
                    fn ->
                      sweep()
                      send(test_pid, {:in_flight, KeyStore.get(key)})
-                     second = Effect.run("branch_push", key, fn -> :second end, meta)
+
+                     second =
+                       Effect.run("branch_push", key, fn -> flunk("ran twice") end, meta)
+
                      send(test_pid, {:second_attempt, second})
                      unquote(result)
                    end,
                    meta
                  )
 
-        assert_received {:in_flight, {:ok, %{status: :ambiguous, metadata: flipped}}}
-        assert KeyStore.decision(flipped) == :not_done
-        assert_received {:second_attempt, :second}
+        assert_received {:in_flight, {:ok, %{status: :started}}}
+        assert_received {:second_attempt, {:error, {:effect_undecided, ^key}}}
         assert {:ok, %{status: unquote(ends)}} = KeyStore.get(key)
       end
     end
