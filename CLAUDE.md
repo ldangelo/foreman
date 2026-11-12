@@ -681,10 +681,12 @@ Source of truth: `docs/TRD/TRD-2026-a804d1c7-phase-0-durable-execution.md`.
 - **Keyed effects.** `Idempotency.Effect.run/4` records an intent key
   `effect:<class>:<run_id>:<identity>` (`started`) before the external effect and
   `completed`/`failed` after it; if the intent cannot be written the effect does
-  not run, and it refuses unless `KeyStore.durable?/0` (`config :foreman_server,
-  :jido_ecto, enabled: true`, read by `maybe_jido_checkpoint_repo_child/0`, plus
-  `JIDO_CHECKPOINT_DATABASE_URL` for the Repo url; the `FOREMAN_JIDO_ECTO_ENABLED`
-  env var named in older docs and a `prod.exs` comment is not wired). Classes: `branch_push`, `pr_create` (AutoPR,
+  not run. `Effect.run/4` does not check durability: keys are durable only when
+  `KeyStore.durable?/0` is true (`config :foreman_server, :jido_ecto, enabled: true`,
+  read by `maybe_jido_checkpoint_repo_child/0`, plus `JIDO_CHECKPOINT_DATABASE_URL`
+  for the Repo url; the `FOREMAN_JIDO_ECTO_ENABLED` env var named in older docs and
+  a `prod.exs` comment is not wired). On the ETS fallback the effect still runs and
+  its key does not survive a restart; boot and `foreman doctor` report it. Classes: `branch_push`, `pr_create` (AutoPR,
   PhasePR) and `task_provider` (`Idempotency.Reconcilers.TaskProvider`; ops `claim`,
   `complete`, `fail`, `reopen`; key `effect:task_provider:<run_id>:<op>:<issue_id>`).
   A crash mid-effect leaves the key `started`; boot marks it `ambiguous`.
@@ -711,9 +713,11 @@ Source of truth: `docs/TRD/TRD-2026-a804d1c7-phase-0-durable-execution.md`.
   `{:effect_check_failed, _}`, `{:effect_marker_malformed, key}`) until `run.reset`
   lifts it (`KeyStore.lift_unresolved/3`). No path marks an ambiguous effect key
   completed. `foreman_doctor` / `GET /api/doctor` list ambiguous keys in the
-  informational `effect_keys` check (store durability line plus class, run id and
-  status per key; `warn` only when keys cannot be read), so `foreman doctor --strict`
-  is unaffected. Phase 0 has no verb that clears a key for a completed, cancelled
+  `effect_keys` check (store durability line plus class, run id and
+  status per key); `foreman doctor` prints its id, title and detail. The check is
+  `ok` whatever the key count, so listed keys never affect `--strict`; it is `warn`
+  only when the store does not answer ("Unresolved effect keys could not be read"),
+  and `doctorExit` fails any warn under `--strict`. Phase 0 has no verb that clears a key for a completed, cancelled
   or deleted run.
 - **Restart budget.** A restarted run does not reset its recovery budget:
   `RunExecutor` records `phase.retry` with reason `resumed` (`PhaseRetried`; the
