@@ -20,6 +20,7 @@ defmodule ForemanServer.Workflow.BootReconciliationAmbiguousKeysTest do
   """
 
   use ExUnit.Case, async: false
+  import ExUnit.CaptureLog
 
   alias ForemanServer.Idempotency.{Effect, IdempotencyKey, KeyStore, Reconciler}
   alias ForemanServer.TelemetryTest.Handler
@@ -257,7 +258,14 @@ defmodule ForemanServer.Workflow.BootReconciliationAmbiguousKeysTest do
     # keeps its ETS copy, which is what `list_by_status/1` falls back to.
     @rows :ambiguous_keys_fake_repo
 
+    # `:fail_insert` makes every write answer an error, as a database that went away does.
     def insert(changeset, _opts) do
+      if :ets.lookup(@rows, :fail_insert) == [],
+        do: write(changeset),
+        else: {:error, :db_down}
+    end
+
+    defp write(changeset) do
       key = Ecto.Changeset.get_field(changeset, :key)
       status = Ecto.Changeset.get_field(changeset, :status)
 
@@ -269,6 +277,10 @@ defmodule ForemanServer.Workflow.BootReconciliationAmbiguousKeysTest do
     end
 
     def get(IdempotencyKey, key) do
+      # `:raise_get` makes a read of a key the `KeyStore` has no ETS copy of raise.
+      if :ets.lookup(@rows, :raise_get) != [],
+        do: raise(DBConnection.ConnectionError, "connection refused")
+
       case :ets.lookup(@rows, key) do
         [{^key, status, metadata}] ->
           %IdempotencyKey{key: key, status: status, metadata: metadata}
@@ -509,6 +521,44 @@ defmodule ForemanServer.Workflow.BootReconciliationAmbiguousKeysTest do
 
       assert {:error, {:effect_undecided, ^key}} =
                Effect.preflight("scan_probe", key, %{run_id: run_id})
+    end
+
+    test "a started key that cannot be marked is logged and counted unresolved: the sweep does not crash and the key stays started",
+         %{effect_ref: ref} do
+      run_id = unique_run("mark-fails")
+      key = plant_started(run_id)
+      :ets.insert(@rows, {:fail_insert, true})
+
+      log = capture_log(fn -> sweep() end)
+
+      assert log =~ "could not be read or marked"
+      assert log =~ key
+      assert_receive {@effect_event, ^ref, %{unresolved: 1, retried: 0, audit_failed: 0}, _}
+      assert {:ok, :started} = KeyStore.status(key)
+
+      :ets.delete(@rows, :fail_insert)
+      sweep()
+      assert {:ok, :ambiguous} = KeyStore.status(key)
+    end
+
+    test "a started key whose read exits is logged and counted unresolved: the sweep does not crash",
+         %{effect_ref: ref} do
+      run_id = unique_run("get-exits")
+      key = Effect.key("scan_probe", run_id, "probe")
+
+      # Listed by the database, unknown to the store's ETS copy: judging it reads the database.
+      :ets.insert(
+        @rows,
+        {key, :started, %{"run_id" => run_id, "effect_class" => "scan_probe"}}
+      )
+
+      :ets.insert(@rows, {:raise_get, true})
+
+      log = capture_log(fn -> sweep() end)
+      :ets.delete(@rows, :raise_get)
+
+      assert log =~ "could not be read or marked"
+      assert_receive {@effect_event, ^ref, %{unresolved: 1, retried: 0, audit_failed: 0}, _}
     end
 
     test "both reads failing count twice, and the next sweep decides the key once the database answers",

@@ -785,7 +785,7 @@ defmodule ForemanServer.Workflow.BootReconciliation do
     ambiguous = list_ambiguous_keys()
 
     case orphans do
-      {:ok, orphaned} when orphaned > 0 ->
+      {:ok, orphaned, _unread} when orphaned > 0 ->
         Logger.warning(
           "BootReconciliation: #{orphaned} orphaned started idempotency key(s) marked ambiguous"
         )
@@ -797,7 +797,12 @@ defmodule ForemanServer.Workflow.BootReconciliation do
     # A read that failed is not a store with no such keys: it is counted `unresolved` with
     # the effect keys, nothing is marked or decided from it, and every undecided key stays
     # refused (the refusal in `Effect.run/4` does not depend on the sweep having listed it).
-    unread = Enum.count([orphans, ambiguous], &match?({:error, _}, &1))
+    unread =
+      Enum.count([orphans, ambiguous], &match?({:error, _}, &1)) +
+        case orphans do
+          {:ok, _marked, unread_keys} -> unread_keys
+          {:error, _reason} -> 0
+        end
 
     {effect_keys, agent_keys} =
       case ambiguous do
@@ -841,13 +846,19 @@ defmodule ForemanServer.Workflow.BootReconciliation do
   # orphanhood. Keys without a run_id cannot be attributed to a run, so they are
   # left untouched and logged.
   #
-  # `{:ok, count}`, or `{:error, reason}` when the `started` keys could not be read, in which
-  # case no key is marked. The listing is the checked read; each key is read again when it is
-  # judged, so a key that settled in between is not marked.
+  # `{:ok, marked, unread}`, or `{:error, reason}` when the `started` keys could not be read, in
+  # which case no key is marked. The listing is the checked read; each key is read again when it
+  # is judged, so a key that settled in between is not marked. A key whose read or mark failed
+  # (an error answer, a store that exits) is logged and counted `unread`: it stays `started`,
+  # which `Effect` refuses, and the sweep goes on with the other keys.
   defp mark_orphaned_started_keys do
     case KeyStore.list_records_checked(:started) do
-      {:ok, records} -> {:ok, Enum.count(records, &orphaned_started_key?(&1.key))}
-      {:error, reason} -> unread_keys(:started, reason)
+      {:ok, records} ->
+        judged = Enum.map(records, &orphaned_started_key?(&1.key))
+        {:ok, Enum.count(judged, &(&1 == true)), Enum.count(judged, &(&1 == :unread))}
+
+      {:error, reason} ->
+        unread_keys(:started, reason)
     end
   end
 
@@ -886,9 +897,24 @@ defmodule ForemanServer.Workflow.BootReconciliation do
           :none -> skip_unattributable_started_key(key)
         end
 
+      {:error, reason} ->
+        unread_started_key(key, reason)
+
       _changed_or_missing ->
         false
     end
+  catch
+    :exit, reason -> unread_started_key(key, reason)
+  end
+
+  defp unread_started_key(key, reason) do
+    Logger.error(
+      "BootReconciliation: started idempotency key #{inspect(key)} could not be read or marked (#{inspect(reason)}); " <>
+        "it is counted unresolved and stays started, so its effect stays refused",
+      key: key
+    )
+
+    :unread
   end
 
   defp started_key_run_id(%{"run_id" => run_id}) when is_binary(run_id) and run_id != "",
@@ -900,8 +926,10 @@ defmodule ForemanServer.Workflow.BootReconciliation do
     if run_executor_alive?(key, run_id) do
       false
     else
-      :ok = KeyStore.mark_ambiguous(key, "orphaned_started_key")
-      true
+      case KeyStore.mark_ambiguous(key, "orphaned_started_key") do
+        :ok -> true
+        {:error, reason} -> unread_started_key(key, reason)
+      end
     end
   end
 
