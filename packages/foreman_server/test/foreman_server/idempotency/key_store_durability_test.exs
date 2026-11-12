@@ -120,7 +120,8 @@ defmodule ForemanServer.Idempotency.KeyStoreDurabilityTest do
       note = KeyStore.durability_note()
       assert note =~ "not durable"
       assert note =~ "do not survive a restart"
-      assert note =~ "FOREMAN_JIDO_ECTO_ENABLED=true"
+      assert note =~ "enabled: true"
+      refute note =~ "FOREMAN_JIDO_ECTO_ENABLED"
       assert note =~ "jido_ecto"
       assert note =~ "JIDO_CHECKPOINT_DATABASE_URL"
     end
@@ -257,7 +258,8 @@ defmodule ForemanServer.Idempotency.KeyStoreDurabilityTest do
 
       assert log =~ "[error]"
       assert log =~ "configured but unreachable"
-      assert log =~ "FOREMAN_JIDO_ECTO_ENABLED=true"
+      assert log =~ "enabled: true"
+      refute log =~ "FOREMAN_JIDO_ECTO_ENABLED"
       assert_received {@event, _ref, %{count: 1}, %{reason: :unreachable}}
     end
   end

@@ -428,7 +428,9 @@ must never enter an event, command payload, log, projection or API response:
 `project.environment.set`; `project.update`/`register` reject the key. The setup
 script (`ProjectSetup`, run via `Jobsite.HostCommand` in its own process group)
 runs once after worktree creation on both doors; network policy
-(`Jobsite.NetworkPolicy`) is enforced on docker jobsites only.
+(`Jobsite.NetworkPolicy`) is enforced on docker jobsites only; a host
+(`RunExecutor`) run whose project carries a non-default `network` policy is
+refused at kickoff (§13.2).
 
 **Project repositories (E12, design `docs/spikes/S3.md`).** A project's `path` is
 its PRIMARY repository; further repositories are the `ProjectRepositoryAdded` /
@@ -595,7 +597,8 @@ JSON round-trip is lossless.
 
 ## 13. Task-provider boundary reminder (Go/Elixir CQRS slice)
 
-RunExecutor drives claim/complete/fail. Workflow.BootReconciliation
+RunExecutor drives claim/complete/fail, each as a keyed `task_provider`
+effect (§13.2). Workflow.BootReconciliation
 drives orphan-reopen. `set_priority` and `add_dependency` stay at the
 adapter boundary until a separate operator surface TRD introduces them.
 
@@ -670,6 +673,93 @@ enforced by `scripts/e2e/ui-a11y/ui_a11y.mjs` (axe-core: zero serious/critical;
 keyboard focus order; zero idle LiveView frames), a LOCAL acceptance command, not
 a CI job; see `docs/spikes/E16-SP1.md`. A new workspace/settings control must
 keep that script green.
+
+## 13.2 Durable execution: recovery, effect keys, preflight (Phase 0)
+
+Source of truth: `docs/TRD/TRD-2026-a804d1c7-phase-0-durable-execution.md`.
+
+- **Keyed effects.** `Idempotency.Effect.run/4` records an intent key
+  `effect:<class>:<run_id>:<identity>` (`started`) before the external effect and
+  `completed`/`failed` after it; if the intent cannot be written the effect does
+  not run. `Effect.run/4` does not check durability: keys are durable only when
+  `KeyStore.durable?/0` is true (`config :foreman_server, :jido_ecto, enabled: true`,
+  read by `maybe_jido_checkpoint_repo_child/0`, plus `JIDO_CHECKPOINT_DATABASE_URL`
+  for the Repo url; the `FOREMAN_JIDO_ECTO_ENABLED` env var named in older docs and
+  a `prod.exs` comment is not wired). On the ETS fallback the effect still runs and
+  its key does not survive a restart; boot and `foreman doctor` report it. Classes: `branch_push`, `pr_create` (AutoPR,
+  PhasePR) and `task_provider` (`Idempotency.Reconcilers.TaskProvider`; ops `claim`,
+  `complete`, `fail`, `reopen`; key `effect:task_provider:<run_id>:<op>:<issue_id>`).
+  A crash mid-effect leaves the key `started`; boot marks it `ambiguous`.
+- **Reconcilers.** `config :foreman_server, ForemanServer.Idempotency.Reconciler,
+  classes:` maps an `effect_class` to the module that asks the outside world
+  whether the effect happened (`:done | :not_done | :unknown`). A class with no
+  entry fails closed. A new effect class needs its entry there.
+- **Boot sweep.** `BootReconciliation.do_reconcile_ambiguous_keys/2` partitions
+  ambiguous keys: agent-phase keys go to `CrashRecovery.reconcile/2`; `effect:`
+  keys (`KeyStore.effect_key?/1`) go to the class reconciler and NEVER to
+  `CrashRecovery` (whose side-effects-present branch marks the key completed and
+  retries, the opposite of what a push needs). Verdict `:not_done` records
+  `RunRecoveryAttempted{outcome: "effect_retried"}` and the key stays ambiguous so
+  the next `Effect.run` re-marks it; `:done`, `:unknown` and an unregistered class
+  record `effect_blocked` and then dispatch `run.block` with reason
+  `effect_already_done`, `effect_outcome_ambiguous` or `effect_class_unregistered`,
+  cancelling the live executor and agent. A terminal or absent run cannot be
+  blocked: the verdict is logged and counted (`[:foreman_server, :workflow,
+  :boot_reconciliation, :effect_on_terminal_run]`) and the key stays ambiguous. The
+  sweep reports `[…, :effect_reconciled]` (`blocked`, `retried`, `on_terminal_run`,
+  `unresolved`, `skipped`). An undecided key (the sweep could not decide) is marked
+  unresolved (`unresolved_at_run_version`, `unresolved_reason`) and
+  `Effect.preflight/3` refuses it (`{:effect_unresolved, key}`,
+  `{:effect_check_failed, _}`, `{:effect_marker_malformed, key}`) until `run.reset`
+  lifts it (`KeyStore.lift_unresolved/3`). No path marks an ambiguous effect key
+  completed. `foreman_doctor` / `GET /api/doctor` list ambiguous keys in the
+  `effect_keys` check (store durability line plus class, run id and
+  status per key); `foreman doctor` prints its id, title and detail. The check is
+  `ok` whatever the key count, so listed keys never affect `--strict`; it is `warn`
+  only when the store does not answer ("Unresolved effect keys could not be read"),
+  and `doctorExit` fails any warn under `--strict`. Phase 0 has no verb that clears a key for a completed, cancelled
+  or deleted run.
+- **Restart budget.** A restarted run does not reset its recovery budget:
+  `RunExecutor` records `phase.retry` with reason `resumed` (`PhaseRetried`; the
+  phase stays `in_progress`, `attempt` advances, `input_artifacts` and
+  `prior_worktree_discarded` ride on it) and `run.recovery_attempt` (`outcome:
+  "resumed"`, `elapsed_since_boot_ms`; non-terminal runs only). The boot cleanup
+  budget of an orphaned slot holder or waiter is durable on the `run_slots:global`
+  stream (`run_slots.recovery_attempt` → `RunSlotRecoveryAttempted`); the sixth
+  consecutive failure records the entry `exhausted` and later boots skip it. It
+  shows as `orphan_recovery` in `ProjectionStore.queue_status/0` and `GET /api/queue`
+  (`foreman_queue_status`). The old ETS table `:boot_recon_dispatch_attempts` is
+  gone. An exhausted entry clears only when its holder or waiter leaves the stream.
+  A worktree that no longer exists at resume is recorded as
+  `prior_worktree_discarded` (`Workflow.WorktreeDiscard`); a failing
+  `git worktree prune` there fails the run `{:resume_worktree_prune_failed, …}`.
+- **Kickoff preflight order** (`RunExecutor.kickoff_preflight/1`, fresh and resumed
+  runs): network isolation (`NetworkPolicy.check_backend/2`; refuses
+  `{:isolation_unsupported, :network, :host_workflow}` because the host cannot
+  enforce a non-default `environment.network`) → provider/model
+  (`:provider_model_preflight_failed`) → skill (`SkillResolver.resolve/4`, a
+  `command:` phase naming a skill pi cannot find fails
+  `{:capability_preflight_failed, [%PreflightFailure{class: :skill_not_found}]}`)
+  → task claim. A skill is `:missing` only when absence is proven everywhere pi
+  looks and no extension could add one; anything unresolvable is `:unverifiable`
+  (the run proceeds with a warning), so on a typical dev host the refusal rarely
+  fires. `config :foreman_server, :skill_home` overrides the home read.
+- **Execution profile.** `Jobsite.ExecutionProfile` names what a backend enforces
+  (`filesystem`, `network`, `credentials`, `cleanup`, each `enforced` or
+  `unenforced` with a reason; `skill` records the skill verdict). It is recorded on
+  `PhaseStarted` and the phase entry as `execution_profile`; the host door is
+  never `enforced` for filesystem or network (`VfsIsolation.allowed?/2` has no
+  caller; the enforced boundary is the docker jobsite mount).
+- **Cancellation.** `Jido.Harness.Run.cancel/1` finalizes a run once it has sent
+  SIGINT to the agent; the harness escalates SIGTERM then SIGKILL itself, so a
+  cancelled run can read as over while the agent is still exiting. Tool processes
+  outlive the agent. `Workflow.OrphanReaper.reap/1` finds those left under a
+  worktree (cwd inside it, parent pid 1) and sends SIGTERM, then SIGKILL; it is
+  called by `RunExecutor` and the jobsite executor.
+- **Test hermeticity.** `test/test_helper.exs` stubs the pi `cli_path` and points
+  `:skill_home` at a private skill home, so a developer's real `~/.pi` or `pi` on
+  `PATH` must not decide a test; a test that needs a skill absent overrides
+  `:skill_home` itself.
 
 ## 14. Beads sync invariants (Go/Elixir CQRS slice)
 
@@ -841,6 +931,15 @@ streams, and keep `foreman_run_get`'s full projection shape distinct. Both carry
 `usage` (a `ForemanServer.Usage`: input/output/cache-read/cache-write/total tokens and
 `cost_usd`, each `null` when the provider did not report it), the sum of the
 `UsageRecorded` worker events; cross-run rollups arrive with E14.
+
+`current_phase` (the `PhaseStatus` DTO, `MCP.Tools.PhaseStatus`) carries the phase
+entry's `run_id`, `task_id`, `input_artifacts` (`[%{index, source_phase, path,
+sha256}]`), `execution_profile`, `prior_worktree_discarded` and `context`
+(`PhaseContextRecorded`: the `sha256`, `bytes`, `sections`, `truncated` and
+`redactions` of the standing-context text the launch delivered; its
+`redaction_scope` is `project_context_sections`, so the count covers those
+sections only). The run DTO carries `recovery`, the latest `RunRecoveryAttempted`
+record. All are `null` when nothing was recorded. See §13.2.
 
 `foreman_run_get_logs` is backed by `ProjectionStore`, not console `Logger`
 output or ad hoc files. Production worker output must enter the system only as

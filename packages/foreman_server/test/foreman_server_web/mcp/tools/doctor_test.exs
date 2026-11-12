@@ -249,7 +249,8 @@ defmodule ForemanServerWeb.MCP.Tools.DoctorTest do
     test "ETS fallback: says the store is not durable and an empty list is not read as clean" do
       assert {:ok, output} = Doctor.run()
       assert output =~ "✗ idempotency store is not durable"
-      assert output =~ "FOREMAN_JIDO_ECTO_ENABLED=true"
+      assert output =~ "enabled: true"
+      refute output =~ "FOREMAN_JIDO_ECTO_ENABLED"
       assert output =~ "none in this process (keys from before the last restart are not listed)"
       refute output =~ "  none\n"
     end
