@@ -99,6 +99,23 @@ defmodule ForemanServer.ApplicationChildrenTest do
     end
   end
 
+  describe "ProjectionStore boot (TRD-031)" do
+    test "is a plain child that reads the real event log, restarted within the application budget" do
+      # A bare module entry: no injected reader, so production boots from the durable log.
+      assert ProjectionStore in ForemanServer.Application.children()
+      assert_started_after(child_ids(), ProjectionStore, [EventStore])
+
+      # A failed boot read stops the store; these two numbers are the bound on how many times
+      # the supervisor retries before it stops the application instead of serving nothing.
+      assert %{max_restarts: 50, max_seconds: 10, strategy: :one_for_one} =
+               Map.new(ForemanServer.Application.supervisor_opts())
+
+      # Started with no options: nothing injects a reader, and the default restart is permanent.
+      assert %{start: {ProjectionStore, :start_link, [[]]}} =
+               Supervisor.child_spec(ProjectionStore, [])
+    end
+  end
+
   describe "PrWatcher" do
     test "is supervised, after the ProjectionStore and CommandRouter it uses, while enabled" do
       watcher(true)

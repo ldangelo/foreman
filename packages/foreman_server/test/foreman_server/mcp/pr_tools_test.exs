@@ -86,6 +86,22 @@ defmodule ForemanServer.MCP.PrToolsTest do
 
   defp tool_names, do: Enum.map(Dispatch.components(), & &1.name)
 
+  test "foreman_pr_status is a projection_unavailable tool error, never an empty list, when the store does not answer",
+       ctx do
+    {:ok, _} = Application.ensure_all_started(:meck)
+    :meck.new(ForemanServer.ProjectionStore, [:passthrough, :no_link])
+    on_exit(fn -> :meck.unload(ForemanServer.ProjectionStore) end)
+
+    :meck.expect(ForemanServer.ProjectionStore, :run, fn _run_id ->
+      exit({:timeout, {GenServer, :call, [ForemanServer.ProjectionStore, :x, 5000]}})
+    end)
+
+    assert {:error, %ToolError{code: "projection_unavailable", message: message}} =
+             Tools.call_tool("foreman_pr_status", %{run_id: ctx.run_id})
+
+    assert message =~ "unknown"
+  end
+
   describe "writes disallowed (default policy)" do
     test "the write tools are hidden and refused", ctx do
       for tool <- @write_tools do

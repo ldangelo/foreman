@@ -120,6 +120,34 @@ defmodule ForemanServerWeb.RunControllerPrsTest do
              get_json("/api/runs/run-nope/prs", 404)
   end
 
+  # TRD-031 (AC-005-3): the projection store not answering (down, restarting after a failed
+  # boot read, or a call timeout) is `unknown`, never an empty PR list. The read is replaced
+  # at the store's boundary; no global process is suspended.
+  for {label, reason} <- [
+        down: {:noproc, {GenServer, :call, [ForemanServer.ProjectionStore, :x, 5000]}},
+        timeout: {:timeout, {GenServer, :call, [ForemanServer.ProjectionStore, :x, 5000]}}
+      ] do
+    test "an unanswered projection store (#{label}) is 503 unknown, never an empty list" do
+      %{run_id: run_id} = PrSurfaceSupport.seed_two_prs!()
+      store_exits!(unquote(Macro.escape(reason)))
+
+      body = get_json("/api/runs/#{run_id}/prs", 503)
+
+      assert %{"error" => "projection_unavailable", "status" => "unknown", "run_id" => ^run_id} =
+               body
+
+      assert is_binary(body["cause"]) and body["cause"] != ""
+      refute Map.has_key?(body, "prs")
+    end
+  end
+
+  defp store_exits!(reason) do
+    {:ok, _} = Application.ensure_all_started(:meck)
+    :meck.new(ForemanServer.ProjectionStore, [:passthrough, :no_link])
+    on_exit(fn -> :meck.unload(ForemanServer.ProjectionStore) end)
+    :meck.expect(ForemanServer.ProjectionStore, :run, fn _run_id -> exit(reason) end)
+  end
+
   test "an unauthenticated request is rejected" do
     assert build_conn() |> get("/api/runs/anything/prs") |> json_response(401)
   end
