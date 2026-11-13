@@ -13,7 +13,7 @@ defmodule ForemanServer.Idempotency.Reconcilers.PrCreateTest do
 
   alias ForemanServer.Idempotency.{Effect, KeyStore, Reconciler}
   alias ForemanServer.Idempotency.Reconcilers.PrCreate
-  alias ForemanServer.TestSupport.{EffectWorld, KeyStoreReset}
+  alias ForemanServer.TestSupport.{EffectWorld, KeyStoreReset, MeckScope}
   alias ForemanServer.Workflow.BootReconciliation
 
   @project_id "project-pr-create-reconciler"
@@ -21,6 +21,7 @@ defmodule ForemanServer.Idempotency.Reconcilers.PrCreateTest do
   @base "main"
 
   setup_all do
+    MeckScope.new_once!(KeyStore)
     path = Path.join(System.tmp_dir!(), "pr-create-project-#{System.unique_integer([:positive])}")
     File.mkdir_p!(path)
     on_exit(fn -> File.rm_rf(path) end)
@@ -70,6 +71,28 @@ defmodule ForemanServer.Idempotency.Reconcilers.PrCreateTest do
                base_branch: @base,
                cwd: "/work/tree"
              }
+    end
+  end
+
+  describe "settle_adopted/3" do
+    test "settles a started key completed" do
+      key = PrCreate.key("run-1", @head, @base)
+      :ok = KeyStore.mark_started(key, %{"run_id" => "run-1"})
+
+      assert :ok = PrCreate.settle_adopted("run-1", @head, @base)
+      assert {:ok, :completed} = KeyStore.status(key)
+    end
+
+    test "a key that settled between the read and the write is left alone and answers :ok" do
+      key = PrCreate.key("run-1", @head, @base)
+      :ok = KeyStore.mark_started(key, %{"run_id" => "run-1"})
+
+      # The race: the key is read `started`, then settles before the write lands, so the
+      # store answers `:status_changed` to the write.
+      MeckScope.restore_on_exit!(KeyStore)
+      :meck.expect(KeyStore, :mark_completed, fn _key, _result -> :status_changed end)
+
+      assert :ok = PrCreate.settle_adopted("run-1", @head, @base)
     end
   end
 

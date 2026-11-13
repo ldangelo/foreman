@@ -1146,6 +1146,9 @@ defmodule ForemanServer.Workflow.BootReconciliationEffectKeysTest do
 
   defp meta(run_id), do: %{"run_id" => run_id, "effect_class" => "branch_push"}
   # A key whose stored status is not one the store writes, listed `ambiguous` by the sweep.
+  # The real listing (`list_records_checked(:ambiguous)`) filters by status, so it can never
+  # list such a key: the stub models the race where a key is read after being re-marked, which
+  # is the only way the sweep's read sees a status it did not list.
   defp plant_weird(run_id) do
     key = Effect.key("branch_push", run_id, "feature/s")
 

@@ -157,6 +157,30 @@ defmodule ForemanServer.Idempotency.EffectTest do
       assert {:ok, %{status: :failed}} = KeyStore.get(key)
     end
 
+    test "an outcome refused because the key settled meanwhile is logged and leaves the result and the key as they are" do
+      key = push_key()
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert :pushed ==
+                   Effect.run(
+                     :branch_push,
+                     key,
+                     fn ->
+                       :ok = KeyStore.mark_failed(key, "settled elsewhere")
+                       :pushed
+                     end,
+                     push_meta()
+                   )
+        end)
+
+      assert log =~ "could not record completed"
+      assert log =~ "status_changed"
+
+      assert {:ok, %{status: :failed, metadata: %{"reason" => "settled elsewhere"}}} =
+               KeyStore.get(key)
+    end
+
     test "the key is derived from stable identity" do
       assert Effect.key(:pr_create, "r1", "feat:main") == "effect:pr_create:r1:feat:main"
 

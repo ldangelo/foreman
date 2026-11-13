@@ -232,8 +232,13 @@ defmodule ForemanServer.Idempotency.Effect do
       {:ok, %{status: undecided, metadata: other}} when undecided in [:started, :ambiguous] ->
         {:check_failed, {:metadata_not_a_map, other}}
 
-      {:ok, %{status: _settled}} ->
+      {:ok, %{status: settled}} when settled in [:completed, :failed] ->
         {:ok, :clear}
+
+      # A status the store never writes: not a settled effect, so not repeatable. Refuse and
+      # leave the key as it is (re-marking it `started` would overwrite it).
+      {:ok, %{status: status}} ->
+        {:check_failed, {:unexpected_status, status}}
 
       other ->
         {:check_failed, {:unreadable_key, other}}

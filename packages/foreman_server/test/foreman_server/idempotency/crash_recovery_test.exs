@@ -1,6 +1,12 @@
 defmodule ForemanServer.Idempotency.CrashRecoveryTest do
   use ExUnit.Case, async: false
 
+  alias ForemanServer.TestSupport.MeckScope
+
+  setup_all do
+    MeckScope.new_once!(ForemanServer.Idempotency.KeyStore)
+  end
+
   setup do
     {:ok, _pid} = ForemanServer.Idempotency.KeyStore.ensure_started()
     ForemanServer.TestSupport.KeyStoreReset.reset!()
@@ -33,6 +39,51 @@ defmodule ForemanServer.Idempotency.CrashRecoveryTest do
              end)
 
     assert {:ok, :failed} = ForemanServer.Idempotency.KeyStore.status("k-failed")
+  end
+
+  describe "marking a key completed after a side-effect check (compare-and-set)" do
+    alias ForemanServer.Idempotency.{CrashRecovery, KeyStore}
+
+    setup do
+      MeckScope.restore_on_exit!(KeyStore)
+    end
+
+    for {settle, expected} <- [
+          {:completed, {:skip, :already_completed}},
+          {:failed, {:retry, :previously_failed}}
+        ] do
+      test "a key that settled #{settle} during the check is re-reconciled from that state, once" do
+        key = "k-race-#{unquote(settle)}"
+        :ok = KeyStore.mark_ambiguous(key)
+        test_pid = self()
+
+        check = fn k ->
+          send(test_pid, :checked)
+
+          :ok =
+            case unquote(settle) do
+              :completed -> KeyStore.mark_completed(k, %{"pr" => 1})
+              :failed -> KeyStore.mark_failed(k, "boom")
+            end
+
+          false
+        end
+
+        assert unquote(Macro.escape(expected)) == CrashRecovery.reconcile(key, check)
+        assert_received :checked
+        refute_received :checked
+        assert {:ok, unquote(settle)} = KeyStore.status(key)
+      end
+    end
+
+    test "a store error on the completed write is an unknown state, not a crash" do
+      key = "k-store-error"
+      :ok = KeyStore.mark_ambiguous(key)
+      :meck.expect(KeyStore, :mark_completed, fn _key, _result -> {:error, :boom} end)
+
+      assert {:retry, :unknown_state} = CrashRecovery.reconcile(key, fn _ -> false end)
+      assert {:ok, :ambiguous} = KeyStore.status(key)
+    end
   end
 
   # --- ambiguous -> side effects check ---

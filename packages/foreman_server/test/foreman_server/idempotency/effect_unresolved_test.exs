@@ -451,6 +451,21 @@ defmodule ForemanServer.Idempotency.EffectUnresolvedTest do
       assert {:error, {:effect_check_failed, {:metadata_not_a_map, "garbage"}}} =
                run_effect(ctx.key, ctx.meta)
     end
+
+    test "a status the store never writes refuses and the key is left as it is", ctx do
+      :ets.insert(:foreman_idempotency_keys, {ctx.key, :weird, ctx.before_key.metadata})
+      key = ctx.key
+
+      assert {:error, {:effect_check_failed, {:unexpected_status, :weird}}} =
+               run_effect(key, ctx.meta)
+
+      assert {:error, {:effect_check_failed, {:unexpected_status, :weird}}} =
+               Effect.preflight(:pr_create, key, ctx.meta)
+
+      assert {:ok, :weird} = KeyStore.status(key)
+      assert {:ok, %{metadata: meta}} = KeyStore.get(key)
+      assert meta == ctx.before_key.metadata
+    end
   end
 
   defp reset_attempt(run_id) do
