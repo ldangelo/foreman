@@ -1,6 +1,6 @@
-# Decision: Phase 1 (Trustworthy PR Delivery) exit record: 21 criteria, 9 pass, 12 caveat, 0 fail
+# Decision: Phase 1 (Trustworthy PR Delivery) exit record: 21 criteria, 9 pass, 10 caveat, 2 fail
 
-Status: PENDING operator acceptance (see "Acceptance" at the end). This is an evidence record, not an argument for acceptance. The operator may reject it, or accept it with the gaps below as the Phase 2 starting list.
+Status: acceptance WITHHELD by the operator on 2026-11-13 (see "Acceptance" at the end). This is an evidence record, not an argument for acceptance. The operator regraded AC-001-3 and AC-003-2 from caveat to fail; Phase 1 is not accepted until both are fixed or the operator decides otherwise.
 
 ## Context
 
@@ -30,9 +30,9 @@ What "pass", "caveat" and "fail" mean here:
 
 A pass does not mean the real GitHub behaves as the scripted GitHub does (gap G-03).
 
-## Decision (PENDING the operator's acceptance)
+## Decision (acceptance WITHHELD by the operator)
 
-Phase 1 is built as described below, with these results over the 21 criteria: **9 pass, 12 caveat, 0 fail**; whether it is accepted is the operator's decision (the Acceptance section is PENDING). The statement Phase 2's PRD needs ("Phase 1 exit criteria are fully met") is NOT supported unqualified by this record. What the record supports is narrower, and is the operator's to accept or reject:
+Phase 1 is built as described below, with these results over the 21 criteria: **9 pass, 10 caveat, 2 fail** (AC-001-3 and AC-003-2, regraded from caveat by the operator's answers on 2026-11-13; see "Acceptance"); the operator withheld acceptance (the Acceptance section says so). The statement Phase 2's PRD needs ("Phase 1 exit criteria are fully met") is NOT supported by this record. What the record supports is narrower:
 
 1. **Checks and risk evidence are machine-verifiable and head-bound**: the check list, the findings record and the risk record each carry the head they were read for and the evaluator refuses another head's record (AC-001-2, AC-001-4, AC-001-7). Qualifications: findings and the model judgement are claims an agent wrote (G-04), the status-context check has no creator (G-13), and a check run's completion time is stored for check runs only (AC-001-1).
 2. **A changed head invalidates prior evidence**: for the check observation, the findings and risk records (adv "at the aggregate, checks, findings and risk of the old head decide nothing for the named head", AC-001-2 row), the waiver (AC-001-5), the report (AC-003-3, display only: the old report is shown stale and nothing forces a refresh before merge, G-06, G-16) and the approval (AC-004-2). The display of this invalidation (AC-005-2) is a caveat and is not relied on here. A late observation can rewind the head of record (G-15, fail-safe).
@@ -57,7 +57,7 @@ Evidence legend: SRC = source decision point; TST = test (file, then exact name 
 * TST (adv): `pr_delivery_adversarial_test.exs` describe "AC-001-2: a required check that never reported" ("an empty rollup refuses with `missing`; the passing check makes it eligible"); describe "AC-001-2 and AC-001-7: evidence of another head" ("a pass recorded for the old head does not carry to a pushed head: the gateway observes the new one"); describe "AC-001-2: the old head's pass does not carry to the fix push" ("the new head's run is in progress: `pending`, until it completes", "the new head's run failed: `failing` with the conclusion"); describe "AC-001-2: a conclusion that is not a pass"; describe "AC-001-2: two results under one name"; `pr_delivery_adversarial_inputs_test.exs` describe "AC-001-2: evidence recorded for another head is labelled stale in the display". Unit: `test/foreman_server/pr_evidence_test.exs` "evidence for another head is the single reason other_sha".
 * Only GitHub is scripted. Reasons reach the operator in the refusal and in the DTO (AC-005-1).
 
-**AC-001-3** (no configured checks: no success inferred; explicit fallback or operator disposition): **caveat**.
+**AC-001-3** (no configured checks: no success inferred; explicit fallback or operator disposition): **fail** (the author graded it caveat; the operator answered on 2026-11-13 that an absent `required_checks` leaving the gate off is not acceptable, which the record's own question treats as a partial fail). What exists is the gate-on empty list: it reads `no_checks_configured` and is waivable. A project with no `required_checks` has no gate and refuses nothing (G-08).
 * SRC: `lib/foreman_server/pr_evidence.ex:704` (an empty `required` list is the single reason `no_checks_configured`); `:301` (it is waivable, so the waiver is the disposition); `lib/foreman_server/command_gateway.ex:89` (`run.pr.waive_evidence` is operator-only).
 * TST: `test/foreman_server/pr_evidence_test.exs` "required [] is no_checks_configured; its waiver makes the PR waived"; `test/foreman_server/aggregates/run_multi_gate_test.exs` "records the waiver on the gate's PR and head, and the evaluator reads it"; `test/foreman_server/command_gateway_test.exs` "a waiver for the live head is recorded for the gate's PR under the project's policy version". adv: "an artifact claiming every test passed, with a clean findings block, stays no check result" (`pr_delivery_adversarial_test.exs`; a project WITH a required check, not an empty list).
 * Why caveat: no test sends `merge_approve` for a gated project whose list is `[]` through the gateway and sees `no_checks_configured` refused (grep of `no_checks_configured` finds the evaluator, the waiver paths and `run_pr_watch_test.exs` risk input only). And a project with `required_checks` ABSENT is the gate off by decision (TRD §11 item 6), so "no configured checks" refuses only for the explicit empty list. A stricter reader of the PRD wording ("requires an explicit fallback policy or operator disposition") could count this row as a PARTIAL FAIL, because an absent `required_checks` leaves the gate off by the operator's §11 item 6 default; the operator is asked to decide this at acceptance (see Acceptance).
@@ -110,7 +110,7 @@ Evidence legend: SRC = source decision point; TST = test (file, then exact name 
 * TST: `test/foreman_server/aggregates/run_pr_watch_test.exs` "the level is the rubric's over the same inputs, and every declared field survives"; `test/foreman_server/pr_risk_test.exs` "the level is the rubric's, the rest is derived, and every nested map is string-keyed JSON"; adv `pr_delivery_adversarial_inputs_test.exs` describe "AC-002-3: a declined critical or major finding still counts as unresolved" (reads only `level` and `unresolved_findings`).
 * Why caveat: the full field set is asserted at the aggregate and unit level only; no adversarial scenario checks the whole `PrRiskRecorded` event after the gateway's observation.
 
-**AC-003-2** (ambiguous, missing or conflicting risk follows the conservative HIGH/blocked path and cannot authorize automation): **caveat**.
+**AC-003-2** (ambiguous, missing or conflicting risk follows the conservative HIGH/blocked path and cannot authorize automation): **fail** (the author graded it caveat; the operator regraded it on 2026-11-13). A missing, malformed or other-head risk record refuses, but a recorded HIGH level refuses nothing (G-06), so a HIGH result does not "block" as the criterion reads.
 * SRC: `lib/foreman_server/pr_risk/rubric.ex:239` (`classify`: the maximum over all rules), `:540` (judgement HIGH when missing, absent, malformed, other-head or without a level), `lib/foreman_server/pr_evidence.ex:573` (`risk_missing` and `risk_other_sha`, never waivable) and `:445` (the gate reads them).
 * TST (adv): `pr_delivery_adversarial_approval_test.exs` "no risk record at all reads risk_missing", "a risk record for another head reads risk_other_sha, and neither it nor a missing one can be waived", "a payload that names any derived field is refused; the rubric's HIGH stands". Unit: `test/foreman_server/pr_risk/rubric_test.exs` "judgement missing, absent, malformed, without a level, for another head", "a LOW judgement never removes a findings or unresolved HIGH"; `test/foreman_server/pr_risk_test.exs` "a missing input is HIGH, never filled in".
 * Why caveat: (a) missing or other-head risk is a hard, unwaivable refusal, but a HIGH level refuses nothing in Phase 1 (G-06): "cannot authorize automation" holds because no automation exists, not because the HIGH path blocks anything; (b) a missing, malformed or conflicting judgement is classified HIGH by the rubric's unit tests and by an executor test that records an absent judgement (`test/foreman_server/workflow/run_executor_findings_test.exs` "an artifact with findings and no judgement block records an absent judgement"), but no adversarial scenario drives such a judgement from the artifact to a recorded HIGH level, and none drives a LOW judgement over a HIGH floor; (c) the `risk_missing` scenarios use the direct aggregate approval with a hand-built stamp. A stricter reader of the PRD wording ("conservative HIGH/blocked path") could count this row as a PARTIAL FAIL, because HIGH blocks nothing; the operator is asked to decide this at acceptance (see Acceptance).
@@ -210,7 +210,7 @@ Every gap is open unless the status says otherwise. "TRD §14" gaps are cited fr
 | G-05 | `CommandRouter.dispatch/2` (`lib/foreman_server/command_router.ex:66`) stays open to trusted in-process code. The aggregate cannot tell a forged `policy: nil` stamp (the gate off) from the gateway's: the only route that stamps is `dispatch_operator`; `dispatch_system` refuses `merge_approve` and `run.pr.waive_evidence` (`lib/foreman_server/command_gateway.ex:169`), but code that calls the router directly is not stopped. No MCP, coordinator, approval or webhook path reaches either command. | AC-001-4, AC-004-1 | open, accepted residual trust (TRD §14 PR 8) |
 | G-06 | The risk LEVEL (HIGH, MEDIUM, LOW) does not refuse an approval, and unresolved critical or major findings contribute no refusal either: a recorded findings block full of open criticals on a PR with passing checks and a risk record is eligible (TRD §14 PR 8; adv "a critical finding declined: risk HIGH, 1 listed, and the level alone does not refuse the approval"). The report comment is advisory. "Cannot authorize automation" is true only because Phase 1 has none. | AC-003-2, AC-003-5 | open, by design |
 | G-07 | Mutation evidence exists only in reports (see "Mutation probes"). | all test evidence | open |
-| G-08 | AC-001-3's gateway-level refusal of an empty required-checks list is not tested; the criterion is read as the gate-on empty list, because an absent setting is the gate off. | AC-001-3 | open |
+| G-08 | AC-001-3: the gateway-level refusal of an empty required-checks list is not tested, and a project with no `required_checks` setting has the gate off, so nothing refuses its approvals. The operator rejected that default on 2026-11-13: the row is graded fail until an unconfigured project refuses or warns loudly. | AC-001-3 | open, blocks acceptance |
 | G-09 | The coordinator's `project.update` of `required_checks` is refused `forbidden_setting` before the store guard, so it never says which store state it is; the two store-state notes are asserted at `KeyStore`, not through the gateway per state. | AC-001-6 | open |
 | G-10 | Neutralisation and the 500-character bound of the report have unit tests only; no adversarial scenario publishes a hostile finding and reads the comment back. A secret that appears only split, encoded or reversed is not recognised. | AC-003-4 | open |
 | G-11 | A missing, malformed or multi-block judgement is never driven from the artifact to a recorded risk level by the adversarial suite; a LOW judgement over a HIGH floor is covered only by the rubric unit tests. | AC-003-2, AC-003-5 | open |
@@ -243,7 +243,7 @@ Every gap is open unless the status says otherwise. "TRD §14" gaps are cited fr
 * Anything about real GitHub beyond one recorded status payload and one scratch-PR comment probe (G-03).
 * That any deployment has gating enabled, the durable store on, the monitor on or `foreman init --force` run (Rollout steps).
 * That the dashboard renders the evidence view: no browser check was made.
-* Results re-observed by an independent party: none. The PR author's runs on the PR 9 head are listed under "Adversarial suite: counts".
+* Results re-observed by an independent party: none. The PR author's runs on the PR 9 head are listed under "What was run".
 
 ## Reviewer checklist (TRD-026-TEST)
 
@@ -252,20 +252,21 @@ The TRD asks for this checklist in the PR description; it is kept here as well s
 1. [ ] **Every cited path exists.** For each backticked path in this file that starts with `lib/`, `test/`, `config/` (under `packages/foreman_server/`), `foreman_cli/` (under `packages/`) or `docs/`: `test -e <path>` succeeds. A missing path is named in the review and the item fails.
 2. [ ] **Every cited test exists.** For each test name in a TST line: `grep -F '<name>' <file>` finds it (a name with `#{...}` is found by its describe). A missing test is named and the item fails.
 3. [ ] **Every cited line is the decision it says.** Open each `path:line`: the line is the head of the named function or clause. Line numbers drift; a moved line is a documentation defect, not a failure of the criterion.
-4. [ ] **Every criterion row has a result.** The 21 criteria AC-001-1 to AC-001-8, AC-002-1 to AC-002-3, AC-003-1 to AC-003-5, AC-004-1, AC-004-2, AC-005-1 to AC-005-3 each carry exactly one of pass, caveat, fail, and every caveat says why. Counts: 9 pass, 12 caveat, 0 fail.
+4. [ ] **Every criterion row has a result.** The 21 criteria AC-001-1 to AC-001-8, AC-002-1 to AC-002-3, AC-003-1 to AC-003-5, AC-004-1, AC-004-2, AC-005-1 to AC-005-3 each carry exactly one of pass, caveat, fail, and every caveat says why. Counts: 9 pass, 10 caveat, 2 fail.
 5. [ ] **Every §11 decision carries its resolution line.** In the TRD, items 1 to 7 and 11 end with `Resolved 2026-11-12 (operator):` and items 8 and 10 with `Standing by default, not put to the operator` (item 9 with `Resolved 2026-11-12 (operator), through the answer to item 5`). Check against `docs/TRD/TRD-2026-c12e5f93-phase-1-trustworthy-pr-delivery.md`.
 6. [ ] **This record points back at §11 and does not state an answer first.** The "Resolved decisions of TRD section 11" table names consequences and evidence by item number and quotes no answer.
 7. [ ] **The gate is not described as protecting against an agent that controls the review artifact** (G-04), and the gaps required by TRD-026 are present: G-04 (agent-authored claims), G-20 (point-in-time approval and the re-check of the head only), G-22 (the sensitive-path table is v1 for this repository and the thresholds are proposals), G-03 (unverified `gh` writes and the scratch-PR result).
-8. [ ] **The Acceptance section is PENDING and holds no acceptance and no date.** It is the operator's to fill.
+8. [ ] **The Acceptance section holds no acceptance.** Its only entries are the operator's withholding and answers, dated 2026-11-13.
 9. [ ] **The mutation statement is plain**: no test enforces that probes were run.
 
 ## Acceptance
 
-PENDING. The operator's acceptance of this record is not given. Nothing below is an acceptance, and no date has been entered.
+WITHHELD. On 2026-11-13 the operator answered the two questions below and withheld acceptance. No acceptance is given.
 
-* Operator: _(blank)_
-* Date: _(blank)_
-* Accepted as written / accepted with changes / rejected: _(blank)_
-* Gaps carried into the Phase 2 PRD: _(blank)_
-* Question for the operator, AC-001-3: an absent `required_checks` leaves the gate off (§11 item 6). Is the criterion's "explicit fallback policy or operator disposition" met by that default, or is the row a partial fail? Answer: _(blank)_
-* Question for the operator, AC-003-2: a HIGH risk level refuses nothing in Phase 1 (G-06). Is the criterion's "conservative HIGH/blocked path" met by `risk_missing` / `risk_other_sha` refusing, or is the row a partial fail? Answer: _(blank)_
+* Operator: ldangelo
+* Date: 2026-11-13
+* Accepted as written / accepted with changes / rejected: **withheld** (not accepted, not formally rejected: the operator chose "Withhold acceptance", treating the 26 gaps as blockers before Phase 2).
+* Gaps carried into the Phase 2 PRD: all of G-01 to G-26 are treated as blockers before Phase 2 starts; G-06 and G-08 are the two that fail a criterion.
+* Question for the operator, AC-001-3: an absent `required_checks` leaves the gate off (§11 item 6). Is the criterion's "explicit fallback policy or operator disposition" met by that default, or is the row a partial fail? Answer: **not met; the operator wants an unconfigured project to refuse or warn.** Regraded to fail.
+* Question for the operator, AC-003-2: a HIGH risk level refuses nothing in Phase 1 (G-06). Is the criterion's "conservative HIGH/blocked path" met by `risk_missing` / `risk_other_sha` refusing, or is the row a partial fail? Answer: **regrade to fail.**
+* Not decided here: how the two fixes should work (refuse versus warn for an unconfigured project; whether a HIGH level refuses or only requires a recorded waiver). Neither is built.
