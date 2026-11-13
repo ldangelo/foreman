@@ -329,7 +329,14 @@ defmodule ForemanServer.GitHub.PrStatus do
     end
   end
 
-  defp parse_pr_url(pr_url) do
+  @doc """
+  Owner, repository and number of a github.com pull request URL, or a typed
+  `{:gh_unexpected_payload, {:unrecognised_pr_url, url}}` (github.com URLs only).
+  """
+  @spec parse_pr_url(String.t()) ::
+          {:ok, String.t(), String.t(), pos_integer()}
+          | {:error, {:gh_unexpected_payload, term()}}
+  def parse_pr_url(pr_url) do
     case Regex.run(~r{github\.com/([^/]+)/([^/]+)/pull/(\d+)}, pr_url) do
       [_, owner, name, number] -> {:ok, owner, name, String.to_integer(number)}
       nil -> {:error, {:gh_unexpected_payload, {:unrecognised_pr_url, pr_url}}}

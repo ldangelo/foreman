@@ -17,7 +17,8 @@ defmodule ForemanServer.Idempotency.Reconcilers.Command do
   `Sandboxes.ExecTimeout`); it no longer blocks recovery. Callers that run in an
   executor (`BranchPush.intent/4`) pass no timeout and the runner is called inline.
 
-  Options: `:cd` (required), `:env` (`[{name, value}]`, passed to the runner),
+  Options: `:cd` (optional: a command that needs no checkout, such as a `gh api` call, passes
+  none and the runner gets no `:cd`), `:env` (`[{name, value}]`, passed to the runner),
   `:timeout_ms` (default `:infinity`).
   """
 
@@ -30,8 +31,8 @@ defmodule ForemanServer.Idempotency.Reconcilers.Command do
   def default_timeout_ms, do: @default_timeout_ms
 
   @doc """
-  Run `executable args` through `runner` in `opts[:cd]`, with stderr merged into
-  the output. `{:ok, {output, exit_code}}`, or `{:error, reason}` when the
+  Run `executable args` through `runner` in `opts[:cd]` (the runner's own directory when
+  there is none), with stderr merged into the output. `{:ok, {output, exit_code}}`, or `{:error, reason}` when the
   command could not be run (`{:command_not_run, executable, original}`, a runner
   that answers something else, a runner that raised) or ran out of time
   (`{:timeout, timeout_ms}`).
@@ -40,7 +41,7 @@ defmodule ForemanServer.Idempotency.Reconcilers.Command do
           {:ok, {String.t(), integer()}} | {:error, term()}
   def run(runner, executable, args, opts) do
     runner_opts =
-      [cd: Keyword.fetch!(opts, :cd), stderr_to_stdout: true] ++ Keyword.take(opts, [:env])
+      Keyword.take(opts, [:cd]) ++ [stderr_to_stdout: true] ++ Keyword.take(opts, [:env])
 
     call = fn -> invoke(runner, executable, args, runner_opts) end
 
