@@ -21,7 +21,7 @@ defmodule ForemanServer.PrDeliveryAdversarialApprovalTest do
   alias ForemanServer.GitHub.PrStatus
   alias ForemanServer.Notifier.{Mapping, Rule}
   alias ForemanServer.PrWatcher.Observer
-  alias ForemanServer.TestSupport.GateEvidence
+  alias ForemanServer.TestSupport.{GateEvidence, SecretStoreDir}
   alias ForemanServer.TestSupport.PrDeliveryWorld, as: World
   alias ForemanServer.TestSupport.PrWatchSupport
 
@@ -30,6 +30,7 @@ defmodule ForemanServer.PrDeliveryAdversarialApprovalTest do
     CommandRouter,
     PrObservation,
     PrReport,
+    PrReport.Publisher,
     ProjectionStore
   }
 
@@ -49,7 +50,10 @@ defmodule ForemanServer.PrDeliveryAdversarialApprovalTest do
   defp passing!(world), do: World.add_check!(world, World.check_run("unit"))
 
   # The approval is refused with exactly `codes` for `head`; the gate is still pending, nothing was
-  # approved and the operator's merge is refused without any call to GitHub's merge.
+  # approved and the operator's merge is refused without any call to GitHub's merge. Every merge
+  # refusal of this file goes through the operator path, whose gateway reads the gate first; the
+  # aggregate's own guard (`ensure_pr_gate_ok`) is exercised only by the direct dispatch in
+  # "without an approval nothing reaches GitHub's merge".
   defp assert_refused(world, run, codes, opts \\ []) do
     head = Keyword.get_lazy(opts, :head_sha, fn -> World.head(world) end)
 
@@ -78,11 +82,11 @@ defmodule ForemanServer.PrDeliveryAdversarialApprovalTest do
     assert World.merge_calls(world) == []
   end
 
-  defp waive(world, run, head, codes \\ ["missing"]) do
+  defp waive(world, run, head, codes \\ ["missing"], opts \\ []) do
     World.operator("run:#{run.run_id}", "run.pr.waive_evidence", %{
       run_id: run.run_id,
       approver: "leo",
-      approver_identity: "github:ldangelo",
+      approver_identity: Keyword.get(opts, :identity, "github:ldangelo"),
       head_sha: head,
       reasons: codes,
       reason: "the check does not run for this PR",
@@ -143,6 +147,48 @@ defmodule ForemanServer.PrDeliveryAdversarialApprovalTest do
     end
 
     :ok
+  end
+
+  # CONTROL of the head-change scenarios: a second PR of the world that nobody pushes to is
+  # approved and merged through the same operator path, pinned to its own head.
+  defp assert_unmoved_pr_merges!(world) do
+    url = World.add_pr!(world, head: "head-steady")
+    other = World.pr(world, url)
+    World.add_check!(other, World.check_run("unit"))
+    run = World.ready_run!(world, World.project!(world, [@unit]), pr: url)
+
+    assert_approved(world, run)
+    assert {:ok, _} = World.merge(run)
+
+    assert ["pr", "merge", ^url, "--squash", "--match-head-commit", "head-steady"] =
+             List.last(World.merge_calls(world))
+
+    assert World.pr_state(other) == "MERGED"
+  end
+
+  # A gated run whose findings record holds one open finding that quotes `secret`, observed with a
+  # running publisher (`publisher_opts` as `World.publisher!/2`): the run, the outcome the
+  # publisher recorded and the bodies of the comments on the PR.
+  defp publish_leaky_finding!(world, project_id, secret, publisher_opts \\ []) do
+    publisher = World.publisher!(world, publisher_opts)
+    run = World.ready_run!(world, project_id, findings: :none)
+
+    finding = %{
+      "severity" => "major",
+      "path" => "lib/a.ex",
+      "line" => 3,
+      "description" => "the deploy token #{secret} is committed",
+      "disposition" => "open",
+      "source" => "review"
+    }
+
+    :ok = World.record_findings!(world, run, "head-one", findings: [finding])
+    passing!(world)
+    World.observe!(world, run)
+
+    assert [outcome] = World.await_publications!(run, 1)
+    World.settle_publisher!(publisher)
+    {run, outcome, Enum.map(World.comments(world), & &1["body"])}
   end
 
   # -- AC-004-2: the head changes after approval ------------------------------------------------
@@ -213,6 +259,9 @@ defmodule ForemanServer.PrDeliveryAdversarialApprovalTest do
       assert get(held, :reason) == "head_moved_since_approval"
       assert {:error, :pr_not_acceptable} = World.merge(run)
       assert World.merge_calls(world) == []
+
+      # CONTROL: a PR nobody pushed to merges through the same path
+      assert_unmoved_pr_merges!(world)
     end
 
     test "a push between the live read and the merge call is refused by GitHub's own pin",
@@ -224,9 +273,11 @@ defmodule ForemanServer.PrDeliveryAdversarialApprovalTest do
       # the live read still shows head-one; the push lands before `gh pr merge` runs
       World.push_after_next_view!(world, "head-two")
 
-      assert {:error,
-              {:gh_merge_failed, 1, "Head branch was modified. Review and try the merge again."}} =
-               World.merge(run)
+      # the world's paraphrase of GitHub's refusal of a stale `--match-head-commit` (the real
+      # `gh` text is unverified): what is pinned is the exit code and that GitHub, not Foreman's
+      # own comparison, refused it
+      assert {:error, {:gh_merge_failed, 1, message}} = World.merge(run)
+      assert message =~ "Head branch was modified"
 
       url = World.pr_url(world)
 
@@ -243,6 +294,9 @@ defmodule ForemanServer.PrDeliveryAdversarialApprovalTest do
       assert {:error, {:head_moved_since_approval, "head-one", "head-two"}} = World.merge(run)
       assert length(World.merge_calls(world)) == 1
       assert World.pr_state(world) == "OPEN"
+
+      # CONTROL: a PR nobody pushes to merges through the same path
+      assert_unmoved_pr_merges!(world)
     end
 
     test "CONTROL: with no push the same approval merges the pinned head", %{world: world} do
@@ -364,6 +418,17 @@ defmodule ForemanServer.PrDeliveryAdversarialApprovalTest do
 
       assert World.events(run, "MergeGateApproved") == []
       assert World.gate_pending?(run)
+
+      # CONTROL: the same stamp naming the observation the gate recorded for this head (a forced
+      # observation of it, `checks_ref` its nonce) is eligible and approves
+      nonce = "nonce-recorded-for-head-one"
+
+      dispatch_all!(
+        observation_batch!(world, run, force: %{nonce: nonce, now_ms: 1_800_000_000_000})
+      )
+
+      assert {:ok, _} = approve_direct(run, "head-one", GateEvidence.gated([@unit], nonce))
+      assert World.gate_approved?(run)
     end
   end
 
@@ -452,6 +517,56 @@ defmodule ForemanServer.PrDeliveryAdversarialApprovalTest do
       # CONTROL: the check passes: nothing was missing, the waiver is simply unused
       World.set_rollup!(world, [World.check_run("unit")])
       assert get(get(assert_approved(world, run), :evidence), :status) == "eligible"
+    end
+
+    test "a waiver recorded under one policy version covers nothing under another", %{
+      world: world
+    } do
+      run = gated_run!(world)
+      assert {:ok, _} = waive(world, run, "head-one")
+      assert [%{} = waived] = World.events(run, "PrEvidenceWaived")
+      v1 = get(waived, :policy_version)
+
+      # the project now requires one more check: another policy version, the same head
+      lint = %{"name" => "lint", "kind" => "check_run"}
+      World.set_required!(world, run.project_id, [@unit, lint])
+
+      detail = assert_refused(world, run, ["missing", "missing"])
+      assert Enum.sort(Enum.map(detail.reasons, & &1.subject)) == ["lint", "unit"]
+      assert detail.policy_version != v1
+      assert detail.waived == []
+      assert %{applies: false, ignored_because: :policy_changed} = detail.waiver
+
+      assert {:ok, %{prs: [dto]}} = ForemanServer.PrWatch.DTO.fetch(run.run_id)
+      assert %{applies: false} = dto.waiver
+      assert to_string(dto.waiver.ignored_because) == "policy_changed"
+
+      # CONTROL: waived again under the current version, the same two reasons are covered
+      assert {:ok, _} = waive(world, run, "head-one")
+      approved = assert_approved(world, run)
+      assert get(get(approved, :evidence), :status) == "waived"
+      assert get(get(approved, :evidence), :policy_version) == detail.policy_version
+    end
+
+    test "a waiver names its approver: no identity and an unauthorized one are refused",
+         %{world: world} do
+      run = gated_run!(world)
+
+      for {identity, error} <- [
+            {nil, {:missing_or_invalid, :approver_identity}},
+            {"", {:missing_or_invalid, :approver_identity}},
+            {"github:intruder", :unauthorized_approver}
+          ] do
+        assert {:error, ^error} = waive(world, run, "head-one", ["missing"], identity: identity)
+      end
+
+      assert World.events(run, "PrEvidenceWaived") == []
+      assert watch_record(run).evidence.waiver == nil
+
+      # CONTROL: the authorized identity waives
+      assert {:ok, _} = waive(world, run, "head-one")
+      assert [%{} = waived] = World.events(run, "PrEvidenceWaived")
+      assert get(waived, :approver_identity) == "github:ldangelo"
     end
   end
 
@@ -563,20 +678,12 @@ defmodule ForemanServer.PrDeliveryAdversarialApprovalTest do
   # -- AC-003-5 and AC-003-2: the risk level is derived, never supplied ---------------------------
 
   describe "AC-003-5: a forged risk record is refused and appends nothing" do
-    @derived [
-      level: "LOW",
-      rationale: [],
-      instructions: [],
-      sensitive_hits: [],
-      unresolved_findings: 0,
-      judgement: %{status: "recorded", level: "LOW"},
-      evidence: [],
-      digest: "forged",
-      seq: 99,
-      rubric_version: "forged",
-      findings_digest: "forged",
-      recorded_at: 1
-    ]
+    # Every content field of the risk event is derived by the handler (the identity fields name the
+    # PR and the head); `sensitive_hits` is a derived rubric input the event does not carry as
+    # such. Read from the event struct, so a field added to the event is tried here too.
+    @identity ~w(run_id project_id task_id pr_url repo_id head_sha)a
+    @derived (Map.keys(ForemanServer.Events.PrRiskRecorded.__struct__()) --
+                [:__struct__ | @identity]) ++ [:sensitive_hits]
 
     test "a payload that names any derived field is refused; the rubric's HIGH stands", %{
       world: world
@@ -589,7 +696,9 @@ defmodule ForemanServer.PrDeliveryAdversarialApprovalTest do
       assert %{type: "run.pr.risk"} = risk = Enum.find(batch, &(&1.type == "run.pr.risk"))
       dispatch_all!(Enum.reject(batch, &(&1.type == "run.pr.risk")))
 
-      for {key, value} <- @derived do
+      for key <- @derived do
+        value = if key == :level, do: "LOW", else: "forged"
+
         forged = %{
           risk
           | command_id: "forged-#{key}",
@@ -695,13 +804,18 @@ defmodule ForemanServer.PrDeliveryAdversarialApprovalTest do
   end
 
   describe "AC-003-5 and AC-004-1: the evidence commands are system-only" do
-    @system_only ~w(run.pr.risk run.pr.checks run.pr.review run.pr.findings
-                    run.pr.comment_published run.pr.ready_failed run.pr.rehold)
+    # Derived from the aggregate's own lists: every PR-watch command that is not an operator
+    # command (the observation, findings, risk, fix and report-outcome records) and the system
+    # commands of the PR lifecycle that no operator envelope accepts.
+    @system_only (ForemanServer.Aggregates.Run.PrWatch.command_types() --
+                    ForemanServer.Aggregates.Run.PrWatch.operator_types()) ++
+                   ~w(run.pr.rehold run.pr.update run.pr.ready run.pr.retarget run.pr.reset)
 
     test "the operator path and POST /api/commands refuse every one, and the run's stream is unchanged",
          %{world: world} do
       run = gated_run!(world)
       passing!(world)
+      World.observe!(world, run)
       before = length(PrWatchSupport.run_events(run.run_id))
 
       payload = %{
@@ -713,7 +827,11 @@ defmodule ForemanServer.PrDeliveryAdversarialApprovalTest do
         level: "LOW"
       }
 
+      assert "run.pr.risk" in @system_only and "run.pr.fix_started" in @system_only
+
       for type <- @system_only do
+        refute type in CommandGateway.operator_types()
+
         assert {:error, {:command_not_allowed, ^type}} =
                  World.operator("run:#{run.run_id}", type, payload)
 
@@ -722,15 +840,24 @@ defmodule ForemanServer.PrDeliveryAdversarialApprovalTest do
       end
 
       assert length(PrWatchSupport.run_events(run.run_id)) == before
-      assert World.events(run, "PrRiskRecorded") == []
       assert World.gate_pending?(run)
 
-      # CONTROL: the operator's own PR command, over the same envelope, is accepted by the
-      # allowlist (its aggregate then answers for the PR, not the envelope)
-      refute match?(
-               {:error, {:command_not_allowed, _}},
-               World.operator("run:#{run.run_id}", "run.pr.publish_report", payload)
-             )
+      # CONTROL: the operator's own PR command, POSTed to the same endpoint, is accepted and recorded
+      request = %{
+        run_id: run.run_id,
+        project_id: run.project_id,
+        task_id: run.task_id,
+        pr_url: run.pr_url
+      }
+
+      conn =
+        post(build_conn(), "/api/commands", %{
+          "type" => "run.pr.publish_report",
+          "payload" => request
+        })
+
+      assert %{"status" => "accepted"} = json_response(conn, 201)
+      assert [_requested] = World.events(run, "PrReportRequested")
     end
 
     test "the merge decisions cannot be dispatched by the system path at all", %{world: world} do
@@ -833,6 +960,46 @@ defmodule ForemanServer.PrDeliveryAdversarialApprovalTest do
       assert {:ok, %{prs: [dto]}} = ForemanServer.PrWatch.DTO.fetch(run.run_id)
       assert %{head_sha: "head-two", current: true, stale: false} = dto.report
     end
+
+    test "with the publisher running across the push, the new head's report edits the same comment on its own",
+         %{world: world} do
+      publisher = World.publisher!(world)
+      run = gated_run!(world)
+      passing!(world)
+      World.observe!(world, run)
+
+      assert [first] = World.await_publications!(run, 1)
+      World.settle_publisher!(publisher)
+      assert [%{"body" => body}] = World.comments(world)
+
+      World.push!(world, "head-two")
+      :ok = World.record_findings!(world, run, "head-two")
+      passing!(world)
+      World.observe!(world, run)
+
+      assert [^first, second] = World.await_publications!(run, 2)
+      World.settle_publisher!(publisher)
+      assert get(second, :status) == "published"
+      assert get(second, :head_sha) == "head-two"
+      assert get(second, :superseded) == "head-one"
+      assert get(second, :comment_id) == get(first, :comment_id)
+
+      # one comment, edited in place: a create, then a PATCH of the same comment
+      assert [%{"body" => new_body}] = World.comments(world)
+      assert new_body != body
+      assert {:ok, %{head_sha: "head-two"}} = PrReport.parse_marker(new_body)
+
+      assert [["api", "repos/" <> _, "-f", _], ["api", "-X", "PATCH", "repos/" <> path | _]] =
+               World.comment_writes(world)
+
+      assert String.ends_with?(path, "/issues/comments/#{get(first, :comment_id)}")
+
+      # CONTROL: an unchanged head writes nothing more
+      World.observe!(world, run)
+      World.settle_publisher!(publisher)
+      assert length(World.publications(run)) == 2
+      assert length(World.comment_writes(world)) == 2
+    end
   end
 
   describe "AC-003-3: the publisher's own comment is not feedback" do
@@ -922,30 +1089,104 @@ defmodule ForemanServer.PrDeliveryAdversarialApprovalTest do
 
     test "a secret inside a finding the agent wrote is replaced, and the rest of the finding is published",
          %{world: world} do
-      secret = "ghp_FINDING-SECRET-0123456789"
-      publisher = World.publisher!(world, secrets: [secret])
-      run = gated_run!(world, findings: :none)
+      secret = "zk-finding-secret-0123456789"
+      project_id = World.project!(world, [@unit])
 
-      finding = %{
-        "severity" => "major",
-        "path" => "lib/a.ex",
-        "line" => 3,
-        "description" => "the deploy token #{secret} is committed",
-        "disposition" => "open",
-        "source" => "review"
-      }
+      {_run, outcome, [body]} =
+        publish_leaky_finding!(world, project_id, secret, secrets: [secret])
 
-      :ok = World.record_findings!(world, run, "head-one", findings: [finding])
-      passing!(world)
-      World.observe!(world, run)
-
-      assert [published] = World.await_publications!(run, 1)
-      World.settle_publisher!(publisher)
-      assert get(published, :status) == "published"
-      assert [%{"body" => body}] = World.comments(world)
+      assert get(outcome, :status) == "published"
       refute body =~ secret
       assert body =~ "the deploy token"
       assert body =~ "is committed"
+    end
+
+    test "CONTROL: the same finding with an empty redaction list is published verbatim, so the replacement above is the list's doing",
+         %{world: world} do
+      secret = "zk-finding-secret-0123456789"
+      project_id = World.project!(world, [@unit])
+
+      {_run, outcome, [body]} = publish_leaky_finding!(world, project_id, secret, secrets: [])
+
+      assert get(outcome, :status) == "published"
+      assert body =~ secret
+    end
+
+    @tag :tmp_dir
+    test "a secret in the project's secret store is replaced through the real redaction list",
+         %{world: world, tmp_dir: tmp_dir} do
+      SecretStoreDir.use_tmp_dir!(tmp_dir)
+      secret = "zk-store-secret-0123456789"
+      project_id = World.project!(world, [@unit])
+      SecretStoreDir.put!(project_id, "DEPLOY_KEY", secret)
+
+      # no `secrets:` here: the publisher resolves the list as production does
+      {_run, outcome, [body]} = publish_leaky_finding!(world, project_id, secret)
+
+      assert get(outcome, :status) == "published"
+      refute body =~ secret
+      assert body =~ "the deploy token"
+    end
+
+    @tag :tmp_dir
+    test "CONTROL: without the store entry the same finding is published verbatim",
+         %{world: world, tmp_dir: tmp_dir} do
+      SecretStoreDir.use_tmp_dir!(tmp_dir)
+      secret = "zk-store-secret-0123456789"
+      project_id = World.project!(world, [@unit])
+
+      {_run, outcome, [body]} = publish_leaky_finding!(world, project_id, secret)
+
+      assert get(outcome, :status) == "published"
+      assert body =~ secret
+    end
+
+    @tag :tmp_dir
+    test "a stored project secret that is in a closed field of the report refuses the publication",
+         %{world: world, tmp_dir: tmp_dir} do
+      SecretStoreDir.use_tmp_dir!(tmp_dir)
+      project_id = World.project!(world, [@unit])
+      # eight characters: stored values shorter than that are not redacted; the marker line
+      # carries the head, and nothing may hide it
+      SecretStoreDir.put!(project_id, "DEPLOY_KEY", "head-one")
+
+      publisher = World.publisher!(world)
+      run = World.ready_run!(world, project_id)
+      passing!(world)
+      World.observe!(world, run)
+
+      assert [refused] = World.await_publications!(run, 1)
+      World.settle_publisher!(publisher)
+      assert get(refused, :status) == "refused"
+      assert get(refused, :reason) == "redaction_failed"
+      assert World.comments(world) == []
+      assert World.comment_writes(world) == []
+    end
+
+    test "a redaction list that cannot be resolved refuses the publication and writes nothing",
+         %{world: world} do
+      publisher = :"pr_world_publisher_boom_#{System.unique_integer([:positive])}"
+
+      start_supervised!(
+        {Publisher,
+         name: publisher,
+         scan: false,
+         command_runner: World.runner(world),
+         secrets_fun: fn _project_id -> {:error, :boom} end}
+      )
+
+      run = gated_run!(world)
+      passing!(world)
+      World.observe!(world, run)
+
+      assert [refused] = World.await_publications!(run, 1)
+      World.settle_publisher!(publisher)
+      assert get(refused, :status) == "refused"
+      assert get(refused, :reason) == "redaction_failed"
+      assert get(refused, :detail) == "the redaction list could not be resolved: boom"
+      assert World.comments(world) == []
+      assert World.comment_writes(world) == []
+      assert for(e <- World.publications(run), get(e, :status) == "published", do: e) == []
     end
   end
 end
