@@ -219,4 +219,166 @@ defmodule ForemanServer.GitHub.PrStatusTest do
       end
     end
   end
+
+  describe "fetch/2 carries the changed paths and the size of the diff" do
+    defp file_item(i),
+      do: %{
+        "path" => "lib/f#{i}.ex",
+        "additions" => i,
+        "deletions" => 1,
+        "changeType" => "MODIFIED"
+      }
+
+    defp sized(extra) do
+      Map.merge(
+        %{
+          "state" => "OPEN",
+          "mergeable" => "MERGEABLE",
+          "headRefOid" => "abc123def456",
+          "headRefName" => "b",
+          "baseRefName" => "main"
+        },
+        extra
+      )
+    end
+
+    defp fetch_sized(extra) do
+      PrStatus.fetch(@url, command_runner: runner(Jason.encode!(sized(extra))))
+    end
+
+    test "asks gh for the four fields in the same call as the head sha" do
+      test_pid = self()
+
+      runner = fn "gh", args, _opts ->
+        send(test_pid, {:gh_args, args})
+        {Jason.encode!(sized(%{})), 0}
+      end
+
+      {:ok, _} = PrStatus.fetch(@url, command_runner: runner)
+      assert_received {:gh_args, ["pr", "view", @url, "--json", fields]}
+      listed = String.split(fields, ",")
+      assert Enum.all?(~w(headRefOid files changedFiles additions deletions), &(&1 in listed))
+    end
+
+    test "a small PR carries its files (path, additions, deletions only) and totals, complete" do
+      assert {:ok, %PrStatus{} = status} =
+               fetch_sized(%{
+                 "files" => [file_item(2), file_item(3)],
+                 "changedFiles" => 2,
+                 "additions" => 5,
+                 "deletions" => 2
+               })
+
+      assert status.files == [
+               %{path: "lib/f2.ex", additions: 2, deletions: 1},
+               %{path: "lib/f3.ex", additions: 3, deletions: 1}
+             ]
+
+      assert {status.changed_files, status.additions, status.deletions} == {2, 5, 2}
+      refute PrStatus.files_incomplete?(status)
+    end
+
+    test "100 of 223 files: the list is kept as listed, the totals are the PR's own, and it is incomplete" do
+      assert {:ok, status} =
+               fetch_sized(%{
+                 "files" => Enum.map(1..100, &file_item/1),
+                 "changedFiles" => 223,
+                 "additions" => 9_000,
+                 "deletions" => 400
+               })
+
+      assert length(status.files) == 100
+      assert hd(status.files).path == "lib/f1.ex"
+      assert List.last(status.files).path == "lib/f100.ex"
+      assert status.changed_files == 223
+      assert {status.additions, status.deletions} == {9_000, 400}
+      assert PrStatus.files_incomplete?(status)
+    end
+
+    test "a list longer than the cap keeps the first 100 as GitHub lists them" do
+      assert {:ok, status} =
+               fetch_sized(%{
+                 "files" => Enum.map(1..130, &file_item/1),
+                 "changedFiles" => 130,
+                 "additions" => 1,
+                 "deletions" => 1
+               })
+
+      assert length(status.files) == 100
+      assert List.last(status.files).path == "lib/f100.ex"
+      assert PrStatus.files_incomplete?(status)
+    end
+
+    test "a response that omits the fields leaves them nil and is incomplete, never an empty list" do
+      assert {:ok, status} = fetch_sized(%{})
+
+      assert {status.files, status.changed_files, status.additions, status.deletions} ==
+               {nil, nil, nil, nil}
+
+      assert PrStatus.files_incomplete?(status)
+    end
+
+    test "files without a count, or a count without files, is incomplete" do
+      assert {:ok, no_count} = fetch_sized(%{"files" => [file_item(1)]})
+      assert PrStatus.files_incomplete?(no_count)
+
+      assert {:ok, no_files} = fetch_sized(%{"changedFiles" => 0})
+      assert PrStatus.files_incomplete?(no_files)
+    end
+
+    test "an explicit empty list for a zero-file PR is complete" do
+      assert {:ok, status} = fetch_sized(%{"files" => [], "changedFiles" => 0})
+      refute PrStatus.files_incomplete?(status)
+    end
+
+    test "a file item without a path, or with a blank or non-string one, is a typed error" do
+      for bad <- [
+            %{"additions" => 1, "deletions" => 1},
+            %{"path" => "", "additions" => 1, "deletions" => 1},
+            %{"path" => 7, "additions" => 1, "deletions" => 1}
+          ] do
+        assert {:error, {:gh_unexpected_payload, ^bad}} =
+                 fetch_sized(%{"files" => [file_item(1), bad], "changedFiles" => 2})
+      end
+    end
+
+    test "a file item with a negative or non-integer count is a typed error" do
+      for bad <- [
+            %{"path" => "a", "additions" => -1, "deletions" => 0},
+            %{"path" => "a", "additions" => 0, "deletions" => "2"},
+            %{"path" => "a"}
+          ] do
+        assert {:error, {:gh_unexpected_payload, ^bad}} =
+                 fetch_sized(%{"files" => [bad], "changedFiles" => 1})
+      end
+    end
+
+    test "a files field that is not a list is a typed error" do
+      assert {:error, {:gh_unexpected_payload, _}} =
+               fetch_sized(%{"files" => %{"path" => "a"}})
+    end
+
+    test "a negative or non-integer total is a typed error, not a clamped value" do
+      for {key, bad} <- [
+            {"changedFiles", -3},
+            {"additions", -1},
+            {"deletions", "9"},
+            {"changedFiles", 2.5}
+          ] do
+        assert {:error, {:gh_unexpected_payload, {^key, ^bad}}} = fetch_sized(%{key => bad})
+      end
+    end
+
+    test "a renamed file is listed once, under its new path" do
+      renamed = %{
+        "path" => "lib/new_name.ex",
+        "additions" => 0,
+        "deletions" => 0,
+        "changeType" => "RENAMED"
+      }
+
+      assert {:ok, %PrStatus{files: [%{path: "lib/new_name.ex"}]}} =
+               fetch_sized(%{"files" => [renamed], "changedFiles" => 1})
+    end
+  end
 end
