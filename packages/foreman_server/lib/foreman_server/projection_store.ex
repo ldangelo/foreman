@@ -12,13 +12,12 @@ defmodule ForemanServer.ProjectionStore do
   event log via `read_all_streams_forward`. This ensures the projection is always
   consistent with the event store at startup.
 
-  A log that cannot be read at startup is not an empty log: after its bounded read retries
-  `init/1` stops with `{:event_log_read_failed, reason}` and registers nothing. The application supervisor
+  A log that cannot be read at startup is not an empty log: `init/1` reads once, stops at
+  once with `{:event_log_read_failed, reason}` and registers nothing. The application supervisor
   restarts the store within its budget (`Application.supervisor_opts/0`) and then stops the
   application, so the store never serves an empty model after a failed read. A log that reads
   but is empty starts an empty model. Start options (tests): `:event_reader` (a
-  `(start, count -> {:ok, events} | {:error, reason})` function), `:name`, `:now_ms`,
-  `:boot_read_attempts` (default 3) and `:boot_read_retry_ms` (default 500).
+  `(start, count -> {:ok, events} | {:error, reason})` function), `:name` and `:now_ms`.
 
   ## Command path
 
@@ -57,11 +56,6 @@ defmodule ForemanServer.ProjectionStore do
   @pr_fold_events ForemanServer.Overview.PrFold.events()
   @pr_watch_only_events ForemanServer.PrWatchFold.events() -- @pr_fold_events
   @active_run_statuses ["awaiting_worker", "in_progress"]
-
-  # The boot read of the event log is tried this many times, this far apart, before `init/1`
-  # gives up (TRD-031).
-  @boot_read_attempts 3
-  @boot_read_retry_ms 500
 
   @spec start_link(term()) :: GenServer.on_start()
   def start_link(init_arg) do
@@ -1256,8 +1250,7 @@ defmodule ForemanServer.ProjectionStore do
     reader = init_event_reader(init_arg)
     Process.put(:projection_event_reader, reader)
 
-    with {:ok, rebuilt} <-
-           rebuild_from_event_log(init_now_ms_fun(init_arg), reader, init_boot_read(init_arg)) do
+    with {:ok, rebuilt} <- rebuild_from_event_log(init_now_ms_fun(init_arg), reader) do
       {:ok, restore_subscribers(rebuilt)}
     end
   end
@@ -2202,20 +2195,14 @@ defmodule ForemanServer.ProjectionStore do
   # -------------------------------------------------------------------------
 
   # The boot read (TRD-031, AC-005-3). A log that cannot be read is NOT an empty log: an
-  # empty model would show every run as absent and every PR as unwatched. The read is retried a
-  # few times (`init_boot_read/1`); if it still fails the store refuses to start, and the
-  # application supervisor restarts it within its budget and then stops the application
-  # (`Application.supervisor_opts/0`), so nothing serves an empty model. One error line per
-  # boot, not one per attempt.
-  defp rebuild_from_event_log(now_ms_fun, reader, {attempts, retry_ms})
-       when is_function(now_ms_fun, 0) do
+  # empty model would show every run as absent and every PR as unwatched. The store reads
+  # once and, on failure, stops at once (no sleep: a stalled `init/1` would stall the
+  # supervisor too); the application supervisor restarts it within its budget and then stops
+  # the application (`Application.supervisor_opts/0`), so nothing serves an empty model.
+  defp rebuild_from_event_log(now_ms_fun, reader) when is_function(now_ms_fun, 0) do
     case rebuild_state_from_event_log(now_ms_fun, reader) do
       {:ok, rebuilt_state} ->
         {:ok, rebuilt_state}
-
-      {:error, _reason} when attempts > 1 ->
-        Process.sleep(retry_ms)
-        rebuild_from_event_log(now_ms_fun, reader, {attempts - 1, retry_ms})
 
       {:error, reason} ->
         Logger.error(
@@ -5732,21 +5719,6 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   defp init_event_reader(_init_arg), do: &EventStore.read_all_streams_forward/2
-
-  # How hard the boot read tries before the store stops: `:boot_read_attempts` reads (default 3)
-  # with `:boot_read_retry_ms` between them (default 500), so a database blip of a second does
-  # not burn the supervisor's restart budget and take the application down.
-  defp init_boot_read(init_arg) when is_list(init_arg) do
-    {positive_or(Keyword.get(init_arg, :boot_read_attempts), @boot_read_attempts),
-     non_negative_or(Keyword.get(init_arg, :boot_read_retry_ms), @boot_read_retry_ms)}
-  end
-
-  defp init_boot_read(_init_arg), do: {@boot_read_attempts, @boot_read_retry_ms}
-
-  defp positive_or(value, _default) when is_integer(value) and value > 0, do: value
-  defp positive_or(_value, default), do: default
-  defp non_negative_or(value, _default) when is_integer(value) and value >= 0, do: value
-  defp non_negative_or(_value, default), do: default
 
   # An ABSENT declaration reads as the empty list, because "declared nothing"
   # and "declared an empty list" mean the same thing to the approval guard. A
