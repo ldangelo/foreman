@@ -62,7 +62,9 @@ defmodule ForemanServer.PrReport.Publisher do
   report of the stream's risk record, then `post/2`, the single flight and the keyed effect with
   adoption by marker). A refused report is never retried here, only by the operator command.
   At most two publications run at the same time while the scan drains its queue; the
-  application start waits for nothing, and a failed read of the projection is logged.
+  application start waits for nothing. A scan item whose PR has a publication in flight stays
+  queued and is started when that publication finishes. A read of the projection that fails
+  (timeout, raise) is retried up to three times, `:scan_retry_ms` apart, then logged as an error.
 
   Configuration: `config :foreman_server, :pr_report_publisher, enabled: boolean` (read as
   `enabled != false`; `config/test.exs` sets `false`). Options of `start_link/1`, passed to
@@ -70,7 +72,8 @@ defmodule ForemanServer.PrReport.Publisher do
   `:secrets_fun` (`project_id -> {:ok, [String.t()]} | {:error, term()}`, default
   `ProjectEnvironment.fetch_secrets/1`), `:now_fun` (`-> ms`) and `:scan` (default `true`; the
   application starts the publisher without it, so the start-up scan always runs there: a test
-  that exercises only the live trigger passes `false`).
+  that exercises only the live trigger passes `false`), `:scan_reader` (`-> [record]`, default
+  `ProjectionStore.watched_prs/0`) and `:scan_retry_ms` (default 1000).
   """
 
   use GenServer
@@ -95,6 +98,8 @@ defmodule ForemanServer.PrReport.Publisher do
   @open_statuses ~w(open conflicted)
   @max_detail 500
   @scan_concurrency 2
+  @scan_attempts 3
+  @scan_retry_ms 1_000
 
   @type result ::
           {:skipped, atom()}
@@ -230,21 +235,7 @@ defmodule ForemanServer.PrReport.Publisher do
   # scan runs here, after `init/1` returned (the supervision tree never waits for it), only
   # reads the projection, and a failure of the read is logged, not a crash.
   @impl true
-  def handle_continue(:scan, state) do
-    queue =
-      try do
-        for record <- ProjectionStore.watched_prs(),
-            payload = scan_candidate(record),
-            key = key(payload),
-            do: {key, payload}
-      catch
-        kind, _value ->
-          Logger.error("PrReport.Publisher start-up scan failed: #{kind}")
-          []
-      end
-
-    {:noreply, pump_scan(%{state | scan_queue: queue})}
-  end
+  def handle_continue(:scan, state), do: {:noreply, run_scan(state, 1)}
 
   @impl true
   def handle_info({:projection_event, %{event_type: "PrRiskRecorded"} = event}, state) do
@@ -266,6 +257,8 @@ defmodule ForemanServer.PrReport.Publisher do
   end
 
   def handle_info({:projection_event, _other}, state), do: {:noreply, state}
+
+  def handle_info({:scan_retry, attempt}, state), do: {:noreply, run_scan(state, attempt)}
 
   def handle_info({ref, result}, state) when is_reference(ref) do
     Process.demonitor(ref, [:flush])
@@ -352,18 +345,74 @@ defmodule ForemanServer.PrReport.Publisher do
   end
 
   # The scan starts a publish only while fewer than `@scan_concurrency` are in flight, so a
-  # burst of PRs never starts unbounded `gh` calls; each finished task starts the next.
-  defp pump_scan(%{scan_queue: [{key, payload} | rest]} = state)
-       when map_size(state.running) < @scan_concurrency do
-    state = %{state | scan_queue: rest}
-
-    # a publication already in flight for the PR answers a newer trigger than the scan's
-    if Map.has_key?(state.running, key),
-      do: pump_scan(state),
-      else: pump_scan(start(state, key, {:scan, payload}))
+  # burst of PRs never starts unbounded `gh` calls; each finished task starts the next. An item
+  # whose PR already has a publication in flight (a live trigger or an operator request, which
+  # may be for another digest and publish nothing) stays queued, in order, and the finish of that
+  # publication pumps it again: the scan never drops an item it could not start. The queue holds
+  # at most one item per PR (`read_scan/1`) and nothing else adds to it.
+  defp pump_scan(state) do
+    {queue, state} = drain_scan(state.scan_queue, [], state)
+    %{state | scan_queue: queue}
   end
 
-  defp pump_scan(state), do: state
+  defp drain_scan([], kept, state), do: {Enum.reverse(kept), state}
+
+  defp drain_scan([{key, payload} = item | rest], kept, state) do
+    cond do
+      map_size(state.running) >= @scan_concurrency ->
+        {Enum.reverse(kept, [item | rest]), state}
+
+      Map.has_key?(state.running, key) ->
+        drain_scan(rest, [item | kept], state)
+
+      true ->
+        drain_scan(rest, kept, start(state, key, {:scan, payload}))
+    end
+  end
+
+  # One read of the watched PRs: `{:ok, queue}` or `{:error, kind}`. A timeout is an exit and a
+  # broken projection a raise; neither crashes the publisher.
+  defp read_scan(opts) do
+    reader = Keyword.get(opts, :scan_reader, &ProjectionStore.watched_prs/0)
+
+    queue =
+      for record <- reader.(),
+          payload = scan_candidate(record),
+          key = key(payload),
+          do: {key, payload}
+
+    {:ok, Enum.uniq_by(queue, &elem(&1, 0))}
+  rescue
+    _error -> {:error, :raise}
+  catch
+    kind, _value -> {:error, kind}
+  end
+
+  # Up to `@scan_attempts` reads, `:scan_retry_ms` apart, then a logged error: a read that fails
+  # once must not cost the whole scan until the next restart.
+  defp run_scan(state, attempt) do
+    case read_scan(state.opts) do
+      {:ok, queue} ->
+        pump_scan(%{state | scan_queue: queue})
+
+      {:error, kind} when attempt < @scan_attempts ->
+        Logger.warning(
+          "PrReport.Publisher start-up scan read failed (#{kind}), attempt #{attempt}: retrying"
+        )
+
+        delay = Keyword.get(state.opts, :scan_retry_ms, @scan_retry_ms)
+        Process.send_after(self(), {:scan_retry, attempt + 1}, delay)
+        state
+
+      {:error, kind} ->
+        Logger.error(
+          "PrReport.Publisher start-up scan failed (#{kind}) after #{attempt} attempts: " <>
+            "no report is published by the scan until the next start"
+        )
+
+        state
+    end
+  end
 
   # A watched, open record holding a risk record for its current head and no report for that
   # head and digest. Whether the project is gated is decided by the publication step itself.

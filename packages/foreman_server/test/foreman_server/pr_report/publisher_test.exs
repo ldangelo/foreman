@@ -1392,6 +1392,174 @@ defmodule ForemanServer.PrReport.PublisherTest do
       posted = posted_runs(ctx.gh)
       assert Enum.all?(runs, fn run -> Enum.count(posted, &(&1 == run.run_id)) == 1 end)
     end
+
+    # a publication parked in its first `gh` call, released by `send(task, :go)`
+    defp parking(ctx, test_pid) do
+      base = ctx.runner
+
+      fn "gh", args, opts ->
+        if match?(["pr", "view" | _], args) do
+          send(test_pid, {:listed, self()})
+
+          receive do
+            :go -> :ok
+          after
+            5_000 -> :ok
+          end
+        end
+
+        base.("gh", args, opts)
+      end
+    end
+
+    # the projection's watched PRs of the named runs only: other tests leave PRs behind
+    defp only(run_ids) do
+      run_ids = List.wrap(run_ids)
+      fn -> Enum.filter(ProjectionStore.watched_prs(), &(&1.run_id in run_ids)) end
+    end
+
+    test "a scan item whose PR has a publication in flight stays queued and is started after it",
+         ctx do
+      pid =
+        start_publisher(ctx,
+          command_runner: parking(ctx, self()),
+          scan_reader: only(ctx.run_id)
+        )
+
+      deliver(pid, ctx.trigger)
+      assert_receive {:listed, first}, 2_000
+
+      # the scan finds the same PR while its publication is in flight: not startable, not lost
+      send(pid, {:scan_retry, 1})
+
+      Eventually.await(fn -> length(:sys.get_state(pid).scan_queue) == 1 end,
+        message: "the scan item is queued behind the publication in flight"
+      )
+
+      assert Publisher.inflight(pid) == 1
+      send(first, :go)
+      Eventually.await(fn -> Publisher.inflight(pid) == 0 end)
+      assert :sys.get_state(pid).scan_queue == []
+
+      # one report, not two: the item was started and found the report already recorded
+      assert [%{status: "published"}] = report_events(ctx.run_id)
+      assert [_one] = FakeGh.comments(ctx.gh)
+    end
+
+    test "a scan and a live trigger for the same PR post one comment", ctx do
+      pid =
+        start_scanning(ctx, command_runner: parking(ctx, self()), scan_reader: only(ctx.run_id))
+
+      assert_receive {:listed, scan_task}, 2_000
+
+      deliver(pid, ctx.trigger)
+      Eventually.await(fn -> map_size(:sys.get_state(pid).pending) == 1 end)
+
+      send(scan_task, :go)
+      settle(pid)
+
+      assert [%{status: "published"}] = report_events(ctx.run_id)
+      assert [_one] = FakeGh.comments(ctx.gh)
+      assert [_one] = writes_of(ctx.gh, ctx.run_id)
+    end
+
+    test "a read of the projection that fails is retried, then the scan publishes", ctx do
+      {:ok, calls} = Agent.start_link(fn -> 0 end)
+
+      reader = fn ->
+        case Agent.get_and_update(calls, &{&1 + 1, &1 + 1}) do
+          1 -> raise "projection busy"
+          2 -> exit(:timeout)
+          _ -> only(ctx.run_id).()
+        end
+      end
+
+      pid = start_scanning(ctx, scan_reader: reader, scan_retry_ms: 10)
+
+      Eventually.await(fn -> match?([_], report_events(ctx.run_id)) end,
+        message: "the third read succeeds and the scan publishes"
+      )
+
+      settle(pid)
+      assert Agent.get(calls, & &1) == 3
+      assert [_one] = FakeGh.comments(ctx.gh)
+    end
+
+    test "a read that keeps failing gives up after three attempts with a logged error", ctx do
+      {:ok, calls} = Agent.start_link(fn -> 0 end)
+
+      reader = fn ->
+        Agent.update(calls, &(&1 + 1))
+        exit(:timeout)
+      end
+
+      log =
+        ExUnit.CaptureLog.capture_log([level: :error], fn ->
+          pid = start_scanning(ctx, scan_reader: reader, scan_retry_ms: 10)
+          Eventually.await(fn -> Agent.get(calls, & &1) == 3 end)
+          # nothing more arrives: the publisher is alive and the count stays at three
+          Publisher.inflight(pid)
+          Process.sleep(60)
+          assert Process.alive?(pid)
+        end)
+
+      assert Agent.get(calls, & &1) == 3
+      assert log =~ "start-up scan failed (exit) after 3 attempts"
+      assert [] = report_events(ctx.run_id)
+    end
+
+    test "tasks that crash mid-scan do not stall it: the queue beyond the bound still drains",
+         ctx do
+      others =
+        for _ <- 1..5 do
+          other = Support.start_run!(project_id: ctx.project_id, complete: true)
+          {:ok, _} = PrAssociate.store(other.run_id, other.pr_url)
+          {:ok, _} = PrWatcher.refresh_now(other.pr_url)
+          other
+        end
+
+      runs = [ctx | others]
+      {:ok, killed} = Agent.start_link(fn -> 0 end)
+      base = ctx.runner
+
+      # the first two publications that start are killed in their first `gh` call: the whole
+      # concurrency bound crashes, with four more items still queued
+      crashing = fn "gh", args, opts ->
+        if match?(["pr", "view" | _], args) and
+             Agent.get_and_update(killed, &{&1 < 2, &1 + 1}) do
+          Process.exit(self(), :kill)
+          Process.sleep(:infinity)
+        end
+
+        base.("gh", args, opts)
+      end
+
+      pid =
+        start_scanning(ctx,
+          command_runner: crashing,
+          scan_reader: only(Enum.map(runs, & &1.run_id))
+        )
+
+      Eventually.await(fn -> Agent.get(killed, & &1) >= 2 end, message: "two tasks were killed")
+
+      Eventually.await(
+        fn ->
+          Enum.count(runs, &match?([%{status: "published"}], report_events(&1.run_id))) == 4
+        end,
+        timeout: 20_000,
+        message: "the four PRs that were not killed are published"
+      )
+
+      settle(pid)
+      assert Process.alive?(pid)
+      assert :sys.get_state(pid).scan_queue == []
+
+      statuses =
+        Enum.map(runs, &Enum.map(report_events(&1.run_id), fn e -> {e.status, e.reason} end))
+
+      assert Enum.count(statuses, &(&1 == [])) == 2, inspect(statuses)
+      assert length(posted_runs(ctx.gh)) == 4
+    end
   end
 
   defp risk_events(run_id),
