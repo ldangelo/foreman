@@ -454,6 +454,7 @@ defmodule ForemanServer.Idempotency.Effect do
         :exit, exit_reason -> {:error, exit_reason}
       end
 
+    # `:status_changed`: the key settled meanwhile (a recorded outcome is never rewritten).
     if outcome != :ok do
       Logger.error(
         "Effect: could not record #{status} for #{inspect(key)}: #{inspect(outcome)}",

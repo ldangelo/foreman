@@ -998,7 +998,8 @@ defmodule ForemanServer.Workflow.BootReconciliation do
   #                             `effect_retried` as an audit event. The key stays ambiguous,
   #                             decision and all, until that attempt re-marks it
   #   * `:done`              -> block `effect_already_done`
-  #   * `:unknown`, or an unexpected store status -> block `effect_outcome_ambiguous`, in the
+  #   * `:unknown`, or an unexpected store status (one the store never writes; it refuses the
+  #                             marker) -> block `effect_outcome_ambiguous`, in the
   #                             boot sweep only; an on-demand scan (the cast of a refusal)
   #                             defers `:unknown`: key left undecided, run not blocked, counted
   #                             `deferred_unknown`, asked again by the next scan
@@ -1267,6 +1268,17 @@ defmodule ForemanServer.Workflow.BootReconciliation do
     else
       {:error, :status_changed} ->
         skip_effect_key(key, "settled before it could be marked unresolved; run not blocked")
+
+      # A status the store never writes: the store refuses the marker (it cannot tell what the
+      # key means), so the run is blocked without one. Fail closed (TRD-012), never skipped.
+      {:error, {:unexpected_status, status}} ->
+        Logger.warning(
+          "BootReconciliation: effect #{inspect(key)} of run #{run_id} holds the unexpected status #{inspect(status)}; blocking the run without an unresolved marker",
+          key: key,
+          run_id: run_id
+        )
+
+        block_for_effect(key, run_id, class, verdict, reason, fields, version)
 
       {:error, marker_error} ->
         Logger.error(

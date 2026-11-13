@@ -61,10 +61,16 @@ defmodule ForemanServer.Idempotency.KeyStore do
 
   @doc """
   Mark an idempotency key as completed, recording an optional result.
-  Returns `:ok` on success.
+
+  Compare-and-set inside the store: written only when the key is `started`, `ambiguous` or
+  absent. A settled key (`completed`, `failed`) is left exactly as it is and the answer is
+  `:status_changed`; a key holding a status the store never writes answers
+  `{:error, {:unexpected_status, status}}`. Returns `:ok`, `:status_changed` or
+  `{:error, reason}`.
   """
+  @spec mark_completed(String.t(), map()) :: :ok | :status_changed | {:error, term()}
   def mark_completed(key, result \\ %{}) do
-    GenServer.call(__MODULE__, {:record, key, :completed, result})
+    GenServer.call(__MODULE__, {:settle, key, :completed, result})
   end
 
   @doc """
@@ -75,7 +81,8 @@ defmodule ForemanServer.Idempotency.KeyStore do
   `ambiguous` or absent (a first write, as a lease timeout or a legacy caller makes). A key
   that has settled (`completed`, `failed`) is left exactly as it is and the answer is
   `:status_changed`: a verdict or a timeout that arrives after the effect finished must not
-  turn the outcome back into doubt. Returns `:ok`, `:status_changed` or `{:error, reason}`.
+  turn the outcome back into doubt. Returns `:ok`, `:status_changed` or `{:error, reason}`
+  (`{:error, {:unexpected_status, status}}` for a status the store never writes).
   """
   @spec mark_ambiguous(String.t(), String.t()) :: :ok | :status_changed | {:error, term()}
   def mark_ambiguous(key, reason \\ "timeout") do
@@ -85,13 +92,16 @@ defmodule ForemanServer.Idempotency.KeyStore do
   @doc """
   Mark an idempotency key as failed with a reason (default: "failed").
   The phase ended in an observed error and may have left side effects; the
-  run's failure path owns it. Returns `:ok` on success.
+  run's failure path owns it. Compare-and-set like `mark_completed/2`: a settled key is not
+  rewritten and the answer is `:status_changed`. Returns `:ok`, `:status_changed` or
+  `{:error, reason}`.
   """
+  @spec mark_failed(String.t(), String.t(), map()) :: :ok | :status_changed | {:error, term()}
   def mark_failed(key, reason \\ "failed", meta \\ %{}) do
     # String keys, as `Effect` writes metadata and as the repo returns it, so the ETS copy and
     # the stored row carry the same `"reason"` (and the same cleared recovery fields).
     meta = meta |> Map.new(fn {k, v} -> {to_string(k), v} end) |> Map.put("reason", reason)
-    GenServer.call(__MODULE__, {:record, key, :failed, meta})
+    GenServer.call(__MODULE__, {:settle, key, :failed, meta})
   end
 
   @doc """
@@ -124,6 +134,7 @@ defmodule ForemanServer.Idempotency.KeyStore do
   def effect_key?(_), do: false
 
   @unresolved_version_field "unresolved_at_run_version"
+  @settled_statuses [:completed, :failed]
 
   @doc """
   Record on an effect key that recovery could not resolve it: the key stays
@@ -135,7 +146,10 @@ defmodule ForemanServer.Idempotency.KeyStore do
 
   Compare-and-set inside the store: only a `started` or `ambiguous` key takes the marker. A
   key that settled (`completed`, `failed`) or is gone is left as it is and the answer is
-  `:status_changed`. Returns `:ok`, `:status_changed` or `{:error, reason}`.
+  `:status_changed`; a key holding any other status (one the store never writes) is left as
+  it is and the answer is `{:error, {:unexpected_status, status}}`, which a caller must treat
+  as an unknown outcome, never as a settle. Returns `:ok`, `:status_changed` or
+  `{:error, reason}`.
   """
   @spec mark_unresolved(String.t(), non_neg_integer(), String.t()) ::
           :ok | :status_changed | {:error, term()}
@@ -458,8 +472,33 @@ defmodule ForemanServer.Idempotency.KeyStore do
       :not_found ->
         handle_call({:record, key, :ambiguous, %{"reason" => reason}}, from, state)
 
-      _settled_or_unknown ->
+      {:ok, status, _stored} when status in @settled_statuses ->
         {:reply, :status_changed, state}
+
+      {:ok, status, _stored} ->
+        {:reply, {:error, {:unexpected_status, status}}, state}
+    end
+  rescue
+    err -> {:reply, {:error, err}, state}
+  end
+
+  # Compare-and-set for `mark_completed/2` and `mark_failed/3`: only a `started` or
+  # `ambiguous` key (or an absent one, as for `mark_ambiguous/2`) takes the settle; a settled
+  # key stays as it is.
+  @impl true
+  def handle_call({:settle, key, status, meta}, from, state) do
+    case current_record(state, key) do
+      {:ok, current, _stored} when current in [:started, :ambiguous] ->
+        handle_call({:record, key, status, meta}, from, state)
+
+      :not_found ->
+        handle_call({:record, key, status, meta}, from, state)
+
+      {:ok, current, _stored} when current in @settled_statuses ->
+        {:reply, :status_changed, state}
+
+      {:ok, current, _stored} ->
+        {:reply, {:error, {:unexpected_status, current}}, state}
     end
   rescue
     err -> {:reply, {:error, err}, state}
@@ -477,6 +516,9 @@ defmodule ForemanServer.Idempotency.KeyStore do
           from,
           state
         )
+
+      {:ok, status, _stored} when status not in @settled_statuses ->
+        {:reply, {:error, {:unexpected_status, status}}, state}
 
       _settled_or_gone ->
         {:reply, :status_changed, state}

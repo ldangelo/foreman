@@ -134,7 +134,12 @@ defmodule ForemanServer.Jobsite.Runners.Overwatch do
       result
     catch
       kind, reason ->
-        :ok = KeyStore.mark_failed(lease.key, Exception.format_banner(kind, reason))
+        record_settle(
+          lease.key,
+          :failed,
+          KeyStore.mark_failed(lease.key, Exception.format_banner(kind, reason))
+        )
+
         :erlang.raise(kind, reason, __STACKTRACE__)
     after
       HeartbeatLease.release(lease.key)
@@ -144,33 +149,39 @@ defmodule ForemanServer.Jobsite.Runners.Overwatch do
 
   defp dispatch_with_lease(launch), do: dispatch(launch)
 
-  defp record_outcome(key, {:ok, _output}), do: :ok = KeyStore.mark_completed(key)
+  defp record_outcome(key, {:ok, _output}),
+    do: record_settle(key, :completed, KeyStore.mark_completed(key))
 
   # No result was observed for these two: the worker may still have run to completion or left side
   # effects, so the outcome is unknown, not failed. `ambiguous` is what crash recovery inspects.
   defp record_outcome(key, {:error, reason})
        when reason in [:worker_timeout, :worker_died_no_result],
-       do: mark_unknown_outcome(key, Atom.to_string(reason))
+       do: record_settle(key, :ambiguous, KeyStore.mark_ambiguous(key, Atom.to_string(reason)))
 
   defp record_outcome(key, {:error, reason}),
-    do: :ok = KeyStore.mark_failed(key, inspect(reason))
+    do: record_settle(key, :failed, KeyStore.mark_failed(key, inspect(reason)))
 
-  # `mark_ambiguous/2` is compare-and-set: a key that settled meanwhile (`:status_changed`) keeps
-  # its outcome and the runner keeps its result. Raising here would reach the `catch` above and
-  # overwrite the settled key with `failed`.
-  defp mark_unknown_outcome(key, reason) do
-    case KeyStore.mark_ambiguous(key, reason) do
-      :ok ->
-        :ok
+  # Every key write is compare-and-set. A key that settled meanwhile (`:status_changed`) keeps
+  # its outcome and the runner keeps its result; a store error is logged and never raised, so
+  # it cannot reach the `catch` above and mark the key `failed` over a settled outcome.
+  defp record_settle(_key, _status, :ok), do: :ok
 
-      :status_changed ->
-        Logger.warning(
-          "Overwatch: idempotency key #{inspect(key)} settled before its #{reason} outcome could be recorded; leaving it as it is",
-          key: key
-        )
+  defp record_settle(key, status, :status_changed) do
+    Logger.warning(
+      "Overwatch: idempotency key #{inspect(key)} settled before its #{status} outcome could be recorded; leaving it as it is",
+      key: key
+    )
 
-        :ok
-    end
+    :ok
+  end
+
+  defp record_settle(key, status, {:error, reason}) do
+    Logger.warning(
+      "Overwatch: idempotency key #{inspect(key)} could not record its #{status} outcome (#{inspect(reason)}); leaving it as it is",
+      key: key
+    )
+
+    :ok
   end
 
   defp register_lease_worker(%{lease: %{key: key}, run_id: run_id}, worker_id),
