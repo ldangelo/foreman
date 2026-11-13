@@ -2600,8 +2600,9 @@ defmodule ForemanServer.Workflow.RunExecutor do
     result
   end
 
-  # TRD-034: the commit the review was produced for, the run branch's local tip. `nil` when it
-  # cannot be resolved (the findings are then not recorded and the PR evaluates `findings_absent`).
+  # TRD-034: the commit the review was produced for, the run branch's local tip. An
+  # `{:error, reason}` when it cannot be resolved (the findings are then not recorded and the PR
+  # evaluates `findings_absent`).
   defp reviewed_head(state) do
     with {:ok, base_branch} <- run_base_branch(state),
          context = auto_pr_context(state, base_branch),

@@ -48,25 +48,7 @@ defmodule ForemanServer.Workflow.RunExecutorFindingsTest do
     :ok =
       ForemanServer.ProjectionStore.apply_events([%{event_type: "RunStarted", payload: started}])
 
-    :ok =
-      ForemanServer.ProjectionStore.apply_events([
-        %{
-          event_type: "PhasePrRecorded",
-          payload: %{
-            run_id: run_id,
-            phase_id: "#{run_id}-p001",
-            phase_index: 1,
-            phase_name: "review",
-            status: "existing",
-            pr_url: @pr_url,
-            pr_number: 42,
-            base_branch: "main",
-            head_branch: "foreman/run-branch",
-            provider: "github",
-            recorded_at: "2026-01-01T00:00:01Z"
-          }
-        }
-      ])
+    record_phase_pr!(run_id)
 
     on_exit(fn -> File.rm_rf(repo) end)
 
@@ -170,6 +152,21 @@ defmodule ForemanServer.Workflow.RunExecutorFindingsTest do
       assert recorded(ctx.run_id) == []
     end
 
+    test "a refused dispatch is logged at error level and finalise still completes", ctx do
+      artifact = artifact!(ctx, block(doc()))
+      # The aggregate refuses a payload that names another project than the run's.
+      st = put_in(state(ctx, artifact), [:task, :project_id], "another-project")
+
+      log =
+        capture_log([level: :error], fn ->
+          assert [{_, {:ok, @pr_url}}] = RunExecutor.__finalize_repo_prs_for_test__(st)
+        end)
+
+      assert log =~ "run.pr.findings"
+      assert log =~ "findings of PR #{@pr_url} NOT recorded"
+      assert recorded(ctx.run_id) == []
+    end
+
     test "finalising twice appends exactly one record", ctx do
       artifact = artifact!(ctx, block(doc()))
       st = state(ctx, artifact)
@@ -179,6 +176,50 @@ defmodule ForemanServer.Workflow.RunExecutorFindingsTest do
       RunExecutor.__finalize_repo_prs_for_test__(st)
 
       assert [_one] = recorded(ctx.run_id)
+    end
+
+    test "a run reset and finalised again appends a new record while the old event stays", ctx do
+      artifact = artifact!(ctx, block(doc()))
+      st = state(ctx, artifact)
+      RunExecutor.__finalize_repo_prs_for_test__(st)
+      assert [first] = recorded(ctx.run_id)
+
+      # The run is blocked, then reset: the aggregate returns to its initial state (the stream
+      # keeps the old event), so the same head and digest must be recorded again.
+      for {type, id} <- [{"run.block", "block"}, {"run.reset", "reset"}] do
+        {:ok, _} =
+          ForemanServer.CommandGateway.dispatch_system(%{
+            type: type,
+            command_id: "#{id}-#{ctx.run_id}",
+            aggregate_id: "run:#{ctx.run_id}",
+            payload: %{"run_id" => ctx.run_id}
+          })
+      end
+
+      # The reset run starts again (a new attempt re-creates it in the aggregate), runs its
+      # phases and has its phase PR on record again.
+      :ok = ForemanServer.TestSupport.EffectWorld.register_project!("project-findings", ctx.repo)
+
+      {:ok, _} =
+        ForemanServer.CommandRouter.dispatch_run_start("project-findings", %{
+          run_id: ctx.run_id,
+          task_id: "task-findings",
+          workflow_snapshot: %{phases: [], attempt: 2}
+        })
+
+      record_phase_pr!(ctx.run_id)
+      Process.sleep(2)
+      RunExecutor.__finalize_repo_prs_for_test__(st)
+
+      assert [^first, second] = recorded(ctx.run_id)
+      assert second["head_sha"] == first["head_sha"]
+      assert second["digest"] == first["digest"]
+      assert second["recorded_at"] > first["recorded_at"]
+
+      assert [%{evidence: %{findings: %{head_sha: head}}}] =
+               ForemanServer.ProjectionStore.pr_watch(ctx.run_id)
+
+      assert head == ctx.local_tip
     end
 
     test "a new head with the same findings is recorded again", ctx do
@@ -197,6 +238,28 @@ defmodule ForemanServer.Workflow.RunExecutorFindingsTest do
       assert [a, b] = recorded(ctx.run_id)
       refute a["head_sha"] == b["head_sha"]
     end
+  end
+
+  defp record_phase_pr!(run_id) do
+    :ok =
+      ForemanServer.ProjectionStore.apply_events([
+        %{
+          event_type: "PhasePrRecorded",
+          payload: %{
+            run_id: run_id,
+            phase_id: "#{run_id}-p001",
+            phase_index: 1,
+            phase_name: "review",
+            status: "existing",
+            pr_url: @pr_url,
+            pr_number: 42,
+            base_branch: "main",
+            head_branch: "foreman/run-branch",
+            provider: "github",
+            recorded_at: "2026-01-01T00:00:01Z"
+          }
+        }
+      ])
   end
 
   defp finalize(ctx, artifact),
