@@ -105,13 +105,17 @@ defmodule ForemanServer.GitHub.PrComment do
           | {:error, {:gh_unexpected_payload, term()}}
   def parse_comment_url(url) when is_binary(url) do
     case Regex.run(comment_url_pattern(), url) do
-      [_url, owner, name, id] -> {:ok, owner, name, String.to_integer(id)}
-      nil -> {:error, {:gh_unexpected_payload, {:unrecognised_comment_url, url}}}
+      [_url, owner, name, id] when owner not in [".", ".."] and name not in [".", ".."] ->
+        {:ok, owner, name, String.to_integer(id)}
+
+      _other ->
+        {:error, {:gh_unexpected_payload, {:unrecognised_comment_url, url}}}
     end
   end
 
   defp comment_url_pattern,
-    do: ~r{\Ahttps://github\.com/([^/#?]+)/([^/#?]+)/(?:pull|issues)/\d+#issuecomment-(\d+)\z}
+    do:
+      ~r{\Ahttps://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/(?:pull|issues)/\d+#issuecomment-(\d+)\z}
 
   defp run(args, opts) do
     runner = Keyword.get(opts, :command_runner) || (&System.cmd/3)
@@ -172,6 +176,9 @@ defmodule ForemanServer.GitHub.PrComment do
 
   defp comment(_other), do: :error
 
+  # An answer that is not clean JSON (a warning of `gh` merged into stdout with an exit 0) is a
+  # typed error, not a success: the write may have happened, and TRD-020's reconciler finds the
+  # comment by its marker before any retry, so a duplicate comment cannot follow from it.
   defp parse_written(output) do
     case Jason.decode(output) do
       {:ok, %{"id" => rest_id, "html_url" => url} = answer}

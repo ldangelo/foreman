@@ -253,6 +253,111 @@ defmodule ForemanServer.PrReportTest do
       assert PrReport.neutralise("a\u0000b\u202Ec\u200Bd\u2028e") == "abcd e"
       assert PrReport.neutralise("<!-- x -->") == "&lt;\\!-- x --&gt;"
       assert PrReport.neutralise(<<"ok", 0xFF, "end">>) == "okend"
+
+      assert PrReport.neutralise("see GH-12 and gh-7") ==
+               "see GH-" <> @zwsp <> "12 and gh-" <> @zwsp <> "7"
+
+      assert PrReport.neutralise("GH-x") == "GH-x"
+      assert PrReport.neutralise("$a$ $$b$$") == "\\$a\\$ \\$\\$b\\$\\$"
+      assert PrReport.neutralise(":smile: and 10:30") == ":" <> @zwsp <> "smile: and 10:30"
+    end
+  end
+
+  describe "redaction details" do
+    test "overlapping secrets are replaced longest first, whatever the order of the list" do
+      text = "x zzqq1234yyxx y zzqq1234 z"
+
+      for secrets <- [["zzqq1234", "zzqq1234yyxx"], ["zzqq1234yyxx", "zzqq1234"]] do
+        body =
+          render!(record(%{unresolved_findings: [finding(%{"description" => text})]}), secrets)
+
+        refute body =~ "zzqq1234"
+        refute body =~ "yyxx"
+        assert body =~ "x \\[REDACTED\\] y \\[REDACTED\\] z"
+      end
+    end
+
+    test "a secret full of regex metacharacters is matched literally" do
+      secret = "p.ss(w*rd)+?[x]|^$\\{1}"
+      decoy = "pXss(w*rd)+?[x]|^$\\{1}"
+      text = "a #{secret} b #{decoy} c"
+
+      body =
+        render!(record(%{unresolved_findings: [finding(%{"description" => text})]}), [secret])
+
+      refute body =~ PrReport.neutralise(secret)
+      assert body =~ "pXss"
+      assert body =~ "\\[REDACTED\\]"
+    end
+
+    test "a secret that neutralising rewrites is redacted in free text and still refused in a closed field" do
+      secrets = ["ghp_abc123", "star*secret1", "hash#secret1", "at@secret1", "br[ack]et1"]
+
+      for secret <- secrets do
+        body =
+          render!(
+            record(%{unresolved_findings: [finding(%{"description" => "k #{secret} k"})]}),
+            [
+              secret
+            ]
+          )
+
+        refute body =~ secret
+        refute body =~ PrReport.neutralise(secret)
+
+        assert PrReport.render(
+                 record(%{
+                   evidence: put_in(record().evidence, ["checks", "reasons"], ["code_" <> secret])
+                 }),
+                 secrets: [secret]
+               ) == {:error, :redaction_failed}
+      end
+    end
+
+    test "a secret with an invisible character inside is redacted in free text and refused in a closed field" do
+      secret = "secretvalue99"
+      hidden = "secret\u200Bvalue99"
+
+      body =
+        render!(record(%{unresolved_findings: [finding(%{"description" => "k #{hidden} k"})]}), [
+          secret
+        ])
+
+      refute body =~ "secretvalue99"
+      refute body =~ "secret"
+      assert body =~ "\\[REDACTED\\]"
+
+      assert PrReport.render(
+               record(%{evidence: put_in(record().evidence, ["checks", "status"], hidden)}),
+               secrets: [secret]
+             ) == {:error, :redaction_failed}
+    end
+
+    test "a secret straddling a cut is redacted whole before anything is cut" do
+      secret = "qrstuv1234wxyz"
+      # the invisible characters are dropped by neutralising, so the secret lands inside the first
+      # 2000 characters of the visible text
+      filler = String.duplicate("\u200B", 1996)
+
+      body =
+        render!(
+          record(%{
+            unresolved_findings: [finding(%{"description" => filler <> secret <> " tail"})]
+          }),
+          [secret]
+        )
+
+      refute body =~ "qrst"
+      assert body =~ "\\[REDACTED\\] tail"
+    end
+
+    test "a secret in a closed field beyond the closed cut is still refused" do
+      long = String.duplicate("c", 100) <> @secret
+
+      assert PrReport.render(
+               record(%{evidence: put_in(record().evidence, ["checks", "reasons"], [long])}),
+               secrets: [@secret]
+             ) == {:error, :redaction_failed}
     end
   end
 
@@ -345,18 +450,128 @@ defmodule ForemanServer.PrReportTest do
       assert length(Regex.scan(~r/^- (major|minor), open:/m, body)) == 2
     end
 
-    test "a fixed part that alone exceeds the budget is refused, never cut" do
-      huge = for n <- 1..20, do: String.duplicate("<", 300) <> "#{n}"
+    test "the worst case of untrusted text still fits: every list at its cap, four-byte and escaped characters" do
+      emoji = String.duplicate("\u{1F600}", 600)
+      mention = String.duplicate("@", 600)
+      angle = String.duplicate("<", 600)
+      long_closed = String.duplicate("\u{1F600}", 200)
 
-      assert PrReport.render(record(%{instructions: huge, rationale: huge_rationale(huge)}),
-               secrets: []
-             ) == {:error, :report_too_large}
+      lists = fn text -> for n <- 1..30, do: text <> "#{n}" end
+
+      record =
+        record(%{
+          rubric_version: long_closed,
+          instructions: lists.(emoji),
+          rationale:
+            for text <- lists.(mention) do
+              %{
+                "rule" => long_closed,
+                "level" => "HIGH",
+                "basis" => long_closed,
+                "detail" => text
+              }
+            end,
+          unresolved_findings:
+            for text <- lists.(angle) do
+              finding(%{
+                "severity" => long_closed,
+                "path" => emoji,
+                "description" => text,
+                "source" => mention,
+                "disposition" => long_closed
+              })
+            end,
+          evidence: %{
+            "checks" => %{"status" => long_closed, "reasons" => lists.(long_closed)},
+            "findings" => %{
+              "status" => long_closed,
+              "defect" => long_closed,
+              "unresolved" => Map.new(1..10, &{"#{long_closed}#{&1}", long_closed})
+            },
+            "files" => %{
+              "changed" => long_closed,
+              "listed" => long_closed,
+              "additions" => long_closed,
+              "deletions" => long_closed,
+              "incomplete" => long_closed
+            },
+            "sensitive_hits" =>
+              for(text <- lists.(emoji), do: %{"path" => text, "group" => long_closed})
+          },
+          judgement: %{"status" => long_closed, "level" => long_closed, "defect" => long_closed}
+        })
+
+      body = render!(record, [])
+
+      assert byte_size(body) <= 16_384
+      assert String.starts_with?(body, PrReport.marker(@run_id, @head, @digest))
+      assert body =~ ~r/\d+ more unresolved findings are not shown here\./
+      assert body =~ ~r/\d+ more rationale lines are not shown here\./
+      assert body =~ "### Instructions"
+      assert String.ends_with?(body, "not proof that a check ran.")
     end
 
-    defp huge_rationale(details) do
-      for detail <- details do
-        %{"rule" => "files", "level" => "HIGH", "basis" => "machine", "detail" => detail}
+    test "findings that no longer fit once the other lists are listed are counted, never refused" do
+      long = String.duplicate("<", 600)
+
+      body =
+        render!(
+          record(%{
+            rationale:
+              for n <- 1..20 do
+                %{
+                  "rule" => "files",
+                  "level" => "HIGH",
+                  "basis" => "machine",
+                  "detail" => long <> "#{n}"
+                }
+              end,
+            instructions: for(n <- 1..20, do: long <> "#{n}"),
+            unresolved_findings:
+              for(n <- 1..20, do: finding(%{"description" => long, "path" => long <> "#{n}"}))
+          })
+        )
+
+      assert byte_size(body) <= 16_384
+
+      [rest] =
+        Regex.run(~r/(\d+) more unresolved findings are not shown here\./, body,
+          capture: :all_but_first
+        )
+
+      shown = length(Regex.scan(~r/^- major, open:/m, body))
+      assert shown + String.to_integer(rest) == 20
+      assert shown >= 1
+    end
+
+    test "the budget is in bytes: multibyte and zero-width-escaped text" do
+      cjk = String.duplicate("漢", 600)
+      mention = String.duplicate("@", 600)
+
+      for text <- [cjk, mention] do
+        findings =
+          for n <- 1..20 do
+            finding(%{"path" => text, "description" => text, "source" => text, "line" => n})
+          end
+
+        body = render!(record(%{unresolved_findings: findings}))
+
+        assert byte_size(body) <= 16_384
+        assert body =~ ~r/\d+ more unresolved findings are not shown here\./
+        assert String.length(body) < byte_size(body)
       end
+    end
+
+    test "the marker line is intact when the findings alone are far over the budget" do
+      findings =
+        for n <- 1..20, do: finding(%{"description" => String.duplicate("漢", 600), "line" => n})
+
+      body = render!(record(%{unresolved_findings: findings}))
+
+      assert byte_size(body) <= 16_384
+      assert [first, _rest] = String.split(body, "\n", parts: 2)
+      assert first == PrReport.marker(@run_id, @head, @digest)
+      assert {:ok, %{run_id: @run_id}} = PrReport.parse_marker(body)
     end
   end
 end
