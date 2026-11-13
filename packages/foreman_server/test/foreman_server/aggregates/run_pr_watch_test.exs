@@ -634,12 +634,294 @@ defmodule ForemanServer.Aggregates.RunPrWatchTest do
     assert state.pr_watch[@url].status == "merged"
   end
 
+  describe "run.pr.findings (TRD-015)" do
+    alias ForemanServer.Events.ReviewFindingsRecorded
+    alias ForemanServer.PrEvidence
+
+    defp finding(extra \\ %{}) do
+      Map.merge(
+        %{
+          "severity" => "major",
+          "path" => "lib/a.ex",
+          "line" => 12,
+          "description" => "unchecked input",
+          "disposition" => "open",
+          "source" => "repo-rules"
+        },
+        extra
+      )
+    end
+
+    defp findings_cmd(extra \\ %{}) do
+      Map.merge(
+        %{
+          pr_url: @url,
+          repo_id: nil,
+          head_sha: "sha-1",
+          status: "recorded",
+          findings: [finding()],
+          defect: nil,
+          defect_detail: nil,
+          artifact_path: "/w/review.md",
+          artifact_sha256: String.duplicate("c", 64),
+          recorded_at: 1_800_000_000_000
+        },
+        extra
+      )
+    end
+
+    test "the command is a system command of PrWatch, not an operator one" do
+      assert "run.pr.findings" in Run.PrWatch.command_types()
+      assert "ReviewFindingsRecorded" in Run.PrWatch.event_types()
+      refute "run.pr.findings" in Run.PrWatch.operator_types()
+    end
+
+    for type <- ["RunCompleted", "RunFailed", "RunCancelled"] do
+      test "is accepted on a #{type} run: every declared field of the event survives" do
+        state = terminal(unquote(type))
+        {state, spec} = accept(state, "run.pr.findings", findings_cmd(%{repo_id: "repo-b"}))
+
+        assert spec.event_type == "ReviewFindingsRecorded"
+        assert spec.stream_id == "run:r1"
+
+        declared = ReviewFindingsRecorded |> struct() |> Map.from_struct() |> Map.keys()
+        assert Enum.sort(Map.keys(spec.payload)) == Enum.sort(declared)
+
+        assert %{
+                 run_id: "r1",
+                 project_id: "p1",
+                 task_id: "t1",
+                 pr_url: @url,
+                 repo_id: "repo-b",
+                 head_sha: "sha-1",
+                 status: "recorded",
+                 findings: [%{"severity" => "major", "line" => 12}],
+                 defect: nil,
+                 defect_detail: nil,
+                 artifact_path: "/w/review.md",
+                 recorded_at: 1_800_000_000_000
+               } = spec.payload
+
+        assert spec.payload.artifact_sha256 == String.duplicate("c", 64)
+        assert state.pr_watch[@url].evidence.findings.head_sha == "sha-1"
+        assert state.pr_watch[@url].evidence.findings.digest == spec.payload.digest
+      end
+    end
+
+    test "the digest is derived from the normalised content, never taken from the payload" do
+      {_, one} = accept(started(), "run.pr.findings", findings_cmd())
+
+      {_, other} =
+        accept(
+          started(),
+          "run.pr.findings",
+          findings_cmd(%{findings: [finding(%{"line" => 13})]})
+        )
+
+      {_, malformed} =
+        accept(
+          started(),
+          "run.pr.findings",
+          findings_cmd(%{status: "malformed", findings: [], defect: "invalid_json"})
+        )
+
+      assert one.payload.digest ==
+               PrEvidence.findings_digest(%{
+                 status: "recorded",
+                 defect: nil,
+                 findings: [finding()]
+               })
+
+      assert one.payload.digest =~ ~r/\A[0-9a-f]{16}\z/
+      # two records that differ only in one finding have different digests
+      assert one.payload.digest != other.payload.digest
+      assert one.payload.digest != malformed.payload.digest
+
+      assert {:error, {:derived_field, :digest}} =
+               reject(started(), "run.pr.findings", findings_cmd(%{digest: one.payload.digest}))
+
+      assert {:error, {:derived_field, :digest}} =
+               reject(started(), "run.pr.findings", findings_cmd(%{digest: "forged"}))
+    end
+
+    test "absent and malformed records are appended with their status, defect and no findings" do
+      {state, absent} =
+        accept(
+          started(),
+          "run.pr.findings",
+          findings_cmd(%{
+            status: "absent",
+            findings: [],
+            artifact_path: nil,
+            artifact_sha256: nil
+          })
+        )
+
+      assert %{status: "absent", findings: [], defect: nil, artifact_path: nil} = absent.payload
+      assert state.pr_watch[@url].evidence.findings.status == "absent"
+
+      {state, malformed} =
+        accept(
+          state,
+          "run.pr.findings",
+          findings_cmd(%{
+            status: "malformed",
+            findings: nil,
+            defect: "legacy_format",
+            defect_detail: "bullets"
+          })
+        )
+
+      assert %{
+               status: "malformed",
+               findings: [],
+               defect: "legacy_format",
+               defect_detail: "bullets"
+             } =
+               malformed.payload
+
+      assert state.pr_watch[@url].evidence.findings.defect == "legacy_format"
+    end
+
+    test "an invalid payload is rejected and nothing is appended" do
+      too_many = List.duplicate(finding(), 101)
+
+      bad = [
+        {%{findings: [finding(%{"severity" => "blocker"})]}, :findings},
+        {%{findings: [finding(%{"disposition" => "later"})]}, :findings},
+        {%{findings: [finding(%{"line" => -1})]}, :findings},
+        {%{findings: too_many}, :findings},
+        {%{findings: "all good"}, :findings},
+        {%{status: "absent", findings: [finding()]}, :findings},
+        {%{status: "malformed", findings: [finding()], defect: "invalid_json"}, :findings},
+        {%{status: "malformed", findings: [], defect: "bad_defect"}, :defect},
+        {%{status: "malformed", findings: [], defect: nil}, :defect},
+        {%{defect: "invalid_json"}, :defect},
+        {%{status: "clean"}, :status},
+        {%{status: nil}, :status},
+        {%{head_sha: nil}, :head_sha},
+        {%{head_sha: ""}, :head_sha},
+        {%{defect_detail: String.duplicate("d", 501)}, :defect_detail},
+        {%{artifact_sha256: "abc"}, :artifact_sha256},
+        {%{artifact_sha256: String.duplicate("z", 64)}, :artifact_sha256},
+        {%{artifact_path: String.duplicate("p", 1025)}, :artifact_path},
+        {%{recorded_at: "now"}, :recorded_at},
+        {%{recorded_at: nil}, :recorded_at},
+        {%{recorded_at: -1}, :recorded_at},
+        {%{project_id: "other"}, :project_id},
+        {%{repo_id: ""}, :repo_id},
+        {%{repo_id: 7}, :repo_id},
+        {%{defect_detail: "a clean review has no defect text"}, :defect_detail}
+      ]
+
+      for {override, key} <- bad do
+        assert {:error, {:missing_or_invalid, ^key}} =
+                 reject(started(), "run.pr.findings", findings_cmd(override)),
+               "override #{inspect(override)}"
+      end
+
+      assert {:error, {:missing_or_invalid, :pr_url}} =
+               reject(started(), "run.pr.findings", Map.delete(findings_cmd(), :pr_url))
+
+      assert {:error, {:not_found, :run, "r1"}} =
+               Run.handle_command(Run.initial_state(), %{
+                 type: "run.pr.findings",
+                 payload: Map.put(findings_cmd(), :run_id, "r1")
+               })
+    end
+
+    test "the same content for one head appends nothing; another head or other content appends" do
+      {state, first} = accept(started(), "run.pr.findings", findings_cmd())
+
+      # the same content again, even with another artifact and timestamp: a no-op
+      assert {:ok, nil} =
+               reject(
+                 state,
+                 "run.pr.findings",
+                 findings_cmd(%{recorded_at: 2, artifact_path: "/other.md"})
+               )
+
+      {state2, second} = accept(state, "run.pr.findings", findings_cmd(%{head_sha: "sha-2"}))
+      assert second.payload.digest == first.payload.digest
+      assert state2.pr_watch[@url].evidence.findings.head_sha == "sha-2"
+
+      {_, third} =
+        accept(state2, "run.pr.findings", findings_cmd(%{head_sha: "sha-2", findings: []}))
+
+      assert third.payload.digest != first.payload.digest
+
+      # A, then B, then A again for one head is a change each time
+      {state3, _} = accept(state, "run.pr.findings", findings_cmd(%{findings: []}))
+      assert {:ok, %{}} = reject(state3, "run.pr.findings", findings_cmd())
+    end
+
+    test "the same content from a different artifact appends nothing and keeps the first artifact" do
+      {state, first} = accept(started(), "run.pr.findings", findings_cmd())
+
+      # TRD-015: "the same content recorded twice for one head (the same `digest`), then the
+      # second command appends nothing". The artifact is not part of the digest, so a re-record
+      # of the same findings from another artifact is that no-op and `evidence.findings` keeps
+      # the first artifact's path and hash (TRD-034/TRD-041 must not rely on a refresh).
+      again =
+        findings_cmd(%{artifact_path: "/w/other.md", artifact_sha256: String.duplicate("d", 64)})
+
+      assert {:ok, nil} = reject(state, "run.pr.findings", again)
+      assert state.pr_watch[@url].evidence.findings.artifact_sha256 == String.duplicate("c", 64)
+      assert state.pr_watch[@url].evidence.findings.artifact_path == first.payload.artifact_path
+    end
+
+    test "it is not a head observation: the PR's head, checks and watching are untouched" do
+      state = watched()
+
+      before =
+        Map.take(state.pr_watch[@url], [
+          :head_sha,
+          :checks_state,
+          :checks_digest,
+          :watching,
+          :status
+        ])
+
+      {state, _} = accept(state, "run.pr.findings", findings_cmd(%{head_sha: "sha-9"}))
+      assert Map.take(state.pr_watch[@url], Map.keys(before)) == before
+      assert state.pr_watch[@url].evidence.findings.head_sha == "sha-9"
+    end
+
+    test "a record belongs to its PR only: another PR of the run evaluates findings_absent" do
+      other = "https://github.com/acme/other/pull/3"
+      {state, _} = accept(watched(), "run.pr.findings", findings_cmd())
+
+      {state, _} =
+        accept(state, "run.pr.checks", checks_payload(%{pr_url: other, repo_id: "repo-b"}))
+
+      ctx = %{
+        head_sha: "sha-1",
+        policy: %{required: [], version: "v1"},
+        now_ms: 1,
+        checks_ref: nil
+      }
+
+      codes = fn url ->
+        state.pr_watch[url]
+        |> PrEvidence.evaluate(ctx)
+        |> Map.fetch!(:reasons)
+        |> Enum.map(& &1.code)
+      end
+
+      refute :findings_absent in codes.(@url)
+      assert :findings_absent in codes.(other)
+      assert state.pr_watch[other].evidence.findings == nil
+    end
+  end
+
   test "every event PrWatch can emit advances the run state (the lists cannot diverge)" do
     other = "https://github.com/acme/repo/pull/8"
 
     steps = [
       {"run.pr.ready_failed",
        %{pr_url: @url, stage: "head_read", reason: "gh_failed:1", failed_at: 5}},
+      {"run.pr.findings",
+       %{pr_url: @url, head_sha: "sha-1", status: "recorded", findings: [], recorded_at: 6}},
       {"run.pr.checks", checks_payload()},
       {"run.pr.review",
        %{

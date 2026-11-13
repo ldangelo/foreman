@@ -83,7 +83,7 @@ defmodule ForemanServer.PrEvidence do
   alias ForemanServer.{ProjectionStore, ProjectSettings}
 
   @head_events ~w(PrUpdated PrReady PrChecksChanged PrReviewChanged)
-  @events @head_events ++ ["PrEvidenceWaived", "PrReadyFailed"]
+  @events @head_events ++ ["PrEvidenceWaived", "PrReadyFailed", "ReviewFindingsRecorded"]
 
   @max_checks 100
   @max_required 20
@@ -213,7 +213,26 @@ defmodule ForemanServer.PrEvidence do
 
   defp apply_evidence(record, "PrReady", _payload), do: put_evidence(record, :delivery_issue, nil)
 
+  # TRD-015: the review findings recorded for the reviewed head. Kept with ITS OWN head, so a
+  # head move neither voids it nor changes what an absent or malformed record reads as.
+  defp apply_evidence(record, "ReviewFindingsRecorded", payload) do
+    put_evidence(record, :findings, %{
+      head_sha: get(payload, :head_sha),
+      status: get(payload, :status),
+      findings: list_or_empty(get(payload, :findings)),
+      defect: get(payload, :defect),
+      defect_detail: get(payload, :defect_detail),
+      artifact_path: get(payload, :artifact_path),
+      artifact_sha256: get(payload, :artifact_sha256),
+      digest: get(payload, :digest),
+      recorded_at: get(payload, :recorded_at)
+    })
+  end
+
   defp apply_evidence(record, _type, _payload), do: record
+
+  defp list_or_empty(value) when is_list(value), do: value
+  defp list_or_empty(_other), do: []
 
   defp put_evidence(record, key, value),
     do: %{record | evidence: Map.put(record.evidence, key, value)}
@@ -282,6 +301,7 @@ defmodule ForemanServer.PrEvidence do
         eligibility(ctx, :unknown, reasons, [], nil, inputs_for(record, ctx))
 
       {_status, reasons} ->
+        reasons = reasons ++ findings_reasons(record, ctx)
         waiver = waiver_state(record, ctx)
         {status, uncovered, covered} = apply_waiver(reasons, waiver)
         eligibility(ctx, status, uncovered, covered, waiver, inputs_for(record, ctx))
@@ -403,6 +423,65 @@ defmodule ForemanServer.PrEvidence do
       evaluated_at: ctx.now_ms
     }
   end
+
+  # -- findings reasons (TRD-015) ---------------------------------------------------
+
+  # No record or `absent` is `findings_absent`; `malformed` is `findings_legacy_format` for the
+  # defect `legacy_format` and `findings_malformed` otherwise, whatever head it was made for;
+  # `recorded` for another head than the one decided is `findings_other_sha`.
+  defp findings_reasons(record, ctx) do
+    findings = record |> evidence_of() |> Map.get(:findings)
+
+    case findings do
+      nil ->
+        [%Reason{code: :findings_absent, subject: nil, detail: "no review findings recorded"}]
+
+      %{} = findings ->
+        findings_reasons_for(get(findings, :status), findings, ctx)
+    end
+  end
+
+  defp findings_reasons_for("absent", findings, _ctx),
+    do: [
+      %Reason{
+        code: :findings_absent,
+        subject: nil,
+        detail: text_or_nil(get(findings, :defect_detail)) || "no review findings block"
+      }
+    ]
+
+  defp findings_reasons_for("malformed", findings, _ctx) do
+    code =
+      if get(findings, :defect) == "legacy_format",
+        do: :findings_legacy_format,
+        else: :findings_malformed
+
+    [%Reason{code: code, subject: nil, detail: text_or_nil(get(findings, :defect_detail))}]
+  end
+
+  defp findings_reasons_for("recorded", findings, ctx) do
+    head = get(findings, :head_sha)
+
+    if head == ctx.head_sha,
+      do: [],
+      else: [
+        %Reason{
+          code: :findings_other_sha,
+          subject: nil,
+          detail: "findings recorded for #{inspect(head)}, decided #{inspect(ctx.head_sha)}"
+        }
+      ]
+  end
+
+  # A status outside the closed set cannot be trusted as a clean review.
+  defp findings_reasons_for(_status, _findings, _ctx),
+    do: [
+      %Reason{
+        code: :findings_malformed,
+        subject: nil,
+        detail: "the findings record has no usable status"
+      }
+    ]
 
   # -- reading the record --------------------------------------------------------
 
@@ -662,6 +741,147 @@ defmodule ForemanServer.PrEvidence do
   end
 
   def validate_required(_other), do: :error
+
+  @findings_statuses ~w(recorded absent malformed)
+  @findings_defects ~w(unterminated_block multiple_blocks legacy_format invalid_json unknown_schema
+                       invalid_field too_large too_many_findings unreadable)
+  @findings_severities ~w(critical major minor nitpick)
+  @findings_dispositions ~w(fixed declined open)
+  @max_findings 100
+  @max_finding_description 1000
+  @max_finding_path 1024
+  @max_finding_source 64
+  @max_defect_detail 500
+
+  @doc "The closed `status` set of a findings record."
+  @spec findings_statuses() :: [String.t()]
+  def findings_statuses, do: @findings_statuses
+
+  @doc "The closed `defect` set of a malformed findings record (TRD-013's reasons and `unreadable`)."
+  @spec findings_defects() :: [String.t()]
+  def findings_defects, do: @findings_defects
+
+  @doc """
+  Validate and normalise one findings record: `status` one of `findings_statuses/0` (atom or
+  string), `findings` a list of at most 100 findings for `recorded` and empty (or `nil`) for the
+  others, `defect` `nil` unless `malformed` (then one of `findings_defects/0`) and
+  `defect_detail` at most 500 characters. Every finding is returned as one string-keyed map
+  (`severity`, `path`, `line`, `description`, `disposition`, `source`) so the live and the
+  replayed fold read identical values. Values over their bound are refused, never cut.
+  """
+  @spec validate_findings(term(), term(), term(), term()) ::
+          {:ok,
+           %{
+             status: String.t(),
+             findings: [map()],
+             defect: String.t() | nil,
+             defect_detail: String.t() | nil
+           }}
+          | {:error, atom()}
+  def validate_findings(status, findings, defect, defect_detail) do
+    with {:ok, status} <- string_enum(status, @findings_statuses, :status),
+         {:ok, findings} <- findings_list(status, findings),
+         {:ok, defect} <- findings_defect(status, defect),
+         {:ok, detail} <- findings_detail(status, defect_detail) do
+      {:ok, %{status: status, findings: findings, defect: defect, defect_detail: detail}}
+    end
+  end
+
+  # A clean review has nothing to explain; `absent` and `malformed` carry the text the operator
+  # reads (TRD-015: "an absent or malformed record carries its defect text").
+  defp findings_detail("recorded", nil), do: {:ok, nil}
+  defp findings_detail("recorded", _detail), do: {:error, :defect_detail}
+
+  defp findings_detail(_status, detail),
+    do: optional_bounded(detail, @max_defect_detail, :defect_detail)
+
+  @doc """
+  The digest of a findings record: the first 16 hex characters of the SHA-256 of the normalised
+  `status`, `defect`, `findings` and `judgement` (`nil` until TRD-041). Derived by the handler,
+  never read from a payload.
+  """
+  @spec findings_digest(map()) :: String.t()
+  def findings_digest(%{} = normalised) do
+    term = {
+      :review_findings,
+      get(normalised, :status),
+      get(normalised, :defect),
+      get(normalised, :findings),
+      get(normalised, :judgement)
+    }
+
+    :crypto.hash(:sha256, :erlang.term_to_binary(term, [:deterministic]))
+    |> Base.encode16(case: :lower)
+    |> binary_part(0, 16)
+  end
+
+  defp findings_list("recorded", items) when is_list(items) and length(items) <= @max_findings do
+    case each_ok(items, &finding/1) do
+      {:ok, list} -> {:ok, list}
+      _error -> {:error, :findings}
+    end
+  end
+
+  defp findings_list(status, items) when status != "recorded" and items in [nil, []],
+    do: {:ok, []}
+
+  defp findings_list(_status, _items), do: {:error, :findings}
+
+  defp findings_defect("malformed", defect), do: string_enum(defect, @findings_defects, :defect)
+  defp findings_defect(_status, nil), do: {:ok, nil}
+  defp findings_defect(_status, _defect), do: {:error, :defect}
+
+  defp finding(item) when is_map(item) do
+    with {:ok, severity} <- string_enum(get(item, :severity), @findings_severities, :findings),
+         {:ok, disposition} <-
+           string_enum(get(item, :disposition), @findings_dispositions, :findings),
+         {:ok, path} <- required_bounded(get(item, :path), @max_finding_path, :findings, true),
+         {:ok, description} <-
+           required_bounded(get(item, :description), @max_finding_description, :findings, false),
+         {:ok, source} <-
+           required_bounded(get(item, :source), @max_finding_source, :findings, false),
+         {:ok, line} <- finding_line(get(item, :line)) do
+      {:ok,
+       %{
+         "severity" => severity,
+         "path" => path,
+         "line" => line,
+         "description" => description,
+         "disposition" => disposition,
+         "source" => source
+       }}
+    else
+      _ -> :error
+    end
+  end
+
+  defp finding(_other), do: :error
+
+  defp finding_line(nil), do: {:ok, nil}
+  defp finding_line(line) when is_integer(line) and line > 0, do: {:ok, line}
+  defp finding_line(_other), do: {:error, :findings}
+
+  # `allow_empty` is for a path (the parser bounds it only); a description and a source must
+  # hold text.
+  defp required_bounded(value, max, key, allow_empty) when is_binary(value) do
+    if String.valid?(value) and String.length(value) <= max and
+         (allow_empty or String.trim(value) != ""),
+       do: {:ok, value},
+       else: {:error, key}
+  end
+
+  defp required_bounded(_value, _max, key, _allow_empty), do: {:error, key}
+
+  defp optional_bounded(nil, _max, _key), do: {:ok, nil}
+  defp optional_bounded(value, max, key), do: required_bounded(value, max, key, true)
+
+  defp string_enum(value, allowed, key) when is_atom(value) and not is_nil(value),
+    do: string_enum(Atom.to_string(value), allowed, key)
+
+  defp string_enum(value, allowed, key) when is_binary(value),
+    do: if(value in allowed, do: {:ok, value}, else: {:error, key})
+
+  defp string_enum(_value, _allowed, key), do: {:error, key}
 
   @doc "A bounded string or `nil`."
   @spec validate_text(term()) :: {:ok, String.t() | nil} | :error

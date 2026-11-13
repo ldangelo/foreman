@@ -285,20 +285,17 @@ defmodule ForemanServer.Workflow.AutoPRTest do
       refute_receive {:cmd, "gh", _}
     end
 
-    test "preserves legacy generated body and review findings when no task metadata is present" do
-      parent = self()
-
+    defp generated_body(artifact_contents) do
       artifact =
         Path.join(System.tmp_dir!(), "autopr-findings-#{System.unique_integer([:positive])}.md")
 
-      File.write!(artifact, """
-      report
-      <!-- FOREMAN_REVIEW_FINDINGS_START -->
-      finding one
-      <!-- FOREMAN_REVIEW_FINDINGS_END -->
-      """)
-
+      File.write!(artifact, artifact_contents)
       on_exit(fn -> File.rm_rf(artifact) end)
+      generated_body_at(artifact)
+    end
+
+    defp generated_body_at(artifact) do
+      parent = self()
 
       runner = fn
         "git", ["rev-list", "--count", "main..foreman/run-12/implement"], _opts ->
@@ -335,8 +332,122 @@ defmodule ForemanServer.Workflow.AutoPRTest do
       body = Enum.at(args, Enum.find_index(args, &(&1 == "--body")) + 1)
       assert body =~ "Foreman run `run-12` complete."
       assert body =~ "Artifact: #{artifact}"
-      assert body =~ "## Unresolved review findings"
-      assert body =~ "finding one"
+      body
+    end
+
+    @findings_start "<!-- FOREMAN_REVIEW_FINDINGS_START -->"
+    @findings_end "<!-- FOREMAN_REVIEW_FINDINGS_END -->"
+
+    defp findings_block(findings) do
+      json =
+        Jason.encode!(%{
+          "schema" => "foreman.review_findings/1",
+          "reviewed" => true,
+          "findings" => findings
+        })
+
+      "report\n#{@findings_start}\n#{json}\n#{@findings_end}\n"
+    end
+
+    test "a recorded block lists the unresolved findings under the agent's-report heading" do
+      body =
+        generated_body(
+          findings_block([
+            %{
+              "severity" => "major",
+              "path" => "lib/foo.ex",
+              "line" => 12,
+              "description" => "unchecked nil",
+              "disposition" => "open",
+              "source" => "repo-rules"
+            },
+            %{
+              "severity" => "minor",
+              "path" => "lib/bar.ex",
+              "line" => nil,
+              "description" => "typo",
+              "disposition" => "fixed",
+              "source" => "coderabbit"
+            }
+          ])
+        )
+
+      assert body =~ "## Review findings (the review agent's report)"
+      assert body =~ "`lib/foo.ex:12`"
+      assert body =~ "unchecked nil"
+      refute body =~ "typo"
+      assert body =~ "Fixed: 1."
+    end
+
+    test "an absent block says the review evidence is missing, never a clean review" do
+      body = generated_body("report with no block\n")
+
+      assert body =~ "## Review findings (the review agent's report)"
+      assert body =~ "review evidence is missing"
+      assert body =~ "not a clean review"
+      refute body =~ "nothing unresolved"
+    end
+
+    test "an unreadable artifact logs a warning, still creates the PR and says so in the body" do
+      missing =
+        Path.join(System.tmp_dir!(), "autopr-missing-#{System.unique_integer([:positive])}.md")
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          send(self(), {:body, generated_body_at(missing)})
+        end)
+
+      assert_received {:body, body}
+      assert log =~ "could not read review findings"
+      assert log =~ "unreadable"
+      assert body =~ "`unreadable`"
+      assert body =~ "not a clean review"
+      refute body =~ "nothing unresolved"
+    end
+
+    test "a recorded block with no findings says nothing was reported unresolved, with counts" do
+      body = generated_body(findings_block([]))
+
+      assert body =~ "## Review findings (the review agent's report)"
+      assert body =~ "The review agent reported nothing unresolved."
+      assert body =~ "Fixed: 0. Declined: 0"
+      refute body =~ "not a clean review"
+    end
+
+    test "multiple_blocks and legacy_format blocks name the defect, never an empty section" do
+      multiple = generated_body(findings_block([]) <> findings_block([]))
+      assert multiple =~ "`multiple_blocks`"
+      assert multiple =~ "not a clean review"
+      refute multiple =~ "nothing unresolved"
+
+      legacy =
+        generated_body(
+          "#{@findings_start}\n- `lib/foo.ex:12` Major — unchecked nil\n#{@findings_end}\n"
+        )
+
+      assert legacy =~ "`legacy_format`"
+      assert legacy =~ "not a clean review"
+      refute legacy =~ "unchecked nil"
+    end
+
+    test "a hostile block cannot grow the body past its bound or break the list" do
+      findings =
+        for n <- 1..100 do
+          %{
+            "severity" => "major",
+            "path" => "lib/f#{n}.ex",
+            "line" => n,
+            "description" => String.duplicate("word\n## injected heading ", 5),
+            "disposition" => "open",
+            "source" => "repo-rules"
+          }
+        end
+
+      body = generated_body(findings_block(findings))
+
+      assert byte_size(body) < 20_000
+      assert body =~ "and 80 more unresolved"
+      refute body =~ "\n## injected heading"
     end
   end
 

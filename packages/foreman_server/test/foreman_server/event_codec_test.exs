@@ -389,6 +389,56 @@ defmodule ForemanServer.EventCodecTest do
     end
   end
 
+  describe "ReviewFindingsRecorded" do
+    @findings_data %{
+      run_id: "r1",
+      project_id: "p1",
+      task_id: "t1",
+      pr_url: "https://github.com/acme/repo/pull/7",
+      repo_id: "repo-b",
+      head_sha: "h1",
+      status: "recorded",
+      findings: [
+        %{
+          "severity" => "major",
+          "path" => "lib/a.ex",
+          "line" => 3,
+          "description" => "bad",
+          "disposition" => "open",
+          "source" => "repo-rules"
+        }
+      ],
+      defect: nil,
+      defect_detail: nil,
+      artifact_path: "/w/review.md",
+      artifact_sha256: String.duplicate("a", 64),
+      digest: "0123456789abcdef",
+      recorded_at: 7
+    }
+
+    test "round-trips through the codec and through JSON with every declared field" do
+      assert %ForemanServer.Events.ReviewFindingsRecorded{} =
+               decoded = EventCodec.decode!("ReviewFindingsRecorded", @findings_data)
+
+      assert Map.from_struct(decoded) == @findings_data
+
+      replayed = @findings_data |> Jason.encode!() |> Jason.decode!()
+
+      assert Map.from_struct(EventCodec.decode!("ReviewFindingsRecorded", replayed)) ==
+               @findings_data
+    end
+
+    test "an unknown key is refused and the enforced keys are required" do
+      assert_raise ArgumentError, fn ->
+        EventCodec.decode!("ReviewFindingsRecorded", Map.put(@findings_data, :judgement, "x"))
+      end
+
+      assert_raise ArgumentError, fn ->
+        EventCodec.decode!("ReviewFindingsRecorded", Map.delete(@findings_data, :head_sha))
+      end
+    end
+  end
+
   describe "PhaseContextRecorded" do
     @data %{
       run_id: "r1",

@@ -86,6 +86,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   alias ForemanServer.Workflow.OrphanReaper
   alias ForemanServer.Workflow.Worktree
   alias ForemanServer.Workflow.RepoPr
+  alias ForemanServer.Workflow.ReviewFindings
   alias ForemanServer.Workflow.RunRepoSet
   alias ForemanServer.Workflow.RunWorktreeLayout
   require Logger
@@ -2541,7 +2542,9 @@ defmodule ForemanServer.Workflow.RunExecutor do
     primary_result =
       case {others, ProjectionStore.pr_association(state.run_id)} do
         {[_ | _], {:ok, %{pr_url: url}}} when is_binary(url) ->
+          head = reviewed_head(state)
           signal_pr_ready(state, url)
+          record_review_findings(state, url, head)
           {:ok, url}
 
         _ ->
@@ -2569,6 +2572,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
   end
 
   defp finalize_primary_pr(state) do
+    # The reviewed head is taken BEFORE AutoPR/PhasePR push: the local tip of the run branch.
+    head = reviewed_head(state)
     result = maybe_auto_pr(state)
 
     case result do
@@ -2581,6 +2586,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
         Logger.info("RunExecutor #{state.run_id} finalize_run: auto-pr created #{pr_url}")
         record_pr_association(state.run_id, pr_url)
         signal_pr_ready(state, pr_url)
+        record_review_findings(state, pr_url, head)
 
       {:error, reason} ->
         # The run produced commits but no PR. Logging at warning previously
@@ -2593,6 +2599,106 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
     result
   end
+
+  # TRD-034: the commit the review was produced for, the run branch's local tip. An
+  # `{:error, reason}` when it cannot be resolved (the findings are then not recorded and the PR
+  # evaluates `findings_absent`).
+  defp reviewed_head(state) do
+    with {:ok, base_branch} <- run_base_branch(state),
+         context = auto_pr_context(state, base_branch),
+         {:ok, branch} <- AutoPR.resolve_head_branch(context),
+         {:ok, sha} <- resolve_revision(context.cwd, "refs/heads/" <> branch) do
+      sha
+    else
+      {:error, reason} ->
+        {:error, reason}
+    end
+  rescue
+    error -> {:error, {:head_unresolvable, Exception.message(error)}}
+  end
+
+  # Reads the completion artifact once and records the typed outcome (`run.pr.findings`) for
+  # `pr_url` at `head`, independently of the ready signal. Best effort but loud: a failure
+  # appends nothing, is logged at error level, and the PR evaluates `findings_absent`.
+  defp record_review_findings(state, pr_url, {:error, reason}) do
+    Logger.error(
+      "RunExecutor #{state.run_id} finalize_run: findings of PR #{pr_url} NOT recorded, the " <>
+        "local tip could not be resolved: #{inspect(reason)}"
+    )
+
+    {:error, reason}
+  end
+
+  defp record_review_findings(state, pr_url, head) when is_binary(head) do
+    artifact_path = completion_artifact_path(state)
+    outcome = ReviewFindings.read(artifact_path)
+    recorded_at = System.system_time(:millisecond)
+
+    payload =
+      %{
+        run_id: state.run_id,
+        project_id: project_id(state),
+        task_id: task_id(state),
+        pr_url: pr_url,
+        head_sha: head,
+        artifact_path: artifact_path,
+        artifact_sha256: artifact_sha256(outcome, artifact_path),
+        recorded_at: recorded_at
+      }
+      |> Map.merge(findings_payload(outcome))
+
+    case dispatch_system_command(
+           "run.pr.findings",
+           Identity.run_pr_findings_command_id(state.run_id, nil, head, recorded_at),
+           "run:#{state.run_id}",
+           payload
+         ) do
+      {:ok, _} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.error(
+          "RunExecutor #{state.run_id} finalize_run: findings of PR #{pr_url} NOT recorded: " <>
+            "#{inspect(reason)}"
+        )
+
+        {:error, reason}
+    end
+  end
+
+  defp findings_payload({:recorded, %ReviewFindings.Record{findings: findings}}) do
+    %{
+      status: "recorded",
+      findings: Enum.map(findings, &Map.from_struct/1),
+      defect: nil,
+      defect_detail: nil
+    }
+  end
+
+  defp findings_payload(:absent),
+    do: %{status: "absent", findings: [], defect: nil, defect_detail: nil}
+
+  defp findings_payload(outcome) do
+    {defect, detail} = ReviewFindings.defect(outcome)
+
+    %{
+      status: "malformed",
+      findings: [],
+      defect: Atom.to_string(defect),
+      defect_detail: detail
+    }
+  end
+
+  defp artifact_sha256({:recorded, %ReviewFindings.Record{artifact_sha256: sha}}, _path), do: sha
+
+  defp artifact_sha256(_outcome, path) when is_binary(path) do
+    case File.read(path) do
+      {:ok, bytes} -> :crypto.hash(:sha256, bytes) |> Base.encode16(case: :lower)
+      {:error, _} -> nil
+    end
+  end
+
+  defp artifact_sha256(_outcome, _path), do: nil
 
   # AutoPR's `{:ok, pr_url}` used to be logged and dropped here, so a PR could
   # exist on GitHub while every read model denied it:

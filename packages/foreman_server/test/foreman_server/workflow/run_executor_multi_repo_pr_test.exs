@@ -146,6 +146,58 @@ defmodule ForemanServer.Workflow.RunExecutorMultiRepoPrTest do
       assert ready_b["repo_id"] == "b"
     end
 
+    test "findings are recorded for the primary PR only, once, even when finalised again", ctx do
+      touch!(ctx, "a")
+      touch!(ctx, "b")
+      tip_a = git!(ctx.wt_a, ["rev-parse", "HEAD"])
+
+      assert [{"main", {:ok, a_url}}, {"b", {:ok, _b_url}}] =
+               RunExecutor.__finalize_repo_prs_for_test__(ctx.state)
+
+      findings = fn ->
+        {:ok, events} = ForemanServer.EventStore.read_stream_forward("run:#{ctx.run_id}")
+        for e <- events, e.event_type == "ReviewFindingsRecorded", do: decode(e)
+      end
+
+      # No completion artifact: the primary PR is recorded as absent, the secondary has none.
+      assert [%{"pr_url" => ^a_url, "head_sha" => ^tip_a, "status" => "absent", "repo_id" => nil}] =
+               findings.()
+
+      # The auto-PR really pushed: the recorded head is the commit now on the remote branch.
+      origin = git!(ctx.repos["a"], ["remote", "get-url", "origin"])
+      branch = ctx.state.last_worktree.branch
+      assert git!(origin, ["rev-parse", "refs/heads/" <> branch]) == tip_a
+
+      # Finalised again with the primary PR already on record: a no-op repeat, still one record.
+      Process.sleep(2)
+      RunExecutor.__finalize_repo_prs_for_test__(ctx.state)
+      assert [_one] = findings.()
+    end
+
+    test "an unresolvable local tip on the re-finalise branch records nothing and logs an error",
+         ctx do
+      touch!(ctx, "a")
+      touch!(ctx, "b")
+
+      assert [{"main", {:ok, a_url}}, {"b", {:ok, _}}] =
+               RunExecutor.__finalize_repo_prs_for_test__(ctx.state)
+
+      {:ok, before} = ForemanServer.EventStore.read_stream_forward("run:#{ctx.run_id}")
+      bad = put_in(ctx.state, [:last_worktree, :branch], "no/such/branch")
+
+      log =
+        ExUnit.CaptureLog.capture_log([level: :error], fn ->
+          assert [{"main", {:ok, ^a_url}}, {"b", {:ok, _}}] =
+                   RunExecutor.__finalize_repo_prs_for_test__(bad)
+        end)
+
+      assert log =~ "findings of PR #{a_url} NOT recorded"
+      {:ok, after_} = ForemanServer.EventStore.read_stream_forward("run:#{ctx.run_id}")
+
+      assert Enum.count(after_, &(&1.event_type == "ReviewFindingsRecorded")) ==
+               Enum.count(before, &(&1.event_type == "ReviewFindingsRecorded"))
+    end
+
     test "an untouched repo opens no PR and records no association", ctx do
       touch!(ctx, "a")
 

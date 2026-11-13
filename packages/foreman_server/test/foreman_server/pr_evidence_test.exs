@@ -412,7 +412,29 @@ defmodule ForemanServer.PrEvidenceTest do
       )
     end
 
-    defp record(evidence \\ %{}), do: %{evidence: Map.merge(PrEvidence.empty(), evidence)}
+    # Findings are part of every decision (TRD-015): the default record carries a clean review
+    # of the decided head, so the check tests read only the check reasons.
+    defp findings_rec(overrides \\ %{}) do
+      Map.merge(
+        %{
+          head_sha: @h,
+          status: "recorded",
+          findings: [],
+          defect: nil,
+          defect_detail: nil,
+          artifact_path: "/a/review.md",
+          artifact_sha256: String.duplicate("a", 64),
+          digest: "fd-1",
+          recorded_at: 5
+        },
+        overrides
+      )
+    end
+
+    defp record(evidence \\ %{}),
+      do: %{
+        evidence: Map.merge(PrEvidence.empty(), Map.merge(%{findings: findings_rec()}, evidence))
+      }
 
     defp policy(required, version \\ "v1"), do: %{required: required, version: version}
 
@@ -727,7 +749,11 @@ defmodule ForemanServer.PrEvidenceTest do
                risk_digest: "r"
              }
 
-      bare = PrEvidence.evaluate(record(%{checks: checks_rec([ck("A"), ck("B")])}), ctx())
+      bare =
+        PrEvidence.evaluate(
+          record(%{checks: checks_rec([ck("A"), ck("B")]), findings: nil}),
+          ctx()
+        )
 
       assert %{findings_head_sha: nil, findings_digest: nil, risk_head_sha: nil, risk_digest: nil} =
                bare.inputs
@@ -762,7 +788,8 @@ defmodule ForemanServer.PrEvidenceTest do
     test "a record with no evidence key reads as empty" do
       assert rcodes(PrEvidence.evaluate(%{}, ctx(checks_ref: nil))) == [
                missing: "A",
-               missing: "B"
+               missing: "B",
+               findings_absent: nil
              ]
     end
 
@@ -809,8 +836,443 @@ defmodule ForemanServer.PrEvidenceTest do
       assert [%{"code" => "missing", "subject" => "C"}] = decoded["waived"]
 
       assert map_size(decoded["inputs"]) == 8
-      assert decoded["inputs"]["findings_digest"] == nil
+      assert decoded["inputs"]["findings_digest"] == "fd-1"
       assert decoded["waiver"]["applies"] == true
+    end
+  end
+
+  describe "evaluate/2 findings reasons (TRD-015)" do
+    alias ForemanServer.PrEvidence.{Eligibility, Reason}
+
+    @fh "sha-f1"
+    @fnow 1_800_000_000_000
+
+    defp passing_checks(head),
+      do: %{
+        head_sha: head,
+        items: [
+          %{
+            "name" => "A",
+            "kind" => "check_run",
+            "state" => "passing",
+            "conclusion" => "SUCCESS",
+            "workflow" => "ci"
+          }
+        ],
+        truncated: false,
+        observed_at: 1,
+        digest: "d",
+        evidence_digest: "ed",
+        observation_ref: "ref-1",
+        required: nil,
+        policy_version: nil
+      }
+
+    defp fctx(head \\ @fh, overrides \\ %{}),
+      do:
+        Map.merge(
+          %{
+            head_sha: head,
+            policy: %{required: [%{"name" => "A", "kind" => "check_run"}], version: "v1"},
+            now_ms: @fnow,
+            checks_ref: "ref-1"
+          },
+          overrides
+        )
+
+    defp frec(findings, head \\ @fh),
+      do: %{
+        evidence:
+          Map.merge(PrEvidence.empty(), %{checks: passing_checks(head), findings: findings})
+      }
+
+    defp fcodes(rec, ctx),
+      do: rec |> PrEvidence.evaluate(ctx) |> Map.fetch!(:reasons) |> Enum.map(& &1.code)
+
+    defp recorded(head, overrides \\ %{}),
+      do:
+        Map.merge(
+          %{
+            head_sha: head,
+            status: "recorded",
+            findings: [],
+            defect: nil,
+            defect_detail: nil,
+            artifact_path: nil,
+            artifact_sha256: nil,
+            digest: "dg-#{head}",
+            recorded_at: 1
+          },
+          overrides
+        )
+
+    test "a clean recorded review of the decided head is the only way to no findings reason" do
+      assert %Eligibility{status: :eligible, reasons: []} =
+               PrEvidence.evaluate(frec(recorded(@fh)), fctx())
+
+      assert fcodes(frec(nil), fctx()) == [:findings_absent]
+    end
+
+    test "an absent record is findings_absent, never a clean review, with its text" do
+      rec = frec(recorded(@fh, %{status: "absent", defect_detail: "no block written"}))
+      r = PrEvidence.evaluate(rec, fctx())
+      assert r.status == :ineligible
+
+      assert [%Reason{code: :findings_absent, subject: nil, detail: "no block written"}] =
+               r.reasons
+    end
+
+    test "the defect decides the malformed code: only legacy_format is the waivable one" do
+      for defect <- PrEvidence.findings_defects() do
+        rec = frec(recorded(@fh, %{status: "malformed", defect: defect, defect_detail: "d"}))
+
+        expected =
+          if defect == "legacy_format", do: :findings_legacy_format, else: :findings_malformed
+
+        assert fcodes(rec, fctx()) == [expected], "defect #{defect}"
+      end
+    end
+
+    test "recorded for another head is findings_other_sha; absent and malformed keep their code" do
+      assert fcodes(frec(recorded("sha-f0")), fctx()) == [:findings_other_sha]
+
+      assert fcodes(frec(recorded("sha-f0", %{status: "absent"})), fctx()) == [:findings_absent]
+
+      assert fcodes(
+               frec(recorded("sha-f0", %{status: "malformed", defect: "multiple_blocks"})),
+               fctx()
+             ) == [:findings_malformed]
+
+      assert fcodes(
+               frec(recorded("sha-f0", %{status: "malformed", defect: "legacy_format"})),
+               fctx()
+             ) == [:findings_legacy_format]
+    end
+
+    test "a display read with no head reads a recorded review as findings_other_sha" do
+      # TRD-015: `recorded` for a head other than `ctx.head_sha` is `findings_other_sha`. A caller
+      # that supplies no head has no head the review can be bound to, so it is never read as clean.
+      assert :findings_other_sha in fcodes(frec(recorded(@fh)), fctx(nil, %{checks_ref: nil}))
+    end
+
+    test "a display read judges findings the same way" do
+      assert fcodes(frec(recorded("sha-f0")), fctx(@fh, %{checks_ref: nil})) == [
+               :findings_other_sha
+             ]
+    end
+
+    test "the waivable findings codes are waivable, the malformed one is not" do
+      waiver = fn codes ->
+        %{
+          head_sha: @fh,
+          codes: codes,
+          policy_version: "v1",
+          reason: "r",
+          waived_by: "w",
+          waived_at: 1
+        }
+      end
+
+      with_waiver = fn findings, codes ->
+        rec = frec(findings)
+        put_in(rec.evidence.waiver, waiver.(codes))
+      end
+
+      legacy = recorded(@fh, %{status: "malformed", defect: "legacy_format"})
+
+      assert %{status: :waived} =
+               PrEvidence.evaluate(with_waiver.(legacy, ["findings_legacy_format"]), fctx())
+
+      assert %{status: :waived} =
+               PrEvidence.evaluate(with_waiver.(nil, ["findings_absent"]), fctx())
+
+      assert %{status: :waived} =
+               PrEvidence.evaluate(
+                 with_waiver.(recorded("sha-f0"), ["findings_other_sha"]),
+                 fctx()
+               )
+
+      multi = recorded(@fh, %{status: "malformed", defect: "multiple_blocks"})
+
+      assert %{status: :ineligible, reasons: [%Reason{code: :findings_malformed}]} =
+               PrEvidence.evaluate(with_waiver.(multi, ["findings_malformed"]), fctx())
+    end
+
+    test "inputs carry the record's own head and digest for a decision on that head or another" do
+      rec = frec(recorded(@fh))
+
+      for decided <- [@fh, "sha-f2"] do
+        r = PrEvidence.evaluate(rec, fctx(decided))
+        assert r.inputs.findings_head_sha == @fh
+        assert r.inputs.findings_digest == "dg-#{@fh}"
+      end
+
+      none = PrEvidence.evaluate(frec(nil), fctx())
+      assert none.inputs.findings_head_sha == nil and none.inputs.findings_digest == nil
+
+      off = PrEvidence.evaluate(rec, fctx(@fh, %{policy: nil}))
+      assert off.status == :off and off.inputs.findings_digest == nil
+    end
+  end
+
+  describe "findings digest and validation" do
+    defp finding_map(extra \\ %{}),
+      do:
+        Map.merge(
+          %{
+            "severity" => "major",
+            "path" => "lib/a.ex",
+            "line" => 3,
+            "description" => "bad",
+            "disposition" => "open",
+            "source" => "repo-rules"
+          },
+          extra
+        )
+
+    test "the digest depends on the findings, not only on status and defect" do
+      {:ok, a} = PrEvidence.validate_findings("recorded", [finding_map()], nil, nil)
+      {:ok, b} = PrEvidence.validate_findings("recorded", [finding_map(%{"line" => 4})], nil, nil)
+      assert PrEvidence.findings_digest(a) != PrEvidence.findings_digest(b)
+      assert PrEvidence.findings_digest(a) == PrEvidence.findings_digest(a)
+      assert PrEvidence.findings_digest(a) =~ ~r/\A[0-9a-f]{16}\z/
+    end
+
+    test "atom-keyed and string-keyed findings normalise to one form" do
+      atoms = %{
+        severity: :major,
+        path: "lib/a.ex",
+        line: 3,
+        description: "bad",
+        disposition: :open,
+        source: "repo-rules"
+      }
+
+      assert {:ok, %{findings: [one]}} =
+               PrEvidence.validate_findings(:recorded, [atoms], nil, nil)
+
+      assert {:ok, %{findings: [^one]}} =
+               PrEvidence.validate_findings("recorded", [finding_map()], nil, nil)
+
+      assert one == finding_map()
+    end
+
+    test "unknown severity, disposition, bad line, over-bound text, 101 findings are refused" do
+      for bad <- [
+            finding_map(%{"severity" => "blocker"}),
+            finding_map(%{"disposition" => "wontfix"}),
+            finding_map(%{"line" => 0}),
+            finding_map(%{"line" => "3"}),
+            finding_map(%{"description" => String.duplicate("x", 1001)}),
+            finding_map(%{"description" => " "}),
+            finding_map(%{"source" => String.duplicate("s", 65)}),
+            finding_map(%{"path" => String.duplicate("p", 1025)}),
+            "not a map"
+          ] do
+        assert {:error, :findings} = PrEvidence.validate_findings("recorded", [bad], nil, nil)
+      end
+
+      assert {:error, :findings} =
+               PrEvidence.validate_findings(
+                 "recorded",
+                 List.duplicate(finding_map(), 101),
+                 nil,
+                 nil
+               )
+
+      assert {:ok, _} =
+               PrEvidence.validate_findings(
+                 "recorded",
+                 List.duplicate(finding_map(), 100),
+                 nil,
+                 nil
+               )
+    end
+
+    test "findings on a non-recorded status, a defect off malformed, an unknown defect are refused" do
+      assert {:error, :findings} =
+               PrEvidence.validate_findings("absent", [finding_map()], nil, nil)
+
+      assert {:error, :findings} =
+               PrEvidence.validate_findings("malformed", [finding_map()], "invalid_json", nil)
+
+      assert {:error, :defect} = PrEvidence.validate_findings("recorded", [], "invalid_json", nil)
+      assert {:error, :defect} = PrEvidence.validate_findings("malformed", [], "weird", nil)
+      assert {:error, :defect} = PrEvidence.validate_findings("malformed", [], nil, nil)
+      assert {:error, :status} = PrEvidence.validate_findings("clean", [], nil, nil)
+
+      assert {:error, :defect_detail} =
+               PrEvidence.validate_findings(
+                 "malformed",
+                 [],
+                 "invalid_json",
+                 String.duplicate("d", 501)
+               )
+
+      assert {:ok, %{status: "absent", findings: [], defect: nil}} =
+               PrEvidence.validate_findings(:absent, nil, nil, nil)
+    end
+  end
+
+  describe "findings evidence (both folds)" do
+    defp findings_event(head, extra \\ %{}) do
+      {"ReviewFindingsRecorded",
+       Map.merge(
+         %{
+           head_sha: head,
+           status: "recorded",
+           findings: [finding_map()],
+           defect: nil,
+           defect_detail: nil,
+           artifact_path: "/w/review.md",
+           artifact_sha256: String.duplicate("b", 64),
+           digest: "dg-#{head}",
+           recorded_at: 7
+         },
+         extra
+       )}
+    end
+
+    test "the record is stored with its head and digest, identically by the aggregate and the projection" do
+      {aggregate, projection} = records = fold_both([findings_event("h1")])
+
+      assert {same, same} = shared(records)
+
+      assert %{
+               head_sha: "h1",
+               status: "recorded",
+               digest: "dg-h1",
+               artifact_path: "/w/review.md",
+               recorded_at: 7,
+               findings: [%{"severity" => "major"}]
+             } = aggregate.evidence.findings
+
+      assert aggregate.evidence.findings == projection.evidence.findings
+      # a findings record is not a head observation
+      assert aggregate.head_sha == nil
+    end
+
+    test "a replayed (string-keyed JSON) stream folds to the same record as the live one" do
+      events = [
+        findings_event("h1", %{
+          status: "malformed",
+          findings: [],
+          defect: "invalid_json",
+          defect_detail: "x"
+        }),
+        checks_event("h2")
+      ]
+
+      live = fold_both(events)
+
+      replayed =
+        events
+        |> Enum.map(fn {type, payload} ->
+          {type, payload |> Jason.encode!() |> Jason.decode!()}
+        end)
+        |> then(fn stringified ->
+          aggregate =
+            Enum.reduce(stringified, started(), fn {type, payload}, state ->
+              Run.apply_event(state, %{
+                event_type: type,
+                payload: Map.merge(%{"run_id" => "r1", "pr_url" => @url}, payload)
+              })
+            end)
+
+          projection =
+            Enum.reduce(stringified, %{}, fn {type, payload}, watch ->
+              PrWatchFold.fold(
+                watch,
+                type,
+                Map.merge(%{"run_id" => "r1", "pr_url" => @url}, payload)
+              )
+            end)
+
+          {aggregate.pr_watch[@url], projection["r1"][@url]}
+        end)
+
+      assert {same, same} = shared(replayed)
+      assert elem(live, 0).evidence.findings == elem(replayed, 0).evidence.findings
+      assert elem(live, 1).evidence.findings == elem(replayed, 1).evidence.findings
+    end
+
+    test "a head move keeps the record with ITS head: nothing is voided, a malformed code is not lost" do
+      {aggregate, projection} =
+        records =
+        fold_both([
+          findings_event("h1", %{
+            status: "malformed",
+            findings: [],
+            defect: "multiple_blocks",
+            defect_detail: "two blocks"
+          }),
+          checks_event("h1"),
+          checks_event("h2")
+        ])
+
+      assert {same, same} = shared(records)
+      assert aggregate.head_sha == "h2"
+
+      assert %{head_sha: "h1", status: "malformed", defect: "multiple_blocks"} =
+               aggregate.evidence.findings
+
+      assert aggregate.evidence.findings == projection.evidence.findings
+
+      ctx = %{
+        head_sha: "h2",
+        policy: %{required: [], version: "v1"},
+        now_ms: 1,
+        checks_ref: nil
+      }
+
+      assert :findings_malformed in Enum.map(
+               PrEvidence.evaluate(aggregate, ctx).reasons,
+               & &1.code
+             )
+    end
+
+    test "recorded for h1 reads findings_other_sha for a decision on h2, in both records" do
+      {aggregate, projection} = fold_both([findings_event("h1"), review_event("h2")])
+      ctx = %{head_sha: "h2", policy: %{required: [], version: "v1"}, now_ms: 1, checks_ref: nil}
+
+      for record <- [aggregate, projection] do
+        assert :findings_other_sha in Enum.map(
+                 PrEvidence.evaluate(record, ctx).reasons,
+                 & &1.code
+               )
+      end
+    end
+
+    test "inputs carry the folded record's head and digest under a policy, for either decided head" do
+      {aggregate, projection} = fold_both([findings_event("h1"), checks_event("h2")])
+
+      for record <- [aggregate, projection], decided <- ["h1", "h2"] do
+        ctx = %{
+          head_sha: decided,
+          policy: %{required: [], version: "v1"},
+          now_ms: 1,
+          checks_ref: nil
+        }
+
+        inputs = PrEvidence.evaluate(record, ctx).inputs
+        assert inputs.findings_head_sha == "h1"
+        assert inputs.findings_digest == "dg-h1"
+      end
+    end
+
+    test "a later record replaces the earlier one; a malformed payload never raises" do
+      {aggregate, _} =
+        fold_both([
+          findings_event("h1"),
+          findings_event("h1", %{status: "absent", findings: [], digest: "dg-b"})
+        ])
+
+      assert %{status: "absent", digest: "dg-b", findings: []} = aggregate.evidence.findings
+
+      assert %{evidence: %{findings: %{findings: [], head_sha: nil}}} =
+               PrEvidence.apply_event(%{head_sha: nil}, "ReviewFindingsRecorded", %{
+                 findings: :junk
+               })
     end
   end
 
