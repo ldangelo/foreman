@@ -151,6 +151,18 @@ defmodule ForemanServer.PrObservationTest do
              ) == []
     end
 
+    test "an own report stored with CRLF line endings is still the token's own report" do
+      crlf = PrReport.marker("run-1", "sha-1", "d1") <> "\r\nreport text\r\nmore"
+
+      status = Support.status(comments: [comment("IC_crlf", crlf, true)])
+      assert PrObservation.comment_ids(status) == []
+      assert PrObservation.review_digest(status) == PrObservation.review_digest(Support.status())
+
+      # written by someone else it is still feedback
+      other = Support.status(comments: [comment("IC_crlf", crlf, false)])
+      assert PrObservation.comment_ids(other) == ["IC_crlf"]
+    end
+
     test "the token's own comment is counted unless its body STARTS with the marker prefix" do
       quoting = "I agree with:\n" <> marker_body()
       indented = " " <> marker_body()

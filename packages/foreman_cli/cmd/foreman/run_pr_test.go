@@ -211,7 +211,8 @@ func TestRunPublishReportRejectsSurplusArguments(t *testing.T) {
 }
 
 // An accepted request is not a posted report: the CLI says so on stderr after the answer, and
-// not at all when the request failed.
+// not at all when the request failed. The test swaps os.Stderr for a pipe and restores it with a
+// defer; no test in this package calls t.Parallel(), so the swap cannot be seen by another test.
 func TestRunPublishReportSaysWhatAcceptedMeans(t *testing.T) {
 	readStderr := func(fn func()) string {
 		old := os.Stderr
@@ -253,5 +254,86 @@ func TestRunPublishReportSaysWhatAcceptedMeans(t *testing.T) {
 	}
 	if strings.Contains(got, "request is recorded") {
 		t.Errorf("a refused request printed the accepted note: %q", got)
+	}
+}
+
+// The request names nothing the server decides: a head, a digest or a level is an unknown flag,
+// a usage error, and nothing is posted.
+func TestRunPublishReportRefusesFlagsThatNameWhatTheServerDecides(t *testing.T) {
+	for _, flagArgs := range [][]string{
+		{"--head-sha", "abc"},
+		{"--digest", "d1"},
+		{"--level", "LOW"},
+	} {
+		args := append([]string{"publish-report", "run-7"}, flagArgs...)
+		t.Run(strings.Join(flagArgs, " "), func(t *testing.T) {
+			var runErr error
+			env := captureCommand(t, func(c *client.Client) error {
+				runErr = runRun(c, args)
+				return runErr
+			})
+			if env != nil {
+				t.Fatalf("server was hit with %+v; the flag must be refused client-side", env)
+			}
+			if runErr == nil || !strings.Contains(runErr.Error(), "flag provided but not defined") {
+				t.Fatalf("err = %v, want an unknown-flag usage error", runErr)
+			}
+		})
+	}
+}
+
+func TestRunPublishReportSendsPrAndRepoIDTogether(t *testing.T) {
+	env := captureCommand(t, func(c *client.Client) error {
+		return runRun(c, []string{"publish-report", "--id", "run-7", "--repo-id", "repo-b", "--pr", "https://github.com/a/b/pull/3"})
+	})
+	if env == nil {
+		t.Fatal("server was never hit")
+	}
+	want := map[string]any{"run_id": "run-7", "pr_url": "https://github.com/a/b/pull/3", "repo_id": "repo-b"}
+	if !reflect.DeepEqual(env.Payload, want) {
+		t.Errorf("payload = %v, want %v", env.Payload, want)
+	}
+}
+
+// A first argument that starts with `-` is a flag, never a run id: nothing is posted.
+func TestRunPublishReportFirstArgumentStartingWithADashIsNotARunID(t *testing.T) {
+	for _, args := range [][]string{
+		{"publish-report", "-run-7"},
+		{"publish-report", "-x", "run-7"},
+		{"publish-report", "--", "-run-7"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			var runErr error
+			env := captureCommand(t, func(c *client.Client) error {
+				runErr = runRun(c, args)
+				return runErr
+			})
+			if env != nil {
+				t.Fatalf("server was hit with %+v", env)
+			}
+			if runErr == nil {
+				t.Fatal("want a usage error")
+			}
+		})
+	}
+}
+
+// The server's refusal (a 422 with its reason) is the CLI's error, verbatim, and exits non-zero.
+func TestRunPublishReportPrintsTheServersRefusal(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_, _ = w.Write([]byte(`{"error":"command_rejected","detail":"no_risk_record: https://github.com/a/b/pull/1"}`))
+	}))
+	defer srv.Close()
+
+	err := runRun(&client.Client{BaseURL: srv.URL, HTTP: srv.Client()}, []string{"publish-report", "run-7"})
+	if err == nil {
+		t.Fatal("a refused request must be an error (non-zero exit)")
+	}
+	for _, want := range []string{"422", "no_risk_record"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err = %q, want it to carry %q", err.Error(), want)
+		}
 	}
 }

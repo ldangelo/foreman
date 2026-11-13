@@ -178,6 +178,7 @@ defmodule ForemanServer.PrReport.PublisherTest do
     {github, fetch} = start_github(passing("sha-1"))
     gh = FakeGh.start(ctx.pr_url)
     on_exit(fn -> if Process.alive?(gh), do: Agent.stop(gh) end)
+    on_exit(fn -> KeyStoreReset.reset!() end)
 
     {:ok, _} = PrAssociate.store(ctx.run_id, ctx.pr_url)
     start_supervised!({PrWatcher, fetch_fun: fetch})
@@ -1051,35 +1052,91 @@ defmodule ForemanServer.PrReport.PublisherTest do
       assert length(String.split(log, "was not published")) == 2
     end
 
-    test "a gh failure's detail holds no secret: quotes, backslashes and the 200-character cut",
-         ctx do
-      quoted = ~S(pa"ss\\word-1234567)
-      straddling = "ZZSECRETVALUE0123456789"
-      opts = Keyword.put(ctx.opts, :secrets_fun, fn _project -> {:ok, [quoted, straddling]} end)
+    # `inspect` escapes a quote and a backslash, so a secret holding them is no longer a
+    # substring of the inspected term: redaction has to come first. The escaped forms are what a
+    # redact-after-inspect implementation leaves behind.
+    test "a gh failure's detail holds no secret that inspect would escape", ctx do
+      quoted = ~S(pa"ss\word-1234567)
+      escaped = String.trim(inspect(quoted), "\"")
+      refute String.contains?(escaped, quoted)
+      opts = Keyword.put(ctx.opts, :secrets_fun, fn _project -> {:ok, [quoted]} end)
 
-      outputs = [
-        "HTTP 403: token #{quoted} rejected",
-        String.duplicate("x", 190) <> straddling <> " trailing"
-      ]
+      FakeGh.fail_write(ctx.gh, "HTTP 403: token #{quoted} rejected")
+      assert {:refused, :gh_failed, detail} = Publisher.post(ctx.trigger, opts)
 
-      for output <- outputs do
-        FakeGh.fail_write(ctx.gh, output)
+      assert detail =~ "gh failed"
 
-        assert {:refused, :gh_failed, detail} =
-                 Publisher.post(ctx.trigger, [
-                   {:now_fun, fn -> System.unique_integer([:positive]) end} | opts
-                 ])
-
-        for secret <- [quoted, String.replace(quoted, ~S(\\), ~S(\\\\)), "ZZSECRETVA", "pa\"ss"] do
-          refute detail =~ secret, "the detail leaks #{inspect(secret)}: #{detail}"
-        end
-
-        assert detail =~ "gh failed"
+      for leak <- [quoted, escaped, String.slice(escaped, 3, 12), "ss\\\\word"] do
+        refute detail =~ leak, "the detail leaks #{inspect(leak)}: #{detail}"
       end
 
-      for %{detail: stored} <- report_events(ctx.run_id) do
-        refute stored =~ "ZZSECRETVA"
-        refute stored =~ "pa\"ss"
+      assert [%{detail: stored}] = report_events(ctx.run_id)
+      refute stored =~ escaped
+      refute stored =~ quoted
+    end
+
+    test "a gh failure's detail holds no secret that straddles the 200-character cut", ctx do
+      straddling = "ZZSECRETVALUE0123456789"
+      opts = Keyword.put(ctx.opts, :secrets_fun, fn _project -> {:ok, [straddling]} end)
+
+      FakeGh.fail_write(ctx.gh, String.duplicate("x", 190) <> straddling <> " trailing")
+      assert {:refused, :gh_failed, detail} = Publisher.post(ctx.trigger, opts)
+
+      refute detail =~ "ZZSECRETVA"
+      assert [%{detail: stored}] = report_events(ctx.run_id)
+      refute stored =~ "ZZSECRETVA"
+    end
+
+    # The error GitHub's answer can carry is whatever JSON decoded to: a secret may be a map KEY.
+    test "a secret in a map key or value of an unexpected gh answer is not recorded", ctx do
+      secret = ~S(KEY"SECRET-9876543210)
+      value_secret = "VALSECRET-1234567890"
+      opts = Keyword.put(ctx.opts, :secrets_fun, fn _project -> {:ok, [secret, value_secret]} end)
+
+      runner = fn "gh", args, run_opts ->
+        if match?(["pr", "view" | _], args),
+          do: {Jason.encode!(%{secret => [value_secret]}), 0},
+          else: ctx.runner.("gh", args, run_opts)
+      end
+
+      assert {:refused, :gh_failed, detail} =
+               Publisher.post(ctx.trigger, Keyword.put(opts, :command_runner, runner))
+
+      refute detail =~ "KEYSECRET"
+      refute detail =~ "VALSECRET"
+      refute detail =~ ~S(KEY\"SECRET)
+      assert [%{reason: "gh_failed", detail: stored}] = report_events(ctx.run_id)
+      refute stored =~ ~S(KEY\"SECRET)
+    end
+
+    # The detail is built from whatever term an error carries; building it must not fail.
+    test "failure_detail/2 redacts map keys, nested values, tuples, structs and charlists" do
+      secret = "TOPSECRET-1234567"
+
+      term =
+        {:gh_failed, %{secret => 1, :k => [{:v, secret}]}, ~c"charlist #{secret} end",
+         %URI{host: secret}}
+
+      detail = Publisher.failure_detail(term, [secret])
+      refute detail =~ "TOPSECRET"
+      assert detail =~ "REDACTED"
+    end
+
+    test "failure_detail/2 handles improper lists, improper tails and non-UTF8 binaries" do
+      secret = "TOPSECRET-1234567"
+
+      for term <- [
+            [1 | 2],
+            [:a, [secret | secret]],
+            <<255, 254, 253>>,
+            [<<255>> | secret],
+            <<255>> <> secret
+          ] do
+        detail = Publisher.failure_detail(term, [secret])
+        assert is_binary(detail)
+        # described, not given up on: the fixed fallback is for what cannot be described at all
+        refute detail == "unprintable"
+        refute detail =~ "TOPSECRET"
       end
     end
 

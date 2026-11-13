@@ -187,6 +187,7 @@ defmodule ForemanServer.Webhooks.GithubTest do
   # review feedback, or every report would move the review digest and emit `run.pr.review`.
   describe "the publisher's own report comment (TRD-030)" do
     alias ForemanServer.{PrReport, PrWatcher, ProjectionStore}
+    alias ForemanServer.TestSupport.Eventually
     alias ForemanServer.TestSupport.PrWatchSupport, as: Support
 
     @describetag :capture_log
@@ -235,29 +236,46 @@ defmodule ForemanServer.Webhooks.GithubTest do
       {:ok, Map.put(run, :agent, agent)}
     end
 
-    # The webhook asks for a re-read; `refresh_now` then waits for it (same fetch) to finish.
+    defp events_of(run_id, type),
+      do: Enum.filter(Support.run_events(run_id), &(&1.event_type == type))
+
+    # The webhook alone asks for the re-read: nothing else calls the watcher, so the fetch and
+    # the observation counted after it are the webhook's. Returns once that observation is done.
     defp deliver_comment(ctx, comments) do
+      before = PrWatcher.stats().observations
       Agent.update(ctx.agent, &%{&1 | comments: comments})
+      refute_received :fetched
+
       assert :ok = Github.process(comment_delivery(ctx.pr_url))
-      assert {:ok, %{dispatched: dispatched}} = PrWatcher.refresh_now(ctx.pr_url)
-      assert_receive :fetched, 5_000
-      dispatched
+      assert_receive :fetched, 5_000, "the webhook did not make the watcher re-read the PR"
+
+      Eventually.await(fn -> PrWatcher.stats().observations == before + 1 end,
+        message: "the watcher finished the webhook's observation"
+      )
+
+      refute_received :fetched
     end
 
     test "the token's own marker comment moves no review digest and emits no run.pr.review",
          ctx do
-      before = review_digest(ctx.run_id, ctx.pr_url)
+      digest = review_digest(ctx.run_id, ctx.pr_url)
+      risks = length(events_of(ctx.run_id, "PrRiskRecorded"))
 
-      assert deliver_comment(ctx, [pr_comment("IC_own", true)]) == []
+      deliver_comment(ctx, [pr_comment("IC_own", true)])
 
       assert review_events(ctx.run_id) == []
-      assert review_digest(ctx.run_id, ctx.pr_url) == before
+      assert review_digest(ctx.run_id, ctx.pr_url) == digest
+      assert length(events_of(ctx.run_id, "PrRiskRecorded")) == risks
+      assert events_of(ctx.run_id, "PrCommentPublished") == []
     end
 
     test "the same marker written by someone else is feedback: run.pr.review is emitted", ctx do
-      assert "run.pr.review" in deliver_comment(ctx, [pr_comment("IC_foreign", false)])
+      digest = review_digest(ctx.run_id, ctx.pr_url)
+
+      deliver_comment(ctx, [pr_comment("IC_foreign", false)])
 
       assert [%{data: %{comment_ids: ["IC_foreign"]}}] = review_events(ctx.run_id)
+      refute review_digest(ctx.run_id, ctx.pr_url) == digest
     end
   end
 end
