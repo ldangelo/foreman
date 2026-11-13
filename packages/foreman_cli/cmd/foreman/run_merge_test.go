@@ -2,9 +2,11 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/fortium/foreman/packages/foreman_cli/internal/client"
@@ -237,24 +239,44 @@ func TestRunWaiveEvidenceCarriesRepoIDAndDispatches(t *testing.T) {
 }
 
 func TestRunWaiveEvidenceRejectsBadFlagsBeforeAnyRequest(t *testing.T) {
-	cases := map[string][]string{}
+	const pfx = "foreman run waive-evidence: "
+	type row struct {
+		args []string
+		want string
+	}
+	cases := map[string]row{}
 	for _, f := range []string{"-id", "-approver", "-identity", "-head-sha", "-waive", "-reason"} {
-		cases["missing "+f] = waiveArgs(f)
+		cases["missing "+f] = row{waiveArgs(f), pfx + "--" + f[1:] + " is required"}
 	}
-	for name, waive := range map[string]string{
-		"empty --waive":     "",
-		"trailing comma":    "ci_failing,",
-		"blank middle item": "ci_failing, ,review_missing",
-		"only separators":   ",",
+	cases["empty --waive"] = row{append(waiveArgs("-waive"), "-waive", ""), pfx + "--waive is required"}
+	cases["empty --reason"] = row{append(waiveArgs("-reason"), "-reason", ""), pfx + "--reason is required"}
+	cases["whitespace --reason"] = row{append(waiveArgs("-reason"), "-reason", "   "), pfx + "--reason is required"}
+	for name, w := range map[string]string{
+		"trailing comma":        "ci_failing,",
+		"blank middle item":     "ci_failing, ,review_missing",
+		"only separators":       ",",
+		"whitespace --waive":    "   ",
+		"whitespace only items": " , ",
 	} {
-		cases[name] = append(waiveArgs("-waive"), "-waive", waive)
+		cases[name] = row{append(waiveArgs("-waive"), "-waive", w), pfx + "--waive has an empty item"}
 	}
-	cases["empty --reason"] = append(waiveArgs("-reason"), "-reason", "")
 
-	for name, args := range cases {
+	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			if env := captureCommand(t, func(c *client.Client) error { return runWaiveEvidence(c, args) }); env != nil {
+			var err error
+			env := captureCommand(t, func(c *client.Client) error {
+				err = runWaiveEvidence(c, tc.args)
+				return err
+			})
+			if env != nil {
 				t.Fatalf("server was hit with %+v; flags must be validated client-side", env)
+			}
+			var usageErr *client.UsageError
+			if !errors.As(err, &usageErr) {
+				t.Fatalf("err = %v (%T), want a *client.UsageError", err, err)
+			}
+			if first, _, _ := strings.Cut(usageErr.Text, "\n"); first != tc.want {
+				t.Fatalf("message = %q, want %q", first, tc.want)
 			}
 		})
 	}

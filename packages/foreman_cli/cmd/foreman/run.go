@@ -270,7 +270,7 @@ func runWaiveEvidence(c *client.Client, args []string) error {
 	if *waive == "" {
 		return usageError(fs, "foreman run waive-evidence: --waive is required")
 	}
-	if *reason == "" {
+	if strings.TrimSpace(*reason) == "" {
 		return usageError(fs, "foreman run waive-evidence: --reason is required")
 	}
 
