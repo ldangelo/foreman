@@ -162,6 +162,28 @@ defmodule ForemanServer.PrRiskTest do
       assert %{status: "absent", level: nil} =
                PrRisk.parse_judgement("```json\n" <> block() <> "```\n")
     end
+
+    defp crlf(text), do: String.replace(text, "\n", "\r\n")
+
+    test "a block with CRLF line ends is recorded" do
+      assert %{status: "recorded", level: "MEDIUM", rationale: "changes the retry path"} =
+               PrRisk.parse_judgement(crlf("# Review\n" <> block()))
+    end
+
+    test "a CRLF-fenced quoted marker and one real block: the real block is recorded" do
+      quoted = crlf("```\n" <> block(json(%{"level" => "LOW"})) <> "```\n")
+
+      assert %{status: "recorded", level: "HIGH"} =
+               PrRisk.parse_judgement(quoted <> crlf(block(json(%{"level" => "HIGH"}))))
+
+      # a block that is only quoted in a CRLF fence is absent
+      assert %{status: "absent"} = PrRisk.parse_judgement(quoted)
+    end
+
+    test "the end marker before the start marker is malformed unterminated_block" do
+      assert %{status: "malformed", defect: "unterminated_block", level: nil, rationale: nil} =
+               PrRisk.parse_judgement("#{@end_}\n#{json()}\n#{@start}\n")
+    end
   end
 
   describe "the review prompts (TRD-041)" do

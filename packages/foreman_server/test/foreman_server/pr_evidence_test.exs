@@ -1114,6 +1114,155 @@ defmodule ForemanServer.PrEvidenceTest do
     end
   end
 
+  describe "judgement validation (TRD-041)" do
+    @absent %{status: "absent", level: nil, rationale: nil, defect: nil, defect_detail: nil}
+
+    test "nil and a bare absent map are the absent judgement" do
+      assert {:ok, @absent} = PrEvidence.validate_judgement(nil)
+      assert {:ok, @absent} = PrEvidence.validate_judgement(%{status: "absent"})
+
+      assert {:ok, @absent} =
+               PrEvidence.validate_judgement(%{"status" => "absent", "level" => nil})
+    end
+
+    test "a valid recorded judgement keeps its level and rationale, at the 1000 character bound" do
+      for level <- ~w(LOW MEDIUM HIGH) do
+        assert {:ok, %{status: "recorded", level: ^level, rationale: "why", defect: nil}} =
+                 PrEvidence.validate_judgement(%{
+                   status: "recorded",
+                   level: level,
+                   rationale: "why"
+                 })
+      end
+
+      edge = String.duplicate("é", 1000)
+
+      assert {:ok, %{rationale: ^edge}} =
+               PrEvidence.validate_judgement(%{status: "recorded", level: "LOW", rationale: edge})
+
+      # a newline and a tab stay
+      assert {:ok, _} =
+               PrEvidence.validate_judgement(%{
+                 status: "recorded",
+                 level: "LOW",
+                 rationale: "a\nb\tc"
+               })
+    end
+
+    test "a valid malformed judgement keeps its defect and detail" do
+      assert {:ok,
+              %{status: "malformed", defect: "multiple_blocks", defect_detail: "two", level: nil}} =
+               PrEvidence.validate_judgement(%{
+                 status: "malformed",
+                 defect: "multiple_blocks",
+                 defect_detail: "two"
+               })
+
+      assert {:ok, %{status: "malformed", defect: "invalid_json", defect_detail: nil}} =
+               PrEvidence.validate_judgement(%{status: "malformed", defect: "invalid_json"})
+    end
+
+    test "a rationale with a control character or over 1000 characters is refused" do
+      base = %{status: "recorded", level: "LOW"}
+
+      for bad <- ["a\e[31mb", "a\0b", "a\rb", "a\x7Fb", String.duplicate("x", 1001), "", "   ", 5] do
+        assert {:error, :judgement} =
+                 PrEvidence.validate_judgement(Map.put(base, :rationale, bad))
+      end
+    end
+
+    test "an absent judgement with a companion field is refused" do
+      for extra <- [
+            %{level: "LOW"},
+            %{rationale: "x"},
+            %{defect: "invalid_json"},
+            %{defect_detail: "x"}
+          ] do
+        assert {:error, :judgement} =
+                 PrEvidence.validate_judgement(Map.put(extra, :status, "absent"))
+      end
+    end
+
+    test "a malformed judgement needs a known defect and carries no level or rationale" do
+      for bad <- [
+            %{status: "malformed"},
+            %{status: "malformed", defect: "nonsense"},
+            %{status: "malformed", defect: "invalid_json", level: "HIGH"},
+            %{status: "malformed", defect: "invalid_json", rationale: "x"},
+            %{
+              status: "malformed",
+              defect: "invalid_json",
+              defect_detail: String.duplicate("x", 501)
+            }
+          ] do
+        assert {:error, :judgement} = PrEvidence.validate_judgement(bad)
+      end
+    end
+
+    test "a recorded judgement needs a level in LOW, MEDIUM, HIGH and a rationale, and no defect" do
+      for bad <- [
+            %{status: "recorded", rationale: "x"},
+            %{status: "recorded", level: "CRITICAL", rationale: "x"},
+            %{status: "recorded", level: "low", rationale: "x"},
+            %{status: "recorded", level: "LOW"},
+            %{status: "recorded", level: "LOW", rationale: "x", defect: "invalid_json"},
+            %{status: "recorded", level: "LOW", rationale: "x", defect_detail: "d"}
+          ] do
+        assert {:error, :judgement} = PrEvidence.validate_judgement(bad)
+      end
+    end
+
+    test "an unknown key, an unknown status and a non-map are refused" do
+      assert {:error, :judgement} =
+               PrEvidence.validate_judgement(%{
+                 status: "recorded",
+                 level: "LOW",
+                 rationale: "x",
+                 extra: 1
+               })
+
+      assert {:error, :judgement} = PrEvidence.validate_judgement(%{status: "clean"})
+      assert {:error, :judgement} = PrEvidence.validate_judgement(%{})
+      assert {:error, :judgement} = PrEvidence.validate_judgement("HIGH")
+      assert {:error, :judgement} = PrEvidence.validate_judgement([])
+    end
+
+    test "string-keyed (replayed) input normalises to the same atom-keyed map" do
+      atom_keyed = %{status: "recorded", level: "HIGH", rationale: "touches auth"}
+      string_keyed = %{"status" => "recorded", "level" => "HIGH", "rationale" => "touches auth"}
+
+      assert {:ok, expected} = PrEvidence.validate_judgement(atom_keyed)
+      assert PrEvidence.normalise_judgement(string_keyed) == expected
+      assert PrEvidence.normalise_judgement(atom_keyed) == expected
+
+      assert expected == %{
+               status: "recorded",
+               level: "HIGH",
+               rationale: "touches auth",
+               defect: nil,
+               defect_detail: nil
+             }
+    end
+
+    test "normalise_judgement falls back to absent and mints no atom from an unknown string key" do
+      key = "unknown_judgement_key_#{System.unique_integer([:positive])}"
+
+      assert @absent ==
+               PrEvidence.normalise_judgement(%{
+                 "status" => "recorded",
+                 "level" => "HIGH",
+                 "rationale" => "x",
+                 key => 1
+               })
+
+      assert_raise ArgumentError, fn -> String.to_existing_atom(key) end
+
+      for bad <- [nil, "HIGH", %{"status" => "recorded", "level" => "CRITICAL"}, %{status: 1}] do
+        assert PrEvidence.normalise_judgement(bad) == @absent
+      end
+    end
+  end
+
   describe "findings evidence (both folds)" do
     defp findings_event(head, extra \\ %{}) do
       {"ReviewFindingsRecorded",
