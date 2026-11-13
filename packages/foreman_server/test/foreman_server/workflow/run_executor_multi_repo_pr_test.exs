@@ -146,6 +146,29 @@ defmodule ForemanServer.Workflow.RunExecutorMultiRepoPrTest do
       assert ready_b["repo_id"] == "b"
     end
 
+    test "findings are recorded for the primary PR only, once, even when finalised again", ctx do
+      touch!(ctx, "a")
+      touch!(ctx, "b")
+      tip_a = git!(ctx.wt_a, ["rev-parse", "HEAD"])
+
+      assert [{"main", {:ok, a_url}}, {"b", {:ok, _b_url}}] =
+               RunExecutor.__finalize_repo_prs_for_test__(ctx.state)
+
+      findings = fn ->
+        {:ok, events} = ForemanServer.EventStore.read_stream_forward("run:#{ctx.run_id}")
+        for e <- events, e.event_type == "ReviewFindingsRecorded", do: decode(e)
+      end
+
+      # No completion artifact: the primary PR is recorded as absent, the secondary has none.
+      assert [%{"pr_url" => ^a_url, "head_sha" => ^tip_a, "status" => "absent", "repo_id" => nil}] =
+               findings.()
+
+      # Finalised again with the primary PR already on record: a no-op repeat, still one record.
+      Process.sleep(2)
+      RunExecutor.__finalize_repo_prs_for_test__(ctx.state)
+      assert [_one] = findings.()
+    end
+
     test "an untouched repo opens no PR and records no association", ctx do
       touch!(ctx, "a")
 
