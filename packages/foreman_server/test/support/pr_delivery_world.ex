@@ -99,6 +99,21 @@ defmodule ForemanServer.TestSupport.PrDeliveryWorld do
     * `watcher!/1`, `webhook!/2`, `issue_comment_payload/2` - the real `PrWatcher` over the world's
       `gh` and a verified webhook delivery handed to `Webhooks.Github.process/1`, which returns
       after the refresh it asked for has finished
+
+  Added for TRD-040 (the keyed effects and the terminal run; the world's `gh` is the same, `git` is
+  real once `effects!/1` was called):
+
+    * `effects!/1` - the real `git` and `EffectWorld`'s `gh pr create` and crash points on the
+      world's GitHub; `delivery_run!/2` (a completed run Create PR opens a PR for), `phase_run!/1`
+      (a running run through `PhasePR.maybe_create/1`), `tip/1`, `remote_tip/1`
+    * `crash!/4`, `executed/2`, `create_calls/1`, `push_calls/1`, `created_prs/1` - the crash
+      windows of the push and the create, and the number of calls that were made and that reached
+      GitHub; `sweep!/1` - the boot sweep over the world's GitHub with the real reconcilers of
+      `branch_push`, `pr_create` and `pr_comment`
+    * `create_pr/1` (the operator's Create PR), `created_url!/1`, `open_by_hand!/3` (a PR the
+      operator opens on GitHub), `fail_gh!/2` and `heal_gh!/2` (`gh pr list` or `gh pr view` fails)
+    * `park_next_comment_write!/2`, `await_parked!/1`, `kill_parked!/1` - the crash window of a
+      comment write
   """
 
   import ExUnit.Assertions
@@ -107,9 +122,36 @@ defmodule ForemanServer.TestSupport.PrDeliveryWorld do
   alias ForemanServer.PrReport.Publisher
   alias ForemanServer.PrWatcher.Observer
   alias ForemanServer.GitHub.PrStatus
-  alias ForemanServer.TestSupport.{Eventually, GateEvidence, PrWatchSupport, UniqueIds}
+
+  alias ForemanServer.TestSupport.{
+    EffectWorld,
+    Eventually,
+    GateEvidence,
+    KeyStoreReset,
+    PrFixSupport,
+    PrWatchSupport,
+    UniqueIds
+  }
+
   alias ForemanServer.Webhooks.Github, as: Webhook
   alias ForemanServer.Workflow.MergeGate
+
+  defmodule Comment do
+    @moduledoc false
+    # The `pr_comment` reconciler of the sweep over the world: the real one, its `gh` the world's.
+    @behaviour ForemanServer.Idempotency.Reconciler
+    alias ForemanServer.Idempotency.Reconcilers.PrComment
+
+    @impl true
+    def reconcile(metadata),
+      do: PrComment.reconcile(metadata, command_runner: Process.get(:effect_world_runner))
+
+    @impl true
+    def repeatable?(metadata), do: PrComment.repeatable?(metadata)
+
+    @impl true
+    def blocks_run?(metadata), do: PrComment.blocks_run?(metadata)
+  end
 
   @type world :: pid() | {pid(), String.t()}
   @type run :: %{
@@ -149,7 +191,10 @@ defmodule ForemanServer.TestSupport.PrDeliveryWorld do
       ],
       after_view: [],
       comment_seq: 0,
-      runs: []
+      runs: [],
+      effects: nil,
+      failing: [],
+      parks: []
     }
 
     {:ok, world} = Agent.start(fn -> state end)
@@ -296,22 +341,27 @@ defmodule ForemanServer.TestSupport.PrDeliveryWorld do
     fn cmd, args, opts -> handle(world, cmd, args, opts) end
   end
 
-  defp handle(world, cmd, args, _opts) do
-    handlers =
+  defp handle(world, cmd, args, opts) do
+    {handlers, effects} =
       Agent.get_and_update(world, fn state ->
-        {state.handlers, %{state | calls: [{cmd, args} | state.calls]}}
+        {{state.handlers, state.effects}, %{state | calls: [{cmd, args} | state.calls]}}
       end)
 
-    reply =
-      if cmd == "gh" do
-        Enum.find_value(handlers, fn {_name, fun} ->
-          case fun.(world, args) do
-            {:reply, reply} -> reply
-            :pass -> nil
-          end
-        end)
-      end
+    sync_effect_prs(world, effects)
+    park(world, :before, cmd, args)
 
+    reply =
+      effect_reply(world, effects, cmd, args, opts) ||
+        if cmd == "gh" do
+          Enum.find_value(handlers, fn {_name, fun} ->
+            case fun.(world, args) do
+              {:reply, reply} -> reply
+              :pass -> nil
+            end
+          end)
+        end
+
+    park(world, :after, cmd, args)
     reply || unscripted(world, cmd, args)
   end
 
@@ -325,7 +375,15 @@ defmodule ForemanServer.TestSupport.PrDeliveryWorld do
 
   # A `gh pr view` that asks for the head is a status read: a push armed by
   # `push_after_next_view!/2` lands right after its answer was computed.
-  defp view_handler(world, ["pr", "view", url, "--json", fields]) do
+  defp view_handler(world, ["pr", "view", url | _] = args) do
+    if failing?(world, :view) and Agent.get(world, &Map.has_key?(&1.prs, url)),
+      do: {:reply, {"error connecting to api.github.com\n", 1}},
+      else: served_view(world, args)
+  end
+
+  defp view_handler(_world, _args), do: :pass
+
+  defp served_view(world, ["pr", "view", url, "--json", fields]) do
     case Agent.get(world, & &1.prs[url]) do
       nil ->
         :pass
@@ -338,7 +396,7 @@ defmodule ForemanServer.TestSupport.PrDeliveryWorld do
     end
   end
 
-  defp view_handler(_world, _args), do: :pass
+  defp served_view(_world, _args), do: :pass
 
   defp land_armed_push(world, url) do
     Agent.update(world, fn state ->
@@ -408,7 +466,15 @@ defmodule ForemanServer.TestSupport.PrDeliveryWorld do
   # `gh pr list --head <branch> --base <branch> --state open|closed|merged|all --json <fields>
   # --limit <n>`. As the real gh, `--state closed` lists the merged ones too.
   @list_fields ~w(url number state headRefOid headRefName baseRefName isCrossRepository)
-  defp list_handler(world, ["pr", "list" | flags]) do
+  defp list_handler(world, ["pr", "list" | _] = args) do
+    if failing?(world, :list),
+      do: {:reply, {"error connecting to api.github.com\n", 1}},
+      else: served_list(world, args)
+  end
+
+  defp list_handler(_world, _args), do: :pass
+
+  defp served_list(world, ["pr", "list" | flags]) do
     fields =
       String.split(List.first(flag_value(flags, "--json") || []) || "url,number,state", ",")
 
@@ -457,7 +523,7 @@ defmodule ForemanServer.TestSupport.PrDeliveryWorld do
     end
   end
 
-  defp list_handler(_world, _args), do: :pass
+  defp served_list(_world, _args), do: :pass
 
   # `gh api repos/<o>/<r>/issues/<n>/comments -f body=<body>` creates a comment of the token's
   # user; `gh api -X PATCH repos/<o>/<r>/issues/comments/<id> -f body=<body>` replaces a body.
@@ -1124,6 +1190,366 @@ defmodule ForemanServer.TestSupport.PrDeliveryWorld do
       5_000
     )
   end
+
+  # -- added for TRD-040 (the keyed effects and the terminal run) ---------------------------
+
+  @doc """
+  Add the keyed effects to the world: `git` is the real binary, `gh pr create` is `EffectWorld`'s
+  (counted, with its crash points) and the PRs it makes are on the world's GitHub from then on
+  (listed, viewed, mirrored on first read; a same-repository open PR of the head and base makes
+  `gh pr create` refuse like gh: "a pull request ... already exists"). The idempotency store is
+  reset now and when the test ends. Returns the `EffectWorld` (`EffectWorld.executed/2` counts the
+  pushes and creates that REACHED GitHub, `calls/1` and `create_calls/1` every call that was
+  made).
+  """
+  @spec effects!(world()) :: pid()
+  def effects!(world) do
+    KeyStoreReset.reset!()
+    effect_world = EffectWorld.start()
+    Agent.update(agent(world), &%{&1 | effects: effect_world})
+    ExUnit.Callbacks.on_exit(&KeyStoreReset.reset!/0)
+    effect_world
+  end
+
+  defp effects(world),
+    do: Agent.get(agent(world), & &1.effects) || flunk("the test did not call effects!/1")
+
+  @doc """
+  A COMPLETED run (a run that ended; `complete: false` leaves it running) on a registered project
+  whose checkout is a real repository with a bare `origin` and the run's branch one commit ahead of
+  `main`, with the task, the recorded base branch and the worktree `PrCreate.execute/1` reads. The
+  run is Create PR's: `PrCreate` reaches GitHub through the world. Returns the run with `repo`,
+  `branch`, `base` and `fx` (the `EffectWorld` fixture).
+  """
+  @spec delivery_run!(world(), keyword()) :: map()
+  def delivery_run!(world, opts \\ []) do
+    _effects = effects(world)
+    repo = PrFixSupport.git_repo!("world-delivery")
+    project_id = "project-world-#{token()}"
+
+    :ok =
+      ProjectionStore.apply_events([
+        %{event_type: "ProjectRegistered", payload: %{project_id: project_id, path: repo}}
+      ])
+
+    started =
+      PrWatchSupport.start_run!(
+        project_id: project_id,
+        complete: Keyword.get(opts, :complete, true)
+      )
+
+    branch = "foreman/#{started.run_id}/implement"
+    fx = EffectWorld.adopt!(repo, branch)
+
+    :ok =
+      ProjectionStore.apply_events([
+        %{
+          event_type: "TaskCreated",
+          payload: %{
+            task_id: started.task_id,
+            project_id: project_id,
+            title: "Add widgets",
+            description: "Adds the widget screen",
+            status: "open",
+            task_type: "implement"
+          }
+        },
+        %{
+          event_type: "RunBaseBranchRecorded",
+          payload: %{run_id: started.run_id, base_branch: fx.base}
+        },
+        %{
+          event_type: "WorktreeCreated",
+          payload: %{
+            operation_id: "wt-#{started.run_id}-implement",
+            project_id: project_id,
+            run_id: started.run_id,
+            phase_id: "implement",
+            repo_path: repo,
+            worktree_path: "/gone/#{token()}",
+            branch: branch,
+            base_ref: fx.base,
+            cleanup: "remove"
+          }
+        }
+      ])
+
+    ForemanServer.PrCreate.set_command_runner(runner(world))
+    ExUnit.Callbacks.on_exit(&ForemanServer.PrCreate.clear_command_runner/0)
+
+    run = %{
+      run_id: started.run_id,
+      project_id: project_id,
+      task_id: started.task_id,
+      pr_url: nil,
+      repo: repo,
+      branch: branch,
+      base: fx.base,
+      fx: fx
+    }
+
+    Agent.update(agent(world), &%{&1 | runs: [run | &1.runs]})
+    run
+  end
+
+  @doc """
+  A RUNNING run through the phase PR (`PhasePR.maybe_create/1`): a project at a scratch path, a
+  started run and a repository with a bare `origin` and the run's branch ahead of `main`. Returns
+  the run with `request` (the `PhasePR.Request` whose runner is the world's), `repo`, `branch`,
+  `base` and `fx`.
+  """
+  @spec phase_run!(world()) :: map()
+  def phase_run!(world) do
+    _effects = effects(world)
+    path = Path.join(System.tmp_dir!(), "world-phase-project-#{token()}")
+    File.mkdir_p!(path)
+    ExUnit.Callbacks.on_exit(fn -> File.rm_rf(path) end)
+    project_id = "project-world-phase-#{token()}"
+    :ok = EffectWorld.register_project!(project_id, path)
+    run_id = EffectWorld.start_run!(project_id, "world-phase")
+    fx = EffectWorld.fixture!("foreman/#{run_id}/implement")
+
+    request = %ForemanServer.Workflow.PhasePR.Request{
+      run_id: run_id,
+      phase_id: "phase-1",
+      phase_index: 1,
+      phase_name: "implement",
+      base_branch: fx.base,
+      head_branch: fx.head,
+      cwd: fx.repo,
+      now: ~U[2026-09-01 00:00:00Z],
+      lookup_retry_sleep_ms: 0,
+      command_runner: runner(world)
+    }
+
+    run = %{
+      run_id: run_id,
+      project_id: project_id,
+      task_id: "task-#{run_id}",
+      pr_url: nil,
+      repo: fx.repo,
+      branch: fx.head,
+      base: fx.base,
+      fx: fx,
+      request: request
+    }
+
+    Agent.update(agent(world), &%{&1 | runs: [run | &1.runs]})
+    run
+  end
+
+  @doc "The commit the run's branch holds locally: the tip the effect pushes."
+  @spec tip(map()) :: String.t()
+  def tip(%{fx: fx}), do: EffectWorld.local_tip(fx)
+
+  @doc "The run's branch as `origin` has it (`nil` before a push reached it)."
+  @spec remote_tip(map()) :: String.t() | nil
+  def remote_tip(%{fx: fx}), do: EffectWorld.remote_tip(fx)
+
+  @doc """
+  Run `fun` in a process that is parked just `side` (`:before` or `:after`) of the next `effect`
+  (`:push` or `:create`) reaching GitHub, then kill it: the effect's key stays `started`, as after
+  a node crash (`EffectWorld.crash!/4`).
+  """
+  @spec crash!(world(), :push | :create, :before | :after, (-> any())) :: :ok
+  def crash!(world, effect, side, fun), do: EffectWorld.crash!(effects(world), effect, side, fun)
+
+  @doc "How many times `effect` (`:push` or `:create`) reached GitHub."
+  @spec executed(world(), :push | :create) :: non_neg_integer()
+  def executed(world, effect), do: EffectWorld.executed(effects(world), effect)
+
+  @doc "Every `gh pr create` call the world received (a parked or refused one included), oldest first."
+  @spec create_calls(world()) :: [[String.t()]]
+  def create_calls(world), do: for({"gh", ["pr", "create" | _] = args} <- calls(world), do: args)
+
+  @doc "Every `git push` call the world received, oldest first."
+  @spec push_calls(world()) :: [[String.t()]]
+  def push_calls(world), do: for({"git", ["push" | _] = args} <- calls(world), do: args)
+
+  @doc "The URLs of the PRs `gh pr create` made on the world's GitHub, oldest first."
+  @spec created_prs(world()) :: [String.t()]
+  def created_prs(world) do
+    effect_world = effects(world)
+    sync_effect_prs(agent(world), effect_world)
+    for %{"url" => url} <- EffectWorld.prs(effect_world), do: url
+  end
+
+  @doc """
+  A PR for the run's branch and base that somebody opened on GitHub by hand: this repository's, open,
+  and with the tip the run pushed (`head:` to name another). Returns its URL.
+  """
+  @spec open_by_hand!(world(), map(), keyword()) :: String.t()
+  def open_by_hand!(world, run, opts \\ []) do
+    add_pr!(world,
+      branch: run.branch,
+      base: run.base,
+      head: Keyword.get_lazy(opts, :head, fn -> tip(run) end),
+      state: Keyword.get(opts, :state, "OPEN"),
+      cross_repository: Keyword.get(opts, :cross_repository, false)
+    )
+  end
+
+  @doc "From now on `gh pr list` (`:list`) or `gh pr view` of a PR the world holds (`:view`) fails."
+  @spec fail_gh!(world(), :list | :view) :: :ok
+  def fail_gh!(world, kind) when kind in [:list, :view],
+    do: Agent.update(agent(world), &%{&1 | failing: Enum.uniq([kind | &1.failing])})
+
+  @doc "`gh pr list` or `gh pr view` answers again."
+  @spec heal_gh!(world(), :list | :view) :: :ok
+  def heal_gh!(world, kind) when kind in [:list, :view],
+    do: Agent.update(agent(world), &%{&1 | failing: List.delete(&1.failing, kind)})
+
+  @doc """
+  The operator's Create PR (`run.pr.create` through `CommandGateway.dispatch_operator/1`, what the
+  dashboard button and `POST /api/commands` send). Returns the gateway's answer unchanged.
+  """
+  @spec create_pr(map()) :: term()
+  def create_pr(%{run_id: run_id}),
+    do: operator("run:#{run_id}", "run.pr.create", %{run_id: run_id})
+
+  @doc "The PR Create PR recorded for the run (`PrCreated`, exactly one)."
+  @spec created_url!(map()) :: String.t()
+  def created_url!(run) do
+    assert [created] = events(run, "PrCreated")
+    ForemanServer.Aggregate.get(created, :pr_url)
+  end
+
+  @doc """
+  The boot sweep over the world: the real reconcilers of the three keyed classes (`branch_push`,
+  `pr_create`, `pr_comment`) reading the world's GitHub and the real `git` through the world's
+  runner (the sweep runs in the caller, so the runner travels in the process dictionary). It is
+  `EffectWorld.sweep/1`'s sweep with the world's GitHub.
+  """
+  @spec sweep!(world()) :: :ok
+  def sweep!(world) do
+    Process.put(:effect_world_runner, runner(world))
+
+    ForemanServer.Workflow.BootReconciliation.do_reconcile_ambiguous_keys(fn _key -> true end,
+      classes: %{
+        "branch_push" => EffectWorld.Push,
+        "pr_create" => EffectWorld.Create,
+        "pr_comment" => ForemanServer.TestSupport.PrDeliveryWorld.Comment
+      }
+    )
+  end
+
+  @doc """
+  Park the next comment write (`gh api` create or PATCH) `:before` it reaches the world or
+  `:after` it was answered: the process that makes it (the publisher's task) stops there until
+  `await_parked!/1` has handed its pid over and `kill_parked!/1` ended it. The window of a crash
+  of the `pr_comment` effect.
+  """
+  @spec park_next_comment_write!(world(), :before | :after) :: :ok
+  def park_next_comment_write!(world, side) when side in [:before, :after] do
+    owner = self()
+    Agent.update(agent(world), &%{&1 | parks: &1.parks ++ [{side, :comment_write, owner}]})
+  end
+
+  @doc "Wait until a process parked `side` (`park_next_comment_write!/2`); returns its pid."
+  @spec await_parked!(:before | :after) :: pid()
+  def await_parked!(side) do
+    receive do
+      {:world_parked, ^side, pid} -> pid
+    after
+      15_000 -> flunk("no process parked #{side} the call")
+    end
+  end
+
+  @doc "Kill the parked process: the effect it was in leaves its key `started`."
+  @spec kill_parked!(pid()) :: :ok
+  def kill_parked!(pid) do
+    ref = Process.monitor(pid)
+    Process.exit(pid, :kill)
+    assert_receive {:DOWN, ^ref, :process, ^pid, :killed}, 5_000
+    :ok
+  end
+
+  # The PRs `gh pr create` made are on the world's GitHub: mirrored the first time anything reads.
+  # A PR the effect world cannot name a head for (the branch is not on origin) has nothing to show.
+  defp sync_effect_prs(_world, nil), do: :ok
+
+  defp sync_effect_prs(world, effect_world) do
+    made = EffectWorld.prs(effect_world)
+
+    Agent.update(world, fn state ->
+      Enum.reduce(made, state, fn pr, state ->
+        url = pr["url"]
+
+        if Map.has_key?(state.prs, url) or not Map.has_key?(pr, "headRefOid") do
+          state
+        else
+          mirrored =
+            new_pr(pr["number"], pr["headRefOid"],
+              branch: pr["head"],
+              base: pr["base"],
+              state: pr["state"],
+              cross_repository: Map.get(pr, "isCrossRepository", false)
+            )
+
+          %{state | prs: Map.put(state.prs, url, mirrored)}
+        end
+      end)
+    end)
+  end
+
+  # With the effects added: `git` is real and `gh pr create` is the effect world's, refused like gh
+  # when this repository already has an open PR for the head and base.
+  defp effect_reply(_world, nil, _cmd, _args, _opts), do: nil
+
+  defp effect_reply(world, effect_world, "gh", ["pr", "create" | _] = args, opts) do
+    head = List.first(flag_value(args, "--head") || [])
+    base = List.first(flag_value(args, "--base") || [])
+
+    existing =
+      world
+      |> Agent.get(& &1.prs)
+      |> Enum.find(fn {_url, pr} ->
+        pr.state == "OPEN" and not pr.cross_repository and pr.branch == head and pr.base == base
+      end)
+
+    case existing do
+      nil ->
+        EffectWorld.runner(effect_world).("gh", args, opts)
+
+      {url, _pr} ->
+        {"a pull request for branch \"#{head}\" into branch \"#{base}\" already exists:\n#{url}\n",
+         1}
+    end
+  end
+
+  defp effect_reply(_world, effect_world, "git", args, opts),
+    do: EffectWorld.runner(effect_world).("git", args, opts)
+
+  defp effect_reply(_world, _effect_world, _cmd, _args, _opts), do: nil
+
+  # One-shot parks (`park_next_comment_write!/2`): the calling process stops at the call.
+  defp park(world, side, cmd, args) do
+    owner =
+      Agent.get_and_update(world, fn state ->
+        case Enum.split_while(state.parks, fn {parked_side, matcher, _owner} ->
+               not (parked_side == side and park_matches?(matcher, cmd, args))
+             end) do
+          {_all, []} -> {nil, state}
+          {before, [{_side, _matcher, owner} | rest]} -> {owner, %{state | parks: before ++ rest}}
+        end
+      end)
+
+    if owner do
+      send(owner, {:world_parked, side, self()})
+      Process.sleep(:infinity)
+    end
+  end
+
+  defp park_matches?(:comment_write, "gh", ["api", "repos/" <> _ | _]), do: true
+  defp park_matches?(:comment_write, "gh", ["api", "-X", "PATCH" | _]), do: true
+  defp park_matches?(_matcher, _cmd, _args), do: false
+
+  @doc "GitHub's PR is now `state` (`\"OPEN\"`, `\"CLOSED\"`, `\"MERGED\"`): merged or closed by somebody."
+  @spec set_state!(world(), String.t()) :: :ok
+  def set_state!(world, state) when state in ["OPEN", "CLOSED", "MERGED"],
+    do: update_pr!(world, &%{&1 | state: state})
+
+  defp failing?(world, kind), do: kind in Agent.get(world, & &1.failing)
 
   # -- reads --------------------------------------------------------------------------------
 
