@@ -1,4 +1,4 @@
-defmodule ForemanServer.Aggregates.RunMergeApproveEvidenceTest do
+defmodule ForemanServer.Aggregates.RunEvidenceGateTest do
   @moduledoc """
   TRD-036: `merge_approve` in the Run aggregate decides on the `evidence` `CommandGateway` stamps
   (TRD-022): it validates it, runs `PrEvidence.evaluate/2` over the record of the PR the gate holds,
@@ -262,9 +262,57 @@ defmodule ForemanServer.Aggregates.RunMergeApproveEvidenceTest do
       assert codes == ["failing", "findings_absent", "risk_missing"]
     end
 
-    test "a PR with no record at all is refused as stale: no observation exists for the decision" do
-      {codes, _} = refusal(started() |> ready() |> findings() |> risk(), gated())
+    test "a PR with findings and risk but no checks record is stale: no observation is recorded for the decision" do
+      state = started() |> ready() |> findings() |> risk()
+      assert Map.has_key?(state.pr_watch, @url)
+      {codes, _} = refusal(state, gated())
       assert codes == ["stale"]
+    end
+
+    defp put_record(state, fun),
+      do: %{state | pr_watch: Map.update!(state.pr_watch, @url, fun)}
+
+    test "nothing in pr_watch for the pinned PR is unreadable, refused, never read as eligible" do
+      state = %{clean() | pr_watch: %{}}
+      assert {["evidence_unreadable"], detail} = refusal(state, gated())
+      assert detail.status == :unknown
+      assert detail.waiver == nil
+      assert_nothing_decided(state)
+    end
+
+    test "a merge pin without a pr_url is unreadable too" do
+      state = %{clean() | merge_pins: %{nil => %Run.MergePin{pr_url: nil}}}
+      assert {["evidence_unreadable"], _detail} = refusal(state, gated())
+      assert_nothing_decided(state)
+    end
+
+    test "a malformed record is unreadable" do
+      for corrupt <- [
+            &Map.put(&1, :evidence, "junk"),
+            &put_in(&1, [:evidence, :checks, :items], "junk"),
+            &put_in(&1, [:evidence, :risk], "junk")
+          ] do
+        state = put_record(clean(), corrupt)
+        assert {["evidence_unreadable"], _detail} = refusal(state, gated())
+        assert_nothing_decided(state)
+      end
+    end
+
+    test "evidence_unreadable is never waivable, whatever codes the recorded waiver lists" do
+      refute "evidence_unreadable" in PrEvidence.waivable_codes()
+
+      state =
+        clean()
+        |> waiver(PrEvidence.waivable_codes() ++ ["evidence_unreadable"])
+        |> put_record(&put_in(&1, [:evidence, :checks, :items], "junk"))
+
+      assert {["evidence_unreadable"], _detail} = refusal(state, gated())
+      assert_nothing_decided(state)
+    end
+
+    test "a gate-off stamp approves even when the record is unreadable" do
+      state = %{clean() | pr_watch: %{}}
+      assert {:ok, %{payload: %{evidence: %{status: "off"}}}} = approve(state, GateEvidence.off())
     end
 
     test "an old observation under a stale ref cannot satisfy a decision that names a new one" do
@@ -544,6 +592,102 @@ defmodule ForemanServer.Aggregates.RunMergeApproveEvidenceTest do
       {:ok, spec} = approve(state, gated())
       approved = Run.apply_event(state, %{event_type: spec.event_type, payload: spec.payload})
       assert {:error, :merge_gate_already_approved} == approve(approved, :none)
+    end
+  end
+
+  # -- a secondary repository ------------------------------------------------------------
+
+  describe "a secondary repository's approval" do
+    @url_b "https://github.com/o/y/pull/2"
+    @head_b "head-b"
+
+    # One PR record (checks, findings, risk) for `url` at `head`, clean or with a failing check.
+    defp record(state, url, head, verdict) do
+      items =
+        case verdict do
+          :clean -> [item("unit", "passing")]
+          :failing -> [item("unit", "failing", "FAILURE")]
+        end
+
+      state
+      |> fold("PrChecksChanged", %{
+        pr_url: url,
+        head_sha: head,
+        checks: items,
+        checks_truncated: false,
+        observed_at: 1_800_000_000_000,
+        digest: "digest-#{url}",
+        evidence_digest: "evidence-digest-#{url}",
+        observation_ref: @ref,
+        required: [],
+        policy_version: nil
+      })
+      |> fold("ReviewFindingsRecorded", %{
+        pr_url: url,
+        head_sha: head,
+        status: "recorded",
+        findings: [],
+        defect: nil,
+        defect_detail: nil,
+        digest: "findings-digest-#{url}",
+        recorded_at: 1_800_000_000_000
+      })
+      |> fold("PrRiskRecorded", %{
+        pr_url: url,
+        head_sha: head,
+        level: "LOW",
+        rubric_version: "1",
+        digest: "risk-digest-#{url}",
+        findings_digest: "findings-digest-#{url}",
+        seq: 1,
+        recorded_at: 1_800_000_000_000
+      })
+    end
+
+    defp two_repos(primary, secondary) do
+      payload = %{
+        run_id: @run_id,
+        project_id: "project-1",
+        task_id: "task-1",
+        pr_url: @url_b,
+        branch_name: "foreman/task-1/#{@run_id}-b",
+        head_sha: @head_b,
+        base_branch: "main",
+        repo_id: "b"
+      }
+
+      state = started() |> ready()
+      {:ok, spec} = Run.handle_command(state, %{type: "run.pr.ready", payload: payload})
+      state = Run.apply_event(state, %{event_type: spec.event_type, payload: spec.payload})
+
+      state |> record(@url, @head, primary) |> record(@url_b, @head_b, secondary)
+    end
+
+    defp approve_b(state),
+      do: approve(state, gated(), %{repo_id: "b", head_sha: @head_b})
+
+    test "is decided on its own PR's record: primary clean, secondary failing is refused" do
+      state = two_repos(:clean, :failing)
+
+      assert {:error, {:evidence_ineligible, @head_b, ["failing"]}, detail} = approve_b(state)
+      assert detail.head_sha == @head_b
+      assert detail.inputs.checks_head_sha == @head_b
+      assert detail.inputs.risk_digest == "risk-digest-#{@url_b}"
+
+      # the primary, whose own record is clean, still approves
+      assert {:ok, %{event_type: "MergeGateApproved"}} = approve(state, gated())
+    end
+
+    test "is decided on its own PR's record: primary failing, secondary clean approves" do
+      state = two_repos(:failing, :clean)
+
+      assert {:ok, %{event_type: "MergeGateApproved", payload: payload}} = approve_b(state)
+      assert payload.repo_id == "b"
+      assert payload.evidence.status == "eligible"
+      assert payload.evidence.inputs.checks_head_sha == @head_b
+
+      assert {:error, {:evidence_ineligible, @head, ["failing"]}, _detail} =
+               approve(state, gated())
     end
   end
 

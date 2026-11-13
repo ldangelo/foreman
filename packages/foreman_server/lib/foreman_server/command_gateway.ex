@@ -85,6 +85,8 @@ defmodule ForemanServer.CommandGateway do
   @question_operator_types ~w(question.answer)
   # The PR watch's head observations: each records the head GitHub shows for a PR.
   @pr_head_observations ~w(run.pr.update run.pr.checks run.pr.review)
+  # The merge gate's operator decisions, which `dispatch_system/2` never carries.
+  @operator_only_gate_types ~w(merge_approve run.pr.waive_evidence)
   @rehold_timeout 5_000
 
   @type dispatch_result :: {:ok, map() | nil} | {:error, term()} | {:error, term(), term()}
@@ -159,6 +161,13 @@ defmodule ForemanServer.CommandGateway do
   """
   @spec dispatch_system(map(), integer()) :: dispatch_result()
   def dispatch_system(command, timeout \\ 5_000)
+
+  # `merge_approve` and `run.pr.waive_evidence` are the operator's decisions on the merge gate: the
+  # gateway's operator path stamps the evidence they are decided on (`gate_evidence/2`, the policy
+  # version), so a system caller would hand the aggregate a stamp nobody checked. They are refused
+  # here with a typed error and nothing is dispatched.
+  def dispatch_system(%{type: type}, _timeout) when type in @operator_only_gate_types,
+    do: {:error, {:operator_only, type}}
 
   # `run.repo.request` (E12 S10) is system-authored: a thread asks to add a
   # repository to its own run. The decision procedure, its side effects and
@@ -458,9 +467,18 @@ defmodule ForemanServer.CommandGateway do
   # The policy of the run's project as it stands now: an unknown run, an unknown project or a
   # projection that does not answer is `{:policy_unavailable, _}`, never gate off.
   # `:merge_gate_readers` (`[run: (run_id -> map | nil), project: (project_id -> map | nil)]`) is
-  # a test seam for the two projection reads; the default is the real projection.
+  # a seam for the two projection reads that only a test build honours; a production build always
+  # reads the real projection and never looks at the application environment.
+  @gate_readers_seam? Mix.env() == :test
+
+  defp gate_readers do
+    if @gate_readers_seam?,
+      do: Application.get_env(:foreman_server, :merge_gate_readers, []),
+      else: []
+  end
+
   defp run_policy(run_id) do
-    readers = Application.get_env(:foreman_server, :merge_gate_readers, [])
+    readers = gate_readers()
     run_reader = Keyword.get(readers, :run, &ProjectionStore.run/1)
 
     case run_reader.(run_id) do

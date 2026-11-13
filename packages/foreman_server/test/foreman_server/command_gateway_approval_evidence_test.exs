@@ -547,14 +547,63 @@ defmodule ForemanServer.CommandGatewayApprovalEvidenceTest do
     test "a gate that is not pending dispatches and stamps nothing; the aggregate refuses" do
       {_project_id, %{run_id: run_id}} = gated_run!()
       assert {:ok, _} = approve(run_id)
-      before = length(after_ready(run_id))
 
-      assert {:error, :merge_gate_already_approved} =
-               approve(run_id, %{evidence: %{checks_ref: "x"}})
+      for key <- [:evidence, "evidence"] do
+        before = length(after_ready(run_id))
 
-      assert [%{type: "merge_approve", payload: payload}] = Enum.drop(after_ready(run_id), before)
-      refute Map.has_key?(payload, :evidence)
-      refute Map.has_key?(payload, "evidence")
+        assert {:error, :merge_gate_already_approved} =
+                 approve(run_id, %{key => %{policy: nil, checks_ref: "x", now_ms: 1}})
+
+        assert [%{type: "merge_approve", payload: payload}] =
+                 Enum.drop(after_ready(run_id), before)
+
+        refute Map.has_key?(payload, :evidence)
+        refute Map.has_key?(payload, "evidence")
+      end
+    end
+  end
+
+  describe "the merge gate's decisions are operator-only (dispatch_system refuses them)" do
+    defp system_command(type, run_id, payload) do
+      %{
+        command_id: "system-#{type}-#{token()}",
+        type: type,
+        aggregate_id: "run:#{run_id}",
+        payload:
+          Map.merge(%{run_id: run_id, approver: "leo", approver_identity: @approver}, payload)
+      }
+    end
+
+    test "merge_approve with a hand-made gate-off evidence is refused and nothing is appended" do
+      {_project_id, %{run_id: run_id}} = gated_run!()
+      forged = %{policy: nil, checks_ref: nil, now_ms: 1}
+
+      command = system_command("merge_approve", run_id, %{head_sha: "head-one", evidence: forged})
+      assert {:error, {:operator_only, "merge_approve"}} = CommandGateway.dispatch_system(command)
+
+      assert events(run_id, "MergeGateApproved") == []
+      refute "merge_approve" in types(after_ready(run_id))
+
+      # the operator path, which stamps its own evidence, still decides the gate
+      assert {:ok, _} = approve(run_id)
+      assert [_approved] = events(run_id, "MergeGateApproved")
+    end
+
+    test "run.pr.waive_evidence is refused too" do
+      {_project_id, %{run_id: run_id}} = gated_run!()
+
+      command =
+        system_command("run.pr.waive_evidence", run_id, %{
+          head_sha: "head-one",
+          policy_version: "v",
+          reasons: ["skipped"],
+          reason: "x"
+        })
+
+      assert {:error, {:operator_only, "run.pr.waive_evidence"}} =
+               CommandGateway.dispatch_system(command)
+
+      assert events(run_id, "PrEvidenceWaived") == []
     end
   end
 

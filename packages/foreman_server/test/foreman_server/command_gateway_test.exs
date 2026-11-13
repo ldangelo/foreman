@@ -2641,10 +2641,10 @@ defmodule ForemanServer.CommandGatewayTest do
       end
     end
 
-    test "a system dispatch carries no stamp: the aggregate refuses a waiver without policy_version",
+    test "a command that skips the gateway carries no stamp: the aggregate refuses a waiver without policy_version",
          %{gate_on: run_id} do
       assert {:error, {:missing_or_invalid, :policy_version}} =
-               CommandGateway.dispatch_system(%{
+               ForemanServer.CommandRouter.dispatch(%{
                  type: "run.pr.waive_evidence",
                  command_id: unique_id("waive-system"),
                  aggregate_id: "run:#{run_id}",
