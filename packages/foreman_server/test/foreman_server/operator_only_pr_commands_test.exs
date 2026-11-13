@@ -84,4 +84,55 @@ defmodule ForemanServer.OperatorOnlyPrCommandsTest do
     assert {:error, {:forbidden_command, "run.pr.retry"}} =
              CoordinatorDispatch.system(CommandGateway, %{type: "run.pr.retry", payload: %{}})
   end
+
+  # TRD-033: the failed-ready record is a `PrWatch` command (so a terminal run takes it) that
+  # only `PrReadySignal` dispatches: no operator envelope, MCP tool, coordinator or approvals.
+  describe "run.pr.ready_failed is system-only" do
+    @type_name "run.pr.ready_failed"
+
+    test "it is a PrWatch command but not an operator one" do
+      assert @type_name in PrWatch.command_types()
+      refute @type_name in PrWatch.operator_types()
+      refute @type_name in CommandGateway.operator_types()
+      refute @type_name in CommandGateway.pr_operator_types()
+    end
+
+    test "the operator envelope refuses it" do
+      assert {:error, {:command_not_allowed, @type_name}} =
+               CommandGateway.dispatch_operator(%{
+                 type: @type_name,
+                 command_id: "c-ready-failed",
+                 aggregate_id: "run:none",
+                 payload: %{
+                   run_id: "none",
+                   pr_url: "https://github.com/a/b/pull/1",
+                   stage: "head_read",
+                   reason: "x",
+                   failed_at: 1
+                 }
+               })
+    end
+
+    test "no MCP tool is, or is named after, it; calling it is an unknown tool" do
+      names = Enum.map(Tools.list_tools(), & &1.name)
+      refute @type_name in names
+      refute "foreman_run_pr_ready_failed" in names
+      refute Enum.any?(names, &String.contains?(&1, "ready_failed"))
+
+      previous = Application.get_env(:foreman_server, :mcp)
+      Application.put_env(:foreman_server, :mcp, allow_workflow_writes: true)
+      on_exit(fn -> Application.put_env(:foreman_server, :mcp, previous || []) end)
+
+      assert {:error, %{code: "METHOD_NOT_FOUND"}} =
+               Tools.call_tool("foreman_run_pr_ready_failed", %{run_id: "none"})
+    end
+
+    test "coordinator and approvals cannot dispatch it" do
+      refute @type_name in CoordinatorDispatch.command_types()
+      refute @type_name in ApprovalsDispatch.command_types()
+
+      assert {:error, {:forbidden_command, @type_name}} =
+               CoordinatorDispatch.system(CommandGateway, %{type: @type_name, payload: %{}})
+    end
+  end
 end

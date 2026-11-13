@@ -7,12 +7,13 @@ defmodule ForemanServer.Workflow.RunExecutorMultiRepoPrTest do
   use ExUnit.Case, async: false
 
   alias ForemanServer.{Identity, MultiRepoRuns, PrAssociate, ProjectionStore}
-  alias ForemanServer.TestSupport.ProjectionStoreReset
+  alias ForemanServer.TestSupport.{PrReadyGithub, ProjectionStoreReset}
   alias ForemanServer.Workflow.{RepoPr, RepoPrContext, RunExecutor}
 
   setup do
     ProjectionStoreReset.reset!()
     MultiRepoRuns.enable!()
+    PrReadyGithub.install!(&PrReadyGithub.sha/1)
 
     root = Path.join(System.tmp_dir!(), "multi-repo-pr-#{System.unique_integer([:positive])}")
     File.mkdir_p!(root)
@@ -202,6 +203,94 @@ defmodule ForemanServer.Workflow.RunExecutorMultiRepoPrTest do
 
       {:ok, run_events} = ForemanServer.EventStore.read_stream_forward("run:#{ctx.run_id}")
       assert Enum.count(run_events, &(&1.event_type == "PrReady")) == 2
+    end
+  end
+
+  describe "the head of record comes from GitHub (TRD-008)" do
+    defp ready_events(run_id) do
+      {:ok, events} = ForemanServer.EventStore.read_stream_forward("run:#{run_id}")
+      for e <- events, e.event_type == "PrReady", do: decode(e)
+    end
+
+    test "each repository's PrReady names the head GitHub shows, not its local tip", ctx do
+      touch!(ctx, "a")
+      touch!(ctx, "b")
+      local_a = git!(ctx.wt_a, ["rev-parse", "HEAD"])
+      local_b = git!(ctx.wt_b, ["rev-parse", "HEAD"])
+
+      # GitHub names H2 for each PR: a rewritten branch is not the local tip H1.
+      h2 = %{
+        "https://github.com/o/repo-a/pull/1" => PrReadyGithub.sha("a force-pushed"),
+        "https://github.com/o/repo-b/pull/2" => PrReadyGithub.sha("b force-pushed")
+      }
+
+      PrReadyGithub.install!(h2)
+
+      assert [{"main", {:ok, a_url}}, {"b", {:ok, b_url}}] =
+               RunExecutor.__finalize_repo_prs_for_test__(ctx.state)
+
+      assert [
+               %{"pr_url" => ^a_url, "head_sha" => head_a},
+               %{"pr_url" => ^b_url, "head_sha" => head_b}
+             ] =
+               ready_events(ctx.run_id)
+
+      assert head_a == h2[a_url] and head_a != local_a
+      assert head_b == h2[b_url] and head_b != local_b
+    end
+
+    test "a failed GitHub read signals nothing for that repository and the run goes on", ctx do
+      touch!(ctx, "a")
+      touch!(ctx, "b")
+
+      PrReadyGithub.install!(fn url ->
+        if String.contains?(url, "repo-b"), do: {:error, 1}, else: PrReadyGithub.sha(url)
+      end)
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert [{"main", {:ok, a_url}}, {"b", {:ok, b_url}}] =
+                   RunExecutor.__finalize_repo_prs_for_test__(ctx.state)
+
+          send(self(), {:urls, a_url, b_url})
+        end)
+
+      assert_received {:urls, a_url, b_url}
+
+      assert log =~ "repository b: PR #{b_url} created but run.pr.ready was NOT signalled"
+      assert log =~ "head_read_failed"
+      assert [%{"pr_url" => ^a_url}] = ready_events(ctx.run_id)
+
+      # the PR itself is open and associated: only its merge gate never engaged
+      assert [%{repo_id: "main"}, %{repo_id: "b", pr_url: ^b_url}] =
+               ProjectionStore.pr_associations_for_run(ctx.run_id)
+    end
+
+    test "a repeated finalisation after the read recovered signals once, with GitHub's head",
+         ctx do
+      touch!(ctx, "a")
+      touch!(ctx, "b")
+      healthy = PrReadyGithub.sha("b healthy")
+
+      PrReadyGithub.install!(fn url ->
+        if String.contains?(url, "repo-b"), do: {:error, 1}, else: PrReadyGithub.sha(url)
+      end)
+
+      ExUnit.CaptureLog.capture_log(fn ->
+        RunExecutor.__finalize_repo_prs_for_test__(ctx.state)
+      end)
+
+      PrReadyGithub.install!(fn url ->
+        if String.contains?(url, "repo-b"), do: healthy, else: PrReadyGithub.sha(url)
+      end)
+
+      RunExecutor.__finalize_repo_prs_for_test__(ctx.state)
+      RunExecutor.__finalize_repo_prs_for_test__(ctx.state)
+
+      assert [%{"repo_id" => "b", "head_sha" => ^healthy}] =
+               Enum.filter(ready_events(ctx.run_id), &(&1["repo_id"] == "b"))
+
+      assert [_, _] = ready_events(ctx.run_id)
     end
   end
 

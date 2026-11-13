@@ -105,6 +105,8 @@ click: `Done: run.pr.create ...`, and GitHub has the PR (#5 on the first server)
 > the signal removed 4 of the 16 tests fail (12/16 pass); restored, 16/16.
 > Re-verified live on the fixed server (PR #6): `PrReady` at 13:21:38 then `PrCreated`; card `ready_for_review / pr_ready`, `merge_gate: pending`;
 > `approve-merge` accepted, `merge` accepted, GitHub `MERGED`, thread `Resolved`.
+>
+> *Superseded (Phase 1 PR 3, TRD-008): the head `PrReady` records is no longer resolved in the project checkout. `PrReadySignal` reads it from GitHub (one `gh pr view`) for all three signalling sites (`RunExecutor`, `PrCreate`, `RepoPr`), and a failed signal is `{:pr_ready_signal_failed, {:head_read_failed, reason}}` (or `{:ready_dispatch_failed, reason}`) and is also recorded as a `PrReadyFailed` event. The record above is otherwise unchanged and describes the build it was run on.*
 
 ## `pr_auto_fix` (9c off, 9f off -> on -> bounded), PR #4
 

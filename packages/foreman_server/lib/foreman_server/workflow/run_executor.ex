@@ -53,6 +53,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   alias ForemanServer.RunControl
   alias ForemanServer.Identity
   alias ForemanServer.PrAssociate
+  alias ForemanServer.PrReadySignal
   alias ForemanServer.ProjectContext
   alias ForemanServer.ProjectionStore
   alias ForemanServer.Workflow.CommitDeferral
@@ -2630,22 +2631,15 @@ defmodule ForemanServer.Workflow.RunExecutor do
   defp signal_pr_ready(state, pr_url) do
     with {:ok, base_branch} <- run_base_branch(state),
          {:ok, head_branch} <- AutoPR.resolve_head_branch(auto_pr_context(state, base_branch)),
-         {:ok, head_sha} <- resolve_revision(vcs_working_directory(state), head_branch),
-         {:ok, _} <-
-           dispatch_system_command(
-             "run.pr.ready",
-             Identity.run_pr_ready_command_id(state.run_id),
-             "run:#{state.run_id}",
-             %{
-               run_id: state.run_id,
-               project_id: project_id(state),
-               task_id: task_id(state),
-               pr_url: pr_url,
-               branch_name: head_branch,
-               head_sha: head_sha,
-               base_branch: base_branch
-             }
-           ) do
+         :ok <-
+           PrReadySignal.signal(%{
+             run_id: state.run_id,
+             project_id: project_id(state),
+             task_id: task_id(state),
+             pr_url: pr_url,
+             branch_name: head_branch,
+             base_branch: base_branch
+           }) do
       :ok
     else
       {:error, reason} ->

@@ -24,8 +24,15 @@ defmodule ForemanServerWeb.DoctorController do
       gating line (`Doctor.gating_line/0`: durable store required and met or not; a switch that
       is not a boolean is read as on and says so) and one line per key in `detail`
       (`<class> run=<id> status=<run status> key=<key> key_status=<started|ambiguous>
-      decision=<not_done|none>`, `Doctor.effect_entry_line/1`); `warn` only when the
+      decision=<not_done|none> writer=<alive|dead|none>`, `Doctor.effect_entry_line/1`); `warn` only when the
       keys cannot be read (the detail then still carries the gating line);
+    * `pr_observation` - what shows a head change, a new check result or a published
+      report without anyone approving (a fix push is re-read by the watcher; any other push
+      is seen only by the poll loop or a verified webhook): the watcher
+      (`PrWatcher.enabled?/0`, on by default), the monitor (`PrMonitor.enabled?/0`, opt-in)
+      and whether `FOREMAN_GITHUB_WEBHOOK_SECRET` is set (never its value); `warn` when
+      the watcher is off. The merge gate does not depend on any of them: approval re-reads
+      GitHub;
     * `project.recommendations` - with `?project=`, counts of setup
       recommendations by severity (`Projects.Recommendations`).
 
@@ -53,7 +60,8 @@ defmodule ForemanServerWeb.DoctorController do
       [check("server", :ok, "Server reachable", "The server answered this request.")] ++
         [event_store_check()] ++
         provider_checks() ++
-        workflow_checks() ++ [notifier_check(), effect_keys_check()] ++ project_check
+        workflow_checks() ++
+        [notifier_check(), effect_keys_check(), pr_observation_check()] ++ project_check
 
     case Enum.find(project_check, &(&1["status"] == "not_found")) do
       nil -> conn |> put_status(:ok) |> json(%{checks: checks})
@@ -92,6 +100,49 @@ defmodule ForemanServerWeb.DoctorController do
           "The idempotency store did not answer, so ambiguous effect keys are unknown.\n" <>
             Doctor.gating_line()
         )
+    end
+  end
+
+  defp pr_observation_check do
+    watcher = ForemanServer.PrWatcher.enabled?()
+    monitor = ForemanServer.PrMonitor.enabled?()
+    webhook = webhook_secret_set?()
+
+    detail =
+      Enum.join(
+        [
+          "watcher: #{on_off(watcher)} (FOREMAN_PR_WATCHER_ENABLED; on by default; re-reads the PR when a fix jobsite ends)",
+          "monitor: #{on_off(monitor)} (FOREMAN_PR_MONITOR_ENABLED=true; polls for a head that moves for any other reason)",
+          "webhook secret: #{if webhook, do: "set", else: "not set"} (FOREMAN_GITHUB_WEBHOOK_SECRET; without it /webhooks/github answers 503)",
+          "The merge gate does not depend on these: approval re-reads GitHub."
+        ],
+        "\n"
+      )
+
+    if watcher do
+      check("pr_observation", :ok, "PR observation: #{summary(monitor, webhook)}", detail)
+    else
+      check(
+        "pr_observation",
+        :warn,
+        "PR watcher is off: fix pushes and PR events are not observed",
+        detail
+      )
+    end
+  end
+
+  defp summary(true, true), do: "watcher on, monitor on, webhook secret set"
+  defp summary(true, false), do: "watcher on, monitor on, webhook secret not set"
+  defp summary(false, true), do: "watcher on, monitor off, webhook secret set"
+  defp summary(false, false), do: "watcher on, monitor off, webhook secret not set"
+
+  defp on_off(true), do: "on"
+  defp on_off(false), do: "off"
+
+  defp webhook_secret_set? do
+    case Application.get_env(:foreman_server, :github_webhook_secret) do
+      secret when is_binary(secret) and secret != "" -> true
+      _ -> false
     end
   end
 

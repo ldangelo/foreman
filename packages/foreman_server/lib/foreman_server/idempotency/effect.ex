@@ -35,8 +35,25 @@ defmodule ForemanServer.Idempotency.Effect do
   calling `fun` and without touching the key, and ask the boot sweep to run again
   (`BootReconciliation.scan_ambiguous_keys/0`, once per refusal; best effort, so a
   sweep that is not running leaves the refusal as it is, and the sweep coalesces the
-  requests), because a decision can only come from it. A key recovery could not
+  requests), because a decision can only come from it. That scan is an on-demand one: a
+  reconciler that cannot tell (`unknown`, such as a `gh` call that timed out) leaves the key
+  undecided and the run running, and the next refusal or the boot sweep asks again; only the
+  boot sweep marks such a key unresolved. A key recovery could not
   resolve is refused as `effect_unresolved` until an operator `run.reset`.
+
+  ## The writer stamp
+
+  The `started` key records its writer: the server incarnation (`Incarnation.id/0`) and the
+  pid of the process that called `run/4`, as a string (`writer_incarnation`, `writer_pid`:
+  JSON-safe, so it survives the repo-backed path). The effect runs in that same process, so
+  the writer is alive exactly while the effect can still be running. `writer_state/1` is the
+  one reading of the stamp: the boot sweep orphans a stamped `started` key only when its
+  writer is `:dead`, whatever executor its run has now, and never when it is `:alive`; the
+  doctor prints it. A key without a stamp (written before the stamp existed) is `:none` and
+  keeps the run-liveness rule. A settle clears the stamp (`KeyStore.recovery_fields_cleared/0`).
+  A writer that hangs forever keeps its key undecided, and a local pid recycled within one
+  incarnation (a full wrap of the pid space in one boot) would read `alive`: both are
+  accepted, since not repeating is the safe side.
 
   The key is marked with `KeyStore.mark_started/2` directly;
   `HeartbeatLease.acquire/4` arms a live-worker expiry timer and is not used.
@@ -44,6 +61,7 @@ defmodule ForemanServer.Idempotency.Effect do
 
   alias ForemanServer.Aggregate
   alias ForemanServer.EventStore
+  alias ForemanServer.Incarnation
   alias ForemanServer.Idempotency.KeyStore
   alias ForemanServer.Idempotency.Reconciler
   alias ForemanServer.Workflow.BootReconciliation
@@ -292,13 +310,68 @@ defmodule ForemanServer.Idempotency.Effect do
   defp present?(nil), do: false
   defp present?(_v), do: true
 
+  @doc """
+  The writer stamp for a `started` key written by the calling process: the incarnation id and
+  the pid as a string.
+  """
+  @spec writer_stamp() :: %{String.t() => String.t()}
+  def writer_stamp do
+    %{
+      "writer_incarnation" => Incarnation.id(),
+      "writer_pid" => self() |> :erlang.pid_to_list() |> List.to_string()
+    }
+  end
+
+  @doc """
+  Whether the writer of a key (its string-keyed metadata) is `:alive`, `:dead` or `:none`
+  (no stamp: a key written before the stamp existed, or an agent-phase key).
+
+  `:dead` when the stamp names another incarnation (no process of an earlier boot exists), a
+  pid that is not alive, or a pid that cannot be read back (garbage, or a pid of another node:
+  neither can be a writer of this boot). Never raises.
+  """
+  @spec writer_state(term()) :: :alive | :dead | :none
+  def writer_state(%{"writer_incarnation" => incarnation, "writer_pid" => pid_text})
+      when is_binary(incarnation) and is_binary(pid_text) do
+    if incarnation == Incarnation.id() do
+      case local_pid(pid_text) do
+        {:ok, pid} -> if Process.alive?(pid), do: :alive, else: :dead
+        :error -> :dead
+      end
+    else
+      :dead
+    end
+  end
+
+  def writer_state(%{writer_incarnation: _} = metadata),
+    do: metadata |> Map.new(fn {k, v} -> {to_string(k), v} end) |> writer_state()
+
+  def writer_state(_metadata), do: :none
+
+  # `list_to_pid/1` raises `badarg` for text that is not a pid, and for a pid text with a node
+  # index this VM does not know (`"<5.1.0>"` on a VM that is not connected to that node;
+  # observed on OTP 28); on a distributed VM that knows the index it returns a remote pid, which
+  # `Process.alive?/1` would raise on, hence the `node/1` check. `String.to_charlist/1` raises
+  # `UnicodeConversionError` on invalid UTF-8. None of them may escape: an unreadable stamp is a
+  # writer that cannot be alive.
+  defp local_pid(text) do
+    if String.valid?(text) do
+      pid = text |> String.to_charlist() |> :erlang.list_to_pid()
+      if node(pid) == node(), do: {:ok, pid}, else: :error
+    else
+      :error
+    end
+  rescue
+    _error -> :error
+  end
+
   # Every re-mark clears what recovery wrote (the decision and the unresolved marker): the
   # store merges new metadata over the stored, so either left on the key by an earlier
   # crash would survive the re-mark and make the next crash look decided or unresolved
   # when the sweep has not yet looked at it.
   defp record_intent(key, typed, :clear) do
     key
-    |> KeyStore.mark_started(Map.merge(typed, KeyStore.recovery_fields_cleared()))
+    |> KeyStore.mark_started(stamped(typed))
     |> intent_result()
   catch
     :exit, reason -> {:error, {:key_store_unavailable, reason}}
@@ -309,12 +382,7 @@ defmodule ForemanServer.Idempotency.Effect do
   # caller observed, so of two callers that both saw the reset only one runs the effect,
   # and a marker rewritten after the check is not lifted on the earlier decision.
   defp record_intent(key, typed, {:lifted, observed_version}) do
-    cleared =
-      Map.merge(typed, %{
-        "unresolved_at_run_version" => nil,
-        "unresolved_reason" => nil,
-        "decision" => nil
-      })
+    cleared = stamped(typed)
 
     case KeyStore.lift_unresolved(key, observed_version, cleared) do
       :lifted -> :ok
@@ -330,7 +398,7 @@ defmodule ForemanServer.Idempotency.Effect do
   # read, so of two callers that both read it only one runs the effect; the other finds
   # the key `started` and is refused as undecided.
   defp record_intent(key, typed, {:decided, observed}) do
-    cleared = Map.put(typed, "decision", nil)
+    cleared = stamped(typed)
 
     case KeyStore.consume_decision(key, observed, cleared) do
       :consumed -> :ok
@@ -340,6 +408,11 @@ defmodule ForemanServer.Idempotency.Effect do
   catch
     :exit, reason -> {:error, {:key_store_unavailable, reason}}
   end
+
+  # The metadata of a `started` write: everything recovery or an earlier writer left is
+  # cleared, then this process stamps itself as the writer.
+  defp stamped(typed),
+    do: typed |> Map.merge(KeyStore.recovery_fields_cleared()) |> Map.merge(writer_stamp())
 
   defp intent_result(:ok), do: :ok
   defp intent_result({:error, reason}), do: {:error, reason}

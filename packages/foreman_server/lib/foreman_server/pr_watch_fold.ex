@@ -21,8 +21,11 @@ defmodule ForemanServer.PrWatchFold do
 
   require Logger
 
+  alias ForemanServer.PrEvidence
+
   @events ~w(PrUpdated PrReady PrMerged PrChecksChanged PrReviewChanged PrFixRequested
-             PrFixStarted PrFixFinished PrFixExhausted PrWatchStopped PrWatchStarted)
+             PrFixStarted PrFixFinished PrFixExhausted PrWatchStopped PrWatchStarted
+             PrEvidenceWaived PrReadyFailed)
 
   @type watch_record :: map()
   @type t :: %{String.t() => %{String.t() => watch_record()}}
@@ -56,6 +59,7 @@ defmodule ForemanServer.PrWatchFold do
       watching: true,
       stop_reason: nil,
       fix: new_fix(),
+      evidence: PrEvidence.empty(),
       updated_at: nil
     }
   end
@@ -88,6 +92,7 @@ defmodule ForemanServer.PrWatchFold do
 
       updated =
         record
+        |> PrEvidence.apply_event(type, payload)
         |> common(payload)
         |> apply_event(type, payload)
 
@@ -196,6 +201,11 @@ defmodule ForemanServer.PrWatchFold do
 
   defp apply_event(record, "PrWatchStarted", _payload),
     do: %{record | watching: true, stop_reason: nil}
+
+  # Applied by `PrEvidence.apply_event/3` (called first in `fold/3`).
+  defp apply_event(record, "PrEvidenceWaived", _payload), do: record
+
+  defp apply_event(record, "PrReadyFailed", _payload), do: record
 
   defp update_fix(record, fun), do: %{record | fix: fun.(record.fix)}
 

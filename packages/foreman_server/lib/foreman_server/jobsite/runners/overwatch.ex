@@ -150,10 +150,28 @@ defmodule ForemanServer.Jobsite.Runners.Overwatch do
   # effects, so the outcome is unknown, not failed. `ambiguous` is what crash recovery inspects.
   defp record_outcome(key, {:error, reason})
        when reason in [:worker_timeout, :worker_died_no_result],
-       do: :ok = KeyStore.mark_ambiguous(key, Atom.to_string(reason))
+       do: mark_unknown_outcome(key, Atom.to_string(reason))
 
   defp record_outcome(key, {:error, reason}),
     do: :ok = KeyStore.mark_failed(key, inspect(reason))
+
+  # `mark_ambiguous/2` is compare-and-set: a key that settled meanwhile (`:status_changed`) keeps
+  # its outcome and the runner keeps its result. Raising here would reach the `catch` above and
+  # overwrite the settled key with `failed`.
+  defp mark_unknown_outcome(key, reason) do
+    case KeyStore.mark_ambiguous(key, reason) do
+      :ok ->
+        :ok
+
+      :status_changed ->
+        Logger.warning(
+          "Overwatch: idempotency key #{inspect(key)} settled before its #{reason} outcome could be recorded; leaving it as it is",
+          key: key
+        )
+
+        :ok
+    end
+  end
 
   defp register_lease_worker(%{lease: %{key: key}, run_id: run_id}, worker_id),
     do: HeartbeatLease.register_worker(worker_id, run_id, key)

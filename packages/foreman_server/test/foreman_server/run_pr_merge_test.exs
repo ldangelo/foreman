@@ -601,7 +601,9 @@ defmodule ForemanServer.RunPrMergeTest do
           state: :failing,
           conclusion: "FAILURE",
           url: nil,
-          workflow: nil
+          workflow: nil,
+          started_at: "2026-11-12T13:58:43Z",
+          completed_at: "2026-11-12T13:58:49Z"
         }
       ]
 

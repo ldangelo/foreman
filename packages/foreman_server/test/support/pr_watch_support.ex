@@ -79,7 +79,9 @@ defmodule ForemanServer.TestSupport.PrWatchSupport do
       state: :failing,
       conclusion: "FAILURE",
       url: "https://github.com/acme/repo/actions/runs/1/job/#{name}",
-      workflow: "ci"
+      workflow: "ci",
+      started_at: "2026-11-12T13:58:43Z",
+      completed_at: "2026-11-12T13:58:49Z"
     }
   end
 

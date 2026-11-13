@@ -8,7 +8,8 @@ defmodule ForemanServer.Aggregates.Run do
   alias ForemanServer.PrGate
 
   @pr_watch_types PrWatch.command_types()
-  @pr_watch_events PrWatch.event_types()
+  # The events `PrWatch` emits plus the evidence events its fold (`PrEvidence`) also applies.
+  @pr_watch_events Enum.uniq(PrWatch.event_types() ++ ForemanServer.PrEvidence.events())
 
   defmodule PhaseStatus do
     @moduledoc "Phase status keyed by phase_id."

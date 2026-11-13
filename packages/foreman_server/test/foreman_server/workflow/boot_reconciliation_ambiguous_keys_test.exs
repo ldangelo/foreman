@@ -132,7 +132,7 @@ defmodule ForemanServer.Workflow.BootReconciliationAmbiguousKeysTest do
       # leaves the key ambiguous for the retried dispatch to resolve).
       assert_receive {@ambiguous_event, _, %{skipped: 0, retried: 1}, _}, 5_000
       assert KeyStore.status("orphan-1") == {:ok, :ambiguous}
-      assert {:ok, %{metadata: %{reason: "orphaned_started_key"}}} = KeyStore.get("orphan-1")
+      assert {:ok, %{metadata: %{"reason" => "orphaned_started_key"}}} = KeyStore.get("orphan-1")
     end
 
     test "a started key whose run is live stays started" do
@@ -250,6 +250,15 @@ defmodule ForemanServer.Workflow.BootReconciliationAmbiguousKeysTest do
     end
   end
 
+  defmodule Unknown do
+    @moduledoc false
+    @behaviour ForemanServer.Idempotency.Reconciler
+
+    # A gh/network call that timed out: the reconciler cannot tell.
+    @impl true
+    def reconcile(_metadata), do: :unknown
+  end
+
   defmodule FakeRepo do
     @moduledoc false
     # Rows live in a public ETS table the test owns, metadata makes a JSON round trip
@@ -309,7 +318,8 @@ defmodule ForemanServer.Workflow.BootReconciliationAmbiguousKeysTest do
     original = Application.get_env(:foreman_server, Reconciler)
 
     Application.put_env(:foreman_server, Reconciler,
-      classes: Map.put(Reconciler.classes(), "scan_probe", Verdicts)
+      classes:
+        Map.merge(Reconciler.classes(), %{"scan_probe" => Verdicts, "scan_unknown" => Unknown})
     )
 
     on_exit(fn ->
@@ -433,6 +443,99 @@ defmodule ForemanServer.Workflow.BootReconciliationAmbiguousKeysTest do
       assert_receive {@ambiguous_event, ^ref, _, _}, 5_000
       refute_receive {@ambiguous_event, ^ref, _, _}, 500
       assert {:ok, :started} = KeyStore.status(undecided)
+    end
+  end
+
+  describe "an unknown verdict is routed by the scan's origin, through the real process" do
+    @describetag :capture_log
+
+    setup %{telemetry_ref: ref} do
+      put_scan_probe_class()
+      {effect_handler, effect_ref} = Handler.attach_event_handlers(self(), [@effect_event])
+      on_exit(fn -> :telemetry.detach(effect_handler) end)
+      start_supervised!({BootReconciliation, []})
+      _ = :sys.get_state(BootReconciliation, 15_000)
+      flush_scans(ref)
+      flush_effect(effect_ref)
+      {:ok, effect_ref: effect_ref}
+    end
+
+    defp flush_effect(ref) do
+      receive do
+        {@effect_event, ^ref, _m, _md} -> flush_effect(ref)
+      after
+        0 -> :ok
+      end
+    end
+
+    defp plant_unknown(run_id) do
+      key = Effect.key("scan_unknown", run_id, "probe")
+
+      :ok =
+        KeyStore.mark_started(key, %{"run_id" => run_id, "effect_class" => "scan_unknown"})
+
+      :ok = KeyStore.mark_ambiguous(key, "orphaned_started_key")
+      key
+    end
+
+    defp undecided_and_unmarked?(key) do
+      {:ok, %{status: :ambiguous, metadata: metadata}} = KeyStore.get(key)
+      KeyStore.unresolved_version(metadata) == :none and KeyStore.decision(metadata) == :none
+    end
+
+    defp marked?(key) do
+      {:ok, %{metadata: metadata}} = KeyStore.get(key)
+      KeyStore.unresolved_version(metadata) != :none
+    end
+
+    test "the cast an effect_undecided refusal sends is on-demand: the key stays undecided and unmarked",
+         %{effect_ref: effect_ref} do
+      run_id = unique_run("od-unknown")
+      key = plant_unknown(run_id)
+
+      assert {:error, {:effect_undecided, ^key}} =
+               Effect.run("scan_unknown", key, fn -> flunk("repeated") end, %{run_id: run_id})
+
+      assert_receive {@effect_event, ^effect_ref, %{deferred_unknown: 1, blocked: 0}, _}, 5_000
+      assert undecided_and_unmarked?(key)
+
+      # Retried by the next refusal, not lost: still refused as undecided.
+      assert {:error, {:effect_undecided, ^key}} =
+               Effect.run("scan_unknown", key, fn -> flunk("repeated") end, %{run_id: run_id})
+
+      assert_receive {@effect_event, ^effect_ref, %{deferred_unknown: 1}, _}, 5_000
+    end
+
+    test "the deferred boot retry (the bare message) is a boot sweep: the key is marked",
+         %{effect_ref: effect_ref} do
+      key = plant_unknown(unique_run("boot-unknown"))
+
+      send(BootReconciliation, :scan_ambiguous_keys)
+
+      assert_receive {@effect_event, ^effect_ref, %{deferred_unknown: 0}, _}, 5_000
+      assert marked?(key)
+    end
+
+    test "an on-demand scan deferred because the CommandRouter is absent keeps its origin when it retries",
+         %{effect_ref: effect_ref} do
+      key = plant_unknown(unique_run("deferred-od"))
+      app_sup = Process.whereis(ForemanServer.Application)
+      :ok = Supervisor.terminate_child(app_sup, ForemanServer.CommandRouter)
+
+      on_exit(fn ->
+        if is_nil(Process.whereis(ForemanServer.CommandRouter)),
+          do: Supervisor.restart_child(app_sup, ForemanServer.CommandRouter)
+      end)
+
+      assert :ok = BootReconciliation.scan_ambiguous_keys()
+      # Let the scan be deferred (it re-arms itself every 50 ms) before the router returns.
+      _ = :sys.get_state(BootReconciliation, 5_000)
+      refute_receive {@effect_event, ^effect_ref, _, _}, 150
+
+      {:ok, _} = Supervisor.restart_child(app_sup, ForemanServer.CommandRouter)
+
+      assert_receive {@effect_event, ^effect_ref, %{deferred_unknown: 1, blocked: 0}, _}, 5_000
+      assert undecided_and_unmarked?(key)
     end
   end
 

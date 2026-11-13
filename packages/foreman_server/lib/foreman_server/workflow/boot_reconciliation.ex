@@ -37,7 +37,7 @@ defmodule ForemanServer.Workflow.BootReconciliation do
   }
 
   alias ForemanServer.Aggregates.{BeadsDbLease, RunSlots}
-  alias ForemanServer.Idempotency.{CrashRecovery, KeyStore, Reconciler, RestartBackoff}
+  alias ForemanServer.Idempotency.{CrashRecovery, Effect, KeyStore, Reconciler, RestartBackoff}
   alias ForemanServer.Idempotency.Reconcilers.TaskProvider, as: TaskProviderEffect
   alias ForemanServer.Incarnation
   alias ForemanServer.TaskProvider.Issue
@@ -189,8 +189,12 @@ defmodule ForemanServer.Workflow.BootReconciliation do
   blocks the run; a run that has ended cannot be blocked, so there the key only stays
   refused (`Effect` answers `effect_unresolved`) and the operator's way out is on GitHub; a
   class that never blocks a run (`Reconciler.blocks_run?/3`) is left as it is (TRD-039).
-  The scan first marks the `started` keys of runs with no live executor
-  `ambiguous`.
+  The scan first marks the orphaned `started` keys `ambiguous`: a key stamped with its writer
+  (`Idempotency.Effect.writer_state/1`) is an orphan when that writer is dead, whatever executor
+  its run has now, and never while it is alive; a key without a stamp is an orphan when its run
+  has no live executor. An `unknown` verdict marks the key unresolved and blocks the run only
+  when the scan is the boot sweep; an on-demand scan (the cast below) leaves the key undecided,
+  counts it `deferred_unknown` and leaves the run running.
 
   Dispatches as a cast so the scan runs inside the `BootReconciliation`
   process. Returns `:ok` once the cast is enqueued, whether or not the process
@@ -300,7 +304,7 @@ defmodule ForemanServer.Workflow.BootReconciliation do
   @impl true
   def handle_cast(:scan_ambiguous_keys, state) do
     coalesce_ambiguous_scan_requests()
-    state = reconcile_ambiguous_keys(state)
+    state = reconcile_ambiguous_keys(state, :on_demand)
     {:noreply, state}
   end
 
@@ -324,8 +328,17 @@ defmodule ForemanServer.Workflow.BootReconciliation do
 
   @impl true
   def handle_info(:scan_ambiguous_keys, state) do
+    # Not coalesced: this is the deferred BOOT sweep, and an on-demand request must not
+    # stand in for it (an on-demand scan never blocks on an unknown verdict).
+    state = reconcile_ambiguous_keys(state, :boot)
+    {:noreply, state}
+  end
+
+  # A deferred on-demand scan keeps its origin: it must not become a boot sweep on the retry.
+  @impl true
+  def handle_info({:scan_ambiguous_keys, :on_demand}, state) do
     coalesce_ambiguous_scan_requests()
-    state = reconcile_ambiguous_keys(state)
+    state = reconcile_ambiguous_keys(state, :on_demand)
     {:noreply, state}
   end
 
@@ -746,22 +759,24 @@ defmodule ForemanServer.Workflow.BootReconciliation do
   # Runs once at boot via handle_continue(:reconcile, ...). Deferred if the
   # CommandRouter is not yet registered.
   @doc false
-  def reconcile_ambiguous_keys(state) do
+  def reconcile_ambiguous_keys(state, origin \\ :boot) when origin in [:boot, :on_demand] do
     case scan_branch() do
       :schedule_not_ready ->
-        schedule_ambiguous_scan(:not_ready)
+        schedule_ambiguous_scan(origin)
         state
 
       _ ->
         # :schedule_worker_registry or :scan
-        do_reconcile_ambiguous_keys()
+        do_reconcile_ambiguous_keys(&CrashRecovery.has_no_side_effects?/1, origin: origin)
         %{state | ambiguous_reconciled?: true}
     end
   end
 
-  defp schedule_ambiguous_scan(_reason) do
-    Process.send_after(self(), :scan_ambiguous_keys, @scan_retry_ms)
-  end
+  defp schedule_ambiguous_scan(:boot),
+    do: Process.send_after(self(), :scan_ambiguous_keys, @scan_retry_ms)
+
+  defp schedule_ambiguous_scan(:on_demand),
+    do: Process.send_after(self(), {:scan_ambiguous_keys, :on_demand}, @scan_retry_ms)
 
   # Every request already queued is answered by the scan about to start, which lists the
   # keys afresh: a refusal that arrived while the previous scan ran is in the mailbox now,
@@ -770,7 +785,7 @@ defmodule ForemanServer.Workflow.BootReconciliation do
   defp coalesce_ambiguous_scan_requests do
     receive do
       {:"$gen_cast", :scan_ambiguous_keys} -> coalesce_ambiguous_scan_requests()
-      :scan_ambiguous_keys -> coalesce_ambiguous_scan_requests()
+      {:scan_ambiguous_keys, :on_demand} -> coalesce_ambiguous_scan_requests()
     after
       0 -> :ok
     end
@@ -837,8 +852,9 @@ defmodule ForemanServer.Workflow.BootReconciliation do
   # resolves such a key and it stays `started` forever. Turn the orphans into
   # `ambiguous` so the reconcile path below inspects them.
   #
-  # A key is an orphan only when its owning run has no executor alive in this
-  # node. `RunExecutorLiveness` (in-memory, written by the jobsite runner only)
+  # A key stamped with its writer (`Effect.writer_state/1`) is an orphan exactly when that
+  # writer is dead, whatever executor its run has now. An unstamped key is an orphan only when
+  # its owning run has no executor alive in this node. `RunExecutorLiveness` (in-memory, written by the jobsite runner only)
   # has an entry for a live jobsite executor; a workflow-door `RunExecutor` has
   # none, but is registered in `RunExecutorRegistry`, which an effect key also
   # consults (agent-phase keys keep the liveness check alone). The scan can be
@@ -892,9 +908,18 @@ defmodule ForemanServer.Workflow.BootReconciliation do
   defp orphaned_started_key?(key) do
     case KeyStore.get(key) do
       {:ok, %{status: :started, metadata: metadata}} when is_map(metadata) ->
-        case started_key_run_id(string_keys(metadata)) do
-          {:ok, run_id} -> mark_if_run_not_live(key, run_id)
-          :none -> skip_unattributable_started_key(key)
+        metadata = string_keys(metadata)
+
+        # A stamped key names its writer (`Effect.writer_state/1`): the writer decides, not
+        # the run's executor. A successor executor of the same run does not protect its dead
+        # predecessor's key, and a live caller with no executor (`PrCreate.execute`,
+        # `RepoPr.retry`) is never orphaned by a scan another run's refusal triggered. A key
+        # with no stamp keeps the run-liveness rule.
+        case {Effect.writer_state(metadata), started_key_run_id(metadata)} do
+          {:alive, _run} -> false
+          {:dead, _run} -> mark_orphaned(key)
+          {:none, {:ok, run_id}} -> mark_if_run_not_live(key, run_id)
+          {:none, :none} -> skip_unattributable_started_key(key)
         end
 
       {:error, reason} ->
@@ -923,13 +948,15 @@ defmodule ForemanServer.Workflow.BootReconciliation do
   defp started_key_run_id(_metadata), do: :none
 
   defp mark_if_run_not_live(key, run_id) do
-    if run_executor_alive?(key, run_id) do
-      false
-    else
-      case KeyStore.mark_ambiguous(key, "orphaned_started_key") do
-        :ok -> true
-        {:error, reason} -> unread_started_key(key, reason)
-      end
+    if run_executor_alive?(key, run_id), do: false, else: mark_orphaned(key)
+  end
+
+  defp mark_orphaned(key) do
+    case KeyStore.mark_ambiguous(key, "orphaned_started_key") do
+      :ok -> true
+      # Settled between the read and this write: the key moved on, nothing was orphaned.
+      :status_changed -> false
+      {:error, reason} -> unread_started_key(key, reason)
     end
   end
 
@@ -971,7 +998,10 @@ defmodule ForemanServer.Workflow.BootReconciliation do
   #                             `effect_retried` as an audit event. The key stays ambiguous,
   #                             decision and all, until that attempt re-marks it
   #   * `:done`              -> block `effect_already_done`
-  #   * `:unknown`, or an unexpected store status -> block `effect_outcome_ambiguous`
+  #   * `:unknown`, or an unexpected store status -> block `effect_outcome_ambiguous`, in the
+  #                             boot sweep only; an on-demand scan (the cast of a refusal)
+  #                             defers `:unknown`: key left undecided, run not blocked, counted
+  #                             `deferred_unknown`, asked again by the next scan
   #   * unregistered class   -> block `effect_class_unregistered` (fail closed)
   #   * `:done` or `:unknown` of a class that never blocks a run (`Reconciler.blocks_run?/3`
   #     false: an advisory effect such as a PR comment) -> nothing: no marker, no block, no
@@ -1030,7 +1060,8 @@ defmodule ForemanServer.Workflow.BootReconciliation do
           on_terminal_run: 0,
           unresolved: unread,
           skipped: 0,
-          audit_failed: 0
+          audit_failed: 0,
+          deferred_unknown: 0
         },
         fn key, counts -> Map.update!(counts, reconcile_effect_key(key, opts), &(&1 + 1)) end
       )
@@ -1092,7 +1123,8 @@ defmodule ForemanServer.Workflow.BootReconciliation do
       # `unknown` verdict may block the run.
       traits = %{
         repeatable?: Reconciler.repeatable?(class, metadata, classes),
-        blocks_run?: Reconciler.blocks_run?(class, metadata, classes)
+        blocks_run?: Reconciler.blocks_run?(class, metadata, classes),
+        origin: Keyword.get(opts, :origin, :boot)
       }
 
       handle_effect_verdict(key, run_id, class, verdict, reason, traits)
@@ -1108,8 +1140,9 @@ defmodule ForemanServer.Workflow.BootReconciliation do
   end
 
   # The one place stored metadata is normalised: `Effect` writes string keys while
-  # `KeyStore.mark_ambiguous/2` adds an atom-keyed `reason` on the
-  # ETS path. Past this point the effect step and the reconcilers read string keys only.
+  # rows written before `mark_ambiguous/2` normalised its `reason` to a string key can still
+  # carry an atom-keyed one. Past this point the effect step and the reconcilers read string
+  # keys only.
   defp read_effect_key(key) do
     case KeyStore.get(key) do
       {:ok, %{status: status, metadata: metadata}} when is_map(metadata) ->
@@ -1195,6 +1228,24 @@ defmodule ForemanServer.Workflow.BootReconciliation do
     :skipped
   end
 
+  # An `unknown` verdict is a gh/network call that timed out or failed, not evidence about the
+  # effect. The boot sweep decides it anyway (marker and block: nothing else will look at the
+  # key until an operator does). An ON-DEMAND scan (the cast of an `effect_undecided` refusal,
+  # which can fire during an unrelated run's refusal) must not mark a key unresolved or block a
+  # live run on a blip: the key stays ambiguous without a decision, so it stays refused, and the
+  # next scan asks its reconciler again.
+  defp handle_effect_verdict(key, run_id, class, "unknown" = verdict, _reason, %{
+         origin: :on_demand
+       }) do
+    Logger.warning(
+      "BootReconciliation: effect #{inspect(key)} (#{class}) of run #{run_id} has verdict #{verdict} on an on-demand scan; key left undecided for the next scan, run not blocked",
+      key: key,
+      run_id: run_id
+    )
+
+    :deferred_unknown
+  end
+
   defp handle_effect_verdict(key, run_id, class, verdict, reason, %{repeatable?: repeatable?}) do
     fields = %{effect_class: class, effect_key: key, effect_verdict: verdict}
     {_state, version} = load_run_stream(run_id)
@@ -1214,6 +1265,9 @@ defmodule ForemanServer.Workflow.BootReconciliation do
     with :ok <- mark_unless_repeatable(key, version, reason, repeatable?) do
       block_for_effect(key, run_id, class, verdict, reason, fields, version)
     else
+      {:error, :status_changed} ->
+        skip_effect_key(key, "settled before it could be marked unresolved; run not blocked")
+
       {:error, marker_error} ->
         Logger.error(
           "BootReconciliation: effect #{inspect(key)} of run #{run_id} has verdict #{verdict} but could not be marked unresolved (#{inspect(marker_error)}); run not blocked, key left ambiguous",
@@ -1381,6 +1435,7 @@ defmodule ForemanServer.Workflow.BootReconciliation do
   defp mark_effect_unresolved(key, version, reason) do
     case KeyStore.mark_unresolved(key, version, reason) do
       :ok -> :ok
+      :status_changed -> {:error, :status_changed}
       {:error, _} = error -> error
       other -> {:error, other}
     end

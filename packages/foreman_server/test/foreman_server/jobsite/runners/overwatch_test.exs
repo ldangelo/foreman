@@ -201,8 +201,20 @@ defmodule ForemanServer.Jobsite.Runners.OverwatchTest do
     assert {:error, %Error{details: %{reason: :worker_died_no_result}}} =
              Task.await(runner, 10_000)
 
-    assert {:ok, %{status: :ambiguous, metadata: %{reason: "worker_died_no_result"}}} =
+    assert {:ok, %{status: :ambiguous, metadata: %{"reason" => "worker_died_no_result"}}} =
              ForemanServer.Idempotency.KeyStore.get(key)
+  end
+
+  test "a key that settled before the worker's no-result outcome is recorded stays settled and the runner does not raise" do
+    {key, runner, worker} = start_leased_run()
+
+    :ok = ForemanServer.Idempotency.KeyStore.mark_completed(key)
+    Process.exit(worker, :kill)
+
+    assert {:error, %Error{details: %{reason: :worker_died_no_result}}} =
+             Task.await(runner, 10_000)
+
+    assert {:ok, :completed} = ForemanServer.Idempotency.KeyStore.status(key)
   end
 
   test "a successful dispatch overwrites an ambiguous left by lease expiry" do

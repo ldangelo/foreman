@@ -242,7 +242,7 @@ defmodule ForemanServer.Idempotency.EffectTest do
 
       assert {:ok, %{status: :ambiguous, metadata: metadata}} = KeyStore.get(key)
       assert metadata["run_id"] == @run_id
-      assert metadata[:reason] == "orphaned_started_key"
+      assert metadata["reason"] == "orphaned_started_key"
     end
 
     test "with no repo, an emptied table leaves nothing to reconcile and raises nothing" do

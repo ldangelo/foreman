@@ -114,6 +114,104 @@ defmodule ForemanServer.Aggregates.RunPrWatchTest do
                })
     end
 
+    test "source is stored as given: watch, gate or absent; any other value is refused" do
+      for source <- ["watch", "gate"] do
+        {_state, spec} = accept(started(), "run.pr.checks", checks_payload(%{source: source}))
+        assert spec.payload.source == source
+      end
+
+      {_state, spec} = accept(started(), "run.pr.checks", checks_payload())
+      assert spec.payload.source == nil
+
+      for bad <- ["operator", "", :watch, 1] do
+        assert {:error, {:missing_or_invalid, :source}} =
+                 reject(started(), "run.pr.checks", checks_payload(%{source: bad}))
+      end
+    end
+
+    test "the evidence fields are validated, normalised, stored, and replay to the live fold" do
+      checks = [
+        %{
+          name: "unit",
+          kind: :check_run,
+          state: :failing,
+          conclusion: "FAILURE",
+          workflow: "ci",
+          started_at: "2026-11-12T13:58:43Z",
+          completed_at: "2026-11-12T13:58:49Z"
+        }
+      ]
+
+      payload =
+        checks_payload(%{
+          checks: checks,
+          checks_truncated: true,
+          evidence_digest: "e1",
+          observation_ref: "n-1",
+          required: [%{name: "unit", kind: "check_run"}],
+          policy_version: "p1"
+        })
+
+      {live, spec} = accept(started(), "run.pr.checks", payload)
+
+      assert %{
+               checks: [%{"name" => "unit", "kind" => "check_run", "state" => "failing"}],
+               checks_truncated: true,
+               evidence_digest: "e1",
+               observation_ref: "n-1",
+               required: [%{"name" => "unit", "kind" => "check_run"}],
+               policy_version: "p1"
+             } = spec.payload
+
+      assert %{items: [%{"name" => "unit"}], truncated: true, evidence_digest: "e1"} =
+               live.pr_watch[@url].evidence.checks
+
+      # What the actor stores is JSON; folding it back (string keys) equals the live fold.
+      replayed =
+        Run.apply_event(started(), %{
+          event_type: spec.event_type,
+          payload: spec.payload |> Jason.encode!() |> Jason.decode!()
+        })
+
+      assert replayed.pr_watch == live.pr_watch
+    end
+
+    test "a payload without checks stores no list: it is nil, never zero checks" do
+      {state, spec} = accept(started(), "run.pr.checks", checks_payload())
+      assert spec.payload.checks == nil
+      assert state.pr_watch[@url].evidence.checks == nil
+    end
+
+    test "unknown kind or state, a non-list, over 100 checks or over 20 required are refused" do
+      good = %{name: "unit", kind: "check_run", state: "failing"}
+
+      for {key, value} <- [
+            {:checks, [%{good | kind: "webhook"}]},
+            {:checks, [%{good | state: "great"}]},
+            {:checks, "nope"},
+            {:checks, List.duplicate(good, 101)},
+            {:required, List.duplicate(%{name: "a", kind: "check_run"}, 21)},
+            {:required, [%{name: "a"}]},
+            {:checks_truncated, "yes"},
+            {:policy_version, 7}
+          ] do
+        assert {:error, {:missing_or_invalid, ^key}} =
+                 reject(started(), "run.pr.checks", checks_payload(%{key => value}))
+      end
+    end
+
+    test "change is stored as given: digest, evidence or absent; any other value is refused" do
+      for change <- ["digest", "evidence", nil] do
+        {_state, spec} = accept(started(), "run.pr.checks", checks_payload(%{change: change}))
+        assert spec.payload.change == change
+      end
+
+      for bad <- ["both", "", :digest, 1] do
+        assert {:error, {:missing_or_invalid, :change}} =
+                 reject(started(), "run.pr.checks", checks_payload(%{change: bad}))
+      end
+    end
+
     test "a payload naming another project is refused" do
       assert {:error, {:missing_or_invalid, :project_id}} =
                reject(started(), "run.pr.checks", checks_payload(%{project_id: "other"}))
@@ -430,6 +528,89 @@ defmodule ForemanServer.Aggregates.RunPrWatchTest do
     end
   end
 
+  describe "run.pr.ready_failed (TRD-033)" do
+    defp ready_failed(extra \\ %{}) do
+      Map.merge(
+        %{pr_url: @url, stage: "head_read", reason: "gh_failed:1", failed_at: 5},
+        extra
+      )
+    end
+
+    for type <- ["RunCompleted", "RunFailed", "RunCancelled"] do
+      test "is accepted on a #{type} run and folds into evidence.delivery_issue" do
+        {state, spec} = accept(terminal(unquote(type)), "run.pr.ready_failed", ready_failed())
+
+        assert spec.event_type == "PrReadyFailed"
+        assert spec.stream_id == "run:r1"
+
+        assert %{
+                 run_id: "r1",
+                 project_id: "p1",
+                 task_id: "t1",
+                 pr_url: @url,
+                 stage: "head_read",
+                 reason: "gh_failed:1",
+                 failed_at: 5
+               } = spec.payload
+
+        assert state.pr_watch[@url].evidence.delivery_issue ==
+                 %{stage: "head_read", reason: "gh_failed:1", failed_at: 5}
+      end
+    end
+
+    test "carries the repo_id it is given and nothing else outside its fields" do
+      {_state, spec} =
+        accept(
+          started(),
+          "run.pr.ready_failed",
+          ready_failed(%{repo_id: "b", gh_output: "secret"})
+        )
+
+      assert spec.payload.repo_id == "b"
+      refute Map.has_key?(spec.payload, :gh_output)
+    end
+
+    test "needs an explicit pr_url, even when the run watches exactly one PR" do
+      state = watched()
+
+      assert {:error, {:missing_or_invalid, :pr_url}} =
+               reject(state, "run.pr.ready_failed", Map.delete(ready_failed(), :pr_url))
+    end
+
+    test "refuses a stage outside head_read | ready_dispatch, a missing reason and a bad failed_at" do
+      for stage <- ["push", "", nil, "HEAD_READ"] do
+        assert {:error, {:missing_or_invalid, :stage}} =
+                 reject(started(), "run.pr.ready_failed", ready_failed(%{stage: stage}))
+      end
+
+      assert {:error, {:missing_or_invalid, :reason}} =
+               reject(started(), "run.pr.ready_failed", ready_failed(%{reason: nil}))
+
+      assert {:error, {:missing_or_invalid, :failed_at}} =
+               reject(started(), "run.pr.ready_failed", ready_failed(%{failed_at: "now"}))
+    end
+
+    test "a project or task the run does not own is refused" do
+      assert {:error, {:missing_or_invalid, :project_id}} =
+               reject(started(), "run.pr.ready_failed", ready_failed(%{project_id: "other"}))
+    end
+
+    test "a later PrReady clears the condition; a PrReady for another PR does not" do
+      {state, _} = accept(started(), "run.pr.ready_failed", ready_failed())
+      other = "https://github.com/acme/repo/pull/9"
+
+      ready = fn state, url ->
+        Run.apply_event(state, %{
+          event_type: "PrReady",
+          payload: %{run_id: "r1", pr_url: url, head_sha: "h", base_branch: "main"}
+        })
+      end
+
+      assert ready.(state, other).pr_watch[@url].evidence.delivery_issue != nil
+      assert ready.(state, @url).pr_watch[@url].evidence.delivery_issue == nil
+    end
+  end
+
   test "PrUpdated and PrMerged keep the watch record's status current" do
     state = started()
 
@@ -457,6 +638,8 @@ defmodule ForemanServer.Aggregates.RunPrWatchTest do
     other = "https://github.com/acme/repo/pull/8"
 
     steps = [
+      {"run.pr.ready_failed",
+       %{pr_url: @url, stage: "head_read", reason: "gh_failed:1", failed_at: 5}},
       {"run.pr.checks", checks_payload()},
       {"run.pr.review",
        %{

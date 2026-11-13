@@ -139,6 +139,55 @@ defmodule ForemanServer.Idempotency.KeyStoreDurabilityTest do
     end
   end
 
+  describe "mark_ambiguous/2 and mark_unresolved/3 are compare-and-set (foreman-ulg5y.3.12)" do
+    for {name, setup_repo} <- [{"the ETS path", false}, {"the repo path", true}] do
+      test "#{name}: a late verdict after the effect settled leaves the key settled" do
+        if unquote(setup_repo), do: use_fake_repo()
+
+        :ok = KeyStore.mark_started("k-late", %{"run_id" => "r1", "effect_class" => "pr_create"})
+        :ok = KeyStore.mark_completed("k-late", %{"pr" => 7})
+
+        assert :status_changed = KeyStore.mark_ambiguous("k-late", "orphaned_started_key")
+        assert :status_changed = KeyStore.mark_unresolved("k-late", 4, "effect_already_done")
+        assert {:ok, :completed} = KeyStore.status("k-late")
+        assert {:ok, %{metadata: meta}} = KeyStore.get("k-late")
+        assert KeyStore.unresolved_version(meta) == :none
+        refute Map.has_key?(meta, "reason")
+
+        :ok = KeyStore.mark_started("k-fail", %{"run_id" => "r1"})
+        :ok = KeyStore.mark_failed("k-fail", "boom")
+        assert :status_changed = KeyStore.mark_ambiguous("k-fail", "late")
+        assert {:ok, :failed} = KeyStore.status("k-fail")
+      end
+
+      test "#{name}: started -> ambiguous -> marked works and the reason is a string key" do
+        if unquote(setup_repo), do: use_fake_repo()
+
+        :ok = KeyStore.mark_started("k-ok", %{"run_id" => "r1", "effect_class" => "pr_create"})
+        assert :ok = KeyStore.mark_ambiguous("k-ok", "orphaned_started_key")
+        assert {:ok, :ambiguous} = KeyStore.status("k-ok")
+        assert {:ok, %{metadata: meta}} = KeyStore.get("k-ok")
+        assert meta["reason"] == "orphaned_started_key"
+        refute Map.has_key?(meta, :reason)
+        assert meta["run_id"] == "r1"
+
+        assert :ok = KeyStore.mark_unresolved("k-ok", 3, "effect_outcome_ambiguous")
+        assert {:ok, %{metadata: meta}} = KeyStore.get("k-ok")
+        assert KeyStore.unresolved_version(meta) == {:ok, 3}
+        assert {:ok, :ambiguous} = KeyStore.status("k-ok")
+      end
+
+      test "#{name}: an absent key can be marked ambiguous (a first write), but not unresolved" do
+        if unquote(setup_repo), do: use_fake_repo()
+
+        assert :ok = KeyStore.mark_ambiguous("k-new", "heartbeat_timeout")
+        assert {:ok, :ambiguous} = KeyStore.status("k-new")
+        assert :status_changed = KeyStore.mark_unresolved("k-gone", 1, "x")
+        assert :not_found = KeyStore.get("k-gone")
+      end
+    end
+  end
+
   describe "ETS fallback (no repo)" do
     test "is not durable, and the note names the production switches" do
       assert KeyStore.durability() == {:not_durable, :no_repo}
@@ -162,7 +211,7 @@ defmodule ForemanServer.Idempotency.KeyStoreDurabilityTest do
                KeyStore.list_records_checked(:ambiguous)
 
       assert meta["run_id"] == "r1"
-      assert meta[:reason] == "expired"
+      assert meta["reason"] == "expired"
     end
 
     test "an effect still runs and records its intent, and a restart then loses the key" do
