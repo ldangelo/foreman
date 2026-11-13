@@ -47,18 +47,30 @@ defmodule ForemanServer.PrDeliveryAdversarialInputsTest do
 
   # -- helpers ----------------------------------------------------------------------------------
 
-  # A gated project whose PR is ready at the world's head with a clean findings record.
+  # A gated project whose PR is ready at the world's head with a clean findings record (a LOW
+  # judgement) and the run's base branch recorded: without either, the rubric level is HIGH and
+  # `risk_high` refuses the approval.
   defp gated_run!(world, required \\ [@unit], opts \\ []) do
-    World.ready_run!(world, World.project!(world, required), opts)
+    ready_run!(world, World.project!(world, required), opts)
+  end
+
+  defp ready_run!(world, project_id, opts \\ []) do
+    run = World.ready_run!(world, project_id, opts)
+    World.record_base!(run)
+    run
   end
 
   defp passing!(world), do: World.add_check!(world, World.check_run("unit"))
 
-  # The approval is refused with exactly `codes` for `head`; the gate is still pending, nothing was
-  # approved and the operator's merge is refused without any call to GitHub's merge. Returns the
-  # refusal's detail.
+  # The approval is refused with exactly `codes` for `head`, plus `risk_high`: the rubric reads
+  # HIGH for a PR whose required checks are not passing or whose findings are unusable, and a HIGH
+  # level is a reason (AC-003-2), so it rides on every refusal about a check or the findings (a
+  # `codes` that names a risk code itself is pinned as given). The gate is still pending, nothing
+  # was approved and the operator's merge is refused without any call to GitHub's merge. Returns
+  # the refusal's detail.
   defp assert_refused(world, run, codes, opts \\ []) do
     head = Keyword.get_lazy(opts, :head_sha, fn -> World.head(world) end)
+    codes = with_risk_high(codes)
 
     assert {:error, {:evidence_ineligible, ^head, ^codes}, detail} =
              World.approve(world, run, opts)
@@ -69,6 +81,12 @@ defmodule ForemanServer.PrDeliveryAdversarialInputsTest do
     assert {:error, :pr_not_acceptable} = World.merge(run)
     assert World.merge_calls(world) == []
     detail
+  end
+
+  defp with_risk_high(codes) do
+    if Enum.any?(codes, &String.starts_with?(&1, "risk_")),
+      do: codes,
+      else: codes ++ ["risk_high"]
   end
 
   # The approval is recorded; returns the `MergeGateApproved` event.
@@ -178,7 +196,7 @@ defmodule ForemanServer.PrDeliveryAdversarialInputsTest do
 
       # the approval reads the PR for the request
       detail = assert_refused(world, run, ["pending"])
-      assert [%{code: :pending, subject: "unit"}] = detail.reasons
+      assert [%{code: :pending, subject: "unit"}, %{code: :risk_high}] = detail.reasons
 
       World.complete_check!(world, "unit", "SUCCESS")
       assert assert_approved(world, run).evidence.status == "eligible"
@@ -191,7 +209,7 @@ defmodule ForemanServer.PrDeliveryAdversarialInputsTest do
 
       assert World.dto!(run).checks.old == true
       detail = assert_refused(world, run, ["failing"])
-      assert [%{code: :failing, subject: "unit"}] = detail.reasons
+      assert [%{code: :failing, subject: "unit"}, %{code: :risk_high}] = detail.reasons
 
       World.set_rollup!(world, [World.check_run("unit")])
       assert assert_approved(world, run).evidence.status == "eligible"
@@ -208,7 +226,7 @@ defmodule ForemanServer.PrDeliveryAdversarialInputsTest do
       passing!(world)
 
       detail = assert_refused(world, run, ["findings_absent"])
-      assert [%{code: :findings_absent, subject: nil}] = detail.reasons
+      assert [%{code: :findings_absent, subject: nil}, %{code: :risk_high}] = detail.reasons
       assert detail.inputs.findings_head_sha == nil
 
       :ok = World.record_findings!(world, run, World.head(world))
@@ -237,14 +255,14 @@ defmodule ForemanServer.PrDeliveryAdversarialInputsTest do
         :ok = World.record_findings!(world, run, head, unquote(Macro.escape(record)))
 
         detail = assert_refused(world, run, [unquote(code)])
-        assert [%{code: code_atom}] = detail.reasons
+        assert [%{code: code_atom}, %{code: :risk_high}] = detail.reasons
         assert Atom.to_string(code_atom) == unquote(code)
 
         if unquote(waivable?) do
-          assert {:ok, _} = waive(world, run, head, [unquote(code)])
+          assert {:ok, _} = waive(world, run, head, [unquote(code), "risk_high"])
           approved = assert_approved(world, run)
           assert approved.evidence.status == "waived"
-          assert approved.evidence.waived == [unquote(code)]
+          assert approved.evidence.waived == [unquote(code), "risk_high"]
 
           # CONTROL: a clean record for the head needs no waiver
           clean = gated_run!(world)
@@ -300,7 +318,9 @@ defmodule ForemanServer.PrDeliveryAdversarialInputsTest do
 
     # {severity, disposition, the level the rubric gives under a LOW judgement, findings listed}.
     # The one input that flips between a row and its control is the disposition: `fixed` is
-    # LOW with nothing unresolved; a declined minor or nitpick is not unresolved either.
+    # LOW with nothing unresolved; a declined minor or nitpick is not unresolved either. A HIGH
+    # level refuses the approval with exactly `risk_high` (AC-003-2); MEDIUM and LOW refuse
+    # nothing.
     for {severity, disposition, level, listed} <- [
           {"critical", "declined", "HIGH", 1},
           {"major", "declined", "HIGH", 1},
@@ -311,10 +331,9 @@ defmodule ForemanServer.PrDeliveryAdversarialInputsTest do
           {"critical", "fixed", "LOW", 0},
           {"major", "fixed", "LOW", 0}
         ] do
-      test "a #{severity} finding #{disposition}: risk #{level}, #{listed} listed, and the level alone does not refuse the approval",
+      test "a #{severity} finding #{disposition}: risk #{level}, #{listed} listed, and #{if level == "HIGH", do: "a HIGH level refuses the approval (risk_high)", else: "the level refuses nothing"}",
            %{world: world} do
         run = gated_run!(world, [@unit], findings: :none)
-        World.record_base!(run)
         passing!(world)
 
         finding =
@@ -349,9 +368,15 @@ defmodule ForemanServer.PrDeliveryAdversarialInputsTest do
                    unquote(listed)
                  )
 
-        # the level is shown to the approver, it is not a reason: the approver decides (PRD §5)
-        approved = assert_approved(world, run)
-        assert approved.evidence.status == "eligible"
+        if unquote(level) == "HIGH" do
+          # the level is a reason, shown and refused: the approval is not recorded
+          assert dto.eligibility.status == "ineligible"
+          assert Enum.map(dto.eligibility.reasons, & &1.code) == ["risk_high"]
+          assert_refused(world, run, ["risk_high"])
+        else
+          approved = assert_approved(world, run)
+          assert approved.evidence.status == "eligible"
+        end
       end
     end
   end
@@ -462,10 +487,13 @@ defmodule ForemanServer.PrDeliveryAdversarialInputsTest do
       legacy = artifact_run!(ctx)
       :ok = finalize!(ctx, legacy, artifact(:legacy, :primary))
       assert_refused(ctx.world, legacy, ["findings_legacy_format"])
-      assert {:ok, _} = waive(ctx.world, legacy, ctx.tip, ["findings_legacy_format"])
+
+      assert {:ok, _} =
+               waive(ctx.world, legacy, ctx.tip, ["findings_legacy_format", "risk_high"])
+
       approved = assert_approved(ctx.world, legacy)
       assert approved.evidence.status == "waived"
-      assert approved.evidence.waived == ["findings_legacy_format"]
+      assert approved.evidence.waived == ["findings_legacy_format", "risk_high"]
 
       malformed = artifact_run!(ctx)
       :ok = finalize!(ctx, malformed, artifact(:identical_blocks, :primary))
@@ -476,7 +504,7 @@ defmodule ForemanServer.PrDeliveryAdversarialInputsTest do
 
       # CONTROL: the legacy block converted to JSON needs no waiver
       converted = artifact_run!(ctx)
-      :ok = finalize!(ctx, converted, artifact(:legacy, :control))
+      :ok = finalize!(ctx, converted, artifact(:legacy, :control) <> low_judgement_block())
       assert assert_approved(ctx.world, converted).evidence.status == "eligible"
     end
   end
@@ -492,7 +520,12 @@ defmodule ForemanServer.PrDeliveryAdversarialInputsTest do
         refused_version = policy_version!(run)
 
         detail = assert_refused(world, run, ["skipped"])
-        assert [%{code: :skipped, subject: "unit", detail: unquote(conclusion)}] = detail.reasons
+
+        assert [
+                 %{code: :skipped, subject: "unit", detail: unquote(conclusion)},
+                 %{code: :risk_high}
+               ] = detail.reasons
+
         assert detail.policy_version == refused_version
 
         World.set_required!(world, run.project_id, [Map.put(@unit, "allow_skipped", true)])
@@ -516,7 +549,7 @@ defmodule ForemanServer.PrDeliveryAdversarialInputsTest do
       ])
 
       detail = assert_refused(world, run, ["skipped"])
-      assert [%{code: :skipped, subject: "unit"}] = detail.reasons
+      assert [%{code: :skipped, subject: "unit"}, %{code: :risk_high}] = detail.reasons
 
       # CONTROL: the entry that did not allow it is allowed
       World.set_required!(world, run.project_id, [
@@ -534,7 +567,7 @@ defmodule ForemanServer.PrDeliveryAdversarialInputsTest do
       World.add_check!(world, World.check_run("unit", conclusion: "FAILURE"))
 
       detail = assert_refused(world, run, ["failing"])
-      assert [%{code: :failing, subject: "unit"}] = detail.reasons
+      assert [%{code: :failing, subject: "unit"}, %{code: :risk_high}] = detail.reasons
 
       World.complete_check!(world, "unit", "SKIPPED")
       assert assert_approved(world, run).evidence.status == "eligible"
@@ -550,10 +583,15 @@ defmodule ForemanServer.PrDeliveryAdversarialInputsTest do
       assert {:ok, _} = waive(world, run, World.head(world), ["missing"])
       assert_refused(world, run, ["skipped"])
 
+      # the waiver of the skipped check alone leaves the level it makes HIGH (a waived check is
+      # HIGH): `risk_high` is the one reason that remains, and is waivable on its own
       assert {:ok, _} = waive(world, run, World.head(world), ["skipped"])
+      assert_refused(world, run, ["risk_high"])
+
+      assert {:ok, _} = waive(world, run, World.head(world), ["skipped", "risk_high"])
       approved = assert_approved(world, run)
       assert approved.evidence.status == "waived"
-      assert approved.evidence.waived == ["skipped"]
+      assert approved.evidence.waived == ["skipped", "risk_high"]
     end
   end
 
@@ -568,7 +606,7 @@ defmodule ForemanServer.PrDeliveryAdversarialInputsTest do
       World.truncate_rollup!(world, PrStatus.max_list() - 1)
 
       detail = assert_refused(world, run, ["checks_truncated"])
-      assert [%{code: :checks_truncated, subject: "unit"}] = detail.reasons
+      assert [%{code: :checks_truncated, subject: "unit"}, %{code: :risk_high}] = detail.reasons
 
       assert {:error, {:reason_not_waivable, "checks_truncated"}} =
                waive(world, run, World.head(world), ["checks_truncated"])
@@ -600,13 +638,13 @@ defmodule ForemanServer.PrDeliveryAdversarialInputsTest do
       refute v1 == v2
 
       detail = assert_refused(world, run, ["missing"])
-      assert [%{code: :missing, subject: "lint"}] = detail.reasons
+      assert [%{code: :missing, subject: "lint"}, %{code: :risk_high}] = detail.reasons
       assert detail.policy_version == v2
       assert is_binary(detail.checks_ref)
 
       World.add_check!(world, World.check_run("lint", status: "IN_PROGRESS"))
       detail = assert_refused(world, run, ["pending"])
-      assert [%{code: :pending, subject: "lint"}] = detail.reasons
+      assert [%{code: :pending, subject: "lint"}, %{code: :risk_high}] = detail.reasons
 
       # CONTROL: the new check passes
       World.complete_check!(world, "lint", "SUCCESS")
@@ -641,11 +679,11 @@ defmodule ForemanServer.PrDeliveryAdversarialInputsTest do
       run = gated_run!(world)
       head = World.head(world)
       v1 = policy_version!(run)
-      # one observation, so the record carries the risk of the head too: the checks are the only
-      # reason, and the waiver can cover it
+      # one observation, so the record carries the risk of the head too: the rubric reads HIGH
+      # for a PR whose checks do not pass, so the waiver names `risk_high` with the check
       World.observe!(world, run)
 
-      assert {:ok, _} = waive(world, run, head, ["missing"])
+      assert {:ok, _} = waive(world, run, head, ["missing", "risk_high"])
       assert [%{} = waived] = World.events(run, "PrEvidenceWaived")
       assert get(waived, :policy_version) == v1
 
@@ -666,22 +704,22 @@ defmodule ForemanServer.PrDeliveryAdversarialInputsTest do
       assert dto.waiver.policy_version == v1
       assert dto.waiver.head_sha == head
 
-      assert [%{action: "waive", codes: ["missing"]}] =
+      assert [%{action: "waive", codes: ["missing", "risk_high"]}] =
                Enum.filter(dto.next_actions, &(&1.action == "waive"))
 
       # the decision: both checks are missing and nothing is covered
       # one reason per entry: the list is not deduplicated
       detail = assert_refused(world, run, ["missing", "missing"])
-      assert detail.reasons |> Enum.map(& &1.subject) |> Enum.sort() == ["lint", "unit"]
+      assert detail.reasons |> Enum.map(& &1.subject) |> Enum.sort() == [nil, "lint", "unit"]
       assert detail.waived == []
       assert %{applies: false, ignored_because: :policy_changed} = detail.waiver
       assert detail.policy_version == v2
 
       # CONTROL: a waiver for the current head under the current version covers both
-      assert {:ok, _} = waive(world, run, head, ["missing"])
+      assert {:ok, _} = waive(world, run, head, ["missing", "risk_high"])
       approved = assert_approved(world, run)
       assert approved.evidence.status == "waived"
-      assert approved.evidence.waived == ["missing", "missing"]
+      assert approved.evidence.waived == ["missing", "missing", "risk_high"]
       assert approved.evidence.policy_version == v2
     end
 
@@ -699,7 +737,7 @@ defmodule ForemanServer.PrDeliveryAdversarialInputsTest do
                  approver: "leo",
                  approver_identity: "github:ldangelo",
                  head_sha: head,
-                 reasons: ["missing"],
+                 reasons: ["missing", "risk_high"],
                  reason: "the check does not run for this PR",
                  pr_url: World.pr_url(world),
                  policy_version: "0000000000000000"
@@ -729,7 +767,10 @@ defmodule ForemanServer.PrDeliveryAdversarialInputsTest do
       assert World.dto!(run).eligibility.status == "off"
 
       views = length(World.view_calls(world))
-      approved = assert_approved(world, run)
+      # a gate-off approval must be acknowledged (AC-001-3)
+      assert {:ok, _} = approve_with(world, run, %{acknowledge_gate_off: true})
+      assert World.gate_approved?(run)
+      assert %{} = approved = List.last(World.events(run, "MergeGateApproved"))
 
       # off: no forced observation and no checks event, the head was the only read
       assert length(World.view_calls(world)) - views == 1
@@ -767,7 +808,7 @@ defmodule ForemanServer.PrDeliveryAdversarialInputsTest do
 
         forged = %{unquote(key) => %{policy: nil, checks_ref: nil, now_ms: 1}}
 
-        assert {:error, {:evidence_ineligible, head, ["failing"]}, _detail} =
+        assert {:error, {:evidence_ineligible, head, ["failing", "risk_high"]}, _detail} =
                  approve_with(world, run, forged)
 
         assert head == World.head(world)
@@ -793,6 +834,7 @@ defmodule ForemanServer.PrDeliveryAdversarialInputsTest do
       run = gated_run!(world, nil)
 
       forged = %{
+        acknowledge_gate_off: true,
         evidence: %{
           policy: %{required: [@lint], version: "forged"},
           checks_ref: "forged",
@@ -835,7 +877,7 @@ defmodule ForemanServer.PrDeliveryAdversarialInputsTest do
 
       # the approval forces its own observation over the forged record and reads the failure
       detail = assert_refused(world, run, ["failing"])
-      assert [%{code: :failing, subject: "unit"}] = detail.reasons
+      assert [%{code: :failing, subject: "unit"}, %{code: :risk_high}] = detail.reasons
       refute detail.checks_ref == "forged-ref"
       assert %{observation_ref: ref} = World.watch_record(run).evidence.checks
       assert ref == detail.checks_ref
@@ -852,8 +894,9 @@ defmodule ForemanServer.PrDeliveryAdversarialInputsTest do
       passing!(world)
       batch = World.observation_batch!(world, run)
       [green] = Enum.filter(batch, &(&1.type == "run.pr.checks"))
-      # the head's genuine risk record is on file, so only the checks decide
-      World.dispatch_all!(Enum.filter(batch, &(&1.type == "run.pr.risk")))
+      # the head's genuine checks and risk are on file (the risk is read from the recorded checks,
+      # so the checks go first), so only the checks of the forgery decide
+      World.dispatch_all!(batch)
       World.set_rollup!(world, [World.check_run("unit", conclusion: "FAILURE")])
 
       forged = %{
@@ -955,7 +998,10 @@ defmodule ForemanServer.PrDeliveryAdversarialInputsTest do
       # CONTROL: the genuine record of the PR's head is decided
       assert {:ok, _} =
                CommandGateway.dispatch_system(
-                 findings_command.("genuine", %{base | recorded_at: base.recorded_at + 1})
+                 findings_command.(
+                   "genuine",
+                   Map.merge(base, %{recorded_at: base.recorded_at + 1, judgement: @low})
+                 )
                )
 
       assert assert_approved(world, run).evidence.status == "eligible"
@@ -1020,7 +1066,7 @@ defmodule ForemanServer.PrDeliveryAdversarialInputsTest do
       # (the one input flipped: the push armed on the first PR)
       url2 = World.add_pr!(world)
       pr2 = World.pr(world, url2)
-      control = World.ready_run!(world, World.project!(world, [@unit]), pr: url2)
+      control = ready_run!(world, World.project!(world, [@unit]), pr: url2)
       World.add_check!(pr2, World.check_run("unit"))
 
       assert assert_approved(world, control).head_sha == World.head(pr2)
@@ -1059,7 +1105,7 @@ defmodule ForemanServer.PrDeliveryAdversarialInputsTest do
       World.add_check!(world, World.check_run("unit", workflow: "nightly"))
 
       detail = assert_refused(world, run, ["missing"])
-      assert [%{code: :missing, subject: "unit"}] = detail.reasons
+      assert [%{code: :missing, subject: "unit"}, %{code: :risk_high}] = detail.reasons
 
       World.add_check!(world, World.check_run("unit", workflow: "ci"))
       assert assert_approved(world, run).evidence.status == "eligible"
@@ -1091,6 +1137,7 @@ defmodule ForemanServer.PrDeliveryAdversarialInputsTest do
   # feeding the finaliser, by design not replay-safe (the event store never holds a phase).
   defp artifact_run!(%{world: world}) do
     run = World.start_run!(world, World.project!(world, [@unit]))
+    World.record_base!(run)
     World.add_check!(world, World.check_run("unit"))
     phase_id = "#{run.run_id}-p001"
 
@@ -1196,6 +1243,15 @@ defmodule ForemanServer.PrDeliveryAdversarialInputsTest do
   defp block(json) when is_map(json), do: block(Jason.encode!(json))
   defp block(text), do: "#{@start}\n#{text}\n#{@end_}\n"
 
+  defp low_judgement_block do
+    "<!-- FOREMAN_RISK_JUDGEMENT_START -->\n" <>
+      Jason.encode!(%{
+        "schema" => "foreman.risk_judgement/1",
+        "level" => "LOW",
+        "rationale" => "small change"
+      }) <> "\n<!-- FOREMAN_RISK_JUDGEMENT_END -->\n"
+  end
+
   # The artifacts of `@artifact_cases`: `:primary`, and its `:control`, the same text with ONE input
   # flipped.
   defp artifact(:two_blocks, :primary), do: block(doc([@echoed])) <> block(doc([]))
@@ -1272,25 +1328,42 @@ defmodule ForemanServer.PrDeliveryAdversarialInputsTest do
   defp quote_text(:nested, text),
     do: text |> String.split("\n") |> Enum.map_join("\n", &("> > " <> &1))
 
-  # The artifact is finalised for a fresh run and the outcome asserted: a clean record is approved,
-  # a refusal is the exact typed reason with the recorded status and defect.
+  # The artifact is finalised for a fresh run and the outcome asserted: a clean record is approved
+  # (its artifact also carries a LOW risk judgement block, which an approval needs: a missing
+  # judgement is HIGH and `risk_high` refuses it), a refusal is the exact typed reason with the
+  # recorded status and defect.
   defp assert_artifact!(ctx, key, which, expected) do
     run = artifact_run!(ctx)
-    :ok = finalize!(ctx, run, artifact(key, which))
+    text = artifact(key, which)
+
+    text =
+      case expected do
+        {:recorded, _count} -> text <> low_judgement_block()
+        {:refused, _code, _status, _defect} -> text
+      end
+
+    :ok = finalize!(ctx, run, text)
     assert [%{} = recorded] = World.events(run, "ReviewFindingsRecorded")
 
     case expected do
       {:recorded, count} ->
         assert get(recorded, :status) == "recorded"
         assert length(get(recorded, :findings)) == count
-        assert assert_approved(ctx.world, run).evidence.status == "eligible"
+
+        if count == 0 do
+          assert assert_approved(ctx.world, run).evidence.status == "eligible"
+        else
+          # the counted finding is an open critical one: it makes the level HIGH, and a HIGH
+          # level refuses the approval with exactly `risk_high`
+          assert_refused(ctx.world, run, ["risk_high"])
+        end
 
       {:refused, code, status, defect} ->
         assert get(recorded, :status) == status
         assert get(recorded, :defect) == defect
         assert get(recorded, :findings) == []
         detail = assert_refused(ctx.world, run, [code])
-        assert [%{code: code_atom}] = detail.reasons
+        assert [%{code: code_atom}, %{code: :risk_high}] = detail.reasons
         assert Atom.to_string(code_atom) == code
     end
   end

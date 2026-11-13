@@ -14,6 +14,14 @@ defmodule ForemanServer.TestSupport.GateEvidence do
 
   @now_ms 1_800_000_000_000
 
+  @low_judgement %{
+    status: "recorded",
+    level: "LOW",
+    rationale: "small change",
+    defect: nil,
+    defect_detail: nil
+  }
+
   @doc "The evidence stamp of a project with the gate off."
   @spec off() :: map()
   def off, do: %{policy: nil, checks_ref: nil, now_ms: @now_ms}
@@ -32,9 +40,11 @@ defmodule ForemanServer.TestSupport.GateEvidence do
   def stamp(payload, evidence \\ off()), do: Map.put(payload, :evidence, evidence)
 
   @doc """
-  Record a clean review-findings block (`status: "recorded"`, no findings) for `head_sha` of `pr_url`
-  through the system command `run.pr.findings` the finalising executor sends, so an approval of that
-  head is not refused `findings_absent`. `opts` override payload fields (`:status`, `:findings`, ...).
+  Record a clean review-findings block (`status: "recorded"`, no findings, a LOW risk judgement)
+  for `head_sha` of `pr_url` through the system command `run.pr.findings` the finalising executor
+  sends, so an approval of that head is refused neither `findings_absent` nor, through a HIGH
+  rubric level for a missing judgement, `risk_high`. `opts` override payload fields (`:status`,
+  `:findings`, `:judgement`, ...); a block that is not `recorded` carries no judgement.
   """
   @spec record_findings!(map(), String.t(), keyword()) :: :ok
   def record_findings!(
@@ -42,6 +52,8 @@ defmodule ForemanServer.TestSupport.GateEvidence do
         head_sha,
         opts \\ []
       ) do
+    opts = Map.new(opts)
+
     payload =
       Map.merge(
         %{
@@ -58,8 +70,13 @@ defmodule ForemanServer.TestSupport.GateEvidence do
           artifact_sha256: String.duplicate("c", 64),
           recorded_at: 1_800_000_000_000
         },
-        Map.new(opts)
+        opts
       )
+
+    payload =
+      if payload.status == "recorded" and not Map.has_key?(opts, :judgement),
+        do: Map.put(payload, :judgement, @low_judgement),
+        else: payload
 
     {:ok, _} =
       ForemanServer.CommandGateway.dispatch_system(%{

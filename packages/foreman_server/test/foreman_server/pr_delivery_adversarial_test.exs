@@ -22,16 +22,24 @@ defmodule ForemanServer.PrDeliveryAdversarialTest do
     %{world: World.start!()}
   end
 
-  # A gated project whose PR is ready at the world's head with a clean findings record.
+  # A gated project whose PR is ready at the world's head with a clean findings record (a LOW
+  # judgement) and the run's base branch recorded: without either, the rubric level is HIGH and
+  # `risk_high` refuses the approval.
   defp gated_run!(world, required) do
-    World.ready_run!(world, World.project!(world, required))
+    run = World.ready_run!(world, World.project!(world, required))
+    World.record_base!(run)
+    run
   end
 
-  # The approval is refused with exactly `codes` for `head`; the gate is still pending, nothing
+  # The approval is refused with exactly `codes` for `head`, plus `risk_high`: the rubric reads
+  # HIGH for a PR whose required checks are not passing or whose findings are unusable, and a HIGH
+  # level is a reason (AC-003-2), so it rides on every refusal about a check or the findings (a
+  # `codes` that names a risk code itself is pinned as given). The gate is still pending, nothing
   # was approved, and the operator's merge is refused without any call to GitHub's merge.
   # Returns the refusal's detail.
   defp assert_refused(world, run, codes, opts \\ []) do
     head = Keyword.get_lazy(opts, :head_sha, fn -> World.head(world) end)
+    codes = with_risk_high(codes)
 
     assert {:error, {:evidence_ineligible, ^head, ^codes}, detail} =
              World.approve(world, run, opts)
@@ -43,6 +51,12 @@ defmodule ForemanServer.PrDeliveryAdversarialTest do
     assert {:error, :pr_not_acceptable} = World.merge(run)
     assert World.merge_calls(world) == []
     detail
+  end
+
+  defp with_risk_high(codes) do
+    if Enum.any?(codes, &String.starts_with?(&1, "risk_")),
+      do: codes,
+      else: codes ++ ["risk_high"]
   end
 
   defp assert_approved(world, run, opts \\ []) do
@@ -61,7 +75,7 @@ defmodule ForemanServer.PrDeliveryAdversarialTest do
       run = gated_run!(world, [@unit])
 
       detail = assert_refused(world, run, ["missing"])
-      assert [%{code: :missing, subject: "unit"}] = detail.reasons
+      assert [%{code: :missing, subject: "unit"}, %{code: :risk_high}] = detail.reasons
 
       World.add_check!(world, World.check_run("unit"))
       assert_approved(world, run)
@@ -75,7 +89,7 @@ defmodule ForemanServer.PrDeliveryAdversarialTest do
       World.set_rollup!(world, [World.check_run("lint")])
 
       detail = assert_refused(world, run, ["missing"])
-      assert [%{code: :missing, subject: "unit"}] = detail.reasons
+      assert [%{code: :missing, subject: "unit"}, %{code: :risk_high}] = detail.reasons
     end
   end
 
@@ -149,13 +163,28 @@ defmodule ForemanServer.PrDeliveryAdversarialTest do
       refused = assert_refused(world, run, ["findings_other_sha"], head_sha: "head-two")
       stamp = GateEvidence.gated(required, refused.checks_ref)
 
-      assert {:error, {:evidence_ineligible, "head-two", ["findings_other_sha"]}, detail} =
+      assert {:error, {:evidence_ineligible, "head-two", ["findings_other_sha", "risk_high"]},
+              detail} =
                approve_stamped(run, "head-two", stamp)
 
       assert detail.inputs.checks_head_sha == "head-two"
       assert detail.inputs.risk_head_sha == "head-two"
 
-      :ok = World.record_findings!(world, run, "head-two")
+      # a review of its own (one fixed finding, so another findings digest) for head-two
+      fixed = %{
+        path: "lib/a.ex",
+        line: 3,
+        description: "the token was logged",
+        source: "repo-rules",
+        severity: "critical",
+        disposition: "fixed"
+      }
+
+      :ok = World.record_findings!(world, run, "head-two", findings: [fixed])
+
+      # the risk of head-two was judged without its findings (HIGH: the findings on file were
+      # head-one's): the PR's own observation records it again from the findings now on file
+      World.observe!(world, run)
       assert {:ok, _} = approve_stamped(run, "head-two", stamp)
 
       assert [%{head_sha: "head-two"}] =
@@ -171,7 +200,7 @@ defmodule ForemanServer.PrDeliveryAdversarialTest do
       World.set_rollup!(world, [World.status_context("unit", "SUCCESS")])
 
       detail = assert_refused(world, run, ["missing"])
-      assert [%{code: :missing, subject: "unit"}] = detail.reasons
+      assert [%{code: :missing, subject: "unit"}, %{code: :risk_high}] = detail.reasons
 
       World.add_check!(world, World.check_run("unit"))
       assert_approved(world, run)
@@ -220,6 +249,7 @@ defmodule ForemanServer.PrDeliveryAdversarialTest do
       File.write!(artifact, claim)
 
       run = World.ready_run!(world, World.project!(world, [@unit]), findings: :none)
+      World.record_base!(run)
       sha = :crypto.hash(:sha256, claim) |> Base.encode16(case: :lower)
 
       :ok =
@@ -246,7 +276,7 @@ defmodule ForemanServer.PrDeliveryAdversarialTest do
       World.truncate_rollup!(world, PrStatus.max_list())
 
       detail = assert_refused(world, run, ["checks_truncated"])
-      assert [%{code: :checks_truncated, subject: "unit"}] = detail.reasons
+      assert [%{code: :checks_truncated, subject: "unit"}, %{code: :risk_high}] = detail.reasons
       assert [%{} = forced] = gate_observations(run)
       assert get(forced, :checks_truncated) == true
       assert length(get(forced, :checks)) == PrStatus.max_list()
@@ -340,7 +370,9 @@ defmodule ForemanServer.PrDeliveryAdversarialTest do
         )
 
         detail = assert_refused(world, run, ["failing"])
-        assert [%{code: :failing, subject: "unit", detail: "FAILURE"}] = detail.reasons
+
+        assert [%{code: :failing, subject: "unit", detail: "FAILURE"}, %{code: :risk_high}] =
+                 detail.reasons
 
         World.set_rollup!(world, [World.check_run("unit"), World.check_run("unit")])
         assert_approved(world, run)
@@ -360,7 +392,7 @@ defmodule ForemanServer.PrDeliveryAdversarialTest do
         World.add_check!(world, World.check_run("unit", conclusion: unquote(conclusion)))
 
         detail = assert_refused(world, run, [unquote(code)])
-        assert [%{subject: "unit"}] = detail.reasons
+        assert [%{subject: "unit"}, %{code: :risk_high}] = detail.reasons
 
         World.complete_check!(world, "unit", "SUCCESS")
         assert_approved(world, run)
@@ -373,7 +405,9 @@ defmodule ForemanServer.PrDeliveryAdversarialTest do
       World.add_check!(world, World.status_context("ci/build", "ERROR"))
 
       detail = assert_refused(world, run, ["failing"])
-      assert [%{code: :failing, subject: "ci/build", detail: "ERROR"}] = detail.reasons
+
+      assert [%{code: :failing, subject: "ci/build", detail: "ERROR"}, %{code: :risk_high}] =
+               detail.reasons
 
       World.set_rollup!(world, [World.status_context("ci/build", "SUCCESS")])
       assert_approved(world, run)
@@ -446,7 +480,7 @@ defmodule ForemanServer.PrDeliveryAdversarialTest do
       :ok = World.record_findings!(world, run, "head-two")
 
       detail = assert_refused(world, run, ["pending"], head_sha: "head-two")
-      assert [%{code: :pending, subject: "unit"}] = detail.reasons
+      assert [%{code: :pending, subject: "unit"}, %{code: :risk_high}] = detail.reasons
 
       # the operator's old approval target is not GitHub's head any more
       assert {:error, {:head_sha_mismatch, "head-one", "head-two"}} =
@@ -463,7 +497,9 @@ defmodule ForemanServer.PrDeliveryAdversarialTest do
       :ok = World.record_findings!(world, run, "head-two")
 
       detail = assert_refused(world, run, ["failing"], head_sha: "head-two")
-      assert [%{code: :failing, subject: "unit", detail: "FAILURE"}] = detail.reasons
+
+      assert [%{code: :failing, subject: "unit", detail: "FAILURE"}, %{code: :risk_high}] =
+               detail.reasons
     end
   end
 

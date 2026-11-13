@@ -3,8 +3,8 @@ defmodule ForemanServer.PrEvidence.Reason do
   One reason a PR is not eligible: `code` (one closed set: `no_checks_configured`, `missing`,
   `failing`, `pending`, `stale`, `skipped`, `other_sha`, `checks_truncated`, `findings_absent`,
   `findings_malformed`, `findings_legacy_format`, `findings_other_sha`, `risk_missing`,
-  `risk_other_sha`, `evidence_unreadable`), `subject` (the check it is about or `nil`) and
-  `detail` (a string or `nil`).
+  `risk_other_sha`, `risk_high`, `evidence_unreadable`), `subject` (the check it is about or
+  `nil`) and `detail` (a string or `nil`).
   """
 
   @derive Jason.Encoder
@@ -299,12 +299,14 @@ defmodule ForemanServer.PrEvidence do
                  findings_digest risk_head_sha risk_digest)a
 
   @waivable ~w(no_checks_configured missing skipped findings_absent findings_legacy_format
-               findings_other_sha)a
+               findings_other_sha risk_high)a
 
   @doc """
   The reason codes an operator may waive (§11), as the strings the `PrEvidenceWaived` event
   carries. Every other code (a failure, a pending or stale check, a check of another head, a
-  truncated list, a malformed findings block, risk, an unreadable record) is never waivable.
+  truncated list, a malformed findings block, a missing risk record or one for another head, an
+  unreadable record) is never waivable. `risk_high` is waivable: a recorded HIGH level refuses
+  the approval until the operator waives it with a reason.
   """
   @spec waivable_codes() :: [String.t()]
   def waivable_codes, do: Enum.map(@waivable, &Atom.to_string/1)
@@ -569,7 +571,10 @@ defmodule ForemanServer.PrEvidence do
 
   # No risk record is `risk_missing`; a record for another head than the one decided is
   # `risk_other_sha`. Neither is waivable: a waiver covers a check or a review gap, never the
-  # absence of the classification the approver reads.
+  # absence of the classification the approver reads. A record for the decided head whose level
+  # is `HIGH` is `risk_high`: waivable, so the operator can approve a HIGH PR with a recorded
+  # reason. `LOW` and `MEDIUM` are no reason. The rationale is untrusted text and is not copied
+  # into the reason.
   defp risk_reasons(record, ctx) do
     case record |> evidence_of() |> Map.get(:risk) do
       nil ->
@@ -578,15 +583,22 @@ defmodule ForemanServer.PrEvidence do
       %{} = risk ->
         head = get(risk, :head_sha)
 
-        if head == ctx.head_sha,
-          do: [],
-          else: [
-            %Reason{
-              code: :risk_other_sha,
-              subject: nil,
-              detail: "risk recorded for #{inspect(head)}, decided #{inspect(ctx.head_sha)}"
-            }
-          ]
+        cond do
+          head != ctx.head_sha ->
+            [
+              %Reason{
+                code: :risk_other_sha,
+                subject: nil,
+                detail: "risk recorded for #{inspect(head)}, decided #{inspect(ctx.head_sha)}"
+              }
+            ]
+
+          get(risk, :level) == "HIGH" ->
+            [%Reason{code: :risk_high, subject: nil, detail: "the recorded risk level is HIGH"}]
+
+          true ->
+            []
+        end
     end
   end
 
