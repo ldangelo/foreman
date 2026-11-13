@@ -259,7 +259,8 @@ defmodule ForemanServer.CommandGateway do
   # fields are checked first with the aggregate's check (`Run.validate_approval/1`), so a
   # malformed or unauthorized approval cannot make the server read GitHub at all.
   defp perform_operator_side_effects(%{type: "merge_approve", payload: payload} = command) do
-    with {:ok, _approval, observed} <- observe_named_head(payload) do
+    with :ok <- validate_acknowledgement(payload),
+         {:ok, _approval, observed} <- observe_named_head(payload) do
       gate_evidence(command, observed)
     end
   end
@@ -424,13 +425,18 @@ defmodule ForemanServer.CommandGateway do
 
   # TRD-022: the approval is decided on evidence read for it. After the head check (one GitHub
   # read, `observed`) the project's policy is read as it stands now. A policy that cannot be
-  # read refuses (never gate off). Gate off dispatches nothing and stamps a nil policy. For a
-  # gated project the durable-store guard is applied again, the evidence batch (`run.pr.update`,
-  # a forced `run.pr.checks` with a fresh nonce, `run.pr.risk`) is built from the SAME
-  # `PrStatus` and dispatched in order, and the approval is stamped with `evidence`
+  # read refuses (never gate off). Gate off (a nil policy) is refused with
+  # `:gate_off_not_acknowledged` unless the operator passed `acknowledge_gate_off: true` for this
+  # approval (AC-001-3); an acknowledged one dispatches nothing and stamps a nil policy, and the
+  # flag goes on to the aggregate, which records it. For a gated project the flag is dropped
+  # (there is nothing to acknowledge), the durable-store guard is applied again, the evidence batch
+  # (`run.pr.update`, a forced `run.pr.checks` with a fresh nonce, `run.pr.risk`) is built from the
+  # SAME `PrStatus` and dispatched in order, and the approval is stamped with `evidence`
   # (`policy`, `checks_ref`, `now_ms`), which replaces anything the caller sent. A command of the
   # batch that fails refuses the approval (fail closed). A gate that is not pending is left to
-  # the aggregate's own refusal; only the caller's `evidence` key is dropped.
+  # the aggregate's own refusal (it refuses an approval with no stamped evidence, so none can be
+  # recorded there, acknowledged or not); only the caller's `evidence` and `acknowledge_gate_off`
+  # keys are dropped.
   defp gate_evidence(%{payload: payload} = command, nil),
     do: {:ok, drop_evidence(command, payload)}
 
@@ -442,7 +448,12 @@ defmodule ForemanServer.CommandGateway do
     with {:ok, policy} <- run_policy(run_id) do
       case policy do
         nil ->
-          {:ok, put_evidence(command, payload, %{policy: nil, checks_ref: nil, now_ms: now_ms})}
+          if acknowledged?(payload) do
+            evidence = %{policy: nil, checks_ref: nil, now_ms: now_ms}
+            {:ok, put_evidence(command, payload, evidence)}
+          else
+            {:error, :gate_off_not_acknowledged}
+          end
 
         %{} ->
           with :ok <- ForemanServer.Idempotency.KeyStore.require_durable(),
@@ -451,14 +462,35 @@ defmodule ForemanServer.CommandGateway do
                  evidence_batch(run_id, repo_id, pr_url, status, policy, nonce, now_ms),
                :ok <- dispatch_evidence_batch(run_id, batch) do
             evidence = %{policy: policy, checks_ref: nonce, now_ms: now_ms}
-            {:ok, put_evidence(command, payload, evidence)}
+            {:ok, put_evidence(command, Map.delete(payload, :acknowledge_gate_off), evidence)}
           end
       end
     end
   end
 
-  defp drop_evidence(command, payload),
-    do: %{command | payload: payload |> Map.delete(:evidence) |> Map.delete("evidence")}
+  # `acknowledge_gate_off` is optional and, when sent, a boolean: anything else is a malformed
+  # request (AGENTS.md 5.3), refused before GitHub is read. The key is atomized by
+  # `normalize_payload_keys/1` like every payload key, and read here by its atom only.
+  defp validate_acknowledgement(payload) do
+    case Map.fetch(payload, :acknowledge_gate_off) do
+      :error -> :ok
+      {:ok, flag} when is_boolean(flag) -> :ok
+      {:ok, _not_a_boolean} -> {:error, {:missing_or_invalid, :acknowledge_gate_off}}
+    end
+  end
+
+  defp acknowledged?(payload), do: Map.get(payload, :acknowledge_gate_off) == true
+
+  defp drop_evidence(command, payload) do
+    %{
+      command
+      | payload:
+          payload
+          |> Map.delete(:evidence)
+          |> Map.delete("evidence")
+          |> Map.delete(:acknowledge_gate_off)
+    }
+  end
 
   defp put_evidence(command, payload, evidence) do
     %{command | payload: payload |> Map.delete("evidence") |> Map.put(:evidence, evidence)}

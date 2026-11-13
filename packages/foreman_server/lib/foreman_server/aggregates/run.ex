@@ -963,14 +963,17 @@ defmodule ForemanServer.Aggregates.Run do
          event_type: "MergeGateApproved",
          payload:
            put_repo_id(
-             %{
-               run_id: run_id,
-               approver: approval.approver,
-               approver_identity: approval.approver_identity,
-               head_sha: approval.head_sha,
-               approved_at: System.system_time(:millisecond),
-               evidence: decision
-             },
+             put_gate_off_acknowledged(
+               %{
+                 run_id: run_id,
+                 approver: approval.approver,
+                 approver_identity: approval.approver_identity,
+                 head_sha: approval.head_sha,
+                 approved_at: System.system_time(:millisecond),
+                 evidence: decision
+               },
+               payload
+             ),
              repo_key
            )
        }}
@@ -1331,6 +1334,15 @@ defmodule ForemanServer.Aggregates.Run do
       nil when is_nil(repo_key) -> {:error, {:merge_gate_not_found, :run}}
       nil -> {:error, {:merge_gate_not_found, :run, repo_key}}
     end
+  end
+
+  # AC-001-3: `CommandGateway` keeps `acknowledge_gate_off: true` on an approval of a gate-off
+  # project the operator acknowledged (and drops it everywhere else). The aggregate decides
+  # nothing new: it records the flag, and only when it is `true`, so no other approval gains a key.
+  defp put_gate_off_acknowledged(event_payload, command_payload) do
+    if Aggregate.get(command_payload, :acknowledge_gate_off) == true,
+      do: Map.put(event_payload, :gate_off_acknowledged, true),
+      else: event_payload
   end
 
   # TRD-036. The decision of `merge_approve` on the evidence `CommandGateway` stamped.

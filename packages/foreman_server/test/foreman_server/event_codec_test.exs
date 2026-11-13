@@ -819,4 +819,37 @@ defmodule ForemanServer.EventCodecTest do
       end
     end
   end
+
+  describe "MergeGateApproved.gate_off_acknowledged (AC-001-3)" do
+    alias ForemanServer.Events.MergeGateApproved
+
+    # What an approval recorded before the field existed holds on disk (string keys, no
+    # `gate_off_acknowledged`): it must keep decoding, or the whole run stream stops replaying.
+    @old_approval %{
+      "run_id" => "r1",
+      "approver" => "leo",
+      "approver_identity" => "github:ldangelo",
+      "head_sha" => "abc",
+      "approved_at" => 1,
+      "evidence" => nil
+    }
+
+    test "an approval recorded before the field existed still decodes, with the field nil" do
+      assert %MergeGateApproved{gate_off_acknowledged: nil, run_id: "r1", head_sha: "abc"} =
+               EventCodec.decode!("MergeGateApproved", @old_approval)
+    end
+
+    test "an approval with the field decodes and round-trips through JSON" do
+      raw = Map.put(@old_approval, "gate_off_acknowledged", true)
+
+      assert %MergeGateApproved{gate_off_acknowledged: true} =
+               decoded = EventCodec.decode!("MergeGateApproved", raw)
+
+      assert decoded ==
+               decoded
+               |> Jason.encode!()
+               |> Jason.decode!()
+               |> then(&EventCodec.decode!("MergeGateApproved", &1))
+    end
+  end
 end
