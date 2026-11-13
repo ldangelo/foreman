@@ -171,10 +171,10 @@ defmodule ForemanServerWeb.DoctorController do
       end
 
     {Enum.sort(names), nil}
-  catch
-    :exit, reason -> {[], inspect(reason, limit: 5)}
   rescue
     error -> {[], Exception.message(error)}
+  catch
+    :exit, reason -> {[], inspect(reason, limit: 5)}
   end
 
   # The projection read; `:doctor_project_lister` (a zero-arity fun) replaces it in tests.
