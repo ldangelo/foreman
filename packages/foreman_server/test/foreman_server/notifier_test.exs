@@ -610,6 +610,138 @@ defmodule ForemanServer.NotifierTest do
     end
   end
 
+  # TRD-022: an approval of a gated project appends a forced `run.pr.checks` (`source: "gate"`)
+  # for every attempt. With a failing check on the PR the Notifier must not say "CI failed" for
+  # it, however long ago the last notification was; an ordinary (watch) observation still does.
+  describe "a gated approval's forced observation does not notify (TRD-022)" do
+    alias ForemanServer.{CommandRouter, PrObservation, RunPrMerge}
+    alias ForemanServer.TestSupport.MeckScope
+
+    setup %{tmp_dir: dir} do
+      MeckScope.new_once!([CommandRouter])
+      MeckScope.restore_on_exit!([CommandRouter])
+
+      # a dedupe window of 1 ms, so two attempts 20 ms apart are further apart than the window
+      Application.put_env(:foreman_server, :messaging,
+        enabled: true,
+        provider: :slack,
+        slack: [webhook_url: @secret_url],
+        dedupe_window_ms: 1
+      )
+
+      required = [%{"name" => "unit", "kind" => "check_run"}]
+      project_id = H.register_project(dir, config: %{required_checks: required})
+      %{run_id: run_id, pr_url: pr_url} = PrWatchSupport.start_run!(project_id: project_id)
+
+      dispatch!(%{
+        type: "run.pr.ready",
+        command_id: "ready-#{run_id}",
+        aggregate_id: "run:#{run_id}",
+        payload: %{
+          run_id: run_id,
+          project_id: project_id,
+          task_id: "task-prw",
+          pr_url: pr_url,
+          branch_name: "foreman/run/phase",
+          head_sha: "sha-1",
+          base_branch: "main"
+        }
+      })
+
+      RunPrMerge.set_command_runner(fn "gh", ["pr", "view" | _], _opts ->
+        {Jason.encode!(%{
+           "state" => "OPEN",
+           "mergeable" => "MERGEABLE",
+           "headRefOid" => "sha-1",
+           "headRefName" => "foreman/run/phase",
+           "baseRefName" => "main",
+           "statusCheckRollup" => [
+             %{
+               "__typename" => "CheckRun",
+               "completedAt" => "2026-11-12T13:58:49Z",
+               "conclusion" => "FAILURE",
+               "name" => "unit",
+               "startedAt" => "2026-11-12T13:58:43Z",
+               "status" => "COMPLETED",
+               "workflowName" => "ci"
+             }
+           ]
+         }), 0}
+      end)
+
+      on_exit(&RunPrMerge.clear_command_runner/0)
+      %{run_id: run_id, project_id: project_id, pr_url: pr_url, required: required}
+    end
+
+    defp approve_head(run_id) do
+      CommandGateway.dispatch_operator(%{
+        command_id: uid("approve"),
+        type: "merge_approve",
+        aggregate_id: "run:#{run_id}",
+        payload: %{
+          run_id: run_id,
+          approver: "leo",
+          approver_identity: "github:ldangelo",
+          head_sha: "sha-1"
+        }
+      })
+    end
+
+    defp checks_events(run_id),
+      do: for(%{event_type: "PrChecksChanged", data: data} <- run_events(run_id), do: data)
+
+    defp run_events(run_id) do
+      {:ok, events} = EventStore.read_stream_forward("run:#{run_id}", 0, 1_000)
+      events
+    end
+
+    test "two approvals further apart than dedupe_window_ms enqueue nothing; a watch observation does",
+         %{run_id: run_id, pr_url: pr_url, required: required} do
+      # attempt one is refused after its evidence was recorded, so a second attempt is possible
+      :meck.expect(CommandRouter, :dispatch, fn command, timeout ->
+        if command.type == "merge_approve",
+          do: {:error, :injected},
+          else: :meck.passthrough([command, timeout])
+      end)
+
+      assert {:error, :injected} = approve_head(run_id)
+      Process.sleep(20)
+      :meck.delete(CommandRouter, :dispatch, 2)
+      assert {:ok, _} = approve_head(run_id)
+
+      assert [first, second] = checks_events(run_id)
+      assert first.source == "gate" and second.source == "gate"
+      assert first.checks_state == :failing or to_string(first.checks_state) == "failing"
+
+      state = Notifier.new_state()
+      assert {state, {:skipped, :unmapped}} = Notifier.process(state, "PrChecksChanged", first)
+      assert {state, {:skipped, :unmapped}} = Notifier.process(state, "PrChecksChanged", second)
+      assert state.stats.notified == 0
+
+      # the same failing state observed by the monitor, the webhook or a refresh does notify
+      status =
+        PrWatchSupport.status(
+          head_sha: "sha-1",
+          checks: [PrWatchSupport.failing_check("unit")],
+          checks_state: :failing
+        )
+
+      assert {:ok, batch} =
+               PrObservation.commands(run_id, pr_url, status, nil, nil,
+                 policy: %{required: required, version: "v"}
+               )
+
+      checks = Enum.find(batch, &(&1.type == "run.pr.checks"))
+      assert checks.payload.source == "watch"
+      dispatch!(checks)
+
+      assert [_, _, watched] = checks_events(run_id)
+      assert watched.source == "watch"
+
+      assert {_, {:notified, _id}} = Notifier.process(state, "PrChecksChanged", watched)
+    end
+  end
+
   describe "stats and status (foreman-ireii)" do
     test "counters tell notified, refused and skipped events apart; unmapped events are not counted",
          %{project_id: project_id} do

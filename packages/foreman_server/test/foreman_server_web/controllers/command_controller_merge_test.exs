@@ -176,6 +176,62 @@ defmodule ForemanServerWeb.CommandControllerMergeTest do
     assert refused =~ "pr_not_acceptable"
   end
 
+  describe "a project with required_checks (TRD-022: POST /api/commands -> CommandGateway.dispatch_operator)" do
+    defp gate_events(run_id, type) do
+      {:ok, events} = ForemanServer.EventStore.read_stream_forward("run:#{run_id}", 0, 1_000)
+      for %{event_type: ^type, data: data} <- events, do: data
+    end
+
+    test "the approval records a forced observation for the head first, then approves", %{
+      run_id: run_id
+    } do
+      :ok =
+        ForemanServer.ProjectionStore.apply_events([
+          %{
+            event_type: "ProjectUpdated",
+            payload: %{
+              project_id: "project-http",
+              required_checks: [%{"name" => "unit", "kind" => "check_run"}]
+            }
+          }
+        ])
+
+      body =
+        run_id
+        |> approve_body("github:ldangelo")
+        |> Map.put("evidence", %{"checks_ref" => "forged"})
+
+      assert %{"status" => "accepted"} = json_response(command("merge_approve", body), 201)
+
+      assert [forced] = gate_events(run_id, "PrChecksChanged")
+      assert ForemanServer.Aggregate.get(forced, :source) == "gate"
+      assert ForemanServer.Aggregate.get(forced, :observation_ref) != "forged"
+      assert [_] = gate_events(run_id, "PrRiskRecorded")
+      assert [_] = gate_events(run_id, "MergeGateApproved")
+    end
+
+    test "a project the projection does not know is a 422 policy_unavailable and nothing is recorded",
+         %{run_id: run_id} do
+      :ok =
+        ForemanServer.ProjectionStore.apply_events([
+          %{
+            event_type: "RunStarted",
+            payload: %{run_id: run_id, project_id: "project-gone", task_id: "task-http"}
+          }
+        ])
+
+      assert %{"error" => error} =
+               json_response(
+                 command("merge_approve", approve_body(run_id, "github:ldangelo")),
+                 422
+               )
+
+      assert error =~ "policy_unavailable"
+      assert gate_events(run_id, "PrChecksChanged") == []
+      assert gate_events(run_id, "MergeGateApproved") == []
+    end
+  end
+
   test "run.pr.rehold is system-only: the HTTP allowlist refuses it", %{run_id: run_id} do
     conn =
       command("run.pr.rehold", %{"run_id" => run_id, "pr_url" => @pr_url, "head_sha" => "x"})
