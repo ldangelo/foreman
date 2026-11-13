@@ -474,7 +474,39 @@ defmodule ForemanServer.Idempotency.EffectTest do
       assert comment_key("h1", "d1") == comment_key("h1", "d1")
       refute comment_key("h1", "d1") == comment_key("h2", "d1")
       refute comment_key("h1", "d1") == comment_key("h1", "d2")
-      refute comment_key("h1", "d1") == comment_key("h1:d", "1")
+    end
+
+    test "a part with a character outside A-Za-z0-9._- is refused, so (a:b, c) and (a, b:c) cannot share a key" do
+      for {head, digest} <- [{"a:b", "c"}, {"a", "b:c"}, {"a b", "c"}, {"a", ""}] do
+        assert_raise ArgumentError, fn -> comment_key(head, digest) end
+      end
+
+      shared = Effect.key(:pr_comment, @run_id, "a:b:c")
+
+      for {head, digest, field} <- [{"a:b", "c", "head_sha"}, {"a", "b:c", "digest"}] do
+        assert {:error, {:intent_not_recorded, {:invalid_metadata, ^field}}} =
+                 Effect.run(
+                   :pr_comment,
+                   shared,
+                   fn -> flunk("ran") end,
+                   comment_meta(head, digest)
+                 )
+      end
+
+      assert KeyStore.status(shared) == :not_found
+
+      assert {:error, {:intent_not_recorded, {:invalid_metadata, "run_id"}}} =
+               Effect.run(
+                 :pr_comment,
+                 shared,
+                 fn -> flunk("ran") end,
+                 ForemanServer.Idempotency.Reconcilers.PrComment.intent(
+                   "run:1",
+                   @pr_url,
+                   "a",
+                   "b"
+                 )
+               )
     end
 
     test "a key settled completed for H1 and d1 does not stop the effect for H2 or d2" do

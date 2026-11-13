@@ -21,7 +21,7 @@ defmodule ForemanServer.Idempotency.Reconcilers.PrComment do
       by anyone else proves nothing) whose first line is the marker for this run, head and
       digest (`PrReport.parse_marker/1`);
     * `:not_done`: the list was read completely and holds no such comment;
-    * `:unknown`: incomplete metadata, or a failed, timed-out or unparsable answer. Never
+    * `:unknown`: incomplete or invalid metadata (a key part outside `A-Za-z0-9._-`), or a failed, timed-out or unparsable answer. Never
       `:not_done`: a post that may have happened is not posted again on a guess.
 
   `repeatable?/1` is true and `blocks_run?/1` false (TRD-002, honoured by the sweep from
@@ -37,6 +37,7 @@ defmodule ForemanServer.Idempotency.Reconcilers.PrComment do
   @behaviour ForemanServer.Idempotency.Reconciler
 
   alias ForemanServer.GitHub.PrComment
+  alias ForemanServer.Idempotency.Effect
   alias ForemanServer.Idempotency.Reconciler
   alias ForemanServer.PrReport
 
@@ -44,11 +45,19 @@ defmodule ForemanServer.Idempotency.Reconcilers.PrComment do
 
   @doc """
   The effect key of the report for `head_sha` and `digest` of `run_id`: a new head or a new
-  digest is a new effect. Neither a head SHA nor a digest contains `:`.
+  digest is a new effect. The three parts are joined with `:`, so each must pass
+  `Effect.key_part?/1` (`A-Za-z0-9._-` only) or this raises `ArgumentError`: (head `a:b`,
+  digest `c`) and (head `a`, digest `b:c`) must not share a key.
   """
   @spec key(String.t(), String.t(), String.t()) :: String.t()
-  def key(run_id, head_sha, digest),
-    do: ForemanServer.Idempotency.Effect.key(:pr_comment, run_id, "#{head_sha}:#{digest}")
+  def key(run_id, head_sha, digest) do
+    for {name, part} <- [run_id: run_id, head_sha: head_sha, digest: digest],
+        not Effect.key_part?(part) do
+      raise ArgumentError, "pr_comment key: #{name} #{inspect(part)} is not A-Za-z0-9._- only"
+    end
+
+    Effect.key(:pr_comment, run_id, "#{head_sha}:#{digest}")
+  end
 
   @doc "The metadata of a PR comment's intent. Pass it to `Effect.run(:pr_comment, key, fun, meta)`."
   @spec intent(String.t(), String.t(), String.t(), String.t()) :: map()
@@ -67,7 +76,8 @@ defmodule ForemanServer.Idempotency.Reconcilers.PrComment do
     with {:ok, pr_url} <- text(metadata, "pr_url"),
          {:ok, head_sha} <- text(metadata, "head_sha"),
          {:ok, digest} <- text(metadata, "digest"),
-         run_id when is_binary(run_id) and run_id != "" <- metadata["run_id"] do
+         run_id when is_binary(run_id) and run_id != "" <- metadata["run_id"],
+         :ok <- key_parts(run_id, head_sha, digest) do
       list_opts = Keyword.take(opts, [:command_runner, :timeout_ms])
 
       case PrComment.list(pr_url, list_opts) do
@@ -81,6 +91,7 @@ defmodule ForemanServer.Idempotency.Reconcilers.PrComment do
       end
     else
       {:error, field} -> unknown(metadata, {:incomplete_metadata, field})
+      {:invalid, field} -> unknown(metadata, {:invalid_metadata, field})
       _ -> unknown(metadata, {:incomplete_metadata, "run_id"})
     end
   end
@@ -90,6 +101,16 @@ defmodule ForemanServer.Idempotency.Reconcilers.PrComment do
 
   @impl Reconciler
   def blocks_run?(_metadata), do: false
+
+  defp key_parts(run_id, head_sha, digest) do
+    case Enum.find(
+           [{"run_id", run_id}, {"head_sha", head_sha}, {"digest", digest}],
+           fn {_field, part} -> not Effect.key_part?(part) end
+         ) do
+      nil -> :ok
+      {field, _part} -> {:invalid, field}
+    end
+  end
 
   defp own_marker?(%{viewer_did_author: true, body: body}, run_id, head_sha, digest)
        when is_binary(body) do

@@ -16,7 +16,9 @@ defmodule ForemanServer.Idempotency.Effect do
     * `branch_push`: `head_branch`, `cwd` (+ `pre_push_remote_sha`,
       `pushed_local_sha`, written by the caller)
     * `pr_create`: `head_branch`, `base_branch`, `cwd`
-    * `pr_comment`: `pr_url`, `head_sha`, `digest` (no `cwd`: the comment is written by URL)
+    * `pr_comment`: `pr_url`, `head_sha`, `digest` (no `cwd`: the comment is written by URL);
+      `run_id`, `head_sha` and `digest` are the parts of its key and take `A-Za-z0-9._-` only
+      (`key_part?/1`), else `{:error, {:intent_not_recorded, {:invalid_metadata, field}}}`
     * `task_provider`: `project_id`, `op`, `issue_id`
     * any other class: only the two universal fields are required.
 
@@ -74,6 +76,7 @@ defmodule ForemanServer.Idempotency.Effect do
           :invalid_class
           | :invalid_key
           | {:missing_metadata, String.t()}
+          | {:invalid_metadata, String.t()}
           | :cwd_missing
           | term()
 
@@ -92,6 +95,10 @@ defmodule ForemanServer.Idempotency.Effect do
     "pr_comment" => ["pr_url", "head_sha", "digest"],
     "task_provider" => ["project_id", "op", "issue_id"]
   }
+
+  # Fields a class's key is built from with `:` between them: a `:` inside one would let two
+  # different effects share a key, so intent is not recorded for such a value.
+  @key_fields %{"pr_comment" => ["run_id", "head_sha", "digest"]}
 
   @doc """
   Derive the stable key `effect:<class>:<run_id>:<identity>`: the same effect
@@ -191,11 +198,26 @@ defmodule ForemanServer.Idempotency.Effect do
     required = ["run_id" | Map.get(@required, class_name, [])]
 
     case Enum.find(required, &(not present?(Map.get(typed, &1)))) do
-      nil -> {:ok, typed}
-      "cwd" -> {:error, :cwd_missing}
-      field -> {:error, {:missing_metadata, field}}
+      nil ->
+        case Enum.find(Map.get(@key_fields, class_name, []), &(not key_part?(Map.get(typed, &1)))) do
+          nil -> {:ok, typed}
+          field -> {:error, {:invalid_metadata, field}}
+        end
+
+      "cwd" ->
+        {:error, :cwd_missing}
+
+      field ->
+        {:error, {:missing_metadata, field}}
     end
   end
+
+  @doc """
+  Whether `value` can be one `:`-joined part of an effect key: a non-empty string of
+  `A-Z a-z 0-9 . _ -` only, so no two different part lists join to the same key.
+  """
+  @spec key_part?(term()) :: boolean()
+  def key_part?(value), do: is_binary(value) and Regex.match?(~r/\A[A-Za-z0-9._-]+\z/, value)
 
   # A key is attempted again only when it is decided. `{:ok, mode}` says how it is
   # re-marked: `:clear` (not found, `completed` or `failed`: a settled effect may run

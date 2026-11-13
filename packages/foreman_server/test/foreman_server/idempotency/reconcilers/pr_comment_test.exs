@@ -62,6 +62,13 @@ defmodule ForemanServer.Idempotency.Reconcilers.PrCommentTest do
       refute key == PrComment.key("run-2", @head, @digest)
     end
 
+    test "a part with a character outside A-Za-z0-9._- is refused, so no two effects share a key" do
+      assert_raise ArgumentError, fn -> PrComment.key(@run_id, "a:b", "c") end
+      assert_raise ArgumentError, fn -> PrComment.key(@run_id, "a", "b:c") end
+      assert_raise ArgumentError, fn -> PrComment.key("run:1", "a", "b") end
+      assert_raise ArgumentError, fn -> PrComment.key(@run_id, "", "b") end
+    end
+
     test "the intent carries the run, url, head and digest and no cwd" do
       assert PrComment.intent(@run_id, @pr_url, @head, @digest) == %{
                run_id: @run_id,
@@ -90,6 +97,21 @@ defmodule ForemanServer.Idempotency.Reconcilers.PrCommentTest do
       assert PrComment.reconcile(metadata(),
                command_runner: runner([comment("chatter", true), comment(marker(), true)])
              ) == :done
+    end
+
+    test "two own comments with the same marker are still :done" do
+      comments = [comment(marker(), true), comment(marker(), true)]
+      assert PrComment.reconcile(metadata(), command_runner: runner(comments)) == :done
+    end
+
+    test "a minimized own comment with the marker is :done: it was posted" do
+      minimized = Map.put(comment(marker(), true), "isMinimized", true)
+      assert PrComment.reconcile(metadata(), command_runner: runner([minimized])) == :done
+    end
+
+    test "an own comment with an empty body is :not_done" do
+      assert PrComment.reconcile(metadata(), command_runner: runner([comment("", true)])) ==
+               :not_done
     end
 
     test "no comment at all is :not_done" do
@@ -145,6 +167,15 @@ defmodule ForemanServer.Idempotency.Reconcilers.PrCommentTest do
       end
 
       refute_received {:ran, _, _, _}
+    end
+
+    test "a head, digest or run id with a character that cannot be in a key is :unknown and runs nothing" do
+      runner = fn _executable, _args, _opts -> flunk("gh ran") end
+
+      for {field, value} <- [{"head_sha", "a:b"}, {"digest", "b:c"}, {"run_id", "run:1"}] do
+        assert PrComment.reconcile(metadata(%{field => value}), command_runner: runner) ==
+                 :unknown
+      end
     end
 
     test "a PR URL that is not a github.com pull request is :unknown and runs nothing" do
