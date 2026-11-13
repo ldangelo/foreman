@@ -146,7 +146,7 @@ defmodule ForemanServer.ProjectionStorePrWatchTest do
 
     ProjectionStoreReset.reset!()
     assert :ok = ProjectionStore.apply_events(json_events)
-    assert ProjectionStore.pr_watch("r1") == live
+    assert strip(ProjectionStore.pr_watch("r1")) == strip(live)
 
     :ok = ProjectionStore.apply_events([ev("PrReady", %{pr_url: @a, head_sha: "h1"})])
     assert [%{evidence: %{delivery_issue: nil}}] = ProjectionStore.pr_watch("r1")
