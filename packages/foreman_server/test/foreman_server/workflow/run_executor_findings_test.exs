@@ -137,6 +137,72 @@ defmodule ForemanServer.Workflow.RunExecutorFindingsTest do
     end
   end
 
+  describe "the risk judgement (TRD-041)" do
+    test "is recorded with the findings, bound to the reviewed head, in the aggregate and the projection",
+         ctx do
+      contents = "# Review\n" <> block(doc([finding()])) <> "\n" <> judgement_block("HIGH")
+      artifact = artifact!(ctx, contents)
+
+      assert [{_, {:ok, @pr_url}}] = finalize(ctx, artifact)
+
+      # One event carries both: the judgement is bound to the event's own reviewed head.
+      assert [rec] = recorded(ctx.run_id)
+      assert rec["head_sha"] == ctx.local_tip
+      assert rec["status"] == "recorded"
+
+      assert %{
+               "status" => "recorded",
+               "level" => "HIGH",
+               "rationale" => "touches the auth path",
+               "defect" => nil
+             } = rec["judgement"]
+
+      # Parsed from the same bytes the artifact digest names.
+      assert rec["artifact_sha256"] ==
+               :crypto.hash(:sha256, contents) |> Base.encode16(case: :lower)
+
+      assert [%{evidence: %{findings: findings}}] =
+               ForemanServer.ProjectionStore.pr_watch(ctx.run_id)
+
+      assert findings.head_sha == ctx.local_tip
+
+      assert %{status: "recorded", level: "HIGH", rationale: "touches the auth path"} =
+               findings.judgement
+    end
+
+    test "an artifact with findings and no judgement block records an absent judgement", ctx do
+      finalize(ctx, artifact!(ctx, block(doc([finding()]))))
+
+      assert [%{"status" => "recorded", "judgement" => judgement}] = recorded(ctx.run_id)
+      assert %{"status" => "absent", "level" => nil, "rationale" => nil} = judgement
+
+      assert [%{evidence: %{findings: %{judgement: %{status: "absent", level: nil}}}}] =
+               ForemanServer.ProjectionStore.pr_watch(ctx.run_id)
+    end
+
+    test "a malformed judgement is recorded with its defect and does not touch the findings",
+         ctx do
+      body = block(doc([finding()])) <> judgement_block("HIGH") <> judgement_block("LOW")
+      finalize(ctx, artifact!(ctx, body))
+
+      assert [rec] = recorded(ctx.run_id)
+      assert rec["status"] == "recorded"
+      assert [_one] = rec["findings"]
+
+      assert %{"status" => "malformed", "defect" => "multiple_blocks", "level" => nil} =
+               rec["judgement"]
+    end
+
+    test "an artifact that cannot be read has no judgement", ctx do
+      finalize(ctx, Path.join(ctx.repo, "never-written.md"))
+
+      assert [%{"status" => "malformed", "defect" => "unreadable", "judgement" => judgement}] =
+               recorded(ctx.run_id)
+
+      assert %{"status" => "absent"} = judgement
+    end
+  end
+
   describe "failures and repeats" do
     test "a local tip that cannot be resolved appends nothing and is logged at error level",
          ctx do
@@ -314,6 +380,20 @@ defmodule ForemanServer.Workflow.RunExecutorFindingsTest do
 
   defp block(json) when is_map(json), do: block(Jason.encode!(json))
   defp block(text), do: "#{@start}\n#{text}\n#{@end_}\n"
+
+  @jstart "<!-- FOREMAN_RISK_JUDGEMENT_START -->"
+  @jend "<!-- FOREMAN_RISK_JUDGEMENT_END -->"
+
+  defp judgement_block(level, rationale \\ "touches the auth path") do
+    json =
+      Jason.encode!(%{
+        "schema" => "foreman.risk_judgement/1",
+        "level" => level,
+        "rationale" => rationale
+      })
+
+    "#{@jstart}\n#{json}\n#{@jend}\n"
+  end
 
   defp git!(root, args) do
     {out, 0} = System.cmd("git", ["-C", root | args], stderr_to_stdout: true)

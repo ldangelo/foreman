@@ -783,6 +783,104 @@ defmodule ForemanServer.Aggregates.RunPrWatchTest do
       assert state.pr_watch[@url].evidence.findings.defect == "legacy_format"
     end
 
+    test "the judgement is carried on the same event, bound to its head, and folded into evidence.findings.judgement" do
+      judgement = %{status: "recorded", level: "HIGH", rationale: "touches auth"}
+      {state, spec} = accept(started(), "run.pr.findings", findings_cmd(%{judgement: judgement}))
+
+      assert spec.event_type == "ReviewFindingsRecorded"
+
+      assert %{status: "recorded", level: "HIGH", rationale: "touches auth", defect: nil} =
+               spec.payload.judgement
+
+      folded = state.pr_watch[@url].evidence.findings
+      assert folded.head_sha == "sha-1"
+      assert folded.judgement == spec.payload.judgement
+
+      # the same judgement with string keys (a replayed payload) folds to the same value
+      string_keyed = %{"status" => "recorded", "level" => "HIGH", "rationale" => "touches auth"}
+      assert PrEvidence.normalise_judgement(string_keyed) == folded.judgement
+    end
+
+    test "no judgement is an absent one, never a recorded or neutral level" do
+      {state, spec} = accept(started(), "run.pr.findings", findings_cmd())
+
+      assert %{status: "absent", level: nil, rationale: nil, defect: nil} = spec.payload.judgement
+      assert state.pr_watch[@url].evidence.findings.judgement == spec.payload.judgement
+
+      {_, explicit} =
+        accept(
+          started(),
+          "run.pr.findings",
+          findings_cmd(%{judgement: %{status: "absent"}})
+        )
+
+      assert explicit.payload.judgement == spec.payload.judgement
+      # an absent judgement keeps the digest the record had before the field existed
+      assert explicit.payload.digest == spec.payload.digest
+
+      assert spec.payload.digest ==
+               PrEvidence.findings_digest(%{
+                 status: "recorded",
+                 defect: nil,
+                 findings: [finding()]
+               })
+    end
+
+    test "the judgement is part of the digest: another level or a malformed one is a new record" do
+      {state, absent} = accept(started(), "run.pr.findings", findings_cmd())
+
+      recorded = %{status: "recorded", level: "LOW", rationale: "small"}
+      {state, low} = accept(state, "run.pr.findings", findings_cmd(%{judgement: recorded}))
+
+      {state, high} =
+        accept(
+          state,
+          "run.pr.findings",
+          findings_cmd(%{judgement: %{recorded | level: "HIGH"}})
+        )
+
+      {state, malformed} =
+        accept(
+          state,
+          "run.pr.findings",
+          findings_cmd(%{
+            judgement: %{status: "malformed", defect: "multiple_blocks", defect_detail: "two"}
+          })
+        )
+
+      digests = Enum.map([absent, low, high, malformed], & &1.payload.digest)
+      assert digests == Enum.uniq(digests)
+
+      assert %{status: "malformed", defect: "multiple_blocks", level: nil} =
+               state.pr_watch[@url].evidence.findings.judgement
+
+      # the same judgement for the same head is a no-op repeat
+      assert {:ok, nil} =
+               reject(
+                 state,
+                 "run.pr.findings",
+                 findings_cmd(%{judgement: malformed.payload.judgement})
+               )
+    end
+
+    test "an invalid judgement is rejected and nothing is appended" do
+      for bad <- [
+            %{status: "recorded", level: "CRITICAL", rationale: "x"},
+            %{status: "recorded", level: "LOW"},
+            %{status: "recorded", level: "LOW", rationale: String.duplicate("x", 1001)},
+            %{status: "recorded", level: "LOW", rationale: "a\e[31mb"},
+            %{status: "recorded", level: "LOW", rationale: "x", defect: "invalid_json"},
+            %{status: "absent", level: "LOW"},
+            %{status: "malformed", defect: "nonsense"},
+            %{status: "malformed", level: "HIGH", defect: "invalid_json"},
+            %{status: "recorded", level: "LOW", rationale: "x", extra: 1},
+            "HIGH"
+          ] do
+        assert {:error, {:missing_or_invalid, :judgement}} =
+                 reject(started(), "run.pr.findings", findings_cmd(%{judgement: bad}))
+      end
+    end
+
     test "an invalid payload is rejected and nothing is appended" do
       too_many = List.duplicate(finding(), 101)
 

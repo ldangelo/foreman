@@ -410,6 +410,13 @@ defmodule ForemanServer.EventCodecTest do
       ],
       defect: nil,
       defect_detail: nil,
+      judgement: %{
+        "status" => "recorded",
+        "level" => "HIGH",
+        "rationale" => "touches auth",
+        "defect" => nil,
+        "defect_detail" => nil
+      },
       artifact_path: "/w/review.md",
       artifact_sha256: String.duplicate("a", 64),
       digest: "0123456789abcdef",
@@ -428,9 +435,24 @@ defmodule ForemanServer.EventCodecTest do
                @findings_data
     end
 
+    test "an event written before the judgement field decodes, with no judgement" do
+      legacy = Map.delete(@findings_data, :judgement)
+      refute Map.has_key?(legacy, :judgement)
+
+      assert %ForemanServer.Events.ReviewFindingsRecorded{judgement: nil} =
+               decoded = EventCodec.decode!("ReviewFindingsRecorded", legacy)
+
+      assert decoded.head_sha == "h1"
+
+      replayed = legacy |> Jason.encode!() |> Jason.decode!()
+
+      assert %ForemanServer.Events.ReviewFindingsRecorded{judgement: nil} =
+               EventCodec.decode!("ReviewFindingsRecorded", replayed)
+    end
+
     test "an unknown key is refused and the enforced keys are required" do
       assert_raise ArgumentError, fn ->
-        EventCodec.decode!("ReviewFindingsRecorded", Map.put(@findings_data, :judgement, "x"))
+        EventCodec.decode!("ReviewFindingsRecorded", Map.put(@findings_data, :bogus, "x"))
       end
 
       assert_raise ArgumentError, fn ->
