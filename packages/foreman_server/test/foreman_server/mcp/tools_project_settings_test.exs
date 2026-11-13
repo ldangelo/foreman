@@ -181,8 +181,15 @@ defmodule ForemanServer.MCP.ToolsProjectSettingsTest do
     refute "repo_allowlist" in properties
     refute "max_repos_per_run" in properties
 
-    for key <- ["repo_allowlist", "max_repos_per_run"] do
-      value = if key == "repo_allowlist", do: ["/"], else: 1000
+    refute "required_checks" in properties
+
+    for key <- ["repo_allowlist", "max_repos_per_run", "required_checks"] do
+      value =
+        case key do
+          "repo_allowlist" -> ["/"]
+          "required_checks" -> []
+          _ -> 1000
+        end
 
       assert {:error, %ToolError{code: "INVALID_PARAMS", message: "Unknown arguments: " <> named}} =
                Tools.call_tool("foreman_project_settings_update", %{
@@ -200,7 +207,7 @@ defmodule ForemanServer.MCP.ToolsProjectSettingsTest do
   # The whitelist (`Aggregates.Project.Settings`) and this tool's schema must not drift apart: a
   # new setting is either settable over MCP or named here as operator-only, never silently neither.
   test "every project setting is either settable over MCP or declared operator-only" do
-    operator_only = ~w(repo_allowlist max_repos_per_run)
+    operator_only = ~w(repo_allowlist max_repos_per_run required_checks)
 
     settable =
       schema_properties("foreman_project_settings_update") --

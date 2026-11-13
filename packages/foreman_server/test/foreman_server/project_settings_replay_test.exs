@@ -4,9 +4,25 @@ defmodule ForemanServer.ProjectSettingsReplayTest do
   alias ForemanServer.{CommandGateway, EventStore, ProjectionStore, ProjectSettings}
   alias ForemanServer.TestSupport.ProjectionStoreReset
 
+  import Phoenix.ConnTest
+  import Plug.Conn
+
+  @endpoint ForemanServerWeb.Endpoint
+  @token "project-settings-replay-token"
+
   setup do
+    previous = Application.get_env(:foreman_server, :api_bearer_token)
+    Application.put_env(:foreman_server, :api_bearer_token, @token)
     ProjectionStoreReset.reset!()
-    on_exit(&ProjectionStoreReset.reset!/0)
+
+    on_exit(fn ->
+      ProjectionStoreReset.reset!()
+
+      if previous == nil,
+        do: Application.delete_env(:foreman_server, :api_bearer_token),
+        else: Application.put_env(:foreman_server, :api_bearer_token, previous)
+    end)
+
     {:ok, id: "settings-replay-#{System.unique_integer([:positive])}"}
   end
 
@@ -102,5 +118,61 @@ defmodule ForemanServer.ProjectSettingsReplayTest do
 
   test "an unknown project has no settings" do
     assert ProjectionStore.project_settings("no-such-project") == nil
+  end
+
+  defp http_required_checks(id) do
+    %{"settings" => settings} =
+      build_conn()
+      |> put_req_header("authorization", "Bearer #{@token}")
+      |> get("/api/projects/#{id}/settings")
+      |> json_response(200)
+
+    assert Map.has_key?(settings, "required_checks")
+    settings["required_checks"]
+  end
+
+  test "required_checks [] stays distinct from a cleared one after a replay and over HTTP", %{
+    id: id
+  } do
+    {:ok, _} = dispatch(id, "project.register", %{path: "/tmp/#{id}"})
+    assert ProjectionStore.project_settings(id).required_checks == nil
+    assert http_required_checks(id) == nil
+
+    {:ok, _} = dispatch(id, "project.update", %{required_checks: []})
+    assert %ProjectSettings{required_checks: []} = ProjectionStore.project_settings(id)
+    assert http_required_checks(id) == []
+
+    {_, events} = stream_version(id)
+    :ok = ProjectionStore.rebuild(events)
+    assert %ProjectSettings{required_checks: []} = ProjectionStore.project_settings(id)
+    assert http_required_checks(id) == []
+
+    entry = %{"name" => "build", "kind" => "check_run", "allow_skipped" => true}
+    {:ok, _} = dispatch(id, "project.update", %{required_checks: [entry]})
+    {_, events} = stream_version(id)
+    :ok = ProjectionStore.rebuild(events)
+    assert ProjectionStore.project_settings(id).required_checks == [entry]
+    assert http_required_checks(id) == [entry]
+
+    {:ok, _} = dispatch(id, "project.update", %{cleared_settings: ["required_checks"]})
+    assert %ProjectSettings{required_checks: nil} = ProjectionStore.project_settings(id)
+    assert http_required_checks(id) == nil
+
+    {_, events} = stream_version(id)
+    :ok = ProjectionStore.rebuild(events)
+    assert %ProjectSettings{required_checks: nil} = ProjectionStore.project_settings(id)
+    assert http_required_checks(id) == nil
+  end
+
+  test "an invalid required_checks update is refused and appends nothing", %{id: id} do
+    {:ok, _} = dispatch(id, "project.register", %{path: "/tmp/#{id}"})
+    {before, _} = stream_version(id)
+
+    assert {:error, {:required_checks_kind_invalid, "deploy"}} =
+             dispatch(id, "project.update", %{
+               required_checks: [%{"name" => "a", "kind" => "deploy"}]
+             })
+
+    assert {^before, _} = stream_version(id)
   end
 end
