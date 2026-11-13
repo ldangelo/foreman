@@ -20,11 +20,11 @@ func generateID(prefix string) string {
 var validBackends = map[string]bool{"pi": true, "claude": true, "codex": true, "opencode": true}
 
 func runRun(c *client.Client, args []string) error {
-	usage := "Usage:\n  foreman run list [--status <status>] [--project-id <id>] [--limit <n>]\n  foreman run get <id>\n  foreman run cancel --id <run-id> [--reason <reason>]\n  foreman run pause --id <run-id> [--reason <reason>]\n  foreman run resume --id <run-id>\n  foreman run remove --id <run-id>\n  foreman run reset --id <run-id>\n  foreman run approve-merge --id <run-id> --approver <name> --identity <github:login> --head-sha <sha> [--repo-id <repo-id>]\n  foreman run waive-evidence --id <run-id> --approver <name> --identity <github:login> --head-sha <sha> --waive <codes> --reason <text> [--repo-id <repo-id>]\n  foreman run merge --id <run-id> [--repo-id <repo-id>]\n  foreman run prs <id>\n  foreman run fix-ci <id> [--pr <url>] [--note <text>]\n  foreman run address-comments <id> [--pr <url>] [--note <text>]\n  foreman run resolve-conflicts <id> [--pr <url>] [--note <text>]\n  foreman run create-pr <id>\n  foreman run retry-pr <id> --repo-id <repo-id>\n  foreman run watch-stop <id> [--pr <url>]\n  foreman run watch-start <id> [--pr <url>]\n  foreman run submit --workflow <name> --prompt <text> --project-id <id> [--work-id <id>] [--backend <backend>]"
+	usage := "Usage:\n  foreman run list [--status <status>] [--project-id <id>] [--limit <n>]\n  foreman run get <id>\n  foreman run cancel --id <run-id> [--reason <reason>]\n  foreman run pause --id <run-id> [--reason <reason>]\n  foreman run resume --id <run-id>\n  foreman run remove --id <run-id>\n  foreman run reset --id <run-id>\n  foreman run approve-merge --id <run-id> --approver <name> --identity <github:login> --head-sha <sha> [--repo-id <repo-id>]\n  foreman run waive-evidence --id <run-id> --approver <name> --identity <github:login> --head-sha <sha> --waive <codes> --reason <text> [--repo-id <repo-id>]\n  foreman run merge --id <run-id> [--repo-id <repo-id>]\n  foreman run prs <id>\n  foreman run fix-ci <id> [--pr <url>] [--note <text>]\n  foreman run address-comments <id> [--pr <url>] [--note <text>]\n  foreman run resolve-conflicts <id> [--pr <url>] [--note <text>]\n  foreman run create-pr <id>\n  foreman run retry-pr <id> --repo-id <repo-id>\n  foreman run watch-stop <id> [--pr <url>]\n  foreman run watch-start <id> [--pr <url>]\n  foreman run publish-report <id> [--pr <url>] [--repo-id <repo-id>]\n  foreman run submit --workflow <name> --prompt <text> --project-id <id> [--work-id <id>] [--backend <backend>]"
 
 	if len(args) == 0 {
 		return usageTextError(
-			"foreman run: missing subcommand (list, get, prs, cancel, pause, resume, remove, reset, approve-merge, waive-evidence, merge, fix-ci, address-comments, resolve-conflicts, create-pr, retry-pr, watch-stop, watch-start, submit)",
+			"foreman run: missing subcommand (list, get, prs, cancel, pause, resume, remove, reset, approve-merge, waive-evidence, merge, fix-ci, address-comments, resolve-conflicts, create-pr, retry-pr, watch-stop, watch-start, publish-report, submit)",
 			usage,
 		)
 	}
@@ -66,6 +66,8 @@ func runRun(c *client.Client, args []string) error {
 		return runPrWatch(c, "watch-stop", "run.pr.watch_stop", args[1:])
 	case "watch-start":
 		return runPrWatch(c, "watch-start", "run.pr.watch_start", args[1:])
+	case "publish-report":
+		return runPublishReport(c, args[1:])
 	case "submit":
 		return runSubmit(c, args[1:])
 	default:
@@ -570,4 +572,45 @@ func runPrWatch(c *client.Client, verb, commandType string, args []string) error
 	}
 
 	return postCommand(c, commandEnvelope{Type: commandType, Payload: payload})
+}
+
+// runPublishReport asks the server to publish the risk report of a run's PR again
+// (`run.pr.publish_report`, an operator command): the retry of a refused publication. It names
+// no head, digest or level: the server publishes the report of the PR's current risk record.
+// Each call carries its own random command id, so two requests are two requests.
+func runPublishReport(c *client.Client, args []string) error {
+	fs := newFlagSet("run publish-report")
+	runID := fs.String("id", "", "Run ID (or pass it as the first argument)")
+	prURL := fs.String("pr", "", "PR URL (required when the run watches several PRs)")
+	repoID := fs.String("repo-id", "", "Repository whose PR to report on (multi-repo runs)")
+
+	positional, rest := prRunID(args)
+	if err := fs.parse(rest); err != nil {
+		return err
+	}
+	if fs.NArg() > 0 {
+		return usageError(fs, "foreman run publish-report: unexpected argument %q (use --pr <url> to select a PR)", fs.Arg(0))
+	}
+	if positional != "" {
+		*runID = positional
+	}
+
+	if *runID == "" {
+		return usageError(fs, "foreman run publish-report: <run-id> is required")
+	}
+
+	payload := map[string]any{"run_id": *runID}
+	if *prURL != "" {
+		payload["pr_url"] = *prURL
+	}
+	if *repoID != "" {
+		payload["repo_id"] = *repoID
+	}
+
+	return postCommand(c, commandEnvelope{
+		Type:        "run.pr.publish_report",
+		CommandID:   generateID("publish-report"),
+		AggregateID: "run:" + *runID,
+		Payload:     payload,
+	})
 }

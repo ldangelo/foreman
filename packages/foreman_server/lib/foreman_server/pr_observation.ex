@@ -32,6 +32,7 @@ defmodule ForemanServer.PrObservation do
   """
 
   alias ForemanServer.GitHub.PrStatus
+  alias ForemanServer.PrReport
   alias ForemanServer.PrRisk.Rubric
   alias ForemanServer.PrUpdate
 
@@ -94,13 +95,24 @@ defmodule ForemanServer.PrObservation do
   coverage report) is not feedback anyone can address, and counting it would enable "Address
   comments" on every PR of an account that has a review bot (foreman-v9y3x). A comment whose
   author type is unknown (`bot: nil`: the fetch did not read it) counts, as every comment did
-  before.
+  before. A comment that is Foreman's own report (TRD-030) is not feedback either: its body
+  starts with `PrReport.marker_prefix/0` AND the token's own user wrote it
+  (`viewer_did_author`, read from `gh pr view`). Without that guard the publisher's comment would
+  reach the watcher through the `issue_comment` webhook and move the review digest. A comment
+  by another user that starts with the marker proves nothing and is counted.
   """
   @spec comment_ids(PrStatus.t()) :: [String.t()]
   def comment_ids(%PrStatus{comments: comments}) do
-    for(%{id: id} = comment <- comments, not match?(%{bot: true}, comment), do: id)
+    for(%{id: id} = comment <- comments, feedback?(comment), do: id)
     |> Enum.sort()
   end
+
+  defp feedback?(%{bot: true}), do: false
+
+  defp feedback?(%{viewer_did_author: true, body: body}) when is_binary(body),
+    do: not String.starts_with?(body, PrReport.marker_prefix())
+
+  defp feedback?(_comment), do: true
 
   @doc "The sorted ids of the PR's unresolved review threads (`[]` when threads were not read)."
   @spec thread_ids(PrStatus.t()) :: [String.t()]

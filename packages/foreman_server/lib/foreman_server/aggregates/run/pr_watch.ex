@@ -51,7 +51,8 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
                    "run.pr.ready_failed",
                    "run.pr.findings",
                    "run.pr.risk",
-                   "run.pr.comment_published"
+                   "run.pr.comment_published",
+                   "run.pr.publish_report"
                  ] ++ Map.keys(@kinds)
 
   @events %{
@@ -70,6 +71,7 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
     "run.pr.findings" => "ReviewFindingsRecorded",
     "run.pr.risk" => "PrRiskRecorded",
     "run.pr.comment_published" => "PrCommentPublished",
+    "run.pr.publish_report" => "PrReportRequested",
     # Operator-only and handled by `Run` beside `merge_approve` (it needs the merge gate), so it
     # is in neither `command_types/0` nor `operator_types/0`: this entry makes `Run` fold the event.
     "run.pr.waive_evidence" => "PrEvidenceWaived"
@@ -88,6 +90,7 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
   @max_report_detail 500
   @max_comment_url 500
   @max_superseded 128
+  @max_requested_by 128
 
   @hard_cap 5
   @default_auto_cap 2
@@ -103,7 +106,7 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
   def event_types, do: @events |> Map.values() |> Enum.uniq()
 
   @operator_types ~w(run.pr.fix_ci run.pr.address_comments run.pr.resolve_conflicts
-                     run.pr.watch_stop run.pr.watch_start run.pr.create)
+                     run.pr.watch_stop run.pr.watch_start run.pr.create run.pr.publish_report)
 
   @doc """
   The PR commands an operator may issue (`CommandGateway` / `CommandController`
@@ -164,6 +167,9 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
              "run.pr.comment_published"
            ] ->
         {:error, {:missing_or_invalid, :pr_url}}
+
+      nil when type == "run.pr.publish_report" ->
+        report_pr_url(state, payload)
 
       nil ->
         single_watched_url(state, Aggregate.get(payload, :run_id))
@@ -581,6 +587,79 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
           recorded_at: recorded_at
         })
       )
+    end
+  end
+
+  # TRD-030: the operator's request to publish the report of the PR's CURRENT risk record again
+  # (the retry of a refused publication). Operator-only (`operator_types/0`). The request names
+  # nothing it decides: a head, a digest or a level in the payload is refused, and the event
+  # carries the head and digest of the folded `evidence.risk`. Refused when the PR is not an open
+  # watched one, has no risk record, its risk record is for another head than the PR's, or
+  # `evidence.report` already holds a published report for that head and digest. A refused
+  # (`refused`) report does not refuse the request: it is what the request retries. Whether the
+  # project is gated is the publisher's to decide (the aggregate cannot read the policy).
+  defp do_handle("run.pr.publish_report", state, run_id, pr_url, payload) do
+    with {:ok, ids} <- identity(state, payload),
+         :ok <- findings_repo_id(ids.repo_id),
+         :ok <- no_named_report(payload),
+         {:ok, requested_by} <-
+           optional_bounded_text(
+             Aggregate.get(payload, :requested_by),
+             @max_requested_by,
+             :requested_by
+           ),
+         {:ok, record} <- watched_open(state, pr_url),
+         {:ok, risk} <- current_risk_record(record, pr_url),
+         :ok <- report_not_published(record, risk) do
+      event("run.pr.publish_report", run_id, pr_url, payload, ids, %{
+        head_sha: risk.head_sha,
+        digest: risk.digest,
+        requested_by: requested_by,
+        requested_at: Aggregate.get(payload, :requested_at) || System.system_time(:millisecond)
+      })
+    end
+  end
+
+  defp no_named_report(payload) do
+    case Enum.find(~w(head_sha digest level)a, &(not is_nil(Aggregate.get(payload, &1)))) do
+      nil -> :ok
+      key -> {:error, {:derived_field, key}}
+    end
+  end
+
+  defp current_risk_record(%{evidence: %{risk: %{head_sha: head} = risk}, head_sha: head}, _url),
+    do: {:ok, risk}
+
+  defp current_risk_record(%{evidence: %{risk: %{head_sha: risk_head}}, head_sha: head}, url),
+    do: {:error, {:risk_not_current, url, risk_head, head}}
+
+  defp current_risk_record(_record, url), do: {:error, {:no_risk_record, url}}
+
+  defp report_not_published(record, %{head_sha: head, digest: digest}) do
+    case record.evidence.report do
+      %{head_sha: ^head, digest: ^digest, status: "published"} ->
+        {:error, {:report_current, head, digest}}
+
+      _none_other_or_refused ->
+        :ok
+    end
+  end
+
+  # The PR the request is about: the one `repo_id` names through the merge gate's pin of that
+  # repository (the PR the gate was opened for), else the one watched PR.
+  defp report_pr_url(state, payload) do
+    case Aggregate.get(payload, :repo_id) do
+      repo_id when is_binary(repo_id) and repo_id != "" ->
+        case Map.get(state.merge_pins, repo_id) do
+          %{pr_url: url} when is_binary(url) and url != "" -> {:ok, url}
+          _no_pin -> {:error, {:pr_not_watched, nil}}
+        end
+
+      nil ->
+        single_watched_url(state, Aggregate.get(payload, :run_id))
+
+      _other ->
+        {:error, {:missing_or_invalid, :repo_id}}
     end
   end
 

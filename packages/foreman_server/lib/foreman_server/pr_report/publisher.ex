@@ -7,8 +7,8 @@ defmodule ForemanServer.PrReport.Publisher do
 
   A `ProjectionStore` subscriber (`init/1` subscribes with `replay_existing: false` and stops
   with `{:projection_subscribe_failed, reason}` on an error, as `PrWatcher` does). It reacts to
-  `PrRiskRecorded` only (TRD-030 adds the operator's `PrReportRequested`) and never to a
-  comment, review or webhook event. `PrRiskRecorded` is appended by the system command
+  `PrRiskRecorded` and to the operator's `PrReportRequested` (TRD-030, `publish_requested/2`)
+  and never to a comment, review or webhook event. `PrRiskRecorded` is appended by the system command
   `run.pr.risk`, which `PrObservation` builds for every observed PR and `PrWatcher.Observer`
   dispatches (`pr_observation.ex`, `risk_commands/7`); a poll, a webhook and the watcher's
   subscription all reach it through `PrWatcher.refresh/2`. Posting a comment appends no event
@@ -66,7 +66,15 @@ defmodule ForemanServer.PrReport.Publisher do
   alias ForemanServer.GitHub.PrComment, as: GhComment
   alias ForemanServer.Idempotency.Effect
   alias ForemanServer.Idempotency.Reconcilers.PrComment, as: CommentEffect
-  alias ForemanServer.{PrEvidence, PrObservation, PrReport, ProjectEnvironment, ProjectionStore}
+
+  alias ForemanServer.{
+    EventStore,
+    PrEvidence,
+    PrObservation,
+    PrReport,
+    ProjectEnvironment,
+    ProjectionStore
+  }
 
   require Logger
 
@@ -119,6 +127,46 @@ defmodule ForemanServer.PrReport.Publisher do
     with {:ok, t} <- trigger(trigger), do: guarded_post(t, opts)
   end
 
+  @doc """
+  The publish step for one `PrReportRequested` payload (TRD-030, the operator's retry): the
+  eligibility of `publish/2` except that a REFUSED report of the head and digest is retried (a
+  published one is not), then the publication of the report of the risk record the request
+  names. The record is read from the run's event stream (the request carries its head and digest
+  only, and the projection keeps a summary): a record the stream does not hold is
+  `{:error, {:risk_record_unreadable, why}}` and nothing is written.
+  """
+  @spec publish_requested(map(), keyword()) :: result()
+  def publish_requested(request, opts \\ []) when is_map(request) and is_list(opts) do
+    with {:ok, t} <- trigger(request),
+         :ok <- eligible(t, true),
+         {:ok, risk} <- read_risk_record(t) do
+      guarded_post(%{t | risk: risk}, opts)
+    end
+  end
+
+  defp read_risk_record(t) do
+    case EventStore.read_stream_forward("run:#{t.run_id}", 0, 99_999_999) do
+      {:ok, events} ->
+        events
+        |> Enum.filter(&risk_event?(&1, t))
+        |> List.last()
+        |> case do
+          nil -> {:error, {:risk_record_unreadable, :not_in_stream}}
+          %{data: data} -> {:ok, data}
+        end
+
+      {:error, reason} ->
+        {:error, {:risk_record_unreadable, reason}}
+    end
+  end
+
+  defp risk_event?(%{event_type: "PrRiskRecorded", data: data}, t) when is_map(data),
+    do:
+      get(data, :pr_url) == t.pr_url and get(data, :head_sha) == t.head_sha and
+        get(data, :digest) == t.digest
+
+  defp risk_event?(_event, _t), do: false
+
   # A raise or throw inside the publication (the secret store, the effect function, a runner)
   # is a typed refusal, not a silent task crash: the detail names the kind of failure only,
   # never a message that could carry a secret.
@@ -158,6 +206,15 @@ defmodule ForemanServer.PrReport.Publisher do
     end
   end
 
+  def handle_info({:projection_event, %{event_type: "PrReportRequested"} = event}, state) do
+    payload = event_payload(event)
+
+    case key(payload) do
+      nil -> {:noreply, state}
+      key -> {:noreply, enqueue(state, key, {:request, payload})}
+    end
+  end
+
   def handle_info({:projection_event, _other}, state), do: {:noreply, state}
 
   def handle_info({ref, result}, state) when is_reference(ref) do
@@ -177,15 +234,25 @@ defmodule ForemanServer.PrReport.Publisher do
   def handle_call(:inflight, _from, state), do: {:reply, map_size(state.running), state}
 
   # One task per `{run_id, pr_url}`; a trigger that arrives meanwhile replaces the one waiting.
-  defp enqueue(state, key, payload) do
+  defp enqueue(state, key, trigger) do
     if Map.has_key?(state.running, key),
-      do: %{state | pending: Map.put(state.pending, key, payload)},
-      else: start(state, key, payload)
+      do: %{state | pending: Map.update(state.pending, key, trigger, &newest(&1, trigger))},
+      else: start(state, key, trigger)
   end
 
-  defp start(state, key, payload) do
+  # The newest trigger waits, except that a waiting operator request is not replaced by a risk
+  # trigger for the same head and digest (that one would be skipped as already reported).
+  defp newest({:request, old}, new) when is_map(new) do
+    if get(old, :head_sha) == get(new, :head_sha) and get(old, :digest) == get(new, :digest),
+      do: {:request, old},
+      else: new
+  end
+
+  defp newest(_old, new), do: new
+
+  defp start(state, key, trigger) do
     opts = state.opts
-    task = Task.Supervisor.async_nolink(state.supervisor, fn -> publish(payload, opts) end)
+    task = Task.Supervisor.async_nolink(state.supervisor, fn -> run_trigger(trigger, opts) end)
 
     %{
       state
@@ -193,6 +260,9 @@ defmodule ForemanServer.PrReport.Publisher do
         flights: Map.put(state.flights, task.ref, key)
     }
   end
+
+  defp run_trigger({:request, request}, opts), do: publish_requested(request, opts)
+  defp run_trigger(payload, opts), do: publish(payload, opts)
 
   defp finish(state, ref) do
     {key, flights} = Map.pop(state.flights, ref)
@@ -231,12 +301,12 @@ defmodule ForemanServer.PrReport.Publisher do
        else: {:skipped, :invalid_trigger}
   end
 
-  defp eligible(t) do
+  defp eligible(t, retry? \\ false) do
     with {:ok, record} <- watch_record(t),
          :ok <- open_and_watched(record),
          :ok <- gated(record.project_id),
          :ok <- current_risk(record, t) do
-      not_yet_reported(record, t)
+      not_yet_reported(record, t, retry?)
     end
   end
 
@@ -265,11 +335,15 @@ defmodule ForemanServer.PrReport.Publisher do
     end
   end
 
-  defp not_yet_reported(record, %{head_sha: head, digest: digest}) do
+  # A risk trigger is skipped for a head and digest already reported, published or refused (a
+  # refusal is retried by the operator's request only); the request retries a refused one and
+  # skips only a published one.
+  defp not_yet_reported(record, %{head_sha: head, digest: digest}, retry?) do
+    statuses = if retry?, do: ["published"], else: ["published", "refused"]
+
     case record.evidence.report do
-      %{head_sha: ^head, digest: ^digest, status: status}
-      when status in ["published", "refused"] ->
-        {:skipped, :already_reported}
+      %{head_sha: ^head, digest: ^digest, status: status} ->
+        if status in statuses, do: {:skipped, :already_reported}, else: :ok
 
       _other ->
         :ok
