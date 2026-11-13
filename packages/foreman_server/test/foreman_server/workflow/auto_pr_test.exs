@@ -286,13 +286,16 @@ defmodule ForemanServer.Workflow.AutoPRTest do
     end
 
     defp generated_body(artifact_contents) do
-      parent = self()
-
       artifact =
         Path.join(System.tmp_dir!(), "autopr-findings-#{System.unique_integer([:positive])}.md")
 
       File.write!(artifact, artifact_contents)
       on_exit(fn -> File.rm_rf(artifact) end)
+      generated_body_at(artifact)
+    end
+
+    defp generated_body_at(artifact) do
+      parent = self()
 
       runner = fn
         "git", ["rev-list", "--count", "main..foreman/run-12/implement"], _opts ->
@@ -383,6 +386,32 @@ defmodule ForemanServer.Workflow.AutoPRTest do
       assert body =~ "review evidence is missing"
       assert body =~ "not a clean review"
       refute body =~ "nothing unresolved"
+    end
+
+    test "an unreadable artifact logs a warning, still creates the PR and says so in the body" do
+      missing =
+        Path.join(System.tmp_dir!(), "autopr-missing-#{System.unique_integer([:positive])}.md")
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          send(self(), {:body, generated_body_at(missing)})
+        end)
+
+      assert_received {:body, body}
+      assert log =~ "could not read review findings"
+      assert log =~ "unreadable"
+      assert body =~ "`unreadable`"
+      assert body =~ "not a clean review"
+      refute body =~ "nothing unresolved"
+    end
+
+    test "a recorded block with no findings says nothing was reported unresolved, with counts" do
+      body = generated_body(findings_block([]))
+
+      assert body =~ "## Review findings (the review agent's report)"
+      assert body =~ "The review agent reported nothing unresolved."
+      assert body =~ "Fixed: 0. Declined: 0"
+      refute body =~ "not a clean review"
     end
 
     test "multiple_blocks and legacy_format blocks name the defect, never an empty section" do

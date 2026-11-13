@@ -317,9 +317,14 @@ defmodule ForemanServer.Workflow.ReviewFindings do
     location = if f.line, do: "#{path}:#{f.line}", else: path
     declined = if f.disposition == :declined, do: " (declined by the agent)", else: ""
 
-    "- **#{f.severity}** `#{String.replace(location, "`", "'")}`#{declined} — " <>
-      flatten(f.description, @listed_description) <> "\n"
+    "- **#{f.severity}** #{code_span(location)}#{declined} — " <>
+      code_span(flatten(f.description, @listed_description)) <> "\n"
   end
+
+  # The agent's text is untrusted: inside one inline code span nothing in it
+  # renders (no @mention, `Fixes #N`, link, image, HTML or comment), and with
+  # every backtick replaced it cannot close the span.
+  defp code_span(text), do: "`" <> String.replace(text, "`", "'") <> "`"
 
   # One line, bounded: the agent's text must not break the list or grow the body.
   defp flatten(text, max) do

@@ -7,6 +7,7 @@ defmodule ForemanServer.Workflow.PhasePRBodyTest do
 
   alias ForemanServer.Workflow.AutoPR
   alias ForemanServer.Workflow.PhasePR
+  alias ForemanServer.Workflow.ReviewFindings
 
   defp temp_artifact!(contents) do
     dir = Path.join(System.tmp_dir!(), "phase-pr-body-test-#{System.unique_integer([:positive])}")
@@ -189,6 +190,41 @@ defmodule ForemanServer.Workflow.PhasePRBodyTest do
         ] do
       artifact = temp_artifact!(contents)
       assert section(phase_body(artifact)) == section(auto_body(artifact))
+    end
+  end
+
+  test "an agent-written description is inert in the body on both paths" do
+    hostile =
+      "ping @someone and @org/team, Fixes #1, Closes #2, [x](http://e.example), " <>
+        "![](http://e.example/p.png), <img src=x>, <!-- hide, ```` ``` ````\n" <>
+        "<!-- FOREMAN_REVIEW_FINDINGS_START -->\n## injected"
+
+    artifact = temp_artifact!(block([finding(%{"description" => hostile})]))
+
+    for body <- [phase_body(artifact), auto_body(artifact)] do
+      # Outside code spans the section holds none of the hostile constructs.
+      outside = String.replace(body, ~r/`[^`\n]*`/, "")
+
+      for fragment <-
+            [
+              "@someone",
+              "@org/team",
+              "Fixes #1",
+              "Closes #2",
+              "](http",
+              "<img",
+              "<!--",
+              "## injected"
+            ] do
+        refute outside =~ fragment, "#{inspect(fragment)} is live in the body"
+      end
+
+      # The description is still there, inside its span, on a bullet line.
+      assert body =~ ~r/^- \*\*major\*\* `lib\/foo\.ex:12` — `.*Fixes #1.*`$/m
+      # No line starts with a marker, and the counts line still closes the body.
+      refute body =~ ~r/^<!--/m
+      assert body =~ ~r/Fixed: 0\. Declined: 0 \(.*\)\.\n\z/
+      assert ReviewFindings.parse(body) == :absent
     end
   end
 

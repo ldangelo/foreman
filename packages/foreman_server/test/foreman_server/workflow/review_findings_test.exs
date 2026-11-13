@@ -526,6 +526,11 @@ defmodule ForemanServer.Workflow.ReviewPromptContractTest do
         assert text =~ "review that did not run writes no block at all"
         assert text =~ "exactly once"
         assert text =~ "declined critical or major finding is still shown"
+
+        # The triage-to-disposition mapping: fix -> fixed, decline -> declined,
+        # anything else -> open.
+        assert text =~
+                 "`fixed` for a finding you fixed, `declined` for one you declined, `open` for any other finding"
       end
 
       test "tells the agent to fence a quoted marker and not to fence the block" do
