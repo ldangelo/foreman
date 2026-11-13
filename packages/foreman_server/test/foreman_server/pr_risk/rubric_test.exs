@@ -333,19 +333,24 @@ defmodule ForemanServer.PrRisk.RubricTest do
 
   describe "raise-only" do
     test "a judgement lower than the floor leaves the floor and only changes its own line" do
-      floor = low(base_branch: "release")
-      lowered = Rubric.classify(floor)
-      assert lowered.level == "HIGH"
-      assert rule(lowered, "judgement").level == "LOW"
+      # a MEDIUM floor (11 files): a LOW judgement cannot lower it
+      floor = sized(11)
+      judged_low = Rubric.classify(%{floor | judgement: %{status: "recorded", level: "LOW"}})
 
-      medium = Rubric.classify(%{sized(11) | judgement: %{status: "recorded", level: "LOW"}})
-      assert medium.level == "MEDIUM"
+      judged_medium =
+        Rubric.classify(%{floor | judgement: %{status: "recorded", level: "MEDIUM"}})
 
-      other = Rubric.classify(%{floor | judgement: %{status: "recorded", level: "MEDIUM"}})
-      assert other.level == "HIGH"
+      assert judged_low.level == "MEDIUM"
+      assert rule(judged_low, "judgement").level == "LOW"
+      assert judged_medium.level == "MEDIUM"
 
       strip = fn %Result{rationale: r} -> Enum.reject(r, &(&1.rule == "judgement")) end
-      assert strip.(lowered) == strip.(other)
+      assert strip.(judged_low) == strip.(judged_medium)
+
+      # a HIGH floor (base branch) stays HIGH under a LOW judgement
+      high = Rubric.classify(low(base_branch: "release"))
+      assert high.level == "HIGH"
+      assert rule(high, "judgement").level == "LOW"
     end
 
     test "a judgement higher than the floor raises it" do
@@ -354,6 +359,12 @@ defmodule ForemanServer.PrRisk.RubricTest do
 
       assert Rubric.classify(%{sized(11) | judgement: %{status: "recorded", level: "HIGH"}}).level ==
                "HIGH"
+
+      # the raised level is above the floor the machine rules alone give
+      floor = Rubric.classify(%{sized(11) | judgement: %{status: "recorded", level: "LOW"}})
+      raised = Rubric.classify(%{sized(11) | judgement: %{status: "recorded", level: "HIGH"}})
+      assert floor.level == "MEDIUM"
+      assert raised.level == "HIGH"
     end
 
     test "a LOW judgement never removes a findings or unresolved HIGH" do
@@ -450,6 +461,9 @@ defmodule ForemanServer.PrRisk.RubricTest do
       {"Dependency and build manifests", "deploy/Dockerfile"},
       {"Dependency and build manifests", "docker-compose.yml"},
       {"Secret-like names", "config/my_secret.txt"},
+      {"Secret-like names", "deploy/Secrets.yaml"},
+      {"Secret-like names", "config/SECRET_KEY.pem"},
+      {"Secret-like names", "infra/secret.tfvars"},
       {"Secret-like names", "app/secrets.yaml"},
       {"Secret-like names", ".env"},
       {"Secret-like names", "deploy/.env.production"}
@@ -498,6 +512,7 @@ defmodule ForemanServer.PrRisk.RubricTest do
       "docs/secre.md",
       "app/environment.ex",
       "a.env",
+      "deploy/Env.yaml",
       "lib/a.ex",
       ""
     ]

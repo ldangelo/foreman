@@ -215,11 +215,20 @@ defmodule ForemanServer.PrRisk.Rubric do
     base = Path.basename(path)
 
     cond do
-      group = prefix_group(path) -> group
-      group = exact_group(path) -> group
-      group = base_name_group(base) -> group
-      String.contains?(base, "secret") or String.starts_with?(base, ".env") -> "Secret-like names"
-      true -> nil
+      group = prefix_group(path) ->
+        group
+
+      group = exact_group(path) ->
+        group
+
+      group = base_name_group(base) ->
+        group
+
+      String.contains?(String.downcase(base), "secret") or String.starts_with?(base, ".env") ->
+        "Secret-like names"
+
+      true ->
+        nil
     end
   end
 
