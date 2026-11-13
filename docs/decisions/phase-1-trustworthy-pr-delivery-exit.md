@@ -4,7 +4,7 @@ Status: PENDING operator acceptance (see "Acceptance" at the end). This is an ev
 
 ## Context
 
-Phase 1 is the PRD `docs/PRD/PRD-2026-c12e5f93-phase-1-trustworthy-pr-delivery.md` (1.1.3, 21 acceptance criteria in 5 requirements) as planned by the TRD `docs/TRD/TRD-2026-c12e5f93-phase-1-trustworthy-pr-delivery.md` (1.1.8), built in nine PRs:
+Phase 1 is the PRD `docs/PRD/PRD-2026-c12e5f93-phase-1-trustworthy-pr-delivery.md` (1.1.3, 21 acceptance criteria in 5 requirements) as planned by the TRD `docs/TRD/TRD-2026-c12e5f93-phase-1-trustworthy-pr-delivery.md` (1.1.9 on main after PR 9; the record was written against 1.1.8 and the PR 9 amendments are in TRD section 14), built in nine PRs:
 
 | PR | What | Merged |
 |---|---|---|
@@ -16,7 +16,7 @@ Phase 1 is the PRD `docs/PRD/PRD-2026-c12e5f93-phase-1-trustworthy-pr-delivery.m
 | 6 | versioned risk classification bound to the head | #876 |
 | 7 | the report published to the PR as a keyed, redacted, head-bound comment | #879 |
 | 8 | approval gated on evidence read for the request; status visible everywhere | #881 |
-| 9 | adversarial suite, this record, the documentation gate | not yet opened when this record was written |
+| 9 | adversarial suite, this record, the documentation gate | #883, `f93c2705` (2026-11-13; this record was written before the merge and corrected afterwards for what it said about verification) |
 
 The PRD's exit sentence (section 5) is: "Exit when quality checks and risk evidence are machine-verifiable, tied to the current SHA, changed heads invalidate prior evidence, and every merge still requires human approval. Adversarial tests must cover missing results, spoofed/stale results, and head changes."
 
@@ -163,13 +163,13 @@ Evidence legend: SRC = source decision point; TST = test (file, then exact name 
 The PRD does not ask for them; the TRD does (every Test AC is a mutation check: revert the behaviour, the named test fails). What was recorded, and where:
 
 * PRs 2 to 8 (#867 to #881): the PR descriptions say, per PR, that each task agent applied a mutation probe per Test AC and named the failing test in its own report. The reports are not in the repository. The descriptions record exceptions: #870 (PR 3) counts per task (recovery 3 beads; TRD-006/007 10 + 3; TRD-008 5 + 1; TRD-009 2, "one of them only on the test, not the watcher's re-read"; TRD-033 seven applied together, 23 tests killed, then re-checked individually by reading); #872 (PR 4) "a few were not applied": the "reachable as an MCP tool" probe, the malformed-config guard tests, one equivalent Go mutant; #874 (PR 5) did not probe moving the reviewed-head read after `maybe_auto_pr/1` (a test cannot tell); #876 (PR 6) lists as un-appliable only the "carried by a separate event" half of the TRD-041 carry-over AC, and records that each of the four size constants moved by +5 and -1 fails a named test; #879 (PR 7) and #881 (PR 8) say the implementers restored several probes with a script rather than the edit tool, against the instructions; #881 records one TRD-036 review finding where a one-line mutation SURVIVED (a secondary repository judged on its own record) and was closed with two-repository tests.
-* PR 9 (this PR; no PR description exists yet): the `-TEST` beads' close reasons record: TRD-025-TEST "7 mutation probes red" (bead `foreman-ulg5y.9.2`, scenarios in `a078fee2`, `daa1bc4b`); TRD-037-TEST "mutation probes run" with no count (`foreman-ulg5y.9.4`, `ce2d4e36`, `41fb76c1`, `933db00b`); TRD-032-TEST "18 mutation probes ... each turned a named scenario red and were restored by editing back" (`foreman-ulg5y.9.6`, `bdb97b7c`, `eef96f86`); TRD-040-TEST two probes, the `pr_lookup` fork filter and the `headRefOid` compare, "turn the adoption scenarios red" (`foreman-ulg5y.9.8`, `ef5274b1`, then `95b53129`, `1dfeb2b1`, and the production fix `4dc50653` for a fork's PR in the `pr_create` sweep). The names of the failing tests per probe are in the agents' reports to the lead, not in a repository artifact, and this record could not re-read them.
+* PR 9 (#883, merged as `f93c2705`): the `-TEST` beads' close reasons record: TRD-025-TEST "7 mutation probes red" (bead `foreman-ulg5y.9.2`, scenarios in `a078fee2`, `daa1bc4b`); TRD-037-TEST "mutation probes run" with no count (`foreman-ulg5y.9.4`, `ce2d4e36`, `41fb76c1`, `933db00b`); TRD-032-TEST "18 mutation probes ... each turned a named scenario red and were restored by editing back" (`foreman-ulg5y.9.6`, `bdb97b7c`, `eef96f86`); TRD-040-TEST two probes, the `pr_lookup` fork filter and the `headRefOid` compare, "turn the adoption scenarios red" (`foreman-ulg5y.9.8`, `ef5274b1`, then `95b53129`, `1dfeb2b1`, and the production fix `4dc50653` for a fork's PR in the `pr_create` sweep). The names of the failing tests per probe are in the agents' reports to the lead, not in a repository artifact, and this record could not re-read them.
 * The `pr_create` sweep was changed after the TRD-040 probes by `0410cca3` (`fix(TRD-004)`), which came from an independent review that found a fork-masking hole in the first fix `4dc50653`. The lead ran one probe of the new truncation rule once and restored it: `>=` mutated to `>` in `lib/foreman_server/idempotency/reconcilers/pr_create.ex:151` was killed by exactly one test, `test/foreman_server/idempotency/reconcilers/pr_create_test.exs` "a full list of 100 forks' PRs may have cut this repository's PR off...". Reported by the lead; not re-run for this record.
 * **No test enforces that any mutation probe was run or that it went red** (TRD §14 "Mutation results are recorded by hand"; round 3, item 6). A probe is not a test file. A reviewer is relying on the author's word that the test fails when the code is reverted, and on review. This record did not re-run any probe.
 
 ## Adversarial suite: counts
 
-Run once on 2026-11-13 at the PR 9 branch HEAD (`631963f3`) with `CI_LIKE=1` (no pi/omp/claude on PATH, empty HOME) and `--warnings-as-errors`: `mix test test/foreman_server/pr_delivery_adversarial_test.exs test/foreman_server/pr_delivery_adversarial_approval_test.exs test/foreman_server/pr_delivery_adversarial_inputs_test.exs test/foreman_server/pr_delivery_adversarial_keys_test.exs`. Result: **157 passed, 0 failed** (the four files together, 26.6 s, one run; no per-file counts were taken); `ProjectionLeakGuard`: judged 0 of 4 modules, no run left behind. The output also carried `fatal: cannot change to '/gone/<hash>'` lines printed by git during the run (their cause was not investigated); no test failed. This is the only run made for this record: the full suite, lint and `format` were not run (G-14).
+Run once on 2026-11-13 at the PR 9 branch HEAD (`631963f3`) with `CI_LIKE=1` (no pi/omp/claude on PATH, empty HOME) and `--warnings-as-errors`: `mix test test/foreman_server/pr_delivery_adversarial_test.exs test/foreman_server/pr_delivery_adversarial_approval_test.exs test/foreman_server/pr_delivery_adversarial_inputs_test.exs test/foreman_server/pr_delivery_adversarial_keys_test.exs`. Result: **157 passed, 0 failed** (the four files together, 26.6 s, one run; no per-file counts were taken); `ProjectionLeakGuard`: judged 0 of 4 modules, no run left behind. The output also carried `fatal: cannot change to '/gone/<hash>'` lines printed by git during the run (their cause was not investigated); no test failed. **That run was made when this record was written. The same PR's final head (`35d4911a`, after the `0410cca3` limit fix and the documentation commits) was then checked by the PR author, not by an independent party:** the full suite with `CI_LIKE=1` and `--warnings-as-errors` passed (**8708 passed**, 9 properties, 8699 tests, 17 excluded, `ProjectionLeakGuard` clean; the same suite had passed 8707 at `631963f3`), forced `compile --force --warnings-as-errors`, `format --check-formatted`, `credo --min-priority higher` (weak evidence, G-14) and `doctor --raise` exited 0, the Go `vet`/`test` of `cmd/foreman` passed, and every CI shard of #883 was green. The adversarial count after `0410cca3` was not taken separately.
 
 ## Resolved decisions of TRD section 11: where each was applied
 
@@ -216,7 +216,7 @@ Every gap is open unless the status says otherwise. "TRD §14" gaps are cited fr
 | G-11 | A missing, malformed or multi-block judgement is never driven from the artifact to a recorded risk level by the adversarial suite; a LOW judgement over a HIGH floor is covered only by the rubric unit tests. | AC-003-2, AC-003-5 | open |
 | G-12 | AC-005 has no adversarial test; `next_actions` is a pure-function test; the CLI test does not check evidence fields; no browser check of the dashboard; the CLI's rendering of the 503 is not verified; the boot-failure and 503 tests are separate. | AC-005-1 to AC-005-3 | open |
 | G-13 | AC-001-1 holds for check runs only (a status context has no completion time; server-run command checks are deferred, PRD 1.1.1). A status context also has no creator or app, so anyone who can create statuses can satisfy an entry of that kind; an entry names its kind and the operator chooses `check_run` where the source matters (TRD §14). The skipped rule covers check runs only. | AC-001-1, AC-001-4 | open, by PRD carve-out |
-| G-14 | The lint evidence of PRs 3 to 8 is weak: the PR descriptions say `credo --min-priority higher` "prints no checks at that filter", so its exit code is not evidence; the full-suite pass counts in them are the authors' reports. No lint or full-suite run was made for this record. | none | open |
+| G-14 | The lint evidence of PRs 3 to 8 is weak: the PR descriptions say `credo --min-priority higher` "prints no checks at that filter", so its exit code is not evidence; the full-suite pass counts in them are the authors' reports. A full suite, `format` and lint run was made on the final head of PR 9 by its author (see "Adversarial suite: counts"); lint there is equally weak. | none | open |
 
 ### Carried from TRD section 14 and its amendments (PR 3 to PR 8)
 
@@ -238,12 +238,12 @@ Every gap is open unless the status says otherwise. "TRD §14" gaps are cited fr
 
 ## What this record does not establish
 
-* That the Phase 1 code is correct beyond the tests named: no test was run for it other than the four adversarial files; the full-suite counts in the PR descriptions are the authors' reports.
+* That the Phase 1 code is correct beyond the tests named: the full-suite counts of PRs 3 to 9 are the authors' reports (the PR 9 head's run is the author's and CI's, not an independent party's).
 * That any mutation probe ran or went red (G-07).
 * Anything about real GitHub beyond one recorded status payload and one scratch-PR comment probe (G-03).
 * That any deployment has gating enabled, the durable store on, the monitor on or `foreman init --force` run (Rollout steps).
 * That the dashboard renders the evidence view: no browser check was made.
-* Results re-observed in PR 9 other than the adversarial counts above: none.
+* Results re-observed by an independent party: none. The PR author's runs on the PR 9 head are listed under "Adversarial suite: counts".
 
 ## Reviewer checklist (TRD-026-TEST)
 
