@@ -338,4 +338,56 @@ defmodule ForemanServer.OperatorOnlyPrCommandsTest do
                })
     end
   end
+
+  # TRD-030: the request to publish the report again is an operator command (the CLI and
+  # `POST /api/commands`), reachable through none of the surfaces an agent or automation drives.
+  describe "run.pr.publish_report is operator-only" do
+    @publish_report "run.pr.publish_report"
+
+    test "it is in the operator allowlists and in no automation list" do
+      assert @publish_report in PrWatch.command_types()
+      assert @publish_report in PrWatch.operator_types()
+      assert @publish_report in CommandGateway.operator_types()
+      assert @publish_report in CommandGateway.command_endpoint_types()
+      assert @publish_report in CommandGateway.pr_operator_types()
+
+      refute @publish_report in CoordinatorDispatch.command_types()
+      refute @publish_report in ApprovalsDispatch.command_types()
+
+      refute Enum.any?(
+               CoordinatorDispatch.command_types(),
+               &String.contains?(&1, "publish_report")
+             )
+
+      refute Enum.any?(ApprovalsDispatch.command_types(), &String.contains?(&1, "publish_report"))
+    end
+
+    test "coordinator and approvals dispatch refuse it" do
+      assert {:error, {:forbidden_command, @publish_report}} =
+               CoordinatorDispatch.system(CommandGateway, %{type: @publish_report, payload: %{}})
+    end
+
+    test "no MCP tool is, or is named after, it; calling it is an unknown tool" do
+      names = Enum.map(Tools.list_tools(), & &1.name)
+      refute @publish_report in names
+      refute Enum.any?(names, &String.contains?(&1, "publish_report"))
+
+      previous = Application.get_env(:foreman_server, :mcp)
+      Application.put_env(:foreman_server, :mcp, allow_workflow_writes: true)
+      on_exit(fn -> Application.put_env(:foreman_server, :mcp, previous || []) end)
+
+      assert {:error, %{code: "METHOD_NOT_FOUND"}} =
+               Tools.call_tool("foreman_run_pr_publish_report", %{run_id: "none"})
+    end
+
+    test "the operator envelope addresses it to the run stream" do
+      assert {:error, {:invalid_envelope, :aggregate_id_mismatch}} =
+               CommandGateway.dispatch_operator(%{
+                 type: @publish_report,
+                 command_id: "c-publish-report-mismatch",
+                 aggregate_id: "run:other",
+                 payload: %{run_id: "none"}
+               })
+    end
+  end
 end

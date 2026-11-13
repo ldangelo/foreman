@@ -181,4 +181,83 @@ defmodule ForemanServer.Webhooks.GithubTest do
       assert :ignored = Github.process(%{"action" => "closed"})
     end
   end
+
+  # TRD-030: the report comment the publisher posts comes back as an `issue_comment` delivery,
+  # which asks the watcher to re-read the PR. The re-read must not see Foreman's own comment as
+  # review feedback, or every report would move the review digest and emit `run.pr.review`.
+  describe "the publisher's own report comment (TRD-030)" do
+    alias ForemanServer.{PrReport, PrWatcher, ProjectionStore}
+    alias ForemanServer.TestSupport.PrWatchSupport, as: Support
+
+    @describetag :capture_log
+
+    defp comment_delivery(pr_url) do
+      %{
+        "action" => "created",
+        "issue" => %{"html_url" => pr_url, "pull_request" => %{"url" => "x"}},
+        "comment" => %{"body" => "hi"}
+      }
+    end
+
+    defp pr_comment(id, viewer_did_author) do
+      %{
+        id: id,
+        author: "x",
+        bot: false,
+        viewer_did_author: viewer_did_author,
+        body: PrReport.marker("run-1", "sha-1", "d1") <> "\nreport text",
+        url: nil,
+        created_at: nil
+      }
+    end
+
+    defp review_events(run_id),
+      do: Enum.filter(Support.run_events(run_id), &(&1.event_type == "PrReviewChanged"))
+
+    defp review_digest(run_id, pr_url),
+      do: Enum.find(ProjectionStore.pr_watch(run_id), &(&1.pr_url == pr_url)).review_digest
+
+    setup do
+      run = Support.start_run!(complete: true)
+      {:ok, _} = PrAssociate.store(run.run_id, run.pr_url)
+      test_pid = self()
+      {:ok, agent} = Agent.start_link(fn -> Support.status() end)
+
+      fetch = fn _url ->
+        send(test_pid, :fetched)
+        {:ok, Agent.get(agent, & &1)}
+      end
+
+      start_supervised!({PrWatcher, fetch_fun: fetch})
+      assert {:ok, _} = PrWatcher.refresh_now(run.pr_url)
+      assert_received :fetched
+
+      {:ok, Map.put(run, :agent, agent)}
+    end
+
+    # The webhook asks for a re-read; `refresh_now` then waits for it (same fetch) to finish.
+    defp deliver_comment(ctx, comments) do
+      Agent.update(ctx.agent, &%{&1 | comments: comments})
+      assert :ok = Github.process(comment_delivery(ctx.pr_url))
+      assert {:ok, %{dispatched: dispatched}} = PrWatcher.refresh_now(ctx.pr_url)
+      assert_receive :fetched, 5_000
+      dispatched
+    end
+
+    test "the token's own marker comment moves no review digest and emits no run.pr.review",
+         ctx do
+      before = review_digest(ctx.run_id, ctx.pr_url)
+
+      assert deliver_comment(ctx, [pr_comment("IC_own", true)]) == []
+
+      assert review_events(ctx.run_id) == []
+      assert review_digest(ctx.run_id, ctx.pr_url) == before
+    end
+
+    test "the same marker written by someone else is feedback: run.pr.review is emitted", ctx do
+      assert "run.pr.review" in deliver_comment(ctx, [pr_comment("IC_foreign", false)])
+
+      assert [%{data: %{comment_ids: ["IC_foreign"]}}] = review_events(ctx.run_id)
+    end
+  end
 end

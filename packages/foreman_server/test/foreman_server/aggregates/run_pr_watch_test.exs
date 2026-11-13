@@ -1786,6 +1786,178 @@ defmodule ForemanServer.Aggregates.RunPrWatchTest do
     end
   end
 
+  describe "run.pr.publish_report (TRD-030)" do
+    alias ForemanServer.PrEvidence
+
+    defp request(extra \\ %{}), do: Map.merge(%{pr_url: @url}, extra)
+
+    test "it is an operator command of PrWatch with an event of its own" do
+      assert "run.pr.publish_report" in Run.PrWatch.command_types()
+      assert "run.pr.publish_report" in Run.PrWatch.operator_types()
+      assert "PrReportRequested" in Run.PrWatch.event_types()
+    end
+
+    test "with a risk record and no published report the event names the record's head and digest" do
+      {state, head, digest} = reported_world()
+
+      {next, spec} =
+        accept(state, "run.pr.publish_report", request(%{requested_by: "ops", requested_at: 40}))
+
+      assert spec.stream_id == "run:r1"
+      assert spec.event_type == "PrReportRequested"
+
+      assert spec.payload == %{
+               run_id: "r1",
+               project_id: "p1",
+               task_id: "t1",
+               pr_url: @url,
+               repo_id: nil,
+               head_sha: head,
+               digest: digest,
+               requested_by: "ops",
+               requested_at: 40
+             }
+
+      assert next.pr_watch[@url].evidence == state.pr_watch[@url].evidence
+    end
+
+    test "a request names nothing it decides: a head, a digest or a level is refused" do
+      {state, _head, _digest} = reported_world()
+
+      for {key, value} <- [head_sha: "sha-1", digest: "d", level: "LOW"] do
+        assert {:error, {:derived_field, ^key}} =
+                 reject(state, "run.pr.publish_report", request(%{key => value}))
+      end
+    end
+
+    test "no risk record is {:no_risk_record, pr_url}" do
+      assert {:error, {:no_risk_record, @url}} =
+               reject(watched(), "run.pr.publish_report", request())
+    end
+
+    test "a published report for that head and digest is {:report_current, head, digest}" do
+      {state, head, digest} = reported_world()
+      {state, _spec} = accept(state, "run.pr.comment_published", published(head, digest))
+
+      assert {:error, {:report_current, ^head, ^digest}} =
+               reject(state, "run.pr.publish_report", request())
+    end
+
+    test "a refused report is what the request retries" do
+      {state, head, digest} = reported_world()
+      {state, _spec} = accept(state, "run.pr.comment_published", refused(head, digest))
+
+      assert {_next, %{payload: %{head_sha: ^head, digest: ^digest}}} =
+               accept(state, "run.pr.publish_report", request())
+    end
+
+    test "a report published for an older digest of the same head does not block the request" do
+      {state, head, digest} = reported_world()
+      other = if digest == "x", do: "y", else: "x"
+
+      stale =
+        put_in(state.pr_watch[@url].evidence.report, %{
+          head_sha: head,
+          digest: other,
+          status: "published"
+        })
+
+      assert {_next, %{payload: %{digest: ^digest}}} =
+               accept(stale, "run.pr.publish_report", request())
+    end
+
+    test "a risk record for another head than the PR's is refused, not republished" do
+      {state, _head, _digest} = reported_world()
+
+      moved =
+        Run.apply_event(state, %{
+          event_type: "PrUpdated",
+          payload: %{run_id: "r1", pr_url: @url, head_sha: "sha-2", pr_status: "open"}
+        })
+
+      assert {:error, {:risk_not_current, @url, "sha-1", "sha-2"}} =
+               reject(moved, "run.pr.publish_report", request())
+    end
+
+    test "a PR that is not watched, or not open, is refused" do
+      {state, _head, _digest} = reported_world()
+
+      {stopped, _spec} = accept(state, "run.pr.watch_stop", %{pr_url: @url, reason: "operator"})
+
+      assert {:error, {:pr_not_watched, @url}} =
+               reject(stopped, "run.pr.publish_report", request())
+
+      {merged, _spec} = accept(state, "run.pr.checks", checks_payload(%{pr_status: "merged"}))
+
+      assert {:error, {:pr_not_open, "merged"}} =
+               reject(merged, "run.pr.publish_report", request())
+
+      assert {:error, {:pr_not_watched, "https://github.com/acme/repo/pull/99"}} =
+               reject(
+                 state,
+                 "run.pr.publish_report",
+                 request(%{pr_url: "https://github.com/acme/repo/pull/99"})
+               )
+    end
+
+    test "without a pr_url the PR is the one watched, or the gate's pin of the named repository" do
+      {state, head, digest} = reported_world()
+
+      assert {_next, %{payload: %{pr_url: @url, head_sha: ^head, digest: ^digest}}} =
+               accept(state, "run.pr.publish_report", %{})
+
+      pinned = %{state | merge_pins: %{"repo-b" => %Run.MergePin{pr_url: @url}}}
+
+      assert {_next, %{payload: %{pr_url: @url, repo_id: "repo-b"}}} =
+               accept(pinned, "run.pr.publish_report", %{repo_id: "repo-b"})
+
+      assert {:error, {:pr_not_watched, nil}} =
+               reject(state, "run.pr.publish_report", %{repo_id: "repo-b"})
+
+      assert {:error, {:missing_or_invalid, :repo_id}} =
+               reject(state, "run.pr.publish_report", %{repo_id: 5})
+    end
+
+    test "requested_by is bounded text, requested_at defaults to the clock" do
+      {state, _head, _digest} = reported_world()
+
+      assert {:error, {:missing_or_invalid, :requested_by}} =
+               reject(
+                 state,
+                 "run.pr.publish_report",
+                 request(%{requested_by: String.duplicate("x", 129)})
+               )
+
+      {_next, spec} = accept(state, "run.pr.publish_report", request())
+      assert is_integer(spec.payload.requested_at) and spec.payload.requested_at > 0
+      assert spec.payload.requested_by == nil
+    end
+
+    test "a request naming another project or task is refused" do
+      {state, _head, _digest} = reported_world()
+
+      assert {:error, {:missing_or_invalid, :project_id}} =
+               reject(state, "run.pr.publish_report", request(%{project_id: "px"}))
+    end
+
+    test "the request changes nothing the gate reads" do
+      {state, head, _digest} = reported_world()
+
+      ctx = %{
+        head_sha: head,
+        policy: %{required: @req, version: version()},
+        now_ms: 10,
+        checks_ref: nil
+      }
+
+      strip = fn eligibility -> Map.take(eligibility, [:status, :reasons, :waived, :inputs]) end
+      {next, _spec} = accept(state, "run.pr.publish_report", request())
+
+      assert strip.(PrEvidence.evaluate(next.pr_watch[@url], ctx)) ==
+               strip.(PrEvidence.evaluate(state.pr_watch[@url], ctx))
+    end
+  end
+
   # The outcome of publishing the report of the risk record the run state holds.
   defp published_payload(state) do
     risk = state.pr_watch[@url].evidence.risk
@@ -1832,6 +2004,7 @@ defmodule ForemanServer.Aggregates.RunPrWatchTest do
          review_decision: "approved",
          pr_status: "open"
        }},
+      {"run.pr.publish_report", %{pr_url: @url}},
       {"run.pr.comment_published", &published_payload/1},
       {"run.pr.fix_ci", %{pr_url: @url}},
       {"run.pr.fix_started", %{pr_url: @url, jobsite_id: "js"}},
@@ -1847,8 +2020,8 @@ defmodule ForemanServer.Aggregates.RunPrWatchTest do
       Enum.reduce(steps, {terminal("RunCompleted"), []}, fn {type, payload}, {state, acc} ->
         payload = if is_function(payload, 1), do: payload.(state), else: payload
         {next, spec} = accept(state, type, payload)
-        # PrCreated is an audit record: PrUpdated/PrReady carry the PR into pr_watch.
-        if spec.event_type != "PrCreated",
+        # PrCreated is an audit record and PrReportRequested a trigger: neither folds state.
+        if spec.event_type not in ["PrCreated", "PrReportRequested"],
           do: assert(next != state, "#{spec.event_type} did not advance the run state")
 
         {next, [spec.event_type | acc]}

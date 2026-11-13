@@ -220,6 +220,62 @@ defmodule ForemanServer.GitHub.PrStatusTest do
     end
   end
 
+  # TRD-030: `gh pr view` reports whether the token's own user wrote a comment
+  # (`viewerDidAuthor`); an absent or non-boolean field is never read as true.
+  describe "fetch/2 reads viewer_did_author" do
+    defp authored(id, field) do
+      Map.merge(comment(id, "foreman-bot"), field)
+    end
+
+    defp viewer_flags(comments) do
+      assert {:ok, %PrStatus{comments: read}} =
+               PrStatus.fetch(@url, command_runner: github(comments, {"unused", 1}))
+
+      Map.new(read, &{&1.id, &1.viewer_did_author})
+    end
+
+    test "true only when GitHub says the token's own user wrote the comment" do
+      flags =
+        viewer_flags([
+          authored("IC_own", %{"viewerDidAuthor" => true}),
+          authored("IC_other", %{"viewerDidAuthor" => false})
+        ])
+
+      assert flags == %{"IC_own" => true, "IC_other" => false}
+    end
+
+    test "a comment without the field is not the viewer's, nor is a non-boolean value" do
+      flags =
+        viewer_flags([
+          comment("IC_absent", "alice"),
+          authored("IC_null", %{"viewerDidAuthor" => nil}),
+          authored("IC_string", %{"viewerDidAuthor" => "true"}),
+          authored("IC_one", %{"viewerDidAuthor" => 1})
+        ])
+
+      assert flags == %{
+               "IC_absent" => false,
+               "IC_null" => false,
+               "IC_string" => false,
+               "IC_one" => false
+             }
+    end
+
+    test "the flag survives the author lookup of threads: true" do
+      runner =
+        github(
+          [authored("IC_own", %{"viewerDidAuthor" => true}), comment("IC_p", "alice")],
+          {nodes([actor("IC_own", "User"), actor("IC_p", "User")]), 0}
+        )
+
+      assert {:ok, %PrStatus{comments: [own, person]}} =
+               PrStatus.fetch(@url, threads: true, command_runner: runner)
+
+      assert %{id: "IC_own", viewer_did_author: true, bot: false} = own
+      assert %{id: "IC_p", viewer_did_author: false, bot: false} = person
+    end
+  end
+
   describe "fetch/2 carries the changed paths and the size of the diff" do
     defp file_item(i),
       do: %{

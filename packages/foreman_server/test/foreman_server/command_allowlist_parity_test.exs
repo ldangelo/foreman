@@ -130,4 +130,23 @@ defmodule ForemanServer.CommandAllowlistParityTest do
       assert_received {:dispatched, %{type: ^type, aggregate_id: "run:r1"}}
     end
   end
+
+  # TRD-030: the operator's request to publish the report again is an operator command like the
+  # other PR verbs; the outcome it triggers (`run.pr.comment_published`) is system-only.
+  test "run.pr.publish_report is listed and routed to the run stream; its outcome is not listed" do
+    type = "run.pr.publish_report"
+
+    assert type in CommandGateway.operator_types()
+    assert type in CommandGateway.command_endpoint_types()
+    assert type in CommandGateway.pr_operator_types()
+    refute type in @system_only
+
+    assert "run.pr.comment_published" in @system_only
+    refute "run.pr.comment_published" in CommandGateway.operator_types()
+
+    conn = post(build_conn(), "/api/commands", %{"type" => type, "payload" => @universal_payload})
+
+    assert json_response(conn, 201)
+    assert_received {:dispatched, %{type: ^type, aggregate_id: "run:r1"}}
+  end
 end

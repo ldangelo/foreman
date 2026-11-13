@@ -899,6 +899,175 @@ defmodule ForemanServer.PrReport.PublisherTest do
     end
   end
 
+  # TRD-030: the operator's `run.pr.publish_report` is the one retry of a refused report. The
+  # request is dispatched through the operator gateway (the production entry: the CLI posts it
+  # to `/api/commands`), appends `PrReportRequested` and the subscribed publisher reacts to it.
+  describe "the operator's request (TRD-030)" do
+    alias ForemanServer.CommandGateway
+
+    defp request_report(ctx, extra \\ %{}) do
+      CommandGateway.dispatch_operator(%{
+        type: "run.pr.publish_report",
+        command_id: "c-publish-report-#{System.unique_integer([:positive])}",
+        aggregate_id: "run:#{ctx.run_id}",
+        payload: Map.merge(%{run_id: ctx.run_id, pr_url: ctx.pr_url}, extra)
+      })
+    end
+
+    defp requested_events(run_id),
+      do:
+        for(
+          %{event_type: "PrReportRequested", data: data} <- Support.run_events(run_id),
+          do: data
+        )
+
+    defp request_of(trigger) do
+      Map.take(trigger, [:run_id, :project_id, :task_id, :pr_url, :repo_id, :head_sha, :digest])
+    end
+
+    defp heal(ctx), do: Agent.update(ctx.gh, &%{&1 | fail_write: nil})
+
+    test "it retries a refused report: the comment is posted and the outcome recorded", ctx do
+      publisher = start_publisher(ctx)
+      FakeGh.fail_write(ctx.gh, "HTTP 500")
+
+      deliver(publisher, ctx.trigger)
+
+      Eventually.await(fn -> match?([_], report_events(ctx.run_id)) end,
+        message: "the refusal is recorded"
+      )
+
+      assert [%{status: "refused", reason: "gh_failed"}] = report_events(ctx.run_id)
+      assert [] = FakeGh.comments(ctx.gh)
+
+      # a refusal is not retried by anything but the request: the same trigger again does nothing
+      deliver(publisher, ctx.trigger)
+      Eventually.await(fn -> Publisher.inflight(publisher) == 0 end)
+      assert [_one] = report_events(ctx.run_id)
+
+      heal(ctx)
+      assert {:ok, _} = request_report(ctx)
+
+      Eventually.await(fn -> match?([_, _], report_events(ctx.run_id)) end,
+        message: "the request is answered with an outcome"
+      )
+
+      digest = ctx.trigger.digest
+
+      assert [%{head_sha: "sha-1", digest: ^digest}] = requested_events(ctx.run_id)
+
+      assert [_refused, %{status: "published", head_sha: "sha-1", digest: ^digest}] =
+               report_events(ctx.run_id)
+
+      assert [%{body: body}] = FakeGh.comments(ctx.gh)
+      assert {:ok, %{run_id: run_id, head_sha: "sha-1", digest: ^digest}} = marker_of(body)
+      assert run_id == ctx.run_id
+      assert %{status: "published"} = report(ctx.run_id)
+    end
+
+    test "a report already published is refused by the command and nothing is posted", ctx do
+      assert {:published, _} = Publisher.publish(ctx.trigger, ctx.opts)
+      digest = ctx.trigger.digest
+
+      assert {:error, {:report_current, "sha-1", ^digest}} = request_report(ctx)
+
+      assert [{:create, nil, _}] = FakeGh.writes(ctx.gh)
+      assert [] = requested_events(ctx.run_id)
+    end
+
+    test "publish_requested publishes the named record's report, a refused one included", ctx do
+      FakeGh.fail_write(ctx.gh, "HTTP 500")
+      assert {:refused, :gh_failed, _} = Publisher.publish(ctx.trigger, ctx.opts)
+      heal(ctx)
+
+      assert {:published, %{action: :created}} =
+               Publisher.publish_requested(request_of(ctx.trigger), ctx.opts)
+
+      assert [_one] = FakeGh.comments(ctx.gh)
+
+      # published now: a second request is not published again
+      assert {:skipped, :already_reported} =
+               Publisher.publish_requested(request_of(ctx.trigger), ctx.opts)
+
+      # the refused write and the one that created the comment; the second request wrote nothing
+      assert [_refused_write, {:create, nil, _}] = FakeGh.writes(ctx.gh)
+      assert [_one] = FakeGh.comments(ctx.gh)
+    end
+
+    test "a request naming a head that is no longer the PR's current record is skipped", ctx do
+      old = request_of(ctx.trigger)
+      _new = move_head!(ctx, "sha-2")
+
+      assert {:skipped, :risk_not_current} = Publisher.publish_requested(old, ctx.opts)
+      assert [] = FakeGh.writes(ctx.gh)
+    end
+
+    test "a request for a digest the record does not hold publishes nothing", ctx do
+      forged = %{request_of(ctx.trigger) | digest: "forged"}
+
+      assert {:skipped, :risk_not_current} = Publisher.publish_requested(forged, ctx.opts)
+      assert [] = FakeGh.writes(ctx.gh)
+    end
+
+    test "a project with the gate off: the request is recorded, nothing is posted", ctx do
+      ungated = register_project!(%{})
+      other = Support.start_run!(project_id: ungated, complete: true)
+      {:ok, _} = PrAssociate.store(other.run_id, other.pr_url)
+      publisher = start_publisher(ctx)
+
+      {:ok, _} = PrWatcher.refresh_now(other.pr_url)
+      trigger = risk_trigger(other.run_id, "sha-1")
+
+      assert {:ok, _} = request_report(other)
+      Eventually.await(fn -> Publisher.inflight(publisher) == 0 end)
+
+      assert [_] = requested_events(other.run_id)
+      assert {:skipped, :ungated} = Publisher.publish_requested(request_of(trigger), ctx.opts)
+      assert [] = FakeGh.writes(ctx.gh)
+      assert [] = report_events(other.run_id)
+    end
+
+    test "a waiting operator request is not replaced by a risk trigger of the same record", ctx do
+      test_pid = self()
+      base = ctx.runner
+
+      blocking = fn "gh", args, opts ->
+        result = base.("gh", args, opts)
+
+        if match?(["pr", "view" | _], args) do
+          send(test_pid, {:listed, self()})
+
+          receive do
+            :go -> :ok
+          after
+            5_000 -> :ok
+          end
+        end
+
+        result
+      end
+
+      pid = start_publisher(ctx, command_runner: blocking)
+      deliver(pid, ctx.trigger)
+      assert_receive {:listed, first}, 2_000
+
+      request = request_of(ctx.trigger)
+      send(pid, {:projection_event, %{event_type: "PrReportRequested", data: request}})
+      deliver(pid, ctx.trigger)
+
+      Eventually.await(fn -> :sys.get_state(pid).pending |> map_size() == 1 end)
+      assert [{:request, ^request}] = Map.values(:sys.get_state(pid).pending)
+
+      # a risk trigger for another record does replace it: the request names a stale record
+      newer = %{ctx.trigger | digest: "newer"}
+      deliver(pid, newer)
+      Eventually.await(fn -> Map.values(:sys.get_state(pid).pending) == [newer] end)
+
+      send(first, :go)
+      Eventually.await(fn -> Publisher.inflight(pid) == 0 end, message: "publisher idle")
+    end
+  end
+
   defp risk_events(run_id),
     do: Enum.filter(Support.run_events(run_id), &(&1.event_type == "PrRiskRecorded"))
 
