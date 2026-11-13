@@ -1,7 +1,7 @@
 ---
 document_id: TRD-2026-c12e5f93
 label: trd-phase-1-trustworthy-pr-delivery
-version: 1.1.10
+version: 1.1.11
 status: Draft
 date: 2026-11-12
 source_prd: PRD-2026-c12e5f93
@@ -1148,6 +1148,7 @@ On 2026-11-12 the operator answered the decisions put to them, every one as prop
    Resolved 2026-11-12 (operator): as proposed, `skipped` included: a skipped required check is not passing and the operator can waive it.
 6. **Default per project.** The gate is off until `required_checks` is set; publication follows the gate switch. Recording does not: the check list, the findings and the risk are recorded for every project (§13).
    Resolved 2026-11-12 (operator): as proposed: the gate is off for a project until `required_checks` is set, and publication follows the gate.
+   Forward pointer (2026-11-13): the operator rejected this default as meeting AC-001-3; see section 14, "Operator answers at the Phase 1 exit review". The resolution above stands as the decision made on 2026-11-12; what to change is not decided.
 7. **Durable-store guard.** Enabling `required_checks` is refused (not only warned) while the idempotency store is ETS-only; the guard's switch `:require_durable_store_for_gating` is true in `config/config.exs` and false in dev and test. The refusal covers every path that can set the policy (`project.update`, `project.register` and the coordinator's `project.update`, TRD-028) and is checked again when a gated approval is made (TRD-022), so a gated project's approvals are refused while the key-store database is unreachable: approvals of a gated project depend on that database, and clearing `required_checks` is the way out.
    Resolved 2026-11-12 (operator): as proposed: the guard refuses.
 8. **Freshness window.** The 900-second figure is a display hint only: the status labels check evidence older than 900 seconds `stale`, and no decision reads it. The gate decides on evidence forced for the named head at approval, so age is never a reason (§6).
@@ -1349,6 +1350,10 @@ Forward pointers; the task text above stays as written. The exit record `docs/de
 - **What the exit record cannot say.** Mutation probes were run by the task agents and reported in their close reasons and the PR descriptions; no test enforces that they were run, and none re-runs them. The scripted GitHub of the world is checked against one recorded real payload (`docs/spikes/S4/pr565-view.json`) and one scratch-PR comment probe; `gh pr merge --match-head-commit` failure text and fork list shapes are the world's paraphrase. The record's own counts of pass, caveat and fail are authoritative (this note does not restate them); it is not an operator acceptance: its Acceptance section records that the operator withheld acceptance on 2026-11-13 and regraded AC-001-3 and AC-003-2 to fail.
 - **The 422 `detail` also carries `waiver` (forward pointer to the PR 8 amendment above).** The `detail` of `{:evidence_ineligible, head_sha, codes}` is `status`, `head_sha`, `policy_version`, `checks_ref`, `now_ms`, `waived`, `waiver`, `reasons` and `inputs` (`aggregates/run.ex` where the refusal is built); `waived` is a list of code strings and only `reasons` carries `{code, subject, detail}`; `checks_ref` is the gateway's nonce.
 
+### Operator answers at the Phase 1 exit review (2026-11-13)
+
+Not a PR 9 amendment: a decision made on reading the exit record `docs/decisions/phase-1-trustworthy-pr-delivery-exit.md`. The operator (1) withheld acceptance of Phase 1 and made the 26 gaps (G-01 to G-26) blockers before Phase 2; (2) answered that §11 item 6's default (the gate is off for a project until `required_checks` is set) does not meet AC-001-3's "explicit fallback policy or operator disposition", and regraded AC-001-3 to fail; (3) regraded AC-003-2 to fail because a recorded HIGH risk level refuses nothing (G-06). Open and undecided: whether an unconfigured project should refuse approvals or warn loudly, and whether a HIGH level should refuse or only require a recorded waiver. Task text is unchanged and neither fix is designed here; §11 item 6 keeps its 2026-11-12 resolution line with a forward pointer.
+
 ## 15. Design Readiness Scorecard
 
 | Dimension | Score | Basis |
@@ -1378,3 +1383,4 @@ Average 3.8, not raised by this revision because nothing was verified. PASS with
 | 1.1.8 | 2026-11-13 | Amendments recorded while building PR 8 (section 14): what refuses an approval and what does not (the risk level does not), the stamp and its residual trust, the status read model, the boot retry and `unknown` surfaces, the dashboard and Overview. Task text unchanged. |
 | 1.1.9 | 2026-11-13 | Amendments recorded while building PR 9 (section 14): `checks.old` versus `checks.stale`, the adversarial world, the `pr_create` boot-sweep fix (a fork's PR is not proof) and the same-repository other-head case left as `done`, the phantom `run.pr.findings` record, what the exit record cannot say. Task text unchanged. |
 | 1.1.10 | 2026-11-13 | Corrections to the PR 9 amendments (section 14): the world's field restriction is `view_reply/2` and `list_handler/2`, not `script!/3`; the phantom `run.pr.findings` record's `pr_url_required` side effect; the 422 `detail` also carries `waiver`; no restated counts. Task text unchanged. |
+| 1.1.11 | 2026-11-13 | Operator answers at the Phase 1 exit review (new section 14 subsection): acceptance withheld, AC-001-3 and AC-003-2 regraded to fail, a forward pointer on section 11 item 6, and the "What the exit record cannot say" amendment no longer says the Acceptance section stays PENDING. Task text unchanged. |
