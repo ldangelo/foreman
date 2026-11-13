@@ -217,6 +217,55 @@ defmodule ForemanServer.Jobsite.Runners.OverwatchTest do
     assert {:ok, :completed} = ForemanServer.Idempotency.KeyStore.status(key)
   end
 
+  test "a key completed before a failed outcome is recorded stays completed and the runner does not raise" do
+    {key, runner, worker} = start_leased_run()
+
+    :ok = ForemanServer.Idempotency.KeyStore.mark_completed(key)
+    send(worker, :fail)
+
+    assert {:error, %Error{code: :agent_failed}} = Task.await(runner, 10_000)
+    assert {:ok, :completed} = ForemanServer.Idempotency.KeyStore.status(key)
+  end
+
+  test "a key failed before a successful outcome is recorded stays failed and the runner keeps its result" do
+    {key, runner, worker} = start_leased_run()
+
+    :ok = ForemanServer.Idempotency.KeyStore.mark_failed(key, "settled elsewhere")
+    send(worker, :finish)
+
+    assert {:ok, %ForemanServer.Jobsite.IterationResult{status: :completed}} =
+             Task.await(runner, 10_000)
+
+    assert {:ok, %{status: :failed, metadata: %{"reason" => "settled elsewhere"}}} =
+             ForemanServer.Idempotency.KeyStore.get(key)
+  end
+
+  test "a dispatch that raises after its key completed leaves the key completed and still propagates" do
+    run_id = "run-overwatch-raise-settled-#{System.unique_integer([:positive])}"
+    key = "lease-test-#{run_id}-1"
+
+    launch = %{
+      run_id: run_id,
+      phase: "jobsite:#{run_id}",
+      phase_index: 1,
+      deadline_ms: System.system_time(:millisecond) + 60_000,
+      timeout_ms: 60_000,
+      activation_timeout_ms: 5_000,
+      lease: %{key: key, budget_ms: 30_000, task_id: "task-lease-test"},
+      driver_opts: fn _remaining_ms ->
+        :ok = ForemanServer.Idempotency.KeyStore.mark_completed(key)
+        raise "driver exploded"
+      end,
+      launch_opts: [provider: :claude, prompt: "x", prompt_path: "/dev/null"]
+    }
+
+    assert_raise RuntimeError, "driver exploded", fn ->
+      Runners.Overwatch.run(%Agent{provider: :claude, model: "m"}, "x", nil, launch: launch)
+    end
+
+    assert {:ok, :completed} = ForemanServer.Idempotency.KeyStore.status(key)
+  end
+
   test "a successful dispatch overwrites an ambiguous left by lease expiry" do
     {key, runner, worker} = start_leased_run()
 

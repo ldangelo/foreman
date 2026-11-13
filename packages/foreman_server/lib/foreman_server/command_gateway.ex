@@ -52,7 +52,7 @@ defmodule ForemanServer.CommandGateway do
   to succeed even if the assets have since changed.
   """
 
-  alias ForemanServer.{CommandRouter, PrGate, ProjectionStore, Telemetry}
+  alias ForemanServer.{Aggregate, CommandRouter, PrEvidence, PrGate, ProjectionStore, Telemetry}
   alias ForemanServer.Projects.RepoValidation
   alias ForemanServer.TaskProvider.Registry
   alias ForemanServer.Workflow.Approval
@@ -189,7 +189,9 @@ defmodule ForemanServer.CommandGateway do
   end
 
   def dispatch_system(command, timeout) when is_map(command) do
-    dispatch_and_emit_project_telemetry(command, timeout)
+    with :ok <- require_durable_store_for_gate(command) do
+      dispatch_and_emit_project_telemetry(command, timeout)
+    end
   end
 
   @doc """
@@ -248,13 +250,29 @@ defmodule ForemanServer.CommandGateway do
   # fields are checked first with the aggregate's check (`Run.validate_approval/1`), so a
   # malformed or unauthorized approval cannot make the server read GitHub at all.
   defp perform_operator_side_effects(%{type: "merge_approve", payload: payload} = command) do
-    run_id = get_value(payload, :run_id) || get_value(payload, "run_id")
-    repo_id = get_value(payload, :repo_id) || get_value(payload, "repo_id")
-
-    with :ok <- valid_repo_id(gate_repo(repo_id), true),
-         {:ok, approval} <- Run.validate_approval(payload),
-         :ok <- RunPrMerge.verify_head(run_id, gate_repo(repo_id), approval.head_sha) do
+    with {:ok, _approval} <- verify_named_head(payload) do
       {:ok, command}
+    end
+  end
+
+  # `run.pr.waive_evidence` (TRD-012) is pinned to a head like `merge_approve`, so the named head
+  # is read back from GitHub through the same helper and a head that is not GitHub's is refused.
+  # The policy version is then stamped from the project's policy as it stands now, replacing
+  # anything the caller sent: the operator cannot name one. A policy that cannot be read refuses
+  # the waiver (`{:policy_unavailable, _}`) and a project whose gate is off refuses it with
+  # `:gate_off`, because a waiver without a policy covers nothing. A run the aggregate does not
+  # know is left to the aggregate's own typed refusal.
+  defp perform_operator_side_effects(%{type: "run.pr.waive_evidence", payload: payload} = command) do
+    run_id = get_value(payload, :run_id) || get_value(payload, "run_id")
+
+    with {:ok, _approval} <- verify_named_head(payload) do
+      case Aggregate.load(Run, "run:#{run_id}") do
+        {%Run.State{exists?: true, project_id: project_id}, _version} ->
+          stamp_policy_version(command, project_id)
+
+        _unknown_run ->
+          {:ok, command}
+      end
     end
   end
 
@@ -320,7 +338,8 @@ defmodule ForemanServer.CommandGateway do
     project_id = get_value(payload, :project_id)
     path = get_value(payload, :path)
 
-    with true <- is_binary(path),
+    with :ok <- require_durable_store_for_gate(command),
+         true <- is_binary(path),
          {:ok, [%{path: current} | _] = repos} <- known_repositories(project_id),
          true <- current != path do
       case RepoValidation.check_candidate(path, repos, replacing: RepoValidation.primary_id()) do
@@ -328,8 +347,14 @@ defmodule ForemanServer.CommandGateway do
         {:error, _} = error -> error
       end
     else
+      {:error, _} = error -> error
       _ -> {:ok, command}
     end
+  end
+
+  # `project.register` applies settings too, so it can turn the merge gate on.
+  defp perform_operator_side_effects(%{type: "project.register"} = command) do
+    with :ok <- require_durable_store_for_gate(command), do: {:ok, command}
   end
 
   # `run.pr.create` opens the real PR (and records the association) before dispatch, for
@@ -351,6 +376,53 @@ defmodule ForemanServer.CommandGateway do
   end
 
   defp perform_operator_side_effects(command), do: {:ok, command}
+
+  defp stamp_policy_version(%{payload: payload} = command, project_id) do
+    case PrEvidence.project_policy(project_id) do
+      {:ok, %{version: version}} ->
+        stamped =
+          payload |> Map.delete("policy_version") |> Map.put(:policy_version, version)
+
+        {:ok, %{command | payload: stamped}}
+
+      {:ok, nil} ->
+        {:error, :gate_off}
+
+      {:error, {:policy_unavailable, _reason}} = unavailable ->
+        unavailable
+    end
+  end
+
+  # The shared head check of the commands that pin a head: the repository id, the operator's own
+  # fields (`Run.validate_approval/1`, so a malformed or unauthorized request cannot make the
+  # server read GitHub) and then GitHub's head for the PR the gate holds.
+  defp verify_named_head(payload) do
+    run_id = get_value(payload, :run_id) || get_value(payload, "run_id")
+    repo_id = get_value(payload, :repo_id) || get_value(payload, "repo_id")
+
+    with :ok <- valid_repo_id(gate_repo(repo_id), true),
+         {:ok, approval} <- Run.validate_approval(payload),
+         :ok <- RunPrMerge.verify_head(run_id, gate_repo(repo_id), approval.head_sha) do
+      {:ok, approval}
+    end
+  end
+
+  # Enabling `required_checks` (`[]` included) turns the merge gate on, and the gate's approvals
+  # depend on the idempotency store surviving a restart (P-3). Refused before dispatch, so nothing
+  # is appended, whichever path carries the command (operator envelope or `dispatch_system/2`).
+  # Clearing the setting, or touching other settings, is never refused here.
+  defp require_durable_store_for_gate(%{type: type, payload: payload})
+       when type in ["project.update", "project.register"] and is_map(payload) do
+    case Map.get(
+           ForemanServer.Aggregates.Project.Settings.changed_keys(payload),
+           :required_checks
+         ) do
+      :set -> ForemanServer.Idempotency.KeyStore.require_durable()
+      _ -> :ok
+    end
+  end
+
+  defp require_durable_store_for_gate(_command), do: :ok
 
   defp known_repositories(project_id) when is_binary(project_id) do
     case ProjectionStore.project_repositories(project_id) do

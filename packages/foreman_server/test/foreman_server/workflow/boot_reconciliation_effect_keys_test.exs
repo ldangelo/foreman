@@ -174,24 +174,36 @@ defmodule ForemanServer.Workflow.BootReconciliationEffectKeysTest do
       assert {:ok, :ambiguous} = KeyStore.status(key)
     end
 
-    test "a status that is not one the store writes is not marked or blocked: the marker's compare-and-set refuses it",
+    test "a status that is not one the store writes blocks `effect_outcome_ambiguous` at boot: the store refuses it a marker, the run is not skipped",
          %{run_id: run_id, ref: ref} do
-      key = Effect.key("branch_push", run_id, "feature/s")
-
-      :ets.insert(
-        :foreman_idempotency_keys,
-        {key, :weird, %{"run_id" => run_id, "effect_class" => "branch_push"}}
-      )
-
-      list_only_ambiguous(key)
-      before_events = events(run_id)
+      key = plant_weird(run_id)
 
       sweep()
+
+      assert status(run_id) == "blocked"
+      assert get(List.last(events(run_id)).payload, :reason) == "effect_outcome_ambiguous"
+      assert get(recovery_record(run_id, "effect_blocked").payload, :effect_verdict) == "unknown"
+      assert {:ok, :weird} = KeyStore.status(key)
+      assert {:ok, %{metadata: metadata}} = KeyStore.get(key)
+      assert KeyStore.unresolved_version(metadata) == :none
+      assert_receive {@effect_event, ^ref, %{blocked: 1, skipped: 0, unresolved: 0}, _}
+    end
+
+    test "a status that is not one the store writes is deferred like any unknown on an on-demand scan",
+         %{run_id: run_id, ref: ref} do
+      key = plant_weird(run_id)
+      before_events = events(run_id)
+
+      BootReconciliation.do_reconcile_ambiguous_keys(fn _key -> true end,
+        classes: @classes,
+        origin: :on_demand
+      )
 
       assert status(run_id) == "awaiting_worker"
       assert events(run_id) == before_events
       assert {:ok, :weird} = KeyStore.status(key)
-      assert_receive {@effect_event, ^ref, %{skipped: 1, blocked: 0, unresolved: 0}, _}
+
+      assert_receive {@effect_event, ^ref, %{deferred_unknown: 1, blocked: 0, skipped: 0}, _}
     end
 
     for moved_on <- [:started, :completed, :failed] do
@@ -1133,6 +1145,21 @@ defmodule ForemanServer.Workflow.BootReconciliationEffectKeysTest do
   # --- helpers ---
 
   defp meta(run_id), do: %{"run_id" => run_id, "effect_class" => "branch_push"}
+  # A key whose stored status is not one the store writes, listed `ambiguous` by the sweep.
+  # The real listing (`list_records_checked(:ambiguous)`) filters by status, so it can never
+  # list such a key: the stub models the race where a key is read after being re-marked, which
+  # is the only way the sweep's read sees a status it did not list.
+  defp plant_weird(run_id) do
+    key = Effect.key("branch_push", run_id, "feature/s")
+
+    :ets.insert(
+      :foreman_idempotency_keys,
+      {key, :weird, %{"run_id" => run_id, "effect_class" => "branch_push"}}
+    )
+
+    list_only_ambiguous(key)
+    key
+  end
 
   defp push_meta(run_id, identity),
     do: %{"run_id" => run_id, "head_branch" => identity, "cwd" => System.tmp_dir!()}

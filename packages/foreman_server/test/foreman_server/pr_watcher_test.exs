@@ -2,6 +2,7 @@ defmodule ForemanServer.PrWatcherTest do
   use ExUnit.Case, async: false
 
   alias ForemanServer.{PrAssociate, PrWatcher, ProjectionStore}
+  alias ForemanServer.PrWatcher.Observer
   alias ForemanServer.TestSupport.PrWatchSupport, as: Support
   alias ForemanServer.TestSupport.UniqueIds
 
@@ -208,5 +209,142 @@ defmodule ForemanServer.PrWatcherTest do
 
     assert {:error, {:fetch_crashed, "boom"}} = PrWatcher.refresh_now(ctx.pr_url)
     assert Process.alive?(pid)
+  end
+
+  describe "required_checks policy" do
+    import ExUnit.CaptureLog
+
+    alias ForemanServer.PrEvidence
+
+    @a %{"name" => "unit", "kind" => "check_run"}
+    @b %{"name" => "lint", "kind" => "check_run"}
+
+    defp register_project!(required) do
+      id = "p-pol-#{System.unique_integer([:positive])}"
+
+      :ok =
+        ProjectionStore.apply_events([
+          %{
+            event_type: "ProjectRegistered",
+            payload: %{project_id: id, path: "/tmp/#{id}", config: %{required_checks: required}}
+          }
+        ])
+
+      id
+    end
+
+    defp set_required!(project_id, required) do
+      :ok =
+        ProjectionStore.apply_events([
+          %{
+            event_type: "ProjectUpdated",
+            payload: %{project_id: project_id, required_checks: required}
+          }
+        ])
+    end
+
+    test "a change of the project's required_checks with no new check emits one run.pr.checks" do
+      project_id = register_project!([@a])
+      run = Support.start_run!(project_id: project_id, complete: true)
+      {_agent, fetch} = start_github(passing())
+      {:ok, _} = PrAssociate.store(run.run_id, run.pr_url)
+      start_supervised!({PrWatcher, fetch_fun: fetch})
+
+      assert {:ok, %{dispatched: first}} = PrWatcher.refresh_now(run.pr_url)
+      assert "run.pr.checks" in first
+      assert {:ok, %{dispatched: []}} = PrWatcher.refresh_now(run.pr_url)
+
+      set_required!(project_id, [@a, @b])
+      assert {:ok, %{dispatched: ["run.pr.checks"]}} = PrWatcher.refresh_now(run.pr_url)
+      assert {:ok, %{dispatched: []}} = PrWatcher.refresh_now(run.pr_url)
+
+      assert [first_event, second_event] = checks_events(run.run_id)
+      assert first_event.data.required == [@a]
+      assert first_event.data.policy_version == PrEvidence.policy_version([@a])
+      assert second_event.data.required == [@a, @b]
+      assert second_event.data.policy_version == PrEvidence.policy_version([@a, @b])
+
+      assert %{evidence: %{checks: %{required: [@a, @b]}}} =
+               ProjectionStore.pr_watch(run.run_id) |> hd()
+    end
+
+    test "clearing the setting is a change: the next observation records required nil" do
+      project_id = register_project!([@a])
+      run = Support.start_run!(project_id: project_id, complete: true)
+      {_agent, fetch} = start_github(passing())
+      {:ok, _} = PrAssociate.store(run.run_id, run.pr_url)
+      start_supervised!({PrWatcher, fetch_fun: fetch})
+
+      assert {:ok, _} = PrWatcher.refresh_now(run.pr_url)
+
+      :ok =
+        ProjectionStore.apply_events([
+          %{
+            event_type: "ProjectUpdated",
+            payload: %{project_id: project_id, cleared_settings: ["required_checks"]}
+          }
+        ])
+
+      assert {:ok, %{dispatched: ["run.pr.checks"]}} = PrWatcher.refresh_now(run.pr_url)
+      assert [_, %{data: %{required: nil, policy_version: nil}}] = checks_events(run.run_id)
+    end
+
+    test "a project that cannot be read is observed with no policy and the error is logged",
+         ctx do
+      {_agent, fetch} = start_github(passing())
+      {:ok, _} = PrAssociate.store(ctx.run_id, ctx.pr_url)
+      start_supervised!({PrWatcher, fetch_fun: fetch})
+
+      log =
+        capture_log(fn ->
+          assert {:ok, %{dispatched: dispatched}} = PrWatcher.refresh_now(ctx.pr_url)
+          assert "run.pr.checks" in dispatched
+        end)
+
+      assert log =~ "required_checks policy unreadable"
+      assert log =~ "project_not_found"
+      assert [%{data: %{required: nil, policy_version: nil}}] = checks_events(ctx.run_id)
+    end
+
+    test "an unregistered project logs at warning, a failed read at error; both observe with no policy" do
+      project_id = register_project!([@a])
+      run = Support.start_run!(project_id: project_id)
+      unregistered = Support.start_run!()
+
+      known =
+        capture_log([level: :debug], fn ->
+          assert %{required: [@a]} = Observer.observation_policy(run.run_id)
+        end)
+
+      refute known =~ "unreadable"
+
+      warned =
+        capture_log([level: :debug], fn ->
+          assert nil == Observer.observation_policy(unregistered.run_id)
+        end)
+
+      assert warned =~ "[warning]"
+      assert warned =~ "project_not_found"
+      refute warned =~ "[error]"
+
+      failed =
+        capture_log([level: :debug], fn ->
+          assert nil == Observer.observation_policy(run.run_id, fn _ -> exit(:noproc) end)
+        end)
+
+      assert failed =~ "[error]"
+      assert failed =~ "policy_unavailable"
+      assert failed =~ ":noproc"
+    end
+
+    test "a run read that exits degrades to no policy instead of crashing the observation" do
+      stub = spawn(fn -> Process.sleep(:infinity) end)
+      on_exit(fn -> Process.exit(stub, :kill) end)
+
+      capture_log(fn ->
+        assert nil ==
+                 Observer.observation_policy("run-x", fn _ -> GenServer.call(stub, :run, 20) end)
+      end)
+    end
   end
 end

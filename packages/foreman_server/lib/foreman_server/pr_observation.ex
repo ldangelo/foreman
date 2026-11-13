@@ -117,6 +117,11 @@ defmodule ForemanServer.PrObservation do
   say, with id `pr_checks:<run_id>:<url_hash>:forced:<nonce>`, `observed_at: now_ms`,
   `observation_ref: nonce` and `source: "gate"`, and no `run.pr.review`. Every other
   `run.pr.checks` is stamped `source: "watch"`.
+
+  `opts` `policy: %{required, version} | nil` (`PrEvidence.project_policy/1`, default `nil`
+  = gate off): every `run.pr.checks` records `required` and `policy_version` on its payload
+  (display only; a decision reads the policy itself), and the version is part of the evidence
+  digest, so a policy change with no new check still emits one `run.pr.checks`.
   """
   @spec commands(
           String.t(),
@@ -129,6 +134,7 @@ defmodule ForemanServer.PrObservation do
   def commands(run_id, pr_url, %PrStatus{} = status, previous, repo_id \\ nil, opts \\ [])
       when is_binary(run_id) and is_binary(pr_url) and is_list(opts) do
     force = Keyword.get(opts, :force)
+    policy = policy_opt(Keyword.get(opts, :policy))
 
     with :ok <- check_force(force),
          {:ok, update} <- update_command(run_id, pr_url, status, repo_id) do
@@ -138,16 +144,26 @@ defmodule ForemanServer.PrObservation do
         nil ->
           {:ok,
            update_commands(update, status, previous) ++
-             checks_commands(run_id, pr_url, status, previous, base) ++
+             checks_commands(run_id, pr_url, status, previous, base, policy) ++
              review_commands(run_id, pr_url, status, previous, base)}
 
         %{nonce: nonce, now_ms: now_ms}
         when is_binary(nonce) and nonce != "" and is_integer(now_ms) ->
           {:ok,
-           [update, forced_checks_command(run_id, pr_url, status, previous, base, nonce, now_ms)]}
+           [
+             update,
+             forced_checks_command(run_id, pr_url, status, previous, base, nonce, now_ms, policy)
+           ]}
       end
     end
   end
+
+  defp policy_opt(%{} = policy),
+    do: %{required: policy_get(policy, :required), version: policy_get(policy, :version)}
+
+  defp policy_opt(_none), do: %{required: nil, version: nil}
+
+  defp policy_get(policy, key), do: Map.get(policy, key, Map.get(policy, Atom.to_string(key)))
 
   defp check_force(nil), do: :ok
 
@@ -183,11 +199,13 @@ defmodule ForemanServer.PrObservation do
     }
   end
 
-  defp checks_commands(run_id, pr_url, status, previous, base) do
+  defp checks_commands(run_id, pr_url, status, previous, base, policy) do
     digest = checks_digest(status)
     baseline = previous_value(previous, :checks_digest) || empty_checks_digest(status)
-    evidence = evidence_digest(status)
-    evidence_baseline = stored_evidence_digest(previous) || empty_evidence_digest(status)
+    evidence = evidence_digest(status, policy.version)
+
+    evidence_baseline =
+      stored_evidence_digest(previous) || empty_evidence_digest(status, policy.version)
 
     if digest == baseline and evidence == evidence_baseline do
       []
@@ -206,7 +224,8 @@ defmodule ForemanServer.PrObservation do
           seq,
           nil,
           "watch",
-          if(digest == baseline, do: "evidence", else: "digest")
+          if(digest == baseline, do: "evidence", else: "digest"),
+          policy
         )
       ]
     end
@@ -221,7 +240,7 @@ defmodule ForemanServer.PrObservation do
   # A forced observation is built whatever the digests say: an unchanged PR returns nothing from
   # `checks_commands/5`, so its `observed_at` and `observation_ref` would stay old. It carries
   # the unchanged notification `digest` and `source: "gate"`, so the Notifier ignores it.
-  defp forced_checks_command(run_id, pr_url, status, previous, base, nonce, now_ms) do
+  defp forced_checks_command(run_id, pr_url, status, previous, base, nonce, now_ms, policy) do
     checks_command(
       "pr_checks:#{run_id}:#{url_hash(pr_url)}:forced:#{nonce}",
       run_id,
@@ -229,11 +248,12 @@ defmodule ForemanServer.PrObservation do
       status,
       %{base | observed_at: now_ms},
       checks_digest(status),
-      evidence_digest(status),
+      evidence_digest(status, policy.version),
       next_checks_seq(previous),
       nonce,
       "gate",
-      "evidence"
+      "evidence",
+      policy
     )
   end
 
@@ -250,7 +270,8 @@ defmodule ForemanServer.PrObservation do
          seq,
          observation_ref,
          source,
-         change
+         change,
+         policy
        ) do
     %{
       type: "run.pr.checks",
@@ -269,6 +290,8 @@ defmodule ForemanServer.PrObservation do
           observation_ref: observation_ref,
           source: source,
           change: change,
+          required: policy.required,
+          policy_version: policy.version,
           observation_seq: seq
         })
     }
@@ -284,8 +307,8 @@ defmodule ForemanServer.PrObservation do
     end
   end
 
-  defp empty_evidence_digest(status),
-    do: evidence_digest(%{status | checks: [], checks_truncated: false})
+  defp empty_evidence_digest(status, policy_version),
+    do: evidence_digest(%{status | checks: [], checks_truncated: false}, policy_version)
 
   defp evidence_checks(status) do
     status.checks

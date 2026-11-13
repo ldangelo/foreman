@@ -116,4 +116,17 @@ defmodule ForemanServer.CommandAllowlistParityTest do
       refute_received {:dispatched, _}
     end
   end
+
+  test "run.pr.waive_evidence is listed and routed to the run stream exactly like merge_approve" do
+    for type <- ["merge_approve", "run.pr.waive_evidence"] do
+      assert type in CommandGateway.operator_types(), type
+      assert type in CommandGateway.command_endpoint_types(), type
+
+      conn =
+        post(build_conn(), "/api/commands", %{"type" => type, "payload" => @universal_payload})
+
+      assert json_response(conn, 201), type
+      assert_received {:dispatched, %{type: ^type, aggregate_id: "run:r1"}}
+    end
+  end
 end

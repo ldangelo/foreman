@@ -669,6 +669,9 @@ defmodule ForemanServer.Aggregates.RunPrWatchTest do
         {next, [spec.event_type | acc]}
       end)
 
-    assert Enum.sort(Enum.uniq(emitted)) == Enum.sort(Run.PrWatch.event_types())
+    # `PrEvidenceWaived` is emitted by the `Run` aggregate's own operator-only clause beside
+    # `merge_approve`, not by a `PrWatch` command: the waiver tests cover it.
+    assert Enum.sort(Enum.uniq(emitted)) ==
+             Enum.sort(Run.PrWatch.event_types() -- ["PrEvidenceWaived"])
   end
 end

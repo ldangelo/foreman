@@ -58,10 +58,20 @@ defmodule ForemanServerWeb.DoctorControllerTest do
 
   describe "pr_observation check (TRD-009)" do
     setup do
-      keys = [:pr_watcher, :pr_monitor_enabled, :github_webhook_secret]
+      keys = [
+        :pr_watcher,
+        :pr_monitor_enabled,
+        :github_webhook_secret,
+        :require_durable_store_for_gating
+      ]
+
       saved = Map.new(keys, &{&1, Application.fetch_env(:foreman_server, &1)})
 
+      ForemanServer.TestSupport.ProjectionStoreReset.reset!()
+
       on_exit(fn ->
+        ForemanServer.TestSupport.ProjectionStoreReset.reset!()
+
         for {key, saved} <- saved do
           case saved do
             {:ok, value} -> Application.put_env(:foreman_server, key, value)
@@ -118,6 +128,108 @@ defmodule ForemanServerWeb.DoctorControllerTest do
     test "an empty webhook secret counts as not set" do
       configure_observation(true, false, "")
       assert pr_observation_row()["detail"] =~ "webhook secret: not set"
+    end
+
+    test "a gated project with neither the monitor nor the webhook on is a warning naming it (TRD-028)" do
+      id = register_gated_project("gated-doctor")
+
+      configure_observation(true, false, nil)
+      row = pr_observation_row()
+
+      assert row["status"] == "warn"
+      assert row["title"] =~ id
+      assert row["detail"] =~ "gated project #{id}"
+      assert row["detail"] =~ "100 checks"
+      assert row["detail"] =~ "newest 100"
+    end
+
+    test "a gated project is not a warning when the monitor or the webhook is on (TRD-028)" do
+      id = register_gated_project("gated-doctor-on")
+
+      configure_observation(true, true, nil)
+      row = pr_observation_row()
+      assert row["status"] == "ok"
+      assert row["detail"] =~ "gated project #{id}"
+
+      configure_observation(true, false, "s3cret-value")
+      assert pr_observation_row()["status"] == "ok"
+    end
+
+    test "an ungated project and a project whose gate was never set do not warn (TRD-028)" do
+      id = unique_project("plain-doctor")
+
+      assert {:ok, _} =
+               ForemanServer.ProjectStore.save(%{project_id: id, path: "/tmp/#{id}", config: %{}})
+
+      configure_observation(true, false, nil)
+      row = pr_observation_row()
+      assert row["status"] == "ok"
+      refute row["detail"] =~ "gated project"
+    end
+
+    test "gated projects are listed sorted, archived ones are skipped (TRD-028)" do
+      b = register_gated_project("zz-gated")
+      a = register_gated_project("aa-gated")
+      archived = register_gated_project("mm-gated-archived")
+      assert {:ok, _} = ForemanServer.ProjectStore.archive(archived)
+
+      configure_observation(true, true, nil)
+      detail = pr_observation_row()["detail"]
+
+      refute detail =~ archived
+      assert {ia, _} = :binary.match(detail, "gated project #{a}")
+      assert {ib, _} = :binary.match(detail, "gated project #{b}")
+      assert ia < ib
+    end
+
+    test "an unreadable projection is a warning naming the failure, never a silent ok (TRD-028)" do
+      configure_observation(true, true, "s3cret-value")
+
+      on_exit(fn -> Application.delete_env(:foreman_server, :doctor_project_lister) end)
+
+      listers = [
+        {fn -> exit({:timeout, {GenServer, :call, [ProjectionStore, :list_projects, 5000]}}) end,
+         "timeout"},
+        {fn -> exit(:noproc) end, "noproc"},
+        {fn -> raise "projection exploded" end, "projection exploded"},
+        {fn -> [%{id: "p", config: :not_a_map}, :not_a_project] end, nil}
+      ]
+
+      for {lister, expected} <- listers do
+        Application.put_env(:foreman_server, :doctor_project_lister, lister)
+        row = pr_observation_row()
+        assert row["status"] == "warn"
+        assert row["title"] =~ "Gated projects could not be read"
+        assert row["detail"] =~ "gated projects could not be read:"
+        if expected, do: assert(row["detail"] =~ expected)
+      end
+    end
+
+    test "a gated project says so when the idempotency store is not durable (TRD-028)" do
+      id = register_gated_project("gated-nondurable")
+      configure_observation(true, true, nil)
+
+      Application.put_env(:foreman_server, :require_durable_store_for_gating, true)
+      detail = pr_observation_row()["detail"]
+      assert detail =~ "gated project #{id}: the idempotency store is not durable"
+
+      Application.put_env(:foreman_server, :require_durable_store_for_gating, false)
+      refute pr_observation_row()["detail"] =~ "idempotency store is not durable"
+    end
+
+    defp unique_project(prefix), do: "#{prefix}-#{System.unique_integer([:positive])}"
+
+    defp register_gated_project(prefix) do
+      id = unique_project(prefix)
+
+      assert {:ok, _} =
+               ForemanServer.ProjectStore.save(%{
+                 project_id: id,
+                 path: "/tmp/#{id}",
+                 config: %{required_checks: []}
+               })
+
+      id
     end
   end
 

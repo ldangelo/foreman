@@ -95,6 +95,7 @@ Commands:
   run reset           Reset a failed or stuck run projection
   run submit          Submit an ad-hoc run (--project-id --workflow --prompt --work-id --backend)
   run approve-merge   Record the operator's merge approval for a run (--id --approver --identity --head-sha [--repo-id])
+  run waive-evidence  Waive named PR evidence reasons for a run (--id --approver --identity --head-sha --waive --reason [--repo-id])
   run merge           Merge an approved run's PR (--id [--repo-id])
   run prs <id>        List the run's pull requests
   run fix-ci <id>     Request a CI-fix thread for a watched PR (--pr --note)

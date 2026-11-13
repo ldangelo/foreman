@@ -30,7 +30,7 @@ end
 defmodule ForemanServer.CommandGatewayTest do
   use ExUnit.Case, async: false
 
-  alias ForemanServer.{CommandGateway, ProjectStore, ProjectionStore}
+  alias ForemanServer.{Aggregate, CommandGateway, ProjectStore, ProjectionStore}
 
   describe "envelope validation" do
     test "rejects command without command_id" do
@@ -2283,6 +2283,194 @@ defmodule ForemanServer.CommandGatewayTest do
     end
   end
 
+  describe "required_checks durable-store guard (TRD-028)" do
+    alias ForemanServer.Idempotency.KeyStore
+    alias ForemanServer.TestSupport.KeyStoreReset
+
+    @switch :require_durable_store_for_gating
+    @store_config ForemanServer.Agents.JidoCheckpointStore
+
+    defmodule UpRepo do
+      @moduledoc false
+      # Answers the durability probe: the store counts as durable.
+      def all(_query), do: []
+    end
+
+    setup do
+      original_switch = Application.fetch_env(:foreman_server, @switch)
+      original_config = Application.get_env(:foreman_server, @store_config, [])
+
+      on_exit(fn ->
+        case original_switch do
+          {:ok, value} -> Application.put_env(:foreman_server, @switch, value)
+          :error -> Application.delete_env(:foreman_server, @switch)
+        end
+
+        Application.put_env(:foreman_server, @store_config, original_config)
+        restart_key_store()
+        KeyStoreReset.reset!()
+        ForemanServer.CommandGatewayTestHelper.reset_projection_store()
+      end)
+
+      Application.put_env(:foreman_server, @store_config, [])
+      Application.put_env(:foreman_server, @switch, true)
+      restart_key_store()
+      refute KeyStore.durable?()
+
+      project_id = unique_id("project")
+
+      assert {:ok, _} =
+               ProjectStore.save(%{
+                 project_id: project_id,
+                 path: "/tmp/#{project_id}",
+                 config: %{}
+               })
+
+      %{project_id: project_id}
+    end
+
+    defp restart_key_store do
+      Supervisor.terminate_child(ForemanServer.Application, KeyStore)
+      {:ok, _pid} = Supervisor.restart_child(ForemanServer.Application, KeyStore)
+      :ok
+    end
+
+    defp make_durable do
+      Application.put_env(:foreman_server, @store_config, repo: UpRepo)
+      restart_key_store()
+      assert KeyStore.durable?()
+    end
+
+    defp project_events(project_id, type) do
+      case ForemanServer.EventStore.read_stream_forward("project:#{project_id}", 0, 1_000) do
+        {:ok, events} -> Enum.filter(events, &(&1.event_type == type))
+        {:error, :stream_not_found} -> []
+      end
+    end
+
+    defp update(project_id, payload, via \\ :operator) do
+      command = %{
+        command_id: unique_id("command"),
+        aggregate_id: "project:#{project_id}",
+        type: "project.update",
+        payload: Map.put(payload, :project_id, project_id)
+      }
+
+      case via do
+        :operator -> CommandGateway.dispatch_operator(command)
+        :system -> CommandGateway.dispatch_system(command)
+      end
+    end
+
+    defp register(project_id, payload, via \\ :operator) do
+      command = %{
+        command_id: unique_id("command"),
+        aggregate_id: "project:#{project_id}",
+        type: "project.register",
+        payload: Map.merge(%{project_id: project_id, path: System.tmp_dir!()}, payload)
+      }
+
+      case via do
+        :operator -> CommandGateway.dispatch_operator(command)
+        :system -> CommandGateway.dispatch_system(command)
+      end
+    end
+
+    test "project.update setting required_checks is refused on a non-durable store, nothing appended",
+         %{project_id: id} do
+      for payload <- [
+            %{required_checks: []},
+            %{required_checks: [%{"name" => "ci", "kind" => "check_run"}]}
+          ],
+          via <- [:operator, :system] do
+        assert {:error, {:store_not_durable, note}} = update(id, payload, via)
+        assert note == KeyStore.durability_note()
+      end
+
+      assert project_events(id, "ProjectUpdated") == []
+    end
+
+    test "project.update setting required_checks is accepted on a durable store", %{
+      project_id: id
+    } do
+      make_durable()
+
+      assert {:ok, _} = update(id, %{required_checks: []})
+      assert [_] = project_events(id, "ProjectUpdated")
+      assert %{required_checks: []} = ProjectionStore.project_settings(id)
+    end
+
+    test "an update of another setting, or one that only clears required_checks, is not refused",
+         %{project_id: id} do
+      assert {:ok, _} = update(id, %{goal: "ship it"})
+      assert {:ok, _} = update(id, %{goal: "ship it", required_checks: nil})
+
+      refute match?(
+               {:error, {:store_not_durable, _}},
+               update(id, %{cleared_settings: ["required_checks"]})
+             )
+
+      refute match?(
+               {:error, {:store_not_durable, _}},
+               update(id, %{cleared_settings: ["required_checks"]}, :system)
+             )
+    end
+
+    test "a malformed config cannot slip a gate-enabling value past the guard, and nesting is seen",
+         %{project_id: id} do
+      for payload <- [
+            %{config: "oops", required_checks: []},
+            %{config: [1], required_checks: []},
+            %{config: %{required_checks: []}},
+            %{config: %{"required_checks" => []}},
+            %{required_checks: [], cleared_settings: ["required_checks"]},
+            %{required_checks: [], cleared_settings: "oops"}
+          ],
+          via <- [:operator, :system] do
+        assert {:error, {:store_not_durable, _}} = update(id, payload, via)
+      end
+
+      for payload <- [%{config: "oops", required_checks: []}, %{config: %{required_checks: []}}] do
+        assert {:error, {:store_not_durable, _}} = register(unique_id("project"), payload)
+      end
+
+      assert project_events(id, "ProjectUpdated") == []
+    end
+
+    test "a malformed config next to a top-level required_checks is still refused by the aggregate on a durable store",
+         %{project_id: id} do
+      make_durable()
+      assert {:error, _} = update(id, %{config: "oops", required_checks: []})
+      assert project_events(id, "ProjectUpdated") == []
+    end
+
+    test "with the guard switched off a non-durable store is not refused", %{project_id: id} do
+      Application.put_env(:foreman_server, @switch, false)
+      assert {:ok, _} = update(id, %{required_checks: []})
+    end
+
+    test "project.register with required_checks is refused on a non-durable store", %{} do
+      for via <- [:operator, :system] do
+        new_id = unique_id("project")
+
+        assert {:error, {:store_not_durable, _note}} =
+                 register(new_id, %{required_checks: []}, via)
+
+        assert project_events(new_id, "ProjectRegistered") == []
+      end
+    end
+
+    test "project.register with required_checks is accepted on a durable store, and without it on any" do
+      new_id = unique_id("project")
+      assert {:ok, _} = register(new_id, %{})
+
+      make_durable()
+      gated_id = unique_id("project")
+      assert {:ok, _} = register(gated_id, %{required_checks: []})
+      assert %{required_checks: []} = ProjectionStore.project_settings(gated_id)
+    end
+  end
+
   defp attach_telemetry(test_pid, events) do
     handler_id = "command-gateway-telemetry-#{unique_id("handler")}"
 
@@ -2296,6 +2484,256 @@ defmodule ForemanServer.CommandGatewayTest do
     )
 
     handler_id
+  end
+
+  # TRD-012: `run.pr.waive_evidence` through the real gateway and Run aggregate; only `gh` is
+  # stubbed. The gateway reads GitHub's head and the project's policy before dispatch.
+  describe "run.pr.waive_evidence" do
+    alias ForemanServer.{EventStore, PrEvidence, RunPrMerge}
+    alias ForemanServer.Workflow.MergeGate
+
+    @live_head "livehead111"
+    @waive_pr_url "https://github.com/acme/repo/pull/12"
+
+    setup do
+      MergeGate.clear()
+      test_pid = self()
+
+      RunPrMerge.set_command_runner(fn "gh", args, _opts ->
+        send(test_pid, {:gh, args})
+
+        {Jason.encode!(%{
+           "state" => "OPEN",
+           "mergeable" => "MERGEABLE",
+           "headRefOid" => @live_head,
+           "headRefName" => "foreman/task/run",
+           "baseRefName" => "main"
+         }), 0}
+      end)
+
+      on_exit(fn ->
+        RunPrMerge.clear_command_runner()
+        ForemanServer.CommandGatewayTestHelper.reset_projection_store()
+      end)
+
+      %{
+        gate_on: start_waiver_run(%{required_checks: []}),
+        gate_off: start_waiver_run(%{}),
+        unknown_project: start_waiver_run(nil)
+      }
+    end
+
+    # A run with a pending gate on `config`'s project; `nil` config leaves the project unknown.
+    defp start_waiver_run(config) do
+      project_id = unique_id("project-waive")
+      run_id = unique_id("run-waive")
+
+      if config do
+        :ok =
+          ProjectionStore.apply_events([
+            %{
+              event_type: "ProjectRegistered",
+              payload: %{project_id: project_id, path: "/tmp/#{project_id}", config: config}
+            }
+          ])
+      end
+
+      started = %{run_id: run_id, project_id: project_id, task_id: "task-waive"}
+
+      :ok =
+        EventStore.append_to_stream("run:#{run_id}", 0, [
+          %Elixir.EventStore.EventData{event_type: "RunStarted", data: started, metadata: %{}}
+        ])
+
+      :ok = ProjectionStore.apply_events([%{event_type: "RunStarted", payload: started}])
+
+      {:ok, _} =
+        CommandGateway.dispatch_system(%{
+          type: "run.pr.ready",
+          command_id: unique_id("ready"),
+          aggregate_id: "run:#{run_id}",
+          payload: %{
+            run_id: run_id,
+            project_id: project_id,
+            task_id: "task-waive",
+            pr_url: @waive_pr_url,
+            branch_name: "foreman/task/run",
+            head_sha: @live_head,
+            base_branch: "main"
+          }
+        })
+
+      run_id
+    end
+
+    defp waive_evidence(run_id, overrides \\ %{}) do
+      CommandGateway.dispatch_operator(%{
+        type: "run.pr.waive_evidence",
+        command_id: unique_id("waive"),
+        aggregate_id: "run:#{run_id}",
+        payload:
+          Map.merge(
+            %{
+              run_id: run_id,
+              approver: "leo",
+              approver_identity: "github:ldangelo",
+              head_sha: @live_head,
+              reasons: ["no_checks_configured"],
+              reason: "no CI in this repository"
+            },
+            overrides
+          )
+      })
+    end
+
+    defp waivers(run_id) do
+      {:ok, events} = EventStore.read_stream_forward("run:#{run_id}", 0, 1_000)
+      Enum.filter(events, &(&1.event_type == "PrEvidenceWaived"))
+    end
+
+    defp gh_calls do
+      Stream.repeatedly(fn ->
+        receive do
+          {:gh, args} -> args
+        after
+          0 -> :done
+        end
+      end)
+      |> Enum.take_while(&(&1 != :done))
+    end
+
+    test "a waiver for the live head is recorded for the gate's PR under the project's policy version",
+         %{gate_on: run_id} do
+      assert {:ok, _} = waive_evidence(run_id)
+
+      assert [%{data: data}] = waivers(run_id)
+      assert Aggregate.get(data, :head_sha) == @live_head
+      assert Aggregate.get(data, :pr_url) == @waive_pr_url
+      assert Aggregate.get(data, :policy_version) == PrEvidence.policy_version([])
+      assert Aggregate.get(data, :reasons) == ["no_checks_configured"]
+    end
+
+    test "a head that is not GitHub's is refused with both SHAs and nothing is appended", %{
+      gate_on: run_id
+    } do
+      assert {:error, {:head_sha_mismatch, "stale-head", @live_head}} =
+               waive_evidence(run_id, %{head_sha: "stale-head"})
+
+      assert waivers(run_id) == []
+    end
+
+    test "the policy version the caller names is replaced by the project's, whatever the key type",
+         %{gate_on: run_id} do
+      assert {:ok, _} =
+               waive_evidence(run_id, %{
+                 policy_version: "forged-version",
+                 pr_url: "https://github.com/evil/other/pull/9"
+               })
+
+      assert {:ok, _} =
+               waive_evidence(run_id, %{"policy_version" => "forged-string-key"})
+
+      assert [first, second] = waivers(run_id)
+
+      for %{data: data} <- [first, second] do
+        assert Aggregate.get(data, :policy_version) == PrEvidence.policy_version([])
+        assert Aggregate.get(data, :pr_url) == @waive_pr_url
+      end
+    end
+
+    test "a system dispatch carries no stamp: the aggregate refuses a waiver without policy_version",
+         %{gate_on: run_id} do
+      assert {:error, {:missing_or_invalid, :policy_version}} =
+               CommandGateway.dispatch_system(%{
+                 type: "run.pr.waive_evidence",
+                 command_id: unique_id("waive-system"),
+                 aggregate_id: "run:#{run_id}",
+                 payload: %{
+                   run_id: run_id,
+                   approver: "leo",
+                   approver_identity: "github:ldangelo",
+                   head_sha: @live_head,
+                   reasons: ["no_checks_configured"],
+                   reason: "x"
+                 }
+               })
+
+      assert waivers(run_id) == []
+    end
+
+    test "a JSON-decoded null among the reasons is refused and the stream is unchanged", %{
+      gate_on: run_id
+    } do
+      {:ok, before} = EventStore.read_stream_forward("run:#{run_id}", 0, 1_000)
+
+      for reasons <- [[nil], ["missing", nil]] do
+        body =
+          %{
+            "run_id" => run_id,
+            "approver" => "leo",
+            "approver_identity" => "github:ldangelo",
+            "head_sha" => @live_head,
+            "reasons" => reasons,
+            "reason" => "x"
+          }
+          |> Jason.encode!()
+          |> Jason.decode!()
+
+        assert {:error, {:reason_not_waivable, nil}} =
+                 CommandGateway.dispatch_operator(%{
+                   type: "run.pr.waive_evidence",
+                   command_id: unique_id("waive-null"),
+                   aggregate_id: "run:#{run_id}",
+                   payload: body
+                 })
+      end
+
+      assert waivers(run_id) == []
+      assert {:ok, ^before} = EventStore.read_stream_forward("run:#{run_id}", 0, 1_000)
+    end
+
+    test "the stored waiver replays into the aggregate's evidence record", %{gate_on: run_id} do
+      assert {:ok, _} = waive_evidence(run_id, %{reasons: ["missing", "skipped"]})
+      assert {:ok, _} = waive_evidence(run_id, %{reasons: ["skipped"], reason: "narrower"})
+
+      {state, _version} = Aggregate.load(ForemanServer.Aggregates.Run, "run:#{run_id}")
+
+      assert %{head_sha: @live_head, codes: ["skipped"], reason: "narrower"} =
+               state.pr_watch[@waive_pr_url].evidence.waiver
+    end
+
+    test "a project whose policy cannot be read refuses the waiver", %{unknown_project: run_id} do
+      assert {:error, {:policy_unavailable, :project_not_found}} = waive_evidence(run_id)
+      assert waivers(run_id) == []
+    end
+
+    test "a project whose gate is off refuses the waiver", %{gate_off: run_id} do
+      assert {:error, :gate_off} = waive_evidence(run_id)
+      assert waivers(run_id) == []
+    end
+
+    test "an unauthorized or malformed request is refused before GitHub is read", %{
+      gate_on: run_id
+    } do
+      assert {:error, :unauthorized_approver} =
+               waive_evidence(run_id, %{approver_identity: "github:intruder"})
+
+      assert {:error, {:missing_or_invalid, :head_sha}} = waive_evidence(run_id, %{head_sha: nil})
+      assert gh_calls() == []
+      assert waivers(run_id) == []
+    end
+
+    test "a reason code that is never waivable is refused and nothing is appended", %{
+      gate_on: run_id
+    } do
+      assert {:error, {:reason_not_waivable, "failing"}} =
+               waive_evidence(run_id, %{reasons: ["failing"]})
+
+      assert {:error, {:reason_not_waivable, "checks_truncated"}} =
+               waive_evidence(run_id, %{reasons: ["no_checks_configured", "checks_truncated"]})
+
+      assert waivers(run_id) == []
+    end
   end
 
   defp unique_id(prefix) do

@@ -188,6 +188,64 @@ defmodule ForemanServer.Idempotency.KeyStoreDurabilityTest do
     end
   end
 
+  describe "mark_completed/2 and mark_failed/3 are compare-and-set (PR 4 opening commit)" do
+    for {name, setup_repo} <- [{"the ETS path", false}, {"the repo path", true}] do
+      test "#{name}: a settled key is never rewritten by either writer" do
+        if unquote(setup_repo), do: use_fake_repo()
+
+        :ok = KeyStore.mark_started("k-done", %{"run_id" => "r1"})
+        :ok = KeyStore.mark_completed("k-done", %{"pr" => 7})
+        assert :status_changed = KeyStore.mark_failed("k-done", "late failure")
+        assert :status_changed = KeyStore.mark_completed("k-done", %{"pr" => 8})
+        assert {:ok, %{status: :completed, metadata: meta}} = KeyStore.get("k-done")
+        assert meta["pr"] == 7
+        refute Map.has_key?(meta, "reason")
+
+        :ok = KeyStore.mark_started("k-bad", %{"run_id" => "r1"})
+        :ok = KeyStore.mark_failed("k-bad", "boom")
+        assert :status_changed = KeyStore.mark_completed("k-bad", %{"pr" => 9})
+        assert :status_changed = KeyStore.mark_failed("k-bad", "again")
+        assert {:ok, %{status: :failed, metadata: meta}} = KeyStore.get("k-bad")
+        assert meta["reason"] == "boom"
+        refute Map.has_key?(meta, "pr")
+      end
+
+      test "#{name}: a started or ambiguous key settles" do
+        if unquote(setup_repo), do: use_fake_repo()
+
+        :ok = KeyStore.mark_started("k-s1", %{"run_id" => "r1"})
+        assert :ok = KeyStore.mark_completed("k-s1", %{})
+        assert {:ok, :completed} = KeyStore.status("k-s1")
+
+        :ok = KeyStore.mark_started("k-s2", %{"run_id" => "r1"})
+        :ok = KeyStore.mark_ambiguous("k-s2", "heartbeat_timeout")
+        assert :ok = KeyStore.mark_failed("k-s2", "boom")
+        assert {:ok, :failed} = KeyStore.status("k-s2")
+      end
+
+      test "#{name}: a status the store never writes answers a typed error from every writer and is left as it is" do
+        if unquote(setup_repo), do: use_fake_repo()
+
+        plant_weird("k-weird")
+
+        assert {:error, {:unexpected_status, :weird}} = KeyStore.mark_completed("k-weird", %{})
+        assert {:error, {:unexpected_status, :weird}} = KeyStore.mark_failed("k-weird", "x")
+        assert {:error, {:unexpected_status, :weird}} = KeyStore.mark_ambiguous("k-weird", "x")
+
+        assert {:error, {:unexpected_status, :weird}} =
+                 KeyStore.mark_unresolved("k-weird", 1, "x")
+
+        assert {:ok, :weird} = KeyStore.status("k-weird")
+      end
+    end
+  end
+
+  defp plant_weird(key) do
+    if :ets.whereis(@rows) != :undefined and Application.get_env(:foreman_server, @config)[:repo],
+      do: :ets.insert(@rows, {key, :weird, %{}}),
+      else: :ets.insert(:foreman_idempotency_keys, {key, :weird, %{}})
+  end
+
   describe "ETS fallback (no repo)" do
     test "is not durable, and the note names the production switches" do
       assert KeyStore.durability() == {:not_durable, :no_repo}
@@ -420,10 +478,21 @@ defmodule ForemanServer.Idempotency.KeyStoreDurabilityTest do
       assert :ok = KeyStore.require_durable()
     end
 
-    test "a switch that is not a boolean is an error, never read as off" do
+    test "a switch that is not a boolean is read as on and refused with a note naming it, never a raise" do
       Application.put_env(:foreman_server, @switch, "false")
 
-      assert_raise ArgumentError, ~r/must be a boolean/, fn -> KeyStore.require_durable() end
+      assert {:error, {:store_not_durable, note}} = KeyStore.require_durable()
+      assert note =~ "must be a boolean"
+      assert note =~ ~s("false")
+      assert note =~ KeyStore.durability_note()
+
+      # the predicate keeps raising: only require_durable/0 is total
+      assert_raise ArgumentError, ~r/must be a boolean/, fn ->
+        KeyStore.durable_store_required?()
+      end
+
+      use_fake_repo()
+      assert :ok = KeyStore.require_durable()
     end
   end
 

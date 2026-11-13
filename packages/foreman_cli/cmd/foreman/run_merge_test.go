@@ -2,9 +2,11 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/fortium/foreman/packages/foreman_cli/internal/client"
@@ -177,5 +179,105 @@ func TestRunRetryPrRequiresRepoID(t *testing.T) {
 		return runRetryPr(c, []string{"run-7"})
 	}); env != nil {
 		t.Fatalf("server was hit without --repo-id: %+v", env)
+	}
+}
+
+var waiveBase = []string{
+	"-id", "run-7", "-approver", "leo", "-identity", "github:ldangelo",
+	"-head-sha", "abc123", "-waive", "ci_failing, review_missing", "-reason", "  accepted risk  ",
+}
+
+// waiveArgs returns waiveBase with the named flag (and its value) removed.
+func waiveArgs(without string) []string {
+	var out []string
+	for i := 0; i < len(waiveBase); i += 2 {
+		if waiveBase[i] != without {
+			out = append(out, waiveBase[i], waiveBase[i+1])
+		}
+	}
+	return out
+}
+
+func TestRunWaiveEvidencePostsReasonsAsList(t *testing.T) {
+	env := captureCommand(t, func(c *client.Client) error { return runWaiveEvidence(c, waiveBase) })
+	if env == nil {
+		t.Fatal("server was never hit")
+	}
+	if env.Type != "run.pr.waive_evidence" {
+		t.Fatalf("type = %q, want run.pr.waive_evidence", env.Type)
+	}
+	reasons, ok := env.Payload["reasons"].([]any)
+	if !ok || len(reasons) != 2 || reasons[0] != "ci_failing" || reasons[1] != "review_missing" {
+		t.Fatalf("reasons = %#v, want the list [ci_failing review_missing] (split and trimmed)", env.Payload["reasons"])
+	}
+	for k, want := range map[string]any{
+		"run_id": "run-7", "approver": "leo", "approver_identity": "github:ldangelo",
+		"head_sha": "abc123", "reason": "  accepted risk  ",
+	} {
+		if env.Payload[k] != want {
+			t.Errorf("payload[%s] = %v, want %v", k, env.Payload[k], want)
+		}
+	}
+	// repo_id only when given; the gateway stamps policy_version, the CLI never sends it.
+	for _, k := range []string{"repo_id", "policy_version"} {
+		if _, present := env.Payload[k]; present {
+			t.Errorf("payload carries %s without being asked", k)
+		}
+	}
+	if len(env.Payload) != 6 {
+		t.Errorf("payload = %+v, want exactly 6 keys", env.Payload)
+	}
+}
+
+func TestRunWaiveEvidenceCarriesRepoIDAndDispatches(t *testing.T) {
+	env := captureCommand(t, func(c *client.Client) error {
+		return runRun(c, append([]string{"waive-evidence", "-repo-id", "b"}, waiveBase...))
+	})
+	if env == nil || env.Type != "run.pr.waive_evidence" || env.Payload["repo_id"] != "b" {
+		t.Fatalf("envelope = %+v, want run.pr.waive_evidence with repo_id b", env)
+	}
+}
+
+func TestRunWaiveEvidenceRejectsBadFlagsBeforeAnyRequest(t *testing.T) {
+	const pfx = "foreman run waive-evidence: "
+	type row struct {
+		args []string
+		want string
+	}
+	cases := map[string]row{}
+	for _, f := range []string{"-id", "-approver", "-identity", "-head-sha", "-waive", "-reason"} {
+		cases["missing "+f] = row{waiveArgs(f), pfx + "--" + f[1:] + " is required"}
+	}
+	cases["empty --waive"] = row{append(waiveArgs("-waive"), "-waive", ""), pfx + "--waive is required"}
+	cases["empty --reason"] = row{append(waiveArgs("-reason"), "-reason", ""), pfx + "--reason is required"}
+	cases["whitespace --reason"] = row{append(waiveArgs("-reason"), "-reason", "   "), pfx + "--reason is required"}
+	for name, w := range map[string]string{
+		"trailing comma":        "ci_failing,",
+		"blank middle item":     "ci_failing, ,review_missing",
+		"only separators":       ",",
+		"whitespace --waive":    "   ",
+		"whitespace only items": " , ",
+	} {
+		cases[name] = row{append(waiveArgs("-waive"), "-waive", w), pfx + "--waive has an empty item"}
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			var err error
+			env := captureCommand(t, func(c *client.Client) error {
+				err = runWaiveEvidence(c, tc.args)
+				return err
+			})
+			if env != nil {
+				t.Fatalf("server was hit with %+v; flags must be validated client-side", env)
+			}
+			var usageErr *client.UsageError
+			if !errors.As(err, &usageErr) {
+				t.Fatalf("err = %v (%T), want a *client.UsageError", err, err)
+			}
+			if first, _, _ := strings.Cut(usageErr.Text, "\n"); first != tc.want {
+				t.Fatalf("message = %q, want %q", first, tc.want)
+			}
+		})
 	}
 }

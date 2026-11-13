@@ -107,6 +107,7 @@ defmodule ForemanServerWeb.DoctorController do
     watcher = ForemanServer.PrWatcher.enabled?()
     monitor = ForemanServer.PrMonitor.enabled?()
     webhook = webhook_secret_set?()
+    {gated, unreadable} = gated_projects()
 
     detail =
       Enum.join(
@@ -115,20 +116,102 @@ defmodule ForemanServerWeb.DoctorController do
           "monitor: #{on_off(monitor)} (FOREMAN_PR_MONITOR_ENABLED=true; polls for a head that moves for any other reason)",
           "webhook secret: #{if webhook, do: "set", else: "not set"} (FOREMAN_GITHUB_WEBHOOK_SECRET; without it /webhooks/github answers 503)",
           "The merge gate does not depend on these: approval re-reads GitHub."
-        ],
+        ] ++ unreadable_lines(unreadable) ++ Enum.flat_map(gated, &gated_lines/1),
         "\n"
       )
 
-    if watcher do
-      check("pr_observation", :ok, "PR observation: #{summary(monitor, webhook)}", detail)
-    else
-      check(
-        "pr_observation",
-        :warn,
-        "PR watcher is off: fix pushes and PR events are not observed",
-        detail
-      )
+    cond do
+      unreadable != nil ->
+        check(
+          "pr_observation",
+          :warn,
+          "Gated projects could not be read: #{unreadable}",
+          detail
+        )
+
+      gated != [] and not monitor and not webhook ->
+        check(
+          "pr_observation",
+          :warn,
+          "Gated project(s) #{Enum.join(gated, ", ")}: neither the monitor nor the webhook is on, " <>
+            "so a head or check change is not observed",
+          detail
+        )
+
+      watcher ->
+        check(
+          "pr_observation",
+          :ok,
+          "PR observation: #{summary(monitor, webhook)}",
+          detail
+        )
+
+      true ->
+        check(
+          "pr_observation",
+          :warn,
+          "PR watcher is off: fix pushes and PR events are not observed",
+          detail
+        )
     end
+  end
+
+  # `{names, nil}`, or `{[], reason}` when the projection cannot be read: an unreadable
+  # projection must not look like "no gated project", so the row says so and warns.
+  # Archived projects are skipped (they take no PRs); names are sorted.
+  defp gated_projects do
+    names =
+      for project <- list_projects(),
+          not archived?(project),
+          ForemanServer.ProjectSettings.from_config(Map.get(project, :config)).required_checks !=
+            nil do
+        to_string(
+          Map.get(project, :name) || Map.get(project, :id) || Map.get(project, :project_id)
+        )
+      end
+
+    {Enum.sort(names), nil}
+  rescue
+    error -> {[], Exception.message(error)}
+  catch
+    :exit, reason -> {[], inspect(reason, limit: 5)}
+  end
+
+  # The projection read; `:doctor_project_lister` (a zero-arity fun) replaces it in tests.
+  defp list_projects do
+    lister =
+      Application.get_env(
+        :foreman_server,
+        :doctor_project_lister,
+        &ProjectionStore.list_projects/0
+      )
+
+    lister.()
+  end
+
+  defp archived?(project),
+    do: Map.get(project, :status) == "archived" or Map.get(project, :archived?) == true
+
+  defp unreadable_lines(nil), do: []
+  defp unreadable_lines(reason), do: ["gated projects could not be read: #{reason}"]
+
+  defp gated_lines(name) do
+    durable =
+      case ForemanServer.Idempotency.KeyStore.require_durable() do
+        :ok ->
+          []
+
+        {:error, {:store_not_durable, _note}} ->
+          [
+            "gated project #{name}: the idempotency store is not durable (see the Phase 1 gating line)"
+          ]
+      end
+
+    [
+      "gated project #{name}: required_checks is set; a PR with more than 100 checks is read from " <>
+        "the newest 100 only, so a required check outside them is checks_truncated and not eligible."
+      | durable
+    ]
   end
 
   defp summary(true, true), do: "watcher on, monitor on, webhook secret set"

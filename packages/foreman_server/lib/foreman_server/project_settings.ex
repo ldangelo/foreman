@@ -23,7 +23,8 @@ defmodule ForemanServer.ProjectSettings do
           repo_allowlist: [String.t()] | nil,
           max_repos_per_run: pos_integer() | nil,
           library_collect_produced: boolean() | nil,
-          notification_preference: String.t() | nil
+          notification_preference: String.t() | nil,
+          required_checks: [map()] | nil
         }
 
   defstruct @keys

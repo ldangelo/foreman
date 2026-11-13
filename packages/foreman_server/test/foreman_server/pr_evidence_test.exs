@@ -371,4 +371,518 @@ defmodule ForemanServer.PrEvidenceTest do
       assert :error = PrEvidence.validate_required(List.duplicate(entry, 21))
     end
   end
+
+  describe "evaluate/2" do
+    alias ForemanServer.PrEvidence.{Eligibility, Reason}
+
+    @h "sha-h1"
+    @now 1_800_000_000_000
+
+    defp ck(name, state \\ "passing", extra \\ %{}) do
+      Map.merge(
+        %{
+          "name" => name,
+          "kind" => "check_run",
+          "state" => state,
+          "conclusion" => if(state == "passing", do: "SUCCESS", else: "FAILURE"),
+          "workflow" => "ci",
+          "started_at" => nil,
+          "completed_at" => nil
+        },
+        extra
+      )
+    end
+
+    defp rq(name, extra \\ %{}), do: Map.merge(%{"name" => name, "kind" => "check_run"}, extra)
+
+    defp checks_rec(items, extra \\ %{}) do
+      Map.merge(
+        %{
+          head_sha: @h,
+          items: items,
+          truncated: false,
+          observed_at: @now - 3 * 3_600_000,
+          digest: "d",
+          evidence_digest: "ed",
+          observation_ref: "ref-1",
+          required: nil,
+          policy_version: nil
+        },
+        extra
+      )
+    end
+
+    defp record(evidence \\ %{}), do: %{evidence: Map.merge(PrEvidence.empty(), evidence)}
+
+    defp policy(required, version \\ "v1"), do: %{required: required, version: version}
+
+    defp ctx(overrides \\ []) do
+      Map.merge(
+        %{
+          head_sha: @h,
+          policy: policy([rq("A"), rq("B")]),
+          now_ms: @now,
+          checks_ref: "ref-1"
+        },
+        Map.new(overrides)
+      )
+    end
+
+    defp waiver(codes, overrides \\ %{}) do
+      Map.merge(
+        %{
+          head_sha: @h,
+          codes: codes,
+          policy_version: "v1",
+          reason: "r",
+          waived_by: "w",
+          waived_at: "t"
+        },
+        overrides
+      )
+    end
+
+    defp rcodes(%Eligibility{reasons: reasons}), do: Enum.map(reasons, &{&1.code, &1.subject})
+
+    test "every required check passing on the decided head is eligible; each failure mode has its code" do
+      both = record(%{checks: checks_rec([ck("A"), ck("B")])})
+      assert %Eligibility{status: :eligible, reasons: []} = PrEvidence.evaluate(both, ctx())
+
+      only_a = record(%{checks: checks_rec([ck("A")])})
+      r = PrEvidence.evaluate(only_a, ctx())
+      assert r.status == :ineligible
+      assert rcodes(r) == [missing: "B"]
+
+      failing = record(%{checks: checks_rec([ck("A", "failing"), ck("B")])})
+      assert rcodes(PrEvidence.evaluate(failing, ctx())) == [failing: "A"]
+
+      pending =
+        record(%{checks: checks_rec([ck("A", "pending", %{"conclusion" => nil}), ck("B")])})
+
+      assert rcodes(PrEvidence.evaluate(pending, ctx())) == [pending: "A"]
+    end
+
+    test "evidence for another head is the single reason other_sha" do
+      rec = record(%{checks: checks_rec([ck("A"), ck("B")], %{head_sha: "sha-h0"})})
+      r = PrEvidence.evaluate(rec, ctx())
+      assert r.status == :ineligible
+      assert rcodes(r) == [other_sha: nil]
+    end
+
+    test "a STALE conclusion is stale for that check" do
+      rec =
+        record(%{
+          checks: checks_rec([ck("A", "passing", %{"conclusion" => "STALE"}), ck("B")])
+        })
+
+      assert rcodes(PrEvidence.evaluate(rec, ctx())) == [stale: "A"]
+    end
+
+    test "a decision whose checks_ref differs from the recorded observation is one stale reason, no per-check reason" do
+      rec = record(%{checks: checks_rec([ck("A", "failing")], %{observation_ref: "ref-0"})})
+      r = PrEvidence.evaluate(rec, ctx())
+      assert rcodes(r) == [stale: nil]
+    end
+
+    test "a decision with a checks_ref over a record with no checks is stale, a display read is missing" do
+      assert rcodes(PrEvidence.evaluate(record(), ctx())) == [stale: nil]
+
+      assert rcodes(PrEvidence.evaluate(record(), ctx(checks_ref: nil))) == [
+               missing: "A",
+               missing: "B"
+             ]
+    end
+
+    test "a display read judges no age: stable green read two hours later is eligible on both reads" do
+      rec =
+        record(%{
+          checks: checks_rec([ck("A"), ck("B")], %{observed_at: @now - 2 * 3_600_000})
+        })
+
+      assert %{status: :eligible} = PrEvidence.evaluate(rec, ctx(checks_ref: nil))
+      assert %{status: :eligible} = PrEvidence.evaluate(rec, ctx())
+      assert %{status: :eligible} = PrEvidence.evaluate(rec, ctx(now_ms: @now + 86_400_000))
+    end
+
+    test "the head and checks_ref combinations: display read still sees another head, a decision of a stale ref sees stale" do
+      rec = record(%{checks: checks_rec([ck("A"), ck("B")], %{head_sha: "other"})})
+      assert rcodes(PrEvidence.evaluate(rec, ctx(checks_ref: nil))) == [other_sha: nil]
+      assert rcodes(PrEvidence.evaluate(rec, ctx())) == [other_sha: nil]
+
+      same = record(%{checks: checks_rec([ck("A"), ck("B")])})
+      assert PrEvidence.evaluate(same, ctx(checks_ref: "ref-2")).status == :ineligible
+      assert PrEvidence.evaluate(same, ctx(checks_ref: nil)).status == :eligible
+    end
+
+    test "SKIPPED and NEUTRAL check runs are skipped unless the entry allows it" do
+      for conclusion <- ["SKIPPED", "NEUTRAL"] do
+        rec =
+          record(%{
+            checks: checks_rec([ck("A", "passing", %{"conclusion" => conclusion}), ck("B")])
+          })
+
+        assert rcodes(PrEvidence.evaluate(rec, ctx())) == [skipped: "A"]
+
+        allowed = ctx(policy: policy([rq("A", %{"allow_skipped" => true}), rq("B")]))
+        assert %{status: :eligible} = PrEvidence.evaluate(rec, allowed)
+      end
+    end
+
+    test "a skipped status context is not skipped (only check runs conclude skipped)" do
+      rec =
+        record(%{
+          checks:
+            checks_rec([
+              ck("S", "passing", %{"kind" => "status_context", "conclusion" => "SKIPPED"})
+            ])
+        })
+
+      c = ctx(policy: policy([%{"name" => "S", "kind" => "status_context"}]))
+      assert %{status: :eligible} = PrEvidence.evaluate(rec, c)
+    end
+
+    test "a rollup cut at 100 items: a missing entry is checks_truncated, a kept one is not" do
+      kept = for n <- 1..100, do: ck("job-#{n}")
+      rec = record(%{checks: checks_rec([ck("A") | tl(kept)], %{truncated: true})})
+
+      r = PrEvidence.evaluate(rec, ctx())
+      assert rcodes(r) == [checks_truncated: "B"]
+
+      c = ctx(policy: policy([rq("A")]))
+      assert %{status: :eligible, reasons: []} = PrEvidence.evaluate(rec, c)
+    end
+
+    test "an entry matches by kind and, when it names one, by workflow" do
+      items = [
+        ck("A", "failing", %{"workflow" => "other"}),
+        ck("A", "passing", %{"workflow" => "ci"})
+      ]
+
+      rec = record(%{checks: checks_rec(items)})
+
+      named = ctx(policy: policy([rq("A", %{"workflow" => "ci"})]))
+      assert %{status: :eligible} = PrEvidence.evaluate(rec, named)
+
+      unnamed = ctx(policy: policy([rq("A")]))
+      assert rcodes(PrEvidence.evaluate(rec, unnamed)) == [failing: "A"]
+
+      absent = ctx(policy: policy([rq("A", %{"workflow" => "nightly"})]))
+      assert rcodes(PrEvidence.evaluate(rec, absent)) == [missing: "A"]
+
+      context_only =
+        record(%{checks: checks_rec([ck("A", "passing", %{"kind" => "status_context"})])})
+
+      assert rcodes(PrEvidence.evaluate(context_only, ctx(policy: policy([rq("A")])))) == [
+               missing: "A"
+             ]
+    end
+
+    test "required [] is no_checks_configured; its waiver makes the PR waived" do
+      c = ctx(policy: policy([]))
+      r = PrEvidence.evaluate(record(), c)
+      assert r.status == :ineligible
+      assert rcodes(r) == [no_checks_configured: nil]
+
+      waived = record(%{waiver: waiver(["no_checks_configured"])})
+      r = PrEvidence.evaluate(waived, c)
+      assert %Eligibility{status: :waived, reasons: [], policy_version: "v1"} = r
+      assert [%Reason{code: :no_checks_configured}] = r.waived
+      assert %{applies: true, ignored_because: nil, codes: ["no_checks_configured"]} = r.waiver
+    end
+
+    test "policy nil is off whatever the record holds, even an unreadable one, with every input nil" do
+      good = record(%{checks: checks_rec([ck("A", "failing")])})
+      bad = record(%{checks: %{items: "nope"}})
+
+      for rec <- [good, bad, nil, :garbage] do
+        r = PrEvidence.evaluate(rec, ctx(policy: nil))
+
+        assert %Eligibility{
+                 status: :off,
+                 reasons: [],
+                 waived: [],
+                 waiver: nil,
+                 policy_version: nil
+               } = r
+
+        assert map_size(r.inputs) == 8
+        assert Enum.all?(r.inputs, fn {_k, v} -> is_nil(v) end)
+      end
+    end
+
+    test "the policy comes from ctx, not from the stored required: a cleared policy is off" do
+      rec =
+        record(%{
+          checks: checks_rec([ck("A", "failing")], %{required: [rq("A")], policy_version: "v1"})
+        })
+
+      assert PrEvidence.evaluate(rec, ctx(policy: nil)).status == :off
+      assert PrEvidence.evaluate(rec, ctx(policy: policy([rq("Z")]))).status == :ineligible
+
+      # the stored list names the failing A; the policy of the decision names only B
+      stored =
+        record(%{checks: checks_rec([ck("A", "failing"), ck("B")], %{required: [rq("A")]})})
+
+      assert %{status: :eligible} = PrEvidence.evaluate(stored, ctx(policy: policy([rq("B")])))
+    end
+
+    test "a waiver covering missing does not cover a failing reason: ineligible, failing remains, missing is waived" do
+      rec =
+        record(%{
+          checks: checks_rec([ck("A", "failing")]),
+          waiver: waiver(["missing"])
+        })
+
+      r = PrEvidence.evaluate(rec, ctx())
+      assert r.status == :ineligible
+      assert rcodes(r) == [failing: "A"]
+      assert [%Reason{code: :missing, subject: "B"}] = r.waived
+    end
+
+    test "a waiver covering every waivable reason makes it waived; never-waivable codes stay even when listed" do
+      rec = record(%{checks: checks_rec([ck("A")]), waiver: waiver(["missing"])})
+      r = PrEvidence.evaluate(rec, ctx())
+      assert r.status == :waived
+      assert [%Reason{code: :missing, subject: "B"}] = r.waived
+
+      stale =
+        record(%{
+          checks: checks_rec([ck("A", "passing", %{"conclusion" => "STALE"}), ck("B")]),
+          waiver: waiver(["stale"])
+        })
+
+      assert PrEvidence.evaluate(stale, ctx()).status == :ineligible
+
+      other =
+        record(%{
+          checks: checks_rec([ck("A"), ck("B")], %{head_sha: "o"}),
+          waiver: waiver(["other_sha"])
+        })
+
+      assert PrEvidence.evaluate(other, ctx()).status == :ineligible
+
+      truncated =
+        record(%{
+          checks: checks_rec([ck("A")], %{truncated: true}),
+          waiver: waiver(["checks_truncated"])
+        })
+
+      assert PrEvidence.evaluate(truncated, ctx()).status == :ineligible
+    end
+
+    test "a waiver for another head covers nothing and is shown as ignored: other_head" do
+      rec =
+        record(%{
+          checks: checks_rec([ck("A")]),
+          waiver: waiver(["missing"], %{head_sha: "old"})
+        })
+
+      r = PrEvidence.evaluate(rec, ctx())
+      assert r.status == :ineligible
+      assert r.waived == []
+      assert %{applies: false, ignored_because: :other_head, head_sha: "old"} = r.waiver
+    end
+
+    test "a waiver of policy V1 is ignored under V2 (policy_changed) and applies under V1" do
+      rec = record(%{checks: checks_rec([ck("X")]), waiver: waiver(["missing"])})
+      v1 = ctx(policy: policy([rq("A")], "v1"))
+      v2 = ctx(policy: policy([rq("A"), rq("B")], "v2"))
+
+      r1 = PrEvidence.evaluate(rec, v1)
+      assert r1.status == :waived
+      assert [%Reason{code: :missing, subject: "A"}] = r1.waived
+
+      r2 = PrEvidence.evaluate(rec, v2)
+      assert r2.status == :ineligible
+      assert rcodes(r2) == [missing: "A", missing: "B"]
+      assert r2.waived == []
+      assert %{applies: false, ignored_because: :policy_changed} = r2.waiver
+    end
+
+    test "a waiver under a record already eligible is shown and applies" do
+      rec = record(%{checks: checks_rec([ck("A"), ck("B")]), waiver: waiver(["missing"])})
+      r = PrEvidence.evaluate(rec, ctx())
+      assert r.status == :eligible
+      assert %{applies: true} = r.waiver
+    end
+
+    test "inputs carry the check, findings and risk values; absent records are nil" do
+      rec =
+        record(%{
+          checks: checks_rec([ck("A"), ck("B")]),
+          findings: %{head_sha: @h, digest: "f"},
+          risk: %{head_sha: "r-head", digest: "r"}
+        })
+
+      r = PrEvidence.evaluate(rec, ctx())
+
+      assert r.inputs == %{
+               checks_head_sha: @h,
+               checks_observed_at: @now - 3 * 3_600_000,
+               evidence_digest: "ed",
+               checks_ref: "ref-1",
+               findings_head_sha: @h,
+               findings_digest: "f",
+               risk_head_sha: "r-head",
+               risk_digest: "r"
+             }
+
+      bare = PrEvidence.evaluate(record(%{checks: checks_rec([ck("A"), ck("B")])}), ctx())
+
+      assert %{findings_head_sha: nil, findings_digest: nil, risk_head_sha: nil, risk_digest: nil} =
+               bare.inputs
+
+      assert bare.inputs.checks_head_sha == @h
+    end
+
+    test "an unreadable record is unknown with the single reason evidence_unreadable, never eligible, never missing" do
+      unreadable = [
+        record(%{checks: %{head_sha: @h, items: :nope}}),
+        record(%{checks: %{head_sha: @h, items: [%{"kind" => "check_run"}]}}),
+        record(%{checks: %{head_sha: @h, items: [%{"name" => 7}]}}),
+        record(%{checks: %{head_sha: @h, items: ["str"]}}),
+        record(%{checks: "bogus"}),
+        %{evidence: "bogus"},
+        nil
+      ]
+
+      for rec <- unreadable do
+        r = PrEvidence.evaluate(rec, ctx())
+        assert %Eligibility{status: :unknown, waived: [], waiver: nil} = r
+        assert [%Reason{code: :evidence_unreadable, subject: nil, detail: detail}] = r.reasons
+        assert is_binary(detail)
+      end
+
+      waived =
+        record(%{checks: %{head_sha: @h, items: :nope}, waiver: waiver(["evidence_unreadable"])})
+
+      assert PrEvidence.evaluate(waived, ctx()).status == :unknown
+    end
+
+    test "a record with no evidence key reads as empty" do
+      assert rcodes(PrEvidence.evaluate(%{}, ctx(checks_ref: nil))) == [
+               missing: "A",
+               missing: "B"
+             ]
+    end
+
+    test "evaluated_at is now_ms and no reason depends on it" do
+      rec = record(%{checks: checks_rec([ck("A", "failing"), ck("B")])})
+      a = PrEvidence.evaluate(rec, ctx(now_ms: 1))
+      b = PrEvidence.evaluate(rec, ctx(now_ms: 2))
+      assert a.evaluated_at == 1 and b.evaluated_at == 2
+      assert a.reasons == b.reasons and a.status == b.status
+    end
+
+    test "evaluate_checks/2 reads no waiver" do
+      rec = record(%{checks: checks_rec([ck("A")]), waiver: waiver(["missing"])})
+
+      assert {:ineligible, [%Reason{code: :missing, subject: "B"}]} =
+               PrEvidence.evaluate_checks(rec, ctx())
+
+      assert {:off, []} = PrEvidence.evaluate_checks(rec, ctx(policy: nil))
+    end
+
+    test "the eligibility encodes as JSON: status a string, reasons objects, eight inputs with null" do
+      rec =
+        record(%{
+          checks: checks_rec([ck("A", "failing"), ck("B", "pending")]),
+          waiver: waiver(["missing"])
+        })
+
+      r = PrEvidence.evaluate(rec, ctx(policy: policy([rq("A"), rq("B"), rq("C")])))
+      assert r.status == :ineligible
+
+      decoded = r |> Jason.encode!() |> Jason.decode!()
+      assert decoded["status"] == "ineligible"
+
+      assert [%{"code" => "failing", "subject" => "A", "detail" => "FAILURE"}, pending] =
+               decoded["reasons"]
+
+      assert %{"code" => "pending", "subject" => "B", "detail" => nil} = pending
+
+      assert Enum.all?(
+               decoded["reasons"],
+               &(Map.keys(&1) |> Enum.sort() == ["code", "detail", "subject"])
+             )
+
+      assert [%{"code" => "missing", "subject" => "C"}] = decoded["waived"]
+
+      assert map_size(decoded["inputs"]) == 8
+      assert decoded["inputs"]["findings_digest"] == nil
+      assert decoded["waiver"]["applies"] == true
+    end
+  end
+
+  describe "policy_version/1" do
+    test "is nil for no gate, order-insensitive, and moves with any entry field" do
+      a = %{"name" => "A", "kind" => "check_run"}
+      b = %{"name" => "B", "kind" => "check_run"}
+
+      assert PrEvidence.policy_version(nil) == nil
+      v = PrEvidence.policy_version([a, b])
+      assert v =~ ~r/\A[0-9a-f]{16}\z/
+      assert v == PrEvidence.policy_version([b, a])
+      assert v == PrEvidence.policy_version([%{name: "A", kind: "check_run"}, b])
+      refute v == PrEvidence.policy_version([a])
+      refute v == PrEvidence.policy_version([a, Map.put(b, "allow_skipped", true)])
+      refute v == PrEvidence.policy_version([a, Map.put(b, "workflow", "ci")])
+      refute PrEvidence.policy_version([]) == v
+    end
+  end
+
+  describe "project_policy/1" do
+    alias ForemanServer.ProjectionStore
+
+    defp register!(config) do
+      id = "p-policy-#{System.unique_integer([:positive])}"
+
+      :ok =
+        ProjectionStore.apply_events([
+          %{
+            event_type: "ProjectRegistered",
+            payload: %{project_id: id, path: "/tmp/#{id}", config: config}
+          }
+        ])
+
+      id
+    end
+
+    test "a set list returns the entries and their version" do
+      required = [%{"name" => "ci", "kind" => "check_run", "workflow" => "build"}]
+      id = register!(%{required_checks: required})
+
+      assert {:ok, %{required: ^required, version: version}} = PrEvidence.project_policy(id)
+      assert version == PrEvidence.policy_version(required)
+    end
+
+    test "[] is the gate on with no checks, nil is gate off" do
+      empty = register!(%{required_checks: []})
+      assert {:ok, %{required: [], version: v}} = PrEvidence.project_policy(empty)
+      assert is_binary(v)
+
+      off = register!(%{})
+      assert {:ok, nil} = PrEvidence.project_policy(off)
+    end
+
+    test "a project the projection does not know is an error, not gate off" do
+      assert {:error, {:policy_unavailable, :project_not_found}} =
+               PrEvidence.project_policy("p-unknown-#{System.unique_integer([:positive])}")
+
+      assert {:error, {:policy_unavailable, _}} = PrEvidence.project_policy(nil)
+    end
+
+    test "a projection that does not answer is policy_unavailable, not gate off" do
+      stub = spawn(fn -> Process.sleep(:infinity) end)
+      on_exit(fn -> Process.exit(stub, :kill) end)
+
+      reader = fn id -> GenServer.call(stub, {:project_projection, id}, 20) end
+
+      assert {:error, {:policy_unavailable, {:exit, {:timeout, _}}}} =
+               PrEvidence.project_policy("p-1", reader)
+
+      assert {:error, {:policy_unavailable, {:exit, :noproc}}} =
+               PrEvidence.project_policy("p-1", fn _ -> exit(:noproc) end)
+    end
+  end
 end

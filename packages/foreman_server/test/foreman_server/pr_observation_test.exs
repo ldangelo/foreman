@@ -527,6 +527,116 @@ defmodule ForemanServer.PrObservationTest do
     end
   end
 
+  describe "policy snapshot" do
+    setup do
+      {:ok, base: Support.status(checks: [passing_check("lint")], checks_state: :passing)}
+    end
+
+    defp policy(required),
+      do: %{required: required, version: ForemanServer.PrEvidence.policy_version(required)}
+
+    @a %{"name" => "lint", "kind" => "check_run"}
+    @b %{"name" => "unit", "kind" => "check_run"}
+
+    test "the checks command records required and policy_version; with no policy both are nil",
+         ctx do
+      assert {:ok, [_update, command]} =
+               PrObservation.commands(ctx.run_id, ctx.pr_url, ctx.base, nil, nil,
+                 policy: policy([@a])
+               )
+
+      assert command.payload.required == [@a]
+      assert command.payload.policy_version == policy([@a]).version
+
+      assert command.payload.evidence_digest ==
+               PrObservation.evidence_digest(ctx.base, policy([@a]).version)
+
+      assert {:ok, [_update, bare]} =
+               PrObservation.commands(ctx.run_id, ctx.pr_url, ctx.base, nil)
+
+      assert bare.payload.required == nil
+      assert bare.payload.policy_version == nil
+    end
+
+    test "a policy change with no new check emits one run.pr.checks; the repeat is quiet", ctx do
+      first = policy([@a])
+      second = policy([@a, @b])
+
+      {:ok, commands} =
+        PrObservation.commands(ctx.run_id, ctx.pr_url, ctx.base, nil, nil, policy: first)
+
+      record = apply!(commands, ctx.run_id, ctx.pr_url)
+      assert record.evidence.checks.policy_version == first.version
+
+      assert {:ok, []} =
+               PrObservation.commands(ctx.run_id, ctx.pr_url, ctx.base, record, nil,
+                 policy: first
+               )
+
+      assert {:ok, [command]} =
+               PrObservation.commands(ctx.run_id, ctx.pr_url, ctx.base, record, nil,
+                 policy: second
+               )
+
+      assert command.type == "run.pr.checks"
+      assert command.payload.required == [@a, @b]
+      assert command.payload.policy_version == second.version
+      assert command.payload.digest == record.checks_digest
+
+      record = apply!([command], ctx.run_id, ctx.pr_url)
+      assert record.evidence.checks.required == [@a, @b]
+      assert record.evidence.checks.policy_version == second.version
+
+      assert {:ok, []} =
+               PrObservation.commands(ctx.run_id, ctx.pr_url, ctx.base, record, nil,
+                 policy: second
+               )
+    end
+
+    test "clearing the policy and an empty policy are changes too", ctx do
+      {:ok, commands} =
+        PrObservation.commands(ctx.run_id, ctx.pr_url, ctx.base, nil, nil, policy: policy([@a]))
+
+      record = apply!(commands, ctx.run_id, ctx.pr_url)
+
+      assert {:ok, [%{payload: %{required: nil, policy_version: nil}}]} =
+               PrObservation.commands(ctx.run_id, ctx.pr_url, ctx.base, record)
+
+      assert {:ok, [%{payload: %{required: [], policy_version: version}}]} =
+               PrObservation.commands(ctx.run_id, ctx.pr_url, ctx.base, record, nil,
+                 policy: policy([])
+               )
+
+      assert is_binary(version)
+    end
+
+    test "a policy with no previous record and no checks emits nothing (no policy to record)",
+         ctx do
+      empty = %{ctx.base | checks: [], checks_state: :none}
+      status_only = Support.status(checks: [], checks_state: :none)
+      assert empty.checks == []
+
+      assert {:ok, commands} =
+               PrObservation.commands(ctx.run_id, ctx.pr_url, status_only, nil, nil,
+                 policy: policy([@a])
+               )
+
+      refute "run.pr.checks" in types(commands)
+    end
+
+    test "a forced observation carries the policy", ctx do
+      assert {:ok, [_update, forced]} =
+               PrObservation.commands(ctx.run_id, ctx.pr_url, ctx.base, nil, nil,
+                 force: %{nonce: "n-1", now_ms: 5},
+                 policy: policy([@a])
+               )
+
+      assert forced.payload.required == [@a]
+      assert forced.payload.policy_version == policy([@a]).version
+      assert forced.payload.source == "gate"
+    end
+  end
+
   defp step(ctx, status, previous) do
     {:ok, commands} = PrObservation.commands(ctx.run_id, ctx.pr_url, status, previous)
     apply!(commands, ctx.run_id, ctx.pr_url)

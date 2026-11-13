@@ -71,7 +71,11 @@ defmodule ForemanServer.Idempotency.Reconcilers.PrCreate do
 
     case KeyStore.get(key) do
       {:ok, %{status: status}} when status in [:started, :ambiguous] ->
-        KeyStore.mark_completed(key, KeyStore.recovery_fields_cleared())
+        case KeyStore.mark_completed(key, KeyStore.recovery_fields_cleared()) do
+          # Settled between the read and the write: left alone, like an already settled key.
+          :status_changed -> :ok
+          other -> other
+        end
 
       :not_found ->
         :ok
