@@ -108,12 +108,20 @@ defmodule ForemanServer.TestSupport.PrDeliveryWorld do
       (a running run through `PhasePR.maybe_create/1`), `tip/1`, `remote_tip/1`
     * `crash!/4`, `executed/2`, `create_calls/1`, `push_calls/1`, `created_prs/1` - the crash
       windows of the push and the create, and the number of calls that were made and that reached
-      GitHub; `sweep!/1` - the boot sweep over the world's GitHub with the real reconcilers of
-      `branch_push`, `pr_create` and `pr_comment`
+      GitHub; `sweep!/1` - the boot sweep over the world's GitHub (see below)
     * `create_pr/1` (the operator's Create PR), `created_url!/1`, `open_by_hand!/3` (a PR the
       operator opens on GitHub), `fail_gh!/2` and `heal_gh!/2` (`gh pr list` or `gh pr view` fails)
     * `park_next_comment_write!/2`, `await_parked!/1`, `kill_parked!/1` - the crash window of a
-      comment write
+      comment write (the parked process ends with the test; the parked call is asserted to be the
+      write); `hold!/4` - a writer that is parked inside an effect and ALIVE (its key is `started`
+      and the sweep must leave it)
+    * the sweep is `BootReconciliation.do_reconcile_ambiguous_keys/2` with the configured class
+      table (`Reconciler.classes/0`), in which `effects!/1` replaces ONLY the three GitHub-facing
+      reconcilers by wrappers (`Push`, `Create`, `Comment`) of the real ones over the world's
+      runner: the real reconcilers take the runner as an option and production passes none
+      (`System.cmd/3`, which a hermetic test cannot run), so the production entry that reads the
+      table is exercised and the three classes' own code is the real code. The `git` of the effects
+      ignores the machine's git configuration
   """
 
   import ExUnit.Assertions
@@ -136,15 +144,48 @@ defmodule ForemanServer.TestSupport.PrDeliveryWorld do
   alias ForemanServer.Webhooks.Github, as: Webhook
   alias ForemanServer.Workflow.MergeGate
 
+  # The reconcilers of the keyed classes over the world: the real ones, their `gh` and `git` the
+  # world's runner (`effects!/1` installs it for the test).
+  defmodule Push do
+    @moduledoc false
+    @behaviour ForemanServer.Idempotency.Reconciler
+    alias ForemanServer.Idempotency.Reconcilers.BranchPush
+
+    @impl true
+    def reconcile(metadata),
+      do:
+        BranchPush.reconcile(metadata,
+          command_runner:
+            :persistent_term.get({ForemanServer.TestSupport.PrDeliveryWorld, :runner})
+        )
+  end
+
+  defmodule Create do
+    @moduledoc false
+    @behaviour ForemanServer.Idempotency.Reconciler
+    alias ForemanServer.Idempotency.Reconcilers.PrCreate
+
+    @impl true
+    def reconcile(metadata),
+      do:
+        PrCreate.reconcile(metadata,
+          command_runner:
+            :persistent_term.get({ForemanServer.TestSupport.PrDeliveryWorld, :runner})
+        )
+  end
+
   defmodule Comment do
     @moduledoc false
-    # The `pr_comment` reconciler of the sweep over the world: the real one, its `gh` the world's.
     @behaviour ForemanServer.Idempotency.Reconciler
     alias ForemanServer.Idempotency.Reconcilers.PrComment
 
     @impl true
     def reconcile(metadata),
-      do: PrComment.reconcile(metadata, command_runner: Process.get(:effect_world_runner))
+      do:
+        PrComment.reconcile(metadata,
+          command_runner:
+            :persistent_term.get({ForemanServer.TestSupport.PrDeliveryWorld, :runner})
+        )
 
     @impl true
     def repeatable?(metadata), do: PrComment.repeatable?(metadata)
@@ -1207,7 +1248,39 @@ defmodule ForemanServer.TestSupport.PrDeliveryWorld do
     KeyStoreReset.reset!()
     effect_world = EffectWorld.start()
     Agent.update(agent(world), &%{&1 | effects: effect_world})
-    ExUnit.Callbacks.on_exit(&KeyStoreReset.reset!/0)
+
+    # the three GitHub-facing reconcilers read the world's runner (`Push`, `Create`, `Comment`)
+    :persistent_term.put({__MODULE__, :runner}, runner(world))
+    original = Application.fetch_env(:foreman_server, ForemanServer.Idempotency.Reconciler)
+    configured = Application.get_env(:foreman_server, ForemanServer.Idempotency.Reconciler, [])
+    classes = Keyword.get(configured, :classes, %{})
+
+    registry =
+      Map.merge(classes, %{
+        "branch_push" => __MODULE__.Push,
+        "pr_create" => __MODULE__.Create,
+        "pr_comment" => __MODULE__.Comment
+      })
+
+    Application.put_env(
+      :foreman_server,
+      ForemanServer.Idempotency.Reconciler,
+      Keyword.put(configured, :classes, registry)
+    )
+
+    ExUnit.Callbacks.on_exit(fn ->
+      case original do
+        {:ok, value} ->
+          Application.put_env(:foreman_server, ForemanServer.Idempotency.Reconciler, value)
+
+        :error ->
+          Application.delete_env(:foreman_server, ForemanServer.Idempotency.Reconciler)
+      end
+
+      :persistent_term.erase({__MODULE__, :runner})
+      KeyStoreReset.reset!()
+    end)
+
     effect_world
   end
 
@@ -1415,29 +1488,25 @@ defmodule ForemanServer.TestSupport.PrDeliveryWorld do
   end
 
   @doc """
-  The boot sweep over the world: the real reconcilers of the three keyed classes (`branch_push`,
-  `pr_create`, `pr_comment`) reading the world's GitHub and the real `git` through the world's
-  runner (the sweep runs in the caller, so the runner travels in the process dictionary). It is
-  `EffectWorld.sweep/1`'s sweep with the world's GitHub.
+  The boot sweep over the world: `BootReconciliation.do_reconcile_ambiguous_keys/2` with NO class
+  override, so it reads the class table through `Reconciler.classes/0` as production does. What
+  differs from production is the table's three GitHub-facing entries (`branch_push`,
+  `pr_create`, `pr_comment`), which `effects!/1` points at wrappers (`Push`, `Create`, `Comment`)
+  of the real reconcilers whose only change is that their `gh` and `git` go through the world's
+  runner (the real reconcilers take the runner as an option; production passes none and runs
+  `System.cmd/3`, which no hermetic test may). Every other class is the configured one.
   """
   @spec sweep!(world()) :: :ok
   def sweep!(world) do
-    Process.put(:effect_world_runner, runner(world))
-
-    ForemanServer.Workflow.BootReconciliation.do_reconcile_ambiguous_keys(fn _key -> true end,
-      classes: %{
-        "branch_push" => EffectWorld.Push,
-        "pr_create" => EffectWorld.Create,
-        "pr_comment" => ForemanServer.TestSupport.PrDeliveryWorld.Comment
-      }
-    )
+    _effects = effects(world)
+    ForemanServer.Workflow.BootReconciliation.do_reconcile_ambiguous_keys(fn _key -> true end)
   end
 
   @doc """
   Park the next comment write (`gh api` create or PATCH) `:before` it reaches the world or
   `:after` it was answered: the process that makes it (the publisher's task) stops there until
-  `await_parked!/1` has handed its pid over and `kill_parked!/1` ended it. The window of a crash
-  of the `pr_comment` effect.
+  `await_parked!/2` has handed its pid over and `kill_parked!/1` ended it (or the test ends). The
+  window of a crash of the `pr_comment` effect.
   """
   @spec park_next_comment_write!(world(), :before | :after) :: :ok
   def park_next_comment_write!(world, side) when side in [:before, :after] do
@@ -1445,11 +1514,19 @@ defmodule ForemanServer.TestSupport.PrDeliveryWorld do
     Agent.update(agent(world), &%{&1 | parks: &1.parks ++ [{side, :comment_write, owner}]})
   end
 
-  @doc "Wait until a process parked `side` (`park_next_comment_write!/2`); returns its pid."
+  @doc """
+  Wait until a process parked `side` (`park_next_comment_write!/2`) and return its pid, after
+  asserting that the call it parked at is the comment WRITE (`gh api repos/... -f body=...`).
+  """
   @spec await_parked!(:before | :after) :: pid()
   def await_parked!(side) do
     receive do
-      {:world_parked, ^side, pid} -> pid
+      {:world_parked, ^side, pid, ["gh" | args]} ->
+        assert match?(["api", "repos/" <> _, "-f", "body=" <> _], args) or
+                 match?(["api", "-X", "PATCH", "repos/" <> _, "-f", "body=" <> _], args),
+               "the parked call is not a comment write: gh #{Enum.join(args, " ")}"
+
+        pid
     after
       15_000 -> flunk("no process parked #{side} the call")
     end
@@ -1462,6 +1539,29 @@ defmodule ForemanServer.TestSupport.PrDeliveryWorld do
     Process.exit(pid, :kill)
     assert_receive {:DOWN, ^ref, :process, ^pid, :killed}, 5_000
     :ok
+  end
+
+  @doc """
+  Run `fun` in a process that parks `side` of the next `effect` (`:push` or `:create`) reaching
+  GitHub and is NOT killed: its key is `started` and its writer is alive. Returns the pid, which is
+  killed when the test ends; `kill_parked!/1` kills it earlier (the crash).
+  """
+  @spec hold!(world(), :push | :create, :before | :after, (-> any())) :: pid()
+  def hold!(world, effect, side, fun) do
+    EffectWorld.crash_at(effects(world), effect, side)
+    {pid, ref} = spawn_monitor(fun)
+
+    receive do
+      {:effect_world_parked, ^effect, ^side, ^pid} ->
+        Process.demonitor(ref, [:flush])
+        ExUnit.Callbacks.on_exit(fn -> Process.exit(pid, :kill) end)
+        pid
+
+      {:DOWN, ^ref, :process, ^pid, reason} ->
+        flunk("the process ended (#{inspect(reason)}) without reaching #{effect} #{side}")
+    after
+      15_000 -> flunk("the process never reached #{effect} #{side}")
+    end
   end
 
   # The PRs `gh pr create` made are on the world's GitHub: mirrored the first time anything reads.
@@ -1517,12 +1617,26 @@ defmodule ForemanServer.TestSupport.PrDeliveryWorld do
     end
   end
 
-  defp effect_reply(_world, effect_world, "git", args, opts),
-    do: EffectWorld.runner(effect_world).("git", args, opts)
+  # `git` of the world is isolated from the machine's configuration (a global hook, a signing
+  # key, a `url.insteadOf`), whatever the caller passed in `env`.
+  @git_env [
+    {"GIT_CONFIG_GLOBAL", "/dev/null"},
+    {"GIT_CONFIG_SYSTEM", "/dev/null"},
+    {"GIT_CONFIG_COUNT", "1"},
+    {"GIT_CONFIG_KEY_0", "commit.gpgsign"},
+    {"GIT_CONFIG_VALUE_0", "false"}
+  ]
+
+  defp effect_reply(_world, effect_world, "git", args, opts) do
+    opts = Keyword.update(opts, :env, @git_env, fn env -> @git_env ++ env end)
+    EffectWorld.runner(effect_world).("git", args, opts)
+  end
 
   defp effect_reply(_world, _effect_world, _cmd, _args, _opts), do: nil
 
-  # One-shot parks (`park_next_comment_write!/2`): the calling process stops at the call.
+  # One-shot parks (`park_next_comment_write!/2`): the calling process stops at the call until it
+  # is killed, or until the test (the owner) is gone, which ends the process too: a test that
+  # fails between the park and `kill_parked!/1` leaves nothing parked.
   defp park(world, side, cmd, args) do
     owner =
       Agent.get_and_update(world, fn state ->
@@ -1535,13 +1649,28 @@ defmodule ForemanServer.TestSupport.PrDeliveryWorld do
       end)
 
     if owner do
-      send(owner, {:world_parked, side, self()})
-      Process.sleep(:infinity)
+      ref = Process.monitor(owner)
+      send(owner, {:world_parked, side, self(), [cmd | args]})
+
+      receive do
+        {:DOWN, ^ref, :process, ^owner, _reason} -> Process.exit(self(), :kill)
+      end
     end
   end
 
-  defp park_matches?(:comment_write, "gh", ["api", "repos/" <> _ | _]), do: true
-  defp park_matches?(:comment_write, "gh", ["api", "-X", "PATCH" | _]), do: true
+  # The comment writes exactly as the core handlers answer them (create and PATCH), never a read.
+  defp park_matches?(:comment_write, "gh", ["api", "repos/" <> _, "-f", "body=" <> _]), do: true
+
+  defp park_matches?(:comment_write, "gh", [
+         "api",
+         "-X",
+         "PATCH",
+         "repos/" <> _,
+         "-f",
+         "body=" <> _
+       ]),
+       do: true
+
   defp park_matches?(_matcher, _cmd, _args), do: false
 
   @doc "GitHub's PR is now `state` (`\"OPEN\"`, `\"CLOSED\"`, `\"MERGED\"`): merged or closed by somebody."
