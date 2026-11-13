@@ -170,7 +170,11 @@ defmodule ForemanServer.Idempotency.KeyStoreTest do
       :ok = KeyStore.mark_started("phase:r9:p1", %{run_id: "r9", cwd: "/w"})
       :ok = KeyStore.mark_ambiguous("phase:r9:p1", "timeout")
 
-      assert {:ok, %{status: :ambiguous, metadata: %{:run_id => "r9", :cwd => "/w", "reason" => "timeout"}}} =
+      assert {:ok,
+              %{
+                status: :ambiguous,
+                metadata: %{:run_id => "r9", :cwd => "/w", "reason" => "timeout"}
+              }} =
                KeyStore.get("phase:r9:p1")
     end
   end
