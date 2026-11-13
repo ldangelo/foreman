@@ -59,8 +59,7 @@ defmodule ForemanServer.PrEvidence do
   `Aggregates.Run.PrWatch.apply_event/3` (the aggregate) and `ForemanServer.PrWatchFold`
   (the projection) both call `apply_event/3` first, so the two records cannot disagree.
   The record is a map with the keys `checks`, `waiver`, `delivery_issue`, `findings`, `risk`
-  and `report`; a record with no `evidence` reads as empty. This module fills every key but
-  `report`, which belongs to a later task and is only kept here.
+  and `report`.
 
     * `checks` - `%{head_sha, items, truncated, observed_at, digest, evidence_digest,
       observation_ref, required, policy_version}`, stored for a `PrChecksChanged` whose `checks`
@@ -69,6 +68,11 @@ defmodule ForemanServer.PrEvidence do
       sorted, de-duplicated list of strings; set by `PrEvidenceWaived` and replacing any earlier one.
     * `risk` - `%{head_sha, level, rubric_version, digest, findings_digest, seq, recorded_at}`,
       set by `PrRiskRecorded` (TRD-018) with the head it was classified for; a head move keeps it.
+    * `report` - `%{head_sha, digest, status, reason, detail, comment_id, comment_url,
+      superseded, recorded_at}`, set by `PrCommentPublished` (TRD-021) with the head and digest
+      of the risk record the report was rendered from; a head move keeps it, so after a push the
+      old report reads as for another head until the new one is published. Nothing in the
+      evaluation reads it: the merge gate does not depend on the comment.
 
   Head reset: of the PR events only `PrUpdated`, `PrReady`, `PrChecksChanged` and
   `PrReviewChanged` carry a head. When one brings a `head_sha` different from the record's
@@ -86,7 +90,13 @@ defmodule ForemanServer.PrEvidence do
 
   @head_events ~w(PrUpdated PrReady PrChecksChanged PrReviewChanged)
   @events @head_events ++
-            ["PrEvidenceWaived", "PrReadyFailed", "ReviewFindingsRecorded", "PrRiskRecorded"]
+            [
+              "PrEvidenceWaived",
+              "PrReadyFailed",
+              "ReviewFindingsRecorded",
+              "PrRiskRecorded",
+              "PrCommentPublished"
+            ]
 
   @max_checks 100
   @max_required 20
@@ -245,6 +255,23 @@ defmodule ForemanServer.PrEvidence do
       digest: get(payload, :digest),
       findings_digest: get(payload, :findings_digest),
       seq: get(payload, :seq),
+      recorded_at: get(payload, :recorded_at)
+    })
+  end
+
+  # TRD-021: the outcome of publishing the report of one risk record. Kept with ITS OWN head
+  # and digest, like the risk record, and replaced by each later outcome (a refused attempt
+  # after a published one for the same head shows the refusal).
+  defp apply_evidence(record, "PrCommentPublished", payload) do
+    put_evidence(record, :report, %{
+      head_sha: get(payload, :head_sha),
+      digest: get(payload, :digest),
+      status: get(payload, :status),
+      reason: get(payload, :reason),
+      detail: get(payload, :detail),
+      comment_id: get(payload, :comment_id),
+      comment_url: get(payload, :comment_url),
+      superseded: get(payload, :superseded),
       recorded_at: get(payload, :recorded_at)
     })
   end
