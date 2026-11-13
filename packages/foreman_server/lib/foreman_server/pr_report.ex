@@ -138,9 +138,16 @@ defmodule ForemanServer.PrReport do
 
   defp escape(char), do: "\\" <> char
 
-  # Control and invisible characters except the three whitespace controls.
-  defp strip_invisible(text),
-    do: String.replace(text, ~r/(?![\n\r\t])[\p{Cc}\p{Cf}]/u, "")
+  # The characters that show nothing: controls (the three whitespace controls apart), format
+  # characters, combining marks, variation selectors and the blank filler letters. A secret
+  # with one of them inside still reads as the secret.
+  @hidden "(?![\\n\\r\\t])[\\p{Cc}\\p{Cf}\\p{Mn}\\p{Me}\\x{115F}\\x{1160}\\x{3164}\\x{FFA0}\\x{2800}\\x{180B}-\\x{180F}]"
+
+  # Matching only, never published: `text` without its invisible characters.
+  defp skeleton(text), do: String.replace(text, Regex.compile!(@hidden, "u"), "")
+
+  defp hidden?(codepoint),
+    do: Regex.match?(Regex.compile!("\\A" <> @hidden <> "\\z", "u"), codepoint)
 
   # -- the body ---------------------------------------------------------------------------
 
@@ -267,15 +274,16 @@ defmodule ForemanServer.PrReport do
   defp with_rest(shown, rest, what, prefix, _empty),
     do: shown ++ ["", "#{prefix}#{rest} more #{what} are not shown here."]
 
-  # The longest prefix of `lines` (at most @max_listed) within `budget` bytes, and the number of
-  # lines left out. Bytes, never characters.
+  # The lines (of the first @max_listed) that fit `budget` bytes, in order, and the number of
+  # lines left out. A line that does not fit is left out and the next one is tried: one huge
+  # finding must not hide the rest. Bytes, never characters.
   defp fit(lines, budget) do
     {shown, _spent} =
       lines
       |> Enum.take(@max_listed)
-      |> Enum.reduce_while({[], 0}, fn line, {acc, spent} ->
+      |> Enum.reduce({[], 0}, fn line, {acc, spent} ->
         next = spent + byte_size(line) + 1
-        if next <= budget, do: {:cont, {[line | acc], next}}, else: {:halt, {acc, spent}}
+        if next <= budget, do: {[line | acc], next}, else: {acc, spent}
       end)
 
     shown = Enum.reverse(shown)
@@ -384,17 +392,73 @@ defmodule ForemanServer.PrReport do
 
   defp closed(value), do: value |> text() |> bounded(@max_closed)
 
-  # The WHOLE value is redacted before anything is cut, and a second time with the invisible
-  # characters removed (a secret with a zero-width space inside is not the listed value, but
-  # neutralising would turn it into the listed value).
+  # The WHOLE value is redacted before anything is cut.
   defp free_text(value, secrets) do
     redacted = value |> text() |> String.replace_invalid("") |> redact(secrets)
     bounded(redacted, @max_text)
   end
 
+  # `Redact.text/3` (the exact values and the built-in patterns), then each secret again where
+  # invisible characters hide it (`secret<U+034F>value`): neutralising would not remove those, so
+  # the published text would still read as the secret. The published text is otherwise unchanged.
   defp redact(text, secrets) do
-    once = Redact.text(nil, text, secrets: secrets)
-    Redact.text(nil, strip_invisible(once), secrets: secrets)
+    secrets
+    |> Enum.sort_by(&String.length/1, :desc)
+    |> Enum.reduce(Redact.text(nil, text, secrets: secrets), &redact_hidden(&2, &1))
+  end
+
+  defp redact_hidden(text, secret) do
+    needle = skeleton(secret)
+
+    if needle == "" or not String.contains?(skeleton(text), needle) do
+      text
+    else
+      cps = String.codepoints(text)
+
+      {kept, _offset} =
+        cps
+        |> Enum.with_index()
+        |> Enum.reduce({[], 0}, fn {cp, index}, {acc, offset} ->
+          if hidden?(cp),
+            do: {acc, offset},
+            else: {[{offset, byte_size(cp), index, cp} | acc], offset + byte_size(cp)}
+        end)
+
+      kept = Enum.reverse(kept)
+      skeleton_text = Enum.map_join(kept, fn {_offset, _size, _index, cp} -> cp end)
+      starts = Map.new(kept, fn {offset, _size, index, _cp} -> {offset, index} end)
+      ends = Map.new(kept, fn {offset, size, index, _cp} -> {offset + size, index} end)
+
+      ranges =
+        for {start, length} <- :binary.matches(skeleton_text, needle),
+            do: {Map.fetch!(starts, start), Map.fetch!(ends, start + length)}
+
+      replace_ranges(cps, ranges)
+    end
+  end
+
+  defp replace_ranges(cps, ranges) do
+    {out, _open} =
+      cps
+      |> Enum.with_index()
+      |> Enum.reduce({[], nil}, fn {cp, index}, {acc, open} ->
+        case open do
+          nil ->
+            case Enum.find(ranges, fn {first, _last} -> first == index end) do
+              nil -> {[cp | acc], nil}
+              {_first, last} when last == index -> {["[REDACTED]" | acc], nil}
+              {_first, last} -> {["[REDACTED]" | acc], last}
+            end
+
+          last when last == index ->
+            {acc, nil}
+
+          _last ->
+            {acc, open}
+        end
+      end)
+
+    out |> Enum.reverse() |> Enum.join()
   end
 
   # `raw` neutralised, in at most `limit` characters: the longest prefix whose neutralised form
@@ -423,16 +487,18 @@ defmodule ForemanServer.PrReport do
   end
 
   # `body` is what would be published and `raw` the closed fields as written. A listed value, its
-  # stripped form or its escaped form (neutralising rewrites `_`, `*`, `#`, `@`, ...) in either
-  # is a surviving secret.
+  # escaped form (neutralising rewrites `_`, `*`, `#`, `@`, ...) or either one without invisible
+  # characters, found in either text (with or without ITS invisible characters), is a surviving
+  # secret.
   defp scan(body, raw, secrets) do
     needles =
       secrets
-      |> Enum.flat_map(&[&1, strip_invisible(&1), neutralise(&1)])
+      |> Enum.flat_map(&[&1, neutralise(&1)])
+      |> Enum.flat_map(&[&1, skeleton(&1)])
       |> Enum.reject(&(&1 == ""))
       |> Enum.uniq()
 
-    haystacks = [body, raw, strip_invisible(raw)]
+    haystacks = [body, raw, skeleton(body), skeleton(raw)]
 
     cond do
       byte_size(body) > @max_body_bytes ->

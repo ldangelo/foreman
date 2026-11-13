@@ -333,6 +333,45 @@ defmodule ForemanServer.PrReportTest do
              ) == {:error, :redaction_failed}
     end
 
+    test "a secret hidden by combining marks, selectors or fillers is redacted in free text and refused in a closed field" do
+      secret = "secretvalue99"
+
+      for hidden <- ["\u034F", "\uFE0F", "\u180B", "\u3164", "\u2800", "\u0301", "\u200B"] do
+        spread = "secret" <> hidden <> "value" <> hidden <> "99"
+
+        body =
+          render!(
+            record(%{unresolved_findings: [finding(%{"description" => "k #{spread} k"})]}),
+            [secret]
+          )
+
+        refute body =~ "secret"
+        refute body =~ "value99"
+        assert body =~ "k \\[REDACTED\\] k"
+
+        assert PrReport.render(
+                 record(%{evidence: put_in(record().evidence, ["checks", "status"], spread)}),
+                 secrets: [secret]
+               ) == {:error, :redaction_failed}
+      end
+    end
+
+    test "hidden characters around the secret are kept, and legitimate combining marks are not touched" do
+      body =
+        render!(
+          record(%{
+            unresolved_findings: [
+              finding(%{"description" => "caf\u0065\u0301 \u034Fsecretvalue99\u034F end"})
+            ]
+          }),
+          ["secretvalue99"]
+        )
+
+      assert body =~ "caf\u0065\u0301 "
+      assert body =~ "\\[REDACTED\\]"
+      refute body =~ "secretvalue99"
+    end
+
     test "a secret straddling a cut is redacted whole before anything is cut" do
       secret = "qrstuv1234wxyz"
       # the invisible characters are dropped by neutralising, so the secret lands inside the first
@@ -542,6 +581,60 @@ defmodule ForemanServer.PrReportTest do
       shown = length(Regex.scan(~r/^- major, open:/m, body))
       assert shown + String.to_integer(rest) == 20
       assert shown >= 1
+    end
+
+    test "one finding too big for what is left does not hide the findings after it" do
+      emoji = String.duplicate("\u{1F600}", 600)
+      long = String.duplicate("<", 600)
+      wide = String.duplicate("\u{1F600}", 100)
+
+      huge_first =
+        finding(%{
+          "severity" => "critical",
+          "path" => emoji,
+          "description" => emoji,
+          "source" => emoji
+        })
+
+      normal = for n <- 1..10, do: finding(%{"severity" => "major", "line" => n})
+
+      body =
+        render!(
+          record(%{
+            rationale:
+              for n <- 1..20 do
+                %{
+                  "rule" => "files",
+                  "level" => "HIGH",
+                  "basis" => "machine",
+                  "detail" => long <> "#{n}"
+                }
+              end,
+            instructions: for(n <- 1..20, do: long <> "#{n}"),
+            evidence: %{
+              "checks" => %{"status" => wide, "reasons" => for(n <- 1..20, do: wide <> "#{n}")},
+              "findings" => %{"status" => wide, "defect" => wide, "unresolved" => %{wide => wide}},
+              "files" => %{
+                "changed" => wide,
+                "listed" => wide,
+                "additions" => wide,
+                "deletions" => wide,
+                "incomplete" => wide
+              },
+              "sensitive_hits" =>
+                for(n <- 1..20, do: %{"path" => long <> "#{n}", "group" => "ci"})
+            },
+            unresolved_findings: [huge_first | normal]
+          })
+        )
+
+      assert byte_size(body) <= 16_384
+      refute body =~ emoji
+
+      assert length(Regex.scan(~r/^- major, open: lib\/a\.ex:\d+: a plain description/m, body)) ==
+               10
+
+      assert body =~ "1 more unresolved findings are not shown here."
     end
 
     test "the budget is in bytes: multibyte and zero-width-escaped text" do

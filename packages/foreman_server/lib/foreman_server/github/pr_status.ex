@@ -330,23 +330,18 @@ defmodule ForemanServer.GitHub.PrStatus do
   end
 
   @doc """
-  Owner, repository and number of a github.com pull request URL, or a typed
-  `{:gh_unexpected_payload, {:unrecognised_pr_url, url}}` (`https://github.com/<owner>/<repo>/pull/<n>` only, with at most a trailing slash: no other
-  host, query, fragment or extra segment).
+  Owner, repository and number of a pull request URL: the first `github.com/<owner>/<repo>/pull/<n>`
+  found in it (lax: any scheme, host prefix, trailing segment, query or fragment), or a typed
+  `{:gh_unexpected_payload, {:unrecognised_pr_url, url}}`. `GitHub.PrComment.parse_pr_url/1` is
+  the strict form that a content write needs.
   """
   @spec parse_pr_url(String.t()) ::
           {:ok, String.t(), String.t(), pos_integer()}
           | {:error, {:gh_unexpected_payload, term()}}
   def parse_pr_url(pr_url) do
-    case Regex.run(
-           ~r{\Ahttps://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/pull/(\d+)/?\z},
-           pr_url
-         ) do
-      [_, owner, name, number] when owner not in [".", ".."] and name not in [".", ".."] ->
-        {:ok, owner, name, String.to_integer(number)}
-
-      _other ->
-        {:error, {:gh_unexpected_payload, {:unrecognised_pr_url, pr_url}}}
+    case Regex.run(~r{github\.com/([^/]+)/([^/]+)/pull/(\d+)}, pr_url) do
+      [_, owner, name, number] -> {:ok, owner, name, String.to_integer(number)}
+      nil -> {:error, {:gh_unexpected_payload, {:unrecognised_pr_url, pr_url}}}
     end
   end
 

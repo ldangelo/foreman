@@ -3,7 +3,7 @@ defmodule ForemanServer.GitHub.PrComment do
   TRD-019: the comments of one pull request, read and written with `gh`.
 
   The first GitHub content write of Foreman. It needs no checkout: owner, repository and number
-  come from the PR URL (`GitHub.PrStatus.parse_pr_url/1`, github.com URLs only) and every call
+  come from the PR URL (`parse_pr_url/1`, strictly `https://github.com/<owner>/<repo>/pull/<n>`) and every call
   goes through `Reconcilers.Command.run/4` with no `:cd`, so each call is bounded
   (`Command.default_timeout_ms/0` unless `opts[:timeout_ms]` says otherwise) and a runner that
   never answers is `{:error, {:timeout, ms}}`.
@@ -32,7 +32,6 @@ defmodule ForemanServer.GitHub.PrComment do
   Production caller: none until the publisher (TRD-021).
   """
 
-  alias ForemanServer.GitHub.PrStatus
   alias ForemanServer.Idempotency.Reconcilers.Command
 
   @type comment :: %{
@@ -55,7 +54,7 @@ defmodule ForemanServer.GitHub.PrComment do
   @doc "Every comment of the PR, oldest first, minimised ones included."
   @spec list(String.t(), keyword()) :: {:ok, [comment()]} | {:error, error()}
   def list(pr_url, opts \\ []) when is_binary(pr_url) and is_list(opts) do
-    with {:ok, _owner, _name, _number} <- PrStatus.parse_pr_url(pr_url),
+    with {:ok, _owner, _name, _number} <- parse_pr_url(pr_url),
          {:ok, output} <- run(["pr", "view", pr_url, "--json", "comments"], opts) do
       parse_list(output)
     end
@@ -65,7 +64,7 @@ defmodule ForemanServer.GitHub.PrComment do
   @spec create(String.t(), String.t(), keyword()) :: {:ok, written()} | {:error, error()}
   def create(pr_url, body, opts \\ [])
       when is_binary(pr_url) and is_binary(body) and is_list(opts) do
-    with {:ok, owner, name, number} <- PrStatus.parse_pr_url(pr_url),
+    with {:ok, owner, name, number} <- parse_pr_url(pr_url),
          {:ok, output} <-
            run(
              ["api", "repos/#{owner}/#{name}/issues/#{number}/comments", "-f", "body=" <> body],
@@ -99,6 +98,26 @@ defmodule ForemanServer.GitHub.PrComment do
     end
   end
 
+  @doc """
+  Owner, repository and number of a PR URL, strictly: exactly
+  `https://github.com/<owner>/<repo>/pull/<n>` with at most a trailing slash (no other host or
+  scheme, query, fragment or extra segment, and no `.` or `..` owner or repository), or a typed
+  `{:gh_unexpected_payload, {:unrecognised_pr_url, url}}`. A content write does not take the lax
+  `PrStatus.parse_pr_url/1`, which accepts any URL that merely contains `github.com/o/r/pull/7`.
+  """
+  @spec parse_pr_url(String.t()) ::
+          {:ok, String.t(), String.t(), pos_integer()}
+          | {:error, {:gh_unexpected_payload, term()}}
+  def parse_pr_url(pr_url) when is_binary(pr_url) do
+    case Regex.run(pr_url_pattern(), pr_url) do
+      [_url, owner, name, number] when owner not in [".", ".."] and name not in [".", ".."] ->
+        {:ok, owner, name, String.to_integer(number)}
+
+      _other ->
+        {:error, {:gh_unexpected_payload, {:unrecognised_pr_url, pr_url}}}
+    end
+  end
+
   @doc "Owner, repository and numeric REST id of a comment URL, or a typed error."
   @spec parse_comment_url(String.t()) ::
           {:ok, String.t(), String.t(), non_neg_integer()}
@@ -112,6 +131,9 @@ defmodule ForemanServer.GitHub.PrComment do
         {:error, {:gh_unexpected_payload, {:unrecognised_comment_url, url}}}
     end
   end
+
+  defp pr_url_pattern,
+    do: ~r{\Ahttps://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/pull/(\d+)/?\z}
 
   defp comment_url_pattern,
     do:

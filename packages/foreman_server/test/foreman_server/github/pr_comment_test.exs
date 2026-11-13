@@ -77,17 +77,34 @@ defmodule ForemanServer.GitHub.PrCommentTest do
       ""
     ]
 
-    test "parse_pr_url/1 accepts a github.com pull URL (with at most a trailing slash) and nothing else" do
-      assert PrStatus.parse_pr_url("https://github.com/o/r/pull/7") == {:ok, "o", "r", 7}
-      assert PrStatus.parse_pr_url("https://github.com/o/r/pull/7/") == {:ok, "o", "r", 7}
+    test "PrComment.parse_pr_url/1 accepts a github.com pull URL (with at most a trailing slash) and nothing else" do
+      assert PrComment.parse_pr_url("https://github.com/o/r/pull/7") == {:ok, "o", "r", 7}
+      assert PrComment.parse_pr_url("https://github.com/o/r/pull/7/") == {:ok, "o", "r", 7}
 
-      assert PrStatus.parse_pr_url("https://github.com/Acme-1/re.po_x/pull/42") ==
+      assert PrComment.parse_pr_url("https://github.com/Acme-1/re.po_x/pull/42") ==
                {:ok, "Acme-1", "re.po_x", 42}
 
       for url <- @hostile_pr_urls do
         assert {:error, {:gh_unexpected_payload, {:unrecognised_pr_url, ^url}}} =
-                 PrStatus.parse_pr_url(url)
+                 PrComment.parse_pr_url(url)
       end
+    end
+
+    test "PrStatus.parse_pr_url/1 keeps its lax reading for the read paths (threads)" do
+      for url <- [
+            "https://github.com/o/r/pull/7",
+            "https://github.com/o/r/pull/7/files",
+            "https://github.com/o/r/pull/7#issuecomment-1",
+            "https://github.com/o/r/pull/7?x=1",
+            "http://github.com/o/r/pull/7",
+            "https://www.github.com/o/r/pull/7",
+            "github.com/o/r/pull/7"
+          ] do
+        assert PrStatus.parse_pr_url(url) == {:ok, "o", "r", 7}
+      end
+
+      assert {:error, {:gh_unexpected_payload, {:unrecognised_pr_url, "https://g/o/r/pull/7"}}} =
+               PrStatus.parse_pr_url("https://g/o/r/pull/7")
     end
 
     test "list/2 and create/3 refuse a hostile URL and run nothing" do
