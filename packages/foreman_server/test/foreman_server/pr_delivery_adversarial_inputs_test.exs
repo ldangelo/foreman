@@ -245,6 +245,10 @@ defmodule ForemanServer.PrDeliveryAdversarialInputsTest do
           approved = assert_approved(world, run)
           assert approved.evidence.status == "waived"
           assert approved.evidence.waived == [unquote(code)]
+
+          # CONTROL: a clean record for the head needs no waiver
+          clean = gated_run!(world)
+          assert assert_approved(world, clean).evidence.status == "eligible"
         else
           assert {:error, {:reason_not_waivable, unquote(code)}} =
                    waive(world, run, head, [unquote(code)])
@@ -279,9 +283,8 @@ defmodule ForemanServer.PrDeliveryAdversarialInputsTest do
 
   # -- AC-002-3: a declined critical finding is still unresolved ---------------------------------
 
-  describe "AC-002-3: a declined critical finding still counts as unresolved" do
-    @critical %{
-      severity: "critical",
+  describe "AC-002-3: a declined critical or major finding still counts as unresolved" do
+    @finding %{
       path: "lib/a.ex",
       line: 3,
       description: "the token is logged",
@@ -295,66 +298,97 @@ defmodule ForemanServer.PrDeliveryAdversarialInputsTest do
       defect_detail: nil
     }
 
-    test "declined: risk HIGH with the finding listed, and the level alone does not refuse the approval",
+    # {severity, disposition, the level the rubric gives under a LOW judgement, findings listed}.
+    # The one input that flips between a row and its control is the disposition: `fixed` is
+    # LOW with nothing unresolved; a declined minor or nitpick is not unresolved either.
+    for {severity, disposition, level, listed} <- [
+          {"critical", "declined", "HIGH", 1},
+          {"major", "declined", "HIGH", 1},
+          {"critical", "open", "HIGH", 1},
+          {"major", "open", "HIGH", 1},
+          {"minor", "open", "MEDIUM", 1},
+          {"minor", "declined", "LOW", 0},
+          {"critical", "fixed", "LOW", 0},
+          {"major", "fixed", "LOW", 0}
+        ] do
+      test "a #{severity} finding #{disposition}: risk #{level}, #{listed} listed, and the level alone does not refuse the approval",
+           %{world: world} do
+        run = gated_run!(world, [@unit], findings: :none)
+        World.record_base!(run)
+        passing!(world)
+
+        finding =
+          Map.merge(@finding, %{severity: unquote(severity), disposition: unquote(disposition)})
+
+        :ok =
+          World.record_findings!(world, run, World.head(world),
+            findings: [finding],
+            judgement: @low
+          )
+
+        World.observe!(world, run)
+
+        assert %{} = risk = List.last(World.events(run, "PrRiskRecorded"))
+        assert get(risk, :level) == unquote(level)
+
+        if unquote(listed) == 1 do
+          assert [%{} = row] = get(risk, :unresolved_findings)
+          assert get(row, :severity) == unquote(severity)
+          assert get(row, :disposition) == unquote(disposition)
+        else
+          assert get(risk, :unresolved_findings) == []
+        end
+
+        dto = World.dto!(run)
+        assert dto.risk.level == unquote(level)
+
+        assert dto.findings.unresolved ==
+                 Map.put(
+                   %{"critical" => 0, "major" => 0, "minor" => 0, "nitpick" => 0},
+                   unquote(severity),
+                   unquote(listed)
+                 )
+
+        # the level is shown to the approver, it is not a reason: the approver decides (PRD §5)
+        approved = assert_approved(world, run)
+        assert approved.evidence.status == "eligible"
+      end
+    end
+  end
+
+  # -- AC-001-2: the display labels evidence of another head -------------------------------------
+
+  describe "AC-001-2: evidence recorded for another head is labelled stale in the display" do
+    test "checks of the old head are `stale` once the PR record moved to the new head; current again once the new head is observed",
          %{world: world} do
-      run = gated_run!(world, [@unit], findings: :none)
-      World.record_base!(run)
+      run = gated_run!(world)
       passing!(world)
-
-      :ok =
-        World.record_findings!(world, run, World.head(world),
-          findings: [Map.put(@critical, :disposition, "declined")],
-          judgement: @low
-        )
-
       World.observe!(world, run)
-
-      assert %{} = risk = List.last(World.events(run, "PrRiskRecorded"))
-      assert get(risk, :level) == "HIGH"
-      assert [%{} = listed] = get(risk, :unresolved_findings)
-      assert get(listed, :severity) == "critical"
-      assert get(listed, :disposition) == "declined"
 
       dto = World.dto!(run)
-      assert dto.risk.level == "HIGH"
+      assert dto.checks.head_sha == "head-one"
+      assert dto.checks.current == true
+      assert dto.checks.stale == false
 
-      assert dto.findings.unresolved == %{
-               "critical" => 1,
-               "major" => 0,
-               "minor" => 0,
-               "nitpick" => 0
-             }
-
-      # the level is shown to the approver, it is not a reason: the approver decides (PRD §5)
-      approved = assert_approved(world, run)
-      assert approved.evidence.status == "eligible"
-    end
-
-    test "CONTROL: the same finding fixed leaves the judged level LOW and nothing unresolved", %{
-      world: world
-    } do
-      run = gated_run!(world, [@unit], findings: :none)
-      World.record_base!(run)
+      # the PR moves and only the head update is recorded: the checks are still head-one's
+      World.push!(world, "head-two")
       passing!(world)
+      batch = World.observation_batch!(world, run)
+      World.dispatch_all!(Enum.filter(batch, &(&1.type == "run.pr.update")))
 
-      :ok =
-        World.record_findings!(world, run, World.head(world),
-          findings: [Map.put(@critical, :disposition, "fixed")],
-          judgement: @low
-        )
+      dto = World.dto!(run)
+      assert dto.head_sha == "head-two"
+      assert dto.checks.head_sha == "head-one"
+      assert dto.checks.current == false
+      assert dto.checks.stale == true
+      assert "other_sha" in Enum.map(dto.eligibility.reasons, & &1.code)
 
-      World.observe!(world, run)
-
-      assert %{} = risk = List.last(World.events(run, "PrRiskRecorded"))
-      assert get(risk, :level) == "LOW"
-      assert get(risk, :unresolved_findings) == []
-
-      assert World.dto!(run).findings.unresolved == %{
-               "critical" => 0,
-               "major" => 0,
-               "minor" => 0,
-               "nitpick" => 0
-             }
+      # CONTROL: the new head's own observation is current
+      World.dispatch_all!(Enum.reject(batch, &(&1.type == "run.pr.update")))
+      dto = World.dto!(run)
+      assert dto.checks.head_sha == "head-two"
+      assert dto.checks.current == true
+      assert dto.checks.stale == false
     end
   end
 
@@ -372,96 +406,61 @@ defmodule ForemanServer.PrDeliveryAdversarialInputsTest do
       "source" => "repo-rules"
     }
 
-    for {name, code, defect} <- [
-          {"two marker blocks", "findings_malformed", "multiple_blocks"},
-          {"an echoed earlier block followed by the real one", "findings_malformed",
-           "multiple_blocks"},
-          {"a legacy bullet block", "findings_legacy_format", "legacy_format"},
-          {"a block that opens and is never closed", "findings_malformed", "unterminated_block"},
-          {"a fence that opens inside the block and hides the end marker", "findings_malformed",
-           "unterminated_block"},
-          {"a fence that opens first and hides the whole block", "findings_absent", nil}
-        ] do
-      test "#{name}: `#{code}`, never clean", ctx do
-        run = artifact_run!(ctx)
-        :ok = finalize!(ctx, run, bad_artifact(unquote(name)))
+    @clean {:recorded, 0}
+    @multiple {:refused, "findings_malformed", "malformed", "multiple_blocks"}
+    @unterminated {:refused, "findings_malformed", "malformed", "unterminated_block"}
+    @legacy {:refused, "findings_legacy_format", "malformed", "legacy_format"}
+    @absent {:refused, "findings_absent", "absent", nil}
 
-        assert [%{} = recorded] = World.events(run, "ReviewFindingsRecorded")
-        assert get(recorded, :findings) == []
-        assert get(recorded, :defect) == unquote(defect)
+    # {what the artifact is, its key, the outcome of the artifact, the outcome of its CONTROL}.
+    # Every control is the same artifact with ONE input flipped (`artifact/2`): the second block
+    # removed, the bullets turned into JSON, the missing end marker added, the fence line dropped,
+    # the quote removed, the closing run changed.
+    @artifact_cases [
+      {"two marker blocks", :two_blocks, @multiple, {:recorded, 1}},
+      {"two byte-identical marker blocks", :identical_blocks, @multiple, @clean},
+      {"an echoed earlier block followed by the real one", :echoed, @multiple, @clean},
+      {"a legacy bullet block", :legacy, @legacy, @clean},
+      {"a block that opens and is never closed", :unterminated, @unterminated, @clean},
+      {"a fence that opens inside the block and hides the end marker", :fence_inside,
+       @unterminated, @clean},
+      {"a fence that opens first and hides the whole block", :fence_first, @absent, @clean},
+      {"a ~~~ fence closed by a ``` line stays open and hides what follows",
+       :tilde_closed_by_tick, @absent, @clean},
+      {"a fence closed by a shorter run stays open and hides what follows", :shorter_close,
+       @absent, @clean},
+      {"a fence closed by a longer run is closed", :longer_close, @clean, @absent},
+      {"a nested `> > ` quote is ignored", :nested_quote, @clean, @multiple},
+      {"markers inline in a sentence are ignored", :inline, @clean, @multiple},
+      {"a fence opened inside a quote is not a fence and hides nothing", :fence_in_quote, @clean,
+       @absent},
+      {"markers quoted inside a code fence are ignored", {:quoted, :fence}, @clean, @multiple},
+      {"markers quoted inside a tilde fence are ignored", {:quoted, :tilde}, @clean, @multiple},
+      {"markers quoted by indentation are ignored", {:quoted, :indent}, @clean, @multiple},
+      {"markers quoted after `> ` are ignored", {:quoted, :quote}, @clean, @multiple}
+    ]
 
-        assert get(recorded, :status) ==
-                 if(unquote(code) == "findings_absent", do: "absent", else: "malformed")
-
-        detail = assert_refused(ctx.world, run, [unquote(code)])
-        assert [%{code: code_atom}] = detail.reasons
-        assert Atom.to_string(code_atom) == unquote(code)
-
-        # CONTROL: one real block, nothing else, in the same place
-        :ok = finalize!(ctx, run, block(doc([])))
-        assert assert_approved(ctx.world, run).evidence.status == "eligible"
-      end
-    end
-
-    test "the later block's content never wins: a clean block after an echoed critical one does not make it clean",
-         ctx do
-      run = artifact_run!(ctx)
-      echoed = block(doc([@echoed]))
-
-      :ok =
-        finalize!(
+    for {label, key, primary, control} <- @artifact_cases do
+      test "#{label}", ctx do
+        assert_artifact!(
           ctx,
-          run,
-          "Previous review:\n" <> echoed <> "\nThis review:\n" <> block(doc([]))
+          unquote(Macro.escape(key)),
+          :primary,
+          unquote(Macro.escape(primary))
         )
 
-      assert [%{} = recorded] = World.events(run, "ReviewFindingsRecorded")
-      assert get(recorded, :status) == "malformed"
-      assert get(recorded, :defect) == "multiple_blocks"
-      assert get(recorded, :findings) == []
-      assert_refused(ctx.world, run, ["findings_malformed"])
-    end
-
-    for {name, kind} <- [
-          {"a code fence", :fence},
-          {"a tilde fence", :tilde},
-          {"an indented quote", :indent},
-          {"a block quote", :quote}
-        ] do
-      test "marker lines quoted inside #{name} are ignored: the one real block is recorded",
-           ctx do
-        run = artifact_run!(ctx)
-        quoted = quote_text(unquote(kind), block(doc([@echoed])))
-
-        :ok =
-          finalize!(ctx, run, "The earlier review said:\n" <> quoted <> "\n" <> block(doc([])))
-
-        assert [%{} = recorded] = World.events(run, "ReviewFindingsRecorded")
-        assert get(recorded, :status) == "recorded"
-        assert get(recorded, :findings) == []
-        assert assert_approved(ctx.world, run).evidence.status == "eligible"
-      end
-    end
-
-    test "CONTROL: the same text outside any quote is a second block", ctx do
-      run = artifact_run!(ctx)
-
-      :ok =
-        finalize!(
+        assert_artifact!(
           ctx,
-          run,
-          "The earlier review said:\n" <> block(doc([@echoed])) <> "\n" <> block(doc([]))
+          unquote(Macro.escape(key)),
+          :control,
+          unquote(Macro.escape(control))
         )
-
-      assert [%{status: "malformed", defect: "multiple_blocks"}] =
-               for(e <- World.events(run, "ReviewFindingsRecorded"), do: Map.new(e))
-
-      assert_refused(ctx.world, run, ["findings_malformed"])
+      end
     end
 
     test "a legacy block is waivable, a malformed one is not", ctx do
       legacy = artifact_run!(ctx)
-      :ok = finalize!(ctx, legacy, "#{@start}\n- looks fine\n#{@end_}\n")
+      :ok = finalize!(ctx, legacy, artifact(:legacy, :primary))
       assert_refused(ctx.world, legacy, ["findings_legacy_format"])
       assert {:ok, _} = waive(ctx.world, legacy, ctx.tip, ["findings_legacy_format"])
       approved = assert_approved(ctx.world, legacy)
@@ -469,11 +468,16 @@ defmodule ForemanServer.PrDeliveryAdversarialInputsTest do
       assert approved.evidence.waived == ["findings_legacy_format"]
 
       malformed = artifact_run!(ctx)
-      :ok = finalize!(ctx, malformed, block(doc([])) <> block(doc([])))
+      :ok = finalize!(ctx, malformed, artifact(:identical_blocks, :primary))
       assert_refused(ctx.world, malformed, ["findings_malformed"])
 
       assert {:error, {:reason_not_waivable, "findings_malformed"}} =
                waive(ctx.world, malformed, ctx.tip, ["findings_malformed"])
+
+      # CONTROL: the legacy block converted to JSON needs no waiver
+      converted = artifact_run!(ctx)
+      :ok = finalize!(ctx, converted, artifact(:legacy, :control))
+      assert assert_approved(ctx.world, converted).evidence.status == "eligible"
     end
   end
 
@@ -686,6 +690,9 @@ defmodule ForemanServer.PrDeliveryAdversarialInputsTest do
       run = gated_run!(world)
       head = World.head(world)
 
+      # without a waiver the approval is refused
+      assert_refused(world, run, ["missing"])
+
       assert {:ok, _} =
                World.operator("run:#{run.run_id}", "run.pr.waive_evidence", %{
                  run_id: run.run_id,
@@ -866,13 +873,22 @@ defmodule ForemanServer.PrDeliveryAdversarialInputsTest do
       assert head == World.head(world)
       assert World.events(run, "MergeGateApproved") == []
 
-      # CONTROL: the ref the record carries is counted (the forger cannot know the gateway's nonce)
+      # CONTROL: the ref the record carries is counted (the forger cannot know the gateway's
+      # nonce). `approve_direct/3` pins the AGGREGATE's behaviour for a caller that skipped the
+      # gateway: the aggregate trusts the stamp it is sent, so any in-process caller could send
+      # one. It is not an operator state: the operator path always stamps the gateway's own nonce.
       assert {:ok, _} =
                World.approve_direct(
                  run,
                  World.head(world),
                  GateEvidence.gated([@unit], "forged-ref")
                )
+
+      assert [%{head_sha: approved_head}] =
+               Enum.map(World.events(run, "MergeGateApproved"), &Map.new/1)
+
+      assert approved_head == World.head(world)
+      assert World.gate_approved?(run)
     end
   end
 
@@ -1000,15 +1016,18 @@ defmodule ForemanServer.PrDeliveryAdversarialInputsTest do
       assert World.merge_calls(world) == []
       assert World.pr_state(world) == "OPEN"
 
-      # CONTROL: no push, the same approval merges
-      other = gated_run!(world)
-      World.set_rollup!(world, [])
-      World.push!(world, "head-three")
-      :ok = World.record_findings!(world, other, "head-three")
-      passing!(world)
-      assert assert_approved(world, other, head_sha: "head-three").head_sha == "head-three"
-      assert {:ok, _} = World.merge(other)
-      assert [[_, _, _, _, _, "head-three"]] = World.merge_calls(world)
+      # CONTROL: the same approval of another PR that nobody pushes to merges its pinned head
+      # (the one input flipped: the push armed on the first PR)
+      url2 = World.add_pr!(world)
+      pr2 = World.pr(world, url2)
+      control = World.ready_run!(world, World.project!(world, [@unit]), pr: url2)
+      World.add_check!(pr2, World.check_run("unit"))
+
+      assert assert_approved(world, control).head_sha == World.head(pr2)
+      assert {:ok, _} = World.merge(control)
+      assert [[_, _, ^url2, _, _, head_two_pr]] = World.merge_calls(world)
+      assert head_two_pr == World.head(pr2)
+      assert World.pr_state(pr2) == "MERGED"
     end
 
     test "evidence of an observed head cannot approve the pushed one: the gateway observes the new head itself",
@@ -1066,28 +1085,46 @@ defmodule ForemanServer.PrDeliveryAdversarialInputsTest do
 
   # -- the finalising executor, for the artifact scenarios ---------------------------------------
 
+  # The run's PR is the run's phase PR, which is what the finalising executor reuses instead of
+  # pushing and opening one. The phase and its PR are applied to the PROJECTION only, as the
+  # executor's own finalisation test does (`run_executor_findings_test.exs`): this is state for
+  # feeding the finaliser, by design not replay-safe (the event store never holds a phase).
   defp artifact_run!(%{world: world}) do
     run = World.start_run!(world, World.project!(world, [@unit]))
     World.add_check!(world, World.check_run("unit"))
+    phase_id = "#{run.run_id}-p001"
 
-    ForemanServer.ProjectionStore.apply_events([
-      %{
-        event_type: "PhasePrRecorded",
-        payload: %{
-          run_id: run.run_id,
-          phase_id: "#{run.run_id}-p001",
-          phase_index: 1,
-          phase_name: "review",
-          status: "existing",
-          pr_url: World.pr_url(world),
-          pr_number: 1,
-          base_branch: "main",
-          head_branch: "foreman/run-branch",
-          provider: "github",
-          recorded_at: "2026-01-01T00:00:01Z"
+    :ok =
+      ForemanServer.ProjectionStore.apply_events([
+        %{
+          event_type: "PhaseStarted",
+          payload: %{
+            run_id: run.run_id,
+            phase_id: phase_id,
+            index: 1,
+            name: "review",
+            attempt: 1,
+            sequence: 1,
+            artifact_template: nil
+          }
+        },
+        %{
+          event_type: "PhasePrRecorded",
+          payload: %{
+            run_id: run.run_id,
+            phase_id: phase_id,
+            phase_index: 1,
+            phase_name: "review",
+            status: "existing",
+            pr_url: World.pr_url(world),
+            pr_number: 1,
+            base_branch: "main",
+            head_branch: "foreman/run-branch",
+            provider: "github",
+            recorded_at: "2026-01-01T00:00:01Z"
+          }
         }
-      }
-    ])
+      ])
 
     %{run | pr_url: World.pr_url(world)}
   end
@@ -1113,6 +1150,15 @@ defmodule ForemanServer.PrDeliveryAdversarialInputsTest do
     :ok
   end
 
+  # A repository of the user's own: no global or system git configuration is read (a signing key,
+  # a hook path, a template), so the commits are the same on every machine.
+  @git_env [
+    {"GIT_CONFIG_GLOBAL", "/dev/null"},
+    {"GIT_CONFIG_SYSTEM", "/dev/null"},
+    {"GIT_CONFIG_NOSYSTEM", "1"},
+    {"GIT_TERMINAL_PROMPT", "0"}
+  ]
+
   defp git_fixture! do
     repo = Path.join(System.tmp_dir!(), "adv-inputs-#{System.unique_integer([:positive])}")
     File.rm_rf!(repo)
@@ -1134,7 +1180,12 @@ defmodule ForemanServer.PrDeliveryAdversarialInputsTest do
   end
 
   defp git!(root, args) do
-    {out, 0} = System.cmd("git", ["-C", root | args], stderr_to_stdout: true)
+    {out, 0} =
+      System.cmd("git", ["-c", "commit.gpgsign=false", "-C", root | args],
+        env: @git_env,
+        stderr_to_stdout: true
+      )
+
     String.trim(out)
   end
 
@@ -1145,21 +1196,69 @@ defmodule ForemanServer.PrDeliveryAdversarialInputsTest do
   defp block(json) when is_map(json), do: block(Jason.encode!(json))
   defp block(text), do: "#{@start}\n#{text}\n#{@end_}\n"
 
-  defp bad_artifact("two marker blocks"), do: block(doc([@echoed])) <> block(doc([]))
+  # The artifacts of `@artifact_cases`: `:primary`, and its `:control`, the same text with ONE input
+  # flipped.
+  defp artifact(:two_blocks, :primary), do: block(doc([@echoed])) <> block(doc([]))
+  defp artifact(:two_blocks, :control), do: block(doc([@echoed]))
+  defp artifact(:identical_blocks, :primary), do: block(doc([])) <> block(doc([]))
+  defp artifact(:identical_blocks, :control), do: block(doc([]))
 
-  defp bad_artifact("an echoed earlier block followed by the real one"),
+  defp artifact(:echoed, :primary),
     do: "Earlier:\n" <> block(doc([@echoed])) <> "\nNow:\n" <> block(doc([]))
 
-  defp bad_artifact("a legacy bullet block"), do: "#{@start}\n- looks fine\n* nothing\n#{@end_}\n"
+  defp artifact(:echoed, :control), do: "Earlier:\n\nNow:\n" <> block(doc([]))
+  defp artifact(:legacy, :primary), do: "#{@start}\n- looks fine\n* nothing\n#{@end_}\n"
+  defp artifact(:legacy, :control), do: block(doc([]))
+  defp artifact(:unterminated, :primary), do: "#{@start}\n" <> Jason.encode!(doc([])) <> "\n"
+  defp artifact(:unterminated, :control), do: block(doc([]))
 
-  defp bad_artifact("a block that opens and is never closed"),
-    do: "#{@start}\n" <> Jason.encode!(doc([])) <> "\n"
-
-  defp bad_artifact("a fence that opens inside the block and hides the end marker"),
+  defp artifact(:fence_inside, :primary),
     do: "#{@start}\n" <> Jason.encode!(doc([])) <> "\n```\n#{@end_}\n"
 
-  defp bad_artifact("a fence that opens first and hides the whole block"),
-    do: "```\n" <> block(doc([]))
+  defp artifact(:fence_inside, :control), do: block(doc([]))
+  defp artifact(:fence_first, :primary), do: "```\n" <> block(doc([]))
+  defp artifact(:fence_first, :control), do: block(doc([]))
+
+  defp artifact(:tilde_closed_by_tick, :primary),
+    do: "~~~\n" <> block(doc([@echoed])) <> "```\n" <> block(doc([]))
+
+  defp artifact(:tilde_closed_by_tick, :control),
+    do: "~~~\n" <> block(doc([@echoed])) <> "~~~\n" <> block(doc([]))
+
+  defp artifact(:shorter_close, :primary),
+    do: "````\n" <> block(doc([@echoed])) <> "```\n" <> block(doc([]))
+
+  defp artifact(:shorter_close, :control),
+    do: "````\n" <> block(doc([@echoed])) <> "````\n" <> block(doc([]))
+
+  defp artifact(:longer_close, :primary),
+    do: "```\n" <> block(doc([@echoed])) <> "`````\n" <> block(doc([]))
+
+  defp artifact(:longer_close, :control),
+    do: "```\n" <> block(doc([@echoed])) <> "``\n" <> block(doc([]))
+
+  defp artifact(:nested_quote, :primary),
+    do: "Earlier:\n" <> quote_text(:nested, block(doc([@echoed]))) <> "\n" <> block(doc([]))
+
+  defp artifact(:nested_quote, :control),
+    do: "Earlier:\n" <> block(doc([@echoed])) <> "\n" <> block(doc([]))
+
+  defp artifact(:inline, :primary),
+    do: "I quoted #{@start} and #{@end_} inline.\n" <> block(doc([]))
+
+  defp artifact(:inline, :control),
+    do: "I quoted\n#{@start}\nand\n#{@end_}\ninline.\n" <> block(doc([]))
+
+  defp artifact(:fence_in_quote, :primary), do: "> ```\n" <> block(doc([]))
+  defp artifact(:fence_in_quote, :control), do: "```\n" <> block(doc([]))
+
+  defp artifact({:quoted, kind}, :primary),
+    do:
+      "The earlier review said:\n" <>
+        quote_text(kind, block(doc([@echoed]))) <> "\n" <> block(doc([]))
+
+  defp artifact({:quoted, _kind}, :control),
+    do: "The earlier review said:\n" <> block(doc([@echoed])) <> "\n" <> block(doc([]))
 
   defp quote_text(:fence, text), do: "```\n#{text}\n```\n"
   defp quote_text(:tilde, text), do: "~~~markdown\n#{text}\n~~~\n"
@@ -1169,4 +1268,30 @@ defmodule ForemanServer.PrDeliveryAdversarialInputsTest do
 
   defp quote_text(:quote, text),
     do: text |> String.split("\n") |> Enum.map_join("\n", &("> " <> &1))
+
+  defp quote_text(:nested, text),
+    do: text |> String.split("\n") |> Enum.map_join("\n", &("> > " <> &1))
+
+  # The artifact is finalised for a fresh run and the outcome asserted: a clean record is approved,
+  # a refusal is the exact typed reason with the recorded status and defect.
+  defp assert_artifact!(ctx, key, which, expected) do
+    run = artifact_run!(ctx)
+    :ok = finalize!(ctx, run, artifact(key, which))
+    assert [%{} = recorded] = World.events(run, "ReviewFindingsRecorded")
+
+    case expected do
+      {:recorded, count} ->
+        assert get(recorded, :status) == "recorded"
+        assert length(get(recorded, :findings)) == count
+        assert assert_approved(ctx.world, run).evidence.status == "eligible"
+
+      {:refused, code, status, defect} ->
+        assert get(recorded, :status) == status
+        assert get(recorded, :defect) == defect
+        assert get(recorded, :findings) == []
+        detail = assert_refused(ctx.world, run, [code])
+        assert [%{code: code_atom}] = detail.reasons
+        assert Atom.to_string(code_atom) == code
+    end
+  end
 end
