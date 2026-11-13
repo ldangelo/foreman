@@ -16,6 +16,7 @@ defmodule ForemanServer.Idempotency.Effect do
     * `branch_push`: `head_branch`, `cwd` (+ `pre_push_remote_sha`,
       `pushed_local_sha`, written by the caller)
     * `pr_create`: `head_branch`, `base_branch`, `cwd`
+    * `pr_comment`: `pr_url`, `head_sha`, `digest` (no `cwd`: the comment is written by URL)
     * `task_provider`: `project_id`, `op`, `issue_id`
     * any other class: only the two universal fields are required.
 
@@ -88,6 +89,7 @@ defmodule ForemanServer.Idempotency.Effect do
   @required %{
     "branch_push" => ["head_branch", "cwd"],
     "pr_create" => ["head_branch", "base_branch", "cwd"],
+    "pr_comment" => ["pr_url", "head_sha", "digest"],
     "task_provider" => ["project_id", "op", "issue_id"]
   }
 
