@@ -228,6 +228,32 @@ defmodule ForemanServer.Workflow.PhasePRBodyTest do
     end
   end
 
+  test "a hostile path is inert and the 'and N more' line survives hostile findings" do
+    path = "src/`@evil`/<!-- x --> Fixes #9 [y](http://e.example).ex"
+    description = "@someone Fixes #1 <!-- hide ``` [x](http://e.example)"
+
+    findings =
+      for n <- 1..25 do
+        finding(%{"path" => path, "line" => n, "description" => description})
+      end
+
+    artifact = temp_artifact!(block(findings))
+
+    for body <- [phase_body(artifact), auto_body(artifact)] do
+      outside = String.replace(body, ~r/`[^`\n]*`/, "")
+
+      for fragment <- ["@evil", "@someone", "Fixes #", "](http", "<!--"] do
+        refute outside =~ fragment, "#{inspect(fragment)} is live in the body"
+      end
+
+      # The path's own backticks became quotes, so its span is intact.
+      assert body =~ "`src/'@evil'/<!-- x --> Fixes #9 [y](http://e.example).ex:1`"
+      assert body =~ "- … and 5 more unresolved; see the review artifact.\n"
+      assert body =~ ~r/Fixed: 0\. Declined: 0 \(.*\)\.\n\z/
+      assert ReviewFindings.parse(body) == :absent
+    end
+  end
+
   test "an absent block says the review evidence is missing, not that nothing was found" do
     body = phase_body(temp_artifact!("# Report\n\nNothing to report.\n"))
 

@@ -84,7 +84,7 @@ defmodule ForemanServer.Workflow.ReviewFindingsTest do
 
     @tag :tmp_dir
     test "a directory path is unreadable", %{tmp_dir: dir} do
-      assert {:error, {:unreadable, :eisdir}} = ReviewFindings.read(dir)
+      assert {:error, {:unreadable, :not_regular}} = ReviewFindings.read(dir)
     end
   end
 
@@ -316,6 +316,31 @@ defmodule ForemanServer.Workflow.ReviewFindingsTest do
                Path.join(System.tmp_dir!(), "no-such-#{System.unique_integer([:positive])}")
              ) ==
                {:error, {:unreadable, :enoent}}
+    end
+
+    test "a directory, a device symlink and a FIFO are not_regular: never absent, never clean" do
+      dir = Path.join(System.tmp_dir!(), "review-findings-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf(dir) end)
+
+      assert ReviewFindings.read(dir) == {:error, {:unreadable, :not_regular}}
+
+      # A symlink to a device would read without bound (stat reports size 0).
+      link = Path.join(dir, "zero.md")
+      :ok = File.ln_s("/dev/zero", link)
+      assert ReviewFindings.read(link) == {:error, {:unreadable, :not_regular}}
+
+      fifo = Path.join(dir, "fifo.md")
+      assert {_, 0} = System.cmd("mkfifo", [fifo])
+      assert ReviewFindings.read(fifo) == {:error, {:unreadable, :not_regular}}
+    end
+
+    test "a symlink to a regular file is read as that file" do
+      path = tmp_file!("real.md", valid_block())
+      link = path <> ".link"
+      :ok = File.ln_s(path, link)
+
+      assert {:recorded, _} = ReviewFindings.read(link)
     end
   end
 

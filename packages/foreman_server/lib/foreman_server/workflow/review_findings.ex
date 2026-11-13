@@ -111,14 +111,18 @@ defmodule ForemanServer.Workflow.ReviewFindings do
   def read(nil), do: :absent
 
   def read(path) when is_binary(path) do
-    with {:ok, %File.Stat{size: size}} when size <= @max_artifact_bytes <- File.stat(path),
+    with {:ok, %File.Stat{type: :regular, size: size}} when size <= @max_artifact_bytes <-
+           File.stat(path),
          {:ok, contents} <- File.read(path) do
       # The file may have grown between the stat and the read.
       if byte_size(contents) > @max_artifact_bytes,
         do: {:malformed, :too_large},
         else: parse(contents)
     else
-      {:ok, %File.Stat{}} -> {:malformed, :too_large}
+      {:ok, %File.Stat{type: :regular}} -> {:malformed, :too_large}
+      # A FIFO or a device (a symlink to /dev/zero) reports size 0 and would be
+      # read without bound; a directory is not an artifact either.
+      {:ok, %File.Stat{}} -> {:error, {:unreadable, :not_regular}}
       {:error, reason} -> {:error, {:unreadable, reason}}
     end
   end
