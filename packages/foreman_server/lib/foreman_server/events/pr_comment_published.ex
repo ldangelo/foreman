@@ -9,7 +9,7 @@ defmodule ForemanServer.Events.PrCommentPublished do
   `published` (the comment `comment_id`/`comment_url` carries the report; `superseded` is the
   head of the earlier report of this run that the comment replaced, or `nil` when it was
   created or adopted as it was) or `refused` (nothing was written; `reason` is
-  `redaction_failed | effect_refused | gh_failed` and `detail`, redacted and at most 500
+  `redaction_failed | effect_refused | gh_failed | publisher_error` and `detail`, redacted and at most 500
   characters, names the cause and never a secret value). `recorded_at` is the time of the
   attempt in milliseconds, so two refused attempts are two events.
 

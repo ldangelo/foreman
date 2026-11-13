@@ -43,13 +43,14 @@ defmodule ForemanServer.PrReport.Publisher do
     3. else creates one (`GitHub.PrComment.create/3`).
 
   The outcome is the system command `run.pr.comment_published` (`PrCommentPublished`,
-  `evidence.report`): `published`, or `refused` with `redaction_failed`, `effect_refused` or
-  `gh_failed`. The render refusals `invalid_record` and `report_too_large` and an identity
+  `evidence.report`): `published`, or `refused` with `redaction_failed`, `effect_refused`,
+  `gh_failed` or `publisher_error` (the publication raised). The render refusals `invalid_record` and `report_too_large` and an identity
   the effect key cannot carry are `effect_refused`: the closed reason set has no other home
   for them. Nothing is retried here; nothing in this module blocks, cancels or refuses a run
   or reads the merge gate.
 
-  `publish/2` is the one publish step: the start-up scan of TRD-035 reuses it.
+  `publish/2` is the one publish step: the start-up scan of TRD-035 reuses it. `post/2` is its
+  publication half without the eligibility check.
 
   Configuration: `config :foreman_server, :pr_report_publisher, enabled: boolean` (read as
   `enabled != false`; `config/test.exs` sets `false`). Options of `start_link/1`, passed to
@@ -104,9 +105,33 @@ defmodule ForemanServer.PrReport.Publisher do
   def publish(trigger, opts \\ []) when is_map(trigger) and is_list(opts) do
     with {:ok, t} <- trigger(trigger),
          :ok <- eligible(t) do
-      post(t, opts)
+      guarded_post(t, opts)
     end
   end
+
+  @doc """
+  The publication alone: redact, render, run the keyed effect and record the outcome, without
+  the eligibility check of `publish/2`. For the callers that decide eligibility themselves
+  (the operator's retry of a refused report, TRD-030).
+  """
+  @spec post(map(), keyword()) :: result()
+  def post(trigger, opts \\ []) when is_map(trigger) and is_list(opts) do
+    with {:ok, t} <- trigger(trigger), do: guarded_post(t, opts)
+  end
+
+  # A raise or throw inside the publication (the secret store, the effect function, a runner)
+  # is a typed refusal, not a silent task crash: the detail names the kind of failure only,
+  # never a message that could carry a secret.
+  defp guarded_post(t, opts) do
+    do_post(t, opts)
+  rescue
+    error -> refuse_failure(t, "raised #{inspect(error.__struct__)}", opts)
+  catch
+    kind, _value -> refuse_failure(t, "#{kind}", opts)
+  end
+
+  defp refuse_failure(t, what, opts),
+    do: refuse(t, :publisher_error, "the publication #{what}", [], opts)
 
   # -- GenServer ---------------------------------------------------------------
 
@@ -253,7 +278,7 @@ defmodule ForemanServer.PrReport.Publisher do
 
   # -- publication -------------------------------------------------------------
 
-  defp post(t, opts) do
+  defp do_post(t, opts) do
     secrets_fun = Keyword.get(opts, :secrets_fun, &ProjectEnvironment.fetch_secrets/1)
 
     case secrets_fun.(t.project_id) do
@@ -368,7 +393,9 @@ defmodule ForemanServer.PrReport.Publisher do
         adopt(comment)
 
       nil ->
-        case List.last(own) do
+        # a hidden (minimised) comment tells nobody: only a visible one is edited; the same
+        # head and digest above may match a hidden one (a person hid it: do not repost it)
+        case own |> Enum.reject(fn {c, _m} -> c.minimized end) |> List.last() do
           {comment, marker} -> edit(comment, marker, body, gh)
           nil -> create(t, body, gh)
         end
@@ -449,7 +476,7 @@ defmodule ForemanServer.PrReport.Publisher do
 
     command_id =
       "pr_comment_published:#{t.run_id}:#{PrObservation.url_hash(t.pr_url)}:#{t.head_sha}:#{t.digest}" <>
-        if(status == "refused", do: ":refused:#{recorded_at}", else: "")
+        if(status == "refused", do: ":refused:#{recorded_at}", else: ":#{recorded_at}")
 
     payload =
       fields

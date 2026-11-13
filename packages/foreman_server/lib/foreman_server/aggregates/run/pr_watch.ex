@@ -84,7 +84,7 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
   @ready_failed_stages ~w(head_read ready_dispatch)
   @open_statuses ~w(open conflicted)
   @report_statuses ~w(published refused)
-  @report_reasons ~w(redaction_failed effect_refused gh_failed)
+  @report_reasons ~w(redaction_failed effect_refused gh_failed publisher_error)
   @max_report_detail 500
   @max_comment_url 500
   @max_superseded 128
