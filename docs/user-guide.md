@@ -2871,18 +2871,29 @@ continues. Push/create failures and closed matching PRs fail the responsible
 phase with typed details. A created or reused phase PR record suppresses the
 final AutoPR; no-op records do not.
 
-**PR bodies carry unresolved review findings only when Foreman generates the body.**
-Phase PRs, and final AutoPRs for ad-hoc no-task runs, append a `## Unresolved
-review findings` section to the generated body when the PR-creating phase's
-artifact contains a `<!-- FOREMAN_REVIEW_FINDINGS_START -->` /
-`<!-- FOREMAN_REVIEW_FINDINGS_END -->` block — the format the bundled `review`
-workflow's phases write. Task-backed final AutoPR bodies are exact task
-descriptions and do not append artifact or review-finding sections. Absent or
-empty blocks add nothing to generated bodies. An unterminated block (a start
-marker with no matching end marker) is distinct: the phase found something and
-failed to close its markers, so a warning is logged and the generated body
-instead names the artifact for a human to check directly, rather than silently
-dropping the findings.
+**PR bodies carry the review agent's report only when Foreman generates the body.**
+Phase PRs, and final AutoPRs for ad-hoc no-task runs, append a `## Review findings
+(the review agent's report)` section to the generated body, read from the
+PR-creating phase's artifact (the `<!-- FOREMAN_REVIEW_FINDINGS_START -->` /
+`<!-- FOREMAN_REVIEW_FINDINGS_END -->` block the bundled `review` workflow's phases
+write). The block is now typed JSON (schema `foreman.review_findings/1`: `schema`,
+`reviewed` which must be `true`, and `findings`, each with `severity`
+`critical|major|minor|nitpick`, `path`, `line`, `description`, `disposition`
+`fixed|declined|open` and `source`); the bundled prompts `review-coderabbit.md` and
+`review-repo-rules.md` ask for it, and say that a review engine that could not run
+writes **no** block and explains why under `## Review engine`. The section is worded
+per state: a block with findings lists the unresolved ones (every `open` finding, and
+every `declined` critical or major one; at most 20, each description inside an inline
+code span) and counts the fixed and declined ones (the section is labelled as written by the
+review agent and not verified by Foreman);
+an absent block, a malformed block (an unterminated block, more than one block, the
+old bullet format, invalid JSON or schema, an invalid field, a block over 32768 bytes
+or a file over 4 MiB, more than 100 findings) and an unreadable artifact are each
+named as **not a clean review**, and a warning is logged. The old bullet format is
+now malformed, not parsed. Task-backed final AutoPR bodies are exact task
+descriptions and do not append artifact or review-finding sections. This is the
+agent's own report, written into the body for a human to read; nothing refuses a
+merge or an approval on it yet. Read from the source, not observed.
 
 **Commits are Foreman's, not the agent's.** At each phase boundary Foreman
 stages and commits whatever the phase produced into the run's worktree, so an
@@ -3213,7 +3224,7 @@ interval below), and a failed one is a failed check. Two things trigger a read:
 
 **Required checks and the evidence waiver (Phase 1 PR 4).** `required_checks` is a project setting naming the checks a PR must show: `foreman project update --required-checks '[{"name":"build","kind":"check_run"}]' <project-id>`. It is a JSON array of at most 20 entries; each has a `name` (at most 200 characters), a `kind` (`check_run` or `status_context`) and, for a `check_run` only, an optional `workflow` and `allow_skipped` (`true`; the default is `false`). `'[]'` turns the gate on with no checks, and unset (the default) or `--clear required_checks` turns it off; `foreman project settings <project-id>` prints it. **It has no effect on approval yet**: nothing in the merge gate reads it or the evaluator below, which a later change (TRD-022) wires. Today it changes what the watcher records (every `run.pr.checks` carries the policy and its version, and a policy change records one evidence-only checks event even with no new check) and what the doctor row shows. It is operator-only: `foreman_project_settings_update` over MCP refuses it (`Unknown arguments: required_checks`; naming it in `clear` is `operator_only_setting`) and the coordinator cannot set or clear it. Setting it, `[]` included, through `project update` or `project register` is refused `{:store_not_durable, note}` (HTTP 422) while `:require_durable_store_for_gating` is on and the idempotency store is not durable ([Restart recovery and external effects](#restart-recovery-and-external-effects)); clearing it is never refused.
 
-The server has a pure evaluator, `PrEvidence.evaluate/2`, that turns the recorded checks into a status (`off`, `eligible`, `ineligible`, `waived` or `unknown`) and reasons (`no_checks_configured`, `missing`, `failing`, `pending`, `stale`, `skipped`, `other_sha`, `checks_truncated`, `findings_absent`, `findings_malformed`, `findings_legacy_format`, `findings_other_sha`, `risk_missing`, `risk_other_sha`, `evidence_unreadable`); nothing calls it from the gate yet and no CLI verb or API shows it. An operator waives the waivable reasons with `foreman run waive-evidence` (see `run waive-evidence` under "Runs"); the waiver is kept in the PR's watch record (`evidence.waiver`, not shown by `foreman run prs`) and applies only to the head it was given for and while the policy is the version it was stamped with. Read from the source, not observed.
+The server has a pure evaluator, `PrEvidence.evaluate/2`, that turns the recorded checks into a status (`off`, `eligible`, `ineligible`, `waived` or `unknown`) and reasons (`no_checks_configured`, `missing`, `failing`, `pending`, `stale`, `skipped`, `other_sha`, `checks_truncated`, `findings_absent`, `findings_malformed`, `findings_legacy_format`, `findings_other_sha`, `risk_missing`, `risk_other_sha`, `evidence_unreadable`); nothing calls it from the gate yet and no CLI verb or API shows it. The review findings of the reviewed head are recorded in the PR's watch record (`evidence.findings`, also not shown by `foreman run prs`) by the finalising executor, and the evaluator adds `findings_absent` (no block, or the engine could not run), `findings_legacy_format` or `findings_malformed` (the block is unusable) or `findings_other_sha` (recorded for another head than the one decided); a recorded block on the decided head adds no reason, and unresolved critical or major findings add none either: nothing refuses on findings at approval yet. An operator waives the waivable reasons with `foreman run waive-evidence` (see `run waive-evidence` under "Runs"); the waiver is kept in the PR's watch record (`evidence.waiver`, not shown by `foreman run prs`) and applies only to the head it was given for and while the policy is the version it was stamped with. Read from the source, not observed.
 
 **Multi-repository runs.** A run that touched several repositories has one PR per
 repository, and every PR is watched, polled and fixed on its own, addressed as
