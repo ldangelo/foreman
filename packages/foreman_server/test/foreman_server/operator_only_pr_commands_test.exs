@@ -54,6 +54,7 @@ defmodule ForemanServer.OperatorOnlyPrCommandsTest do
     end
 
     refute Enum.any?(names, &String.contains?(&1, ["merge", "approve_merge"]))
+    refute Enum.any?(names, &String.contains?(&1, "waive"))
   end
 
   test "calling one over MCP is an unknown tool, even with workflow writes enabled" do
@@ -67,6 +68,10 @@ defmodule ForemanServer.OperatorOnlyPrCommandsTest do
 
       assert {:error, %{code: "METHOD_NOT_FOUND"}} =
                Tools.call_tool("foreman_" <> String.replace(type, ".", "_"), %{run_id: "none"})
+    end
+
+    for name <- ["foreman_waive_evidence", "foreman_run_waive_evidence"] do
+      assert {:error, %{code: "METHOD_NOT_FOUND"}} = Tools.call_tool(name, %{run_id: "none"})
     end
 
     # The policy has nothing to refuse because nothing is advertised.
@@ -152,6 +157,10 @@ defmodule ForemanServer.OperatorOnlyPrCommandsTest do
       refute @waive in PrWatch.operator_types()
       refute @waive in CoordinatorDispatch.command_types()
       refute @waive in ApprovalsDispatch.command_types()
+
+      for types <- [CoordinatorDispatch.command_types(), ApprovalsDispatch.command_types()] do
+        refute Enum.any?(types, &String.contains?(&1, "waive"))
+      end
     end
 
     test "coordinator and approvals dispatch refuse it" do

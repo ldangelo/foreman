@@ -608,6 +608,38 @@ defmodule ForemanServer.Aggregates.RunMultiGateTest do
                watch[@run_id][url].evidence.waiver
     end
 
+    test "a stored (string-keyed, JSON-decoded) event folds identically in both records", %{
+      state: state
+    } do
+      url = url_of(nil)
+      ready_state = ready(state, nil)
+      {:ok, spec} = waive_result(ready_state, nil)
+      stored = spec.payload |> Jason.encode!() |> Jason.decode!()
+
+      assert %{"pr_url" => ^url, "reasons" => ["no_checks_configured"]} = stored
+
+      ready_payload = %{
+        "run_id" => @run_id,
+        "pr_url" => url,
+        "head_sha" => "sha-main",
+        "base_branch" => "main"
+      }
+
+      aggregate =
+        state
+        |> Run.apply_event(%{event_type: "PrReady", payload: ready_payload})
+        |> Run.apply_event(%{event_type: "PrEvidenceWaived", payload: stored})
+
+      watch =
+        %{}
+        |> ForemanServer.PrWatchFold.fold("PrReady", ready_payload)
+        |> ForemanServer.PrWatchFold.fold("PrEvidenceWaived", stored)
+
+      waiver = aggregate.pr_watch[url].evidence.waiver
+      assert %{head_sha: "sha-main", codes: ["no_checks_configured"]} = waiver
+      assert watch[@run_id][url].evidence.waiver == waiver
+    end
+
     test "a second waiver for the same head replaces the first", %{state: state} do
       twice =
         state
@@ -638,6 +670,16 @@ defmodule ForemanServer.Aggregates.RunMultiGateTest do
       end
 
       assert {:error, {:reason_not_waivable, 5}} = waive_result(state, nil, %{reasons: [5]})
+
+      for {reasons, offender} <- [
+            {[nil], nil},
+            {[false], false},
+            {["missing", nil], nil},
+            {["missing", 5], 5}
+          ] do
+        assert {:error, {:reason_not_waivable, ^offender}} =
+                 waive_result(state, nil, %{reasons: reasons})
+      end
     end
 
     test "malformed fields are refused with the field's name", %{state: state} do

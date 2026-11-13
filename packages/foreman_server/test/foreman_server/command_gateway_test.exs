@@ -2661,6 +2661,37 @@ defmodule ForemanServer.CommandGatewayTest do
       assert waivers(run_id) == []
     end
 
+    test "a JSON-decoded null among the reasons is refused and the stream is unchanged", %{
+      gate_on: run_id
+    } do
+      {:ok, before} = EventStore.read_stream_forward("run:#{run_id}", 0, 1_000)
+
+      for reasons <- [[nil], ["missing", nil]] do
+        body =
+          %{
+            "run_id" => run_id,
+            "approver" => "leo",
+            "approver_identity" => "github:ldangelo",
+            "head_sha" => @live_head,
+            "reasons" => reasons,
+            "reason" => "x"
+          }
+          |> Jason.encode!()
+          |> Jason.decode!()
+
+        assert {:error, {:reason_not_waivable, nil}} =
+                 CommandGateway.dispatch_operator(%{
+                   type: "run.pr.waive_evidence",
+                   command_id: unique_id("waive-null"),
+                   aggregate_id: "run:#{run_id}",
+                   payload: body
+                 })
+      end
+
+      assert waivers(run_id) == []
+      assert {:ok, ^before} = EventStore.read_stream_forward("run:#{run_id}", 0, 1_000)
+    end
+
     test "the stored waiver replays into the aggregate's evidence record", %{gate_on: run_id} do
       assert {:ok, _} = waive_evidence(run_id, %{reasons: ["missing", "skipped"]})
       assert {:ok, _} = waive_evidence(run_id, %{reasons: ["skipped"], reason: "narrower"})

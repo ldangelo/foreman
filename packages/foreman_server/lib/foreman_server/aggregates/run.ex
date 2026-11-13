@@ -1330,9 +1330,9 @@ defmodule ForemanServer.Aggregates.Run do
   defp waivable_codes([_ | _] = reasons) do
     waivable = ForemanServer.PrEvidence.waivable_codes()
 
-    case Enum.find(reasons, &(not (is_binary(&1) and &1 in waivable))) do
-      nil -> {:ok, reasons |> Enum.uniq() |> Enum.sort()}
-      code -> {:error, {:reason_not_waivable, code}}
+    case Enum.reject(reasons, &(is_binary(&1) and &1 in waivable)) do
+      [] -> {:ok, reasons |> Enum.uniq() |> Enum.sort()}
+      [code | _] -> {:error, {:reason_not_waivable, code}}
     end
   end
 
