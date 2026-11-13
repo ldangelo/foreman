@@ -80,14 +80,35 @@ defmodule ForemanServer.TestSupport.PrDeliveryWorld do
   assertion never leaves a non-terminal run in the projection.
 
   Reads for assertions: `events/2`, `gate_pending?/1`, `gate_approved?/1`.
+
+  Added for TRD-037 (the approval, publication and re-run scenarios):
+
+    * `push_after_next_view!/2` - a push that lands right after the next `gh pr view` that reads
+      the PR's head (the status read of a merge), so the head moves between the live read and the
+      `gh pr merge` call
+    * `set_files!/2` - the PR's changed files (`{path, additions, deletions}`), what the risk
+      rubric classifies
+    * `add_comment!/3`, `comments/1`, `comment_writes/1` - a comment somebody else wrote (user or
+      bot, `own: true` for the token user's), the comments as `gh` shows them, and every comment
+      write (`gh api` create or PATCH) that reached the world. `gh api repos/o/r/issues/N/comments`,
+      `gh api -X PATCH repos/o/r/issues/comments/ID` and the GraphQL author lookup of `PrStatus`
+      are core answers (a created comment is the token user's, `viewerDidAuthor: true`)
+    * `publisher!/2`, `stop_publisher!/1`, `settle_publisher!/1`, `publications/1`,
+      `await_publications!/2` - the real `PrReport.Publisher` over the world's `gh` (it reacts to
+      the `PrRiskRecorded` events of the real observation path); `secrets:` is the redaction list
+    * `watcher!/1`, `webhook!/2`, `issue_comment_payload/2` - the real `PrWatcher` over the world's
+      `gh` and a verified webhook delivery handed to `Webhooks.Github.process/1`, which returns
+      after the refresh it asked for has finished
   """
 
   import ExUnit.Assertions
 
-  alias ForemanServer.{CommandGateway, EventStore, ProjectionStore, RunPrMerge}
+  alias ForemanServer.{CommandGateway, EventStore, PrWatcher, ProjectionStore, RunPrMerge}
+  alias ForemanServer.PrReport.Publisher
   alias ForemanServer.PrWatcher.Observer
   alias ForemanServer.GitHub.PrStatus
-  alias ForemanServer.TestSupport.{GateEvidence, PrWatchSupport, UniqueIds}
+  alias ForemanServer.TestSupport.{Eventually, GateEvidence, PrWatchSupport, UniqueIds}
+  alias ForemanServer.Webhooks.Github, as: Webhook
   alias ForemanServer.Workflow.MergeGate
 
   @type world :: pid() | {pid(), String.t()}
@@ -122,8 +143,12 @@ defmodule ForemanServer.TestSupport.PrDeliveryWorld do
       handlers: [
         {:pr_view, &view_handler/2},
         {:pr_merge, &merge_handler/2},
-        {:pr_list, &list_handler/2}
+        {:pr_list, &list_handler/2},
+        {:comment_api, &comment_handler/2},
+        {:comment_authors, &authors_handler/2}
       ],
+      after_view: [],
+      comment_seq: 0,
       runs: []
     }
 
@@ -298,14 +323,34 @@ defmodule ForemanServer.TestSupport.PrDeliveryWorld do
 
   # -- the scripted gh ----------------------------------------------------------------------
 
+  # A `gh pr view` that asks for the head is a status read: a push armed by
+  # `push_after_next_view!/2` lands right after its answer was computed.
   defp view_handler(world, ["pr", "view", url, "--json", fields]) do
     case Agent.get(world, & &1.prs[url]) do
-      nil -> :pass
-      pr -> {:reply, view_reply(pr, String.split(fields, ","))}
+      nil ->
+        :pass
+
+      pr ->
+        requested = String.split(fields, ",")
+        reply = view_reply(pr, requested)
+        if "headRefOid" in requested, do: land_armed_push(world, url)
+        {:reply, reply}
     end
   end
 
   defp view_handler(_world, _args), do: :pass
+
+  defp land_armed_push(world, url) do
+    Agent.update(world, fn state ->
+      case List.keytake(state.after_view, url, 0) do
+        nil ->
+          state
+
+        {{^url, head}, rest} ->
+          update_in(%{state | after_view: rest}, [:prs, url], &%{&1 | head: head, rollup: []})
+      end
+    end)
+  end
 
   # Only the requested fields, like gh; a field the PR record cannot answer fails the call.
   defp view_reply(pr, requested) do
@@ -414,6 +459,108 @@ defmodule ForemanServer.TestSupport.PrDeliveryWorld do
 
   defp list_handler(_world, _args), do: :pass
 
+  # `gh api repos/<o>/<r>/issues/<n>/comments -f body=<body>` creates a comment of the token's
+  # user; `gh api -X PATCH repos/<o>/<r>/issues/comments/<id> -f body=<body>` replaces a body.
+  # Both answer like GitHub's REST API: `id`, `node_id` and `html_url`.
+  defp comment_handler(world, ["api", "repos/" <> path, "-f", "body=" <> body]) do
+    with [owner, repo, "issues", number, "comments"] <- String.split(path, "/"),
+         url = "https://github.com/#{owner}/#{repo}/pull/#{number}",
+         true <- Agent.get(world, &Map.has_key?(&1.prs, url)) do
+      {id, comment_url} = add_comment(world, url, body, own: true)
+      {:reply, {Jason.encode!(%{id: id, node_id: "IC_#{id}", html_url: comment_url}), 0}}
+    else
+      _not_scripted -> :pass
+    end
+  end
+
+  defp comment_handler(world, ["api", "-X", "PATCH", "repos/" <> path, "-f", "body=" <> body]) do
+    with [owner, repo, "issues", "comments", id] <- String.split(path, "/"),
+         {id, ""} <- Integer.parse(id),
+         {_url, comment_url} <- edit_comment(world, owner, repo, id, body) do
+      {:reply, {Jason.encode!(%{id: id, node_id: "IC_#{id}", html_url: comment_url}), 0}}
+    else
+      _not_scripted -> :pass
+    end
+  end
+
+  defp comment_handler(_world, _args), do: :pass
+
+  # The GraphQL lookup `PrStatus.fetch/2` makes for the authors of the comments it read.
+  defp authors_handler(world, ["api", "graphql", "-f", "query=" <> _query | rest]) do
+    ids = for ["-f", "ids[]=" <> id] <- Enum.chunk_every(rest, 2), do: id
+    comments = world |> Agent.get(& &1.prs) |> Enum.flat_map(fn {_url, pr} -> pr.comments end)
+
+    nodes =
+      for id <- ids do
+        case Enum.find(comments, &(&1["id"] == id)) do
+          nil ->
+            nil
+
+          comment ->
+            kind = if comment["botAuthor"], do: "Bot", else: "User"
+            %{"id" => id, "author" => %{"__typename" => kind}}
+        end
+      end
+
+    {:reply, {Jason.encode!(%{"data" => %{"nodes" => nodes}}), 0}}
+  end
+
+  defp authors_handler(_world, _args), do: :pass
+
+  defp add_comment(world, url, body, opts) do
+    Agent.get_and_update(world, fn state ->
+      n = state.comment_seq + 1
+      comment_url = "#{url}#issuecomment-#{n}"
+
+      comment = %{
+        "id" => "IC_#{n}",
+        "url" => comment_url,
+        "body" => body,
+        "viewerDidAuthor" => Keyword.get(opts, :own, false),
+        "isMinimized" => Keyword.get(opts, :minimized, false),
+        "createdAt" => created_at(n),
+        "author" => %{"login" => Keyword.get(opts, :author, "a-person")},
+        "botAuthor" => Keyword.get(opts, :bot, false)
+      }
+
+      state =
+        update_in(%{state | comment_seq: n}, [:prs, url, :comments], &(&1 ++ [comment]))
+
+      {{n, comment_url}, state}
+    end)
+  end
+
+  defp created_at(n) do
+    pad = &(&1 |> Integer.to_string() |> String.pad_leading(2, "0"))
+    "2026-11-12T10:#{pad.(div(n, 60))}:#{pad.(rem(n, 60))}Z"
+  end
+
+  defp edit_comment(world, owner, repo, id, body) do
+    prefix = "https://github.com/#{owner}/#{repo}/pull/"
+    node = "IC_#{id}"
+
+    Agent.get_and_update(world, fn state ->
+      found =
+        Enum.find_value(state.prs, fn {url, pr} ->
+          if String.starts_with?(url, prefix) and Enum.any?(pr.comments, &(&1["id"] == node)),
+            do: url
+        end)
+
+      case found do
+        nil ->
+          {nil, state}
+
+        url ->
+          comments =
+            Enum.map(state.prs[url].comments, fn comment ->
+              if comment["id"] == node, do: %{comment | "body" => body}, else: comment
+            end)
+
+          {{url, "#{url}#issuecomment-#{id}"}, put_in(state.prs[url].comments, comments)}
+      end
+    end)
+  end
+
   defp flag_value(flags, name) do
     case Enum.drop_while(flags, &(&1 != name)) do
       [^name, value | _] -> [value]
@@ -519,6 +666,57 @@ defmodule ForemanServer.TestSupport.PrDeliveryWorld do
   @spec set_raw!(world(), map()) :: :ok
   def set_raw!(world, %{} = fields),
     do: update_pr!(world, &%{&1 | raw: Map.merge(&1.raw, fields)})
+
+  @doc """
+  The PR's changed files, `{path, additions, deletions}` each, as `gh pr view --json files,
+  changedFiles,additions,deletions` shows them (what the risk rubric classifies).
+  """
+  @spec set_files!(world(), [{String.t(), non_neg_integer(), non_neg_integer()}]) :: :ok
+  def set_files!(world, files) when is_list(files) do
+    update_pr!(world, fn pr ->
+      %{
+        pr
+        | files:
+            for(
+              {path, add, del} <- files,
+              do: %{"path" => path, "additions" => add, "deletions" => del}
+            ),
+          changed_files: length(files),
+          additions: files |> Enum.map(&elem(&1, 1)) |> Enum.sum(),
+          deletions: files |> Enum.map(&elem(&1, 2)) |> Enum.sum()
+      }
+    end)
+  end
+
+  @doc """
+  A push that lands right after the next `gh pr view` that reads the PR's head: the new head
+  (and an empty rollup) is GitHub's from then on. It is how a push between the live read of a
+  merge and its `gh pr merge` call is scripted.
+  """
+  @spec push_after_next_view!(world(), String.t()) :: :ok
+  def push_after_next_view!(world, head) do
+    url = url_of(world)
+    Agent.update(agent(world), &%{&1 | after_view: &1.after_view ++ [{url, head}]})
+  end
+
+  @doc """
+  A comment somebody wrote on the PR; returns its node id. Options: `:author` ("a-person"),
+  `:bot` (false), `:own` (false: the token user's own comment is `true`) and `:minimized`.
+  """
+  @spec add_comment!(world(), String.t(), keyword()) :: String.t()
+  def add_comment!(world, body, opts \\ []) do
+    {n, _url} = add_comment(agent(world), url_of(world), body, opts)
+    "IC_#{n}"
+  end
+
+  @doc "The PR's comments as `gh pr view --json comments` lists them, oldest first."
+  @spec comments(world()) :: [map()]
+  def comments(world), do: read_pr(world).comments
+
+  @doc "Every comment write (`gh api` create or PATCH, not the GraphQL lookup) that reached the world."
+  @spec comment_writes(world()) :: [[String.t()]]
+  def comment_writes(world),
+    do: for({"gh", ["api", first | _] = args} <- calls(world), first != "graphql", do: args)
 
   defp update_pr!(world, fun) do
     url = url_of(world)
@@ -720,6 +918,97 @@ defmodule ForemanServer.TestSupport.PrDeliveryWorld do
       aggregate_id: aggregate_id,
       payload: payload
     })
+  end
+
+  # -- the publisher and the webhook --------------------------------------------------------
+
+  @doc """
+  The real `PrReport.Publisher` over the world's `gh`, supervised by the test (no start-up scan:
+  it reacts to the risk records the real observation path appends from now on). `secrets:` is the
+  project's redaction list (default: the real `ProjectEnvironment.fetch_secrets/1`). Returns the
+  name the publisher is registered under.
+  """
+  @spec publisher!(world(), keyword()) :: atom()
+  def publisher!(world, opts \\ []) do
+    name = Module.concat(Publisher, "World#{token()}")
+    base = [name: name, scan: false, command_runner: runner(world)]
+
+    start_opts =
+      case Keyword.fetch(opts, :secrets) do
+        {:ok, secrets} -> [{:secrets_fun, fn _project_id -> {:ok, secrets} end} | base]
+        :error -> base
+      end
+
+    ExUnit.Callbacks.start_supervised!(Supervisor.child_spec({Publisher, start_opts}, id: name))
+    name
+  end
+
+  @doc "Stop a publisher `publisher!/2` started (the events it would have reacted to are lost to it)."
+  @spec stop_publisher!(atom()) :: :ok
+  def stop_publisher!(name), do: ExUnit.Callbacks.stop_supervised!(name)
+
+  @doc "Wait until the publisher has no publication in flight."
+  @spec settle_publisher!(atom()) :: :ok
+  def settle_publisher!(name) do
+    Eventually.await(fn -> Publisher.inflight(name) == 0 end,
+      message: "the publisher still has a publication in flight"
+    )
+
+    :ok
+  end
+
+  @doc "The `PrCommentPublished` events of the run, oldest first."
+  @spec publications(run()) :: [map()]
+  def publications(run), do: events(run, "PrCommentPublished")
+
+  @doc "Wait until the run has `count` publication outcomes and return them (the polling helper has a deadline)."
+  @spec await_publications!(run(), pos_integer()) :: [map()]
+  def await_publications!(run, count) do
+    Eventually.await(fn -> length(publications(run)) >= count end,
+      message: "fewer than #{count} publication outcomes were recorded"
+    )
+
+    publications(run)
+  end
+
+  @doc """
+  The real `PrWatcher` over the world's `gh` (named as production names it, so the webhook adapter
+  finds it). A watcher observes on `PrReady`, `PrAssociated`, `PrWatchStarted` and
+  `ReviewFindingsRecorded`: start it AFTER the run is readied and its findings recorded.
+  """
+  @spec watcher!(world()) :: pid()
+  def watcher!(world) do
+    fetch = fn url -> PrStatus.fetch(url, command_runner: runner(world)) end
+    no_jobsites = fn _opts -> {:error, :the_world_has_no_jobsites} end
+
+    ExUnit.Callbacks.start_supervised!(
+      {PrWatcher, fetch_fun: fetch, jobsite_starter: no_jobsites}
+    )
+  end
+
+  @doc """
+  Hand a verified webhook payload to `Webhooks.Github.process/1`, then wait for the refresh it asked
+  of the watcher (the watcher's single flight joins an observation already running). Returns what
+  `process/1` returned.
+  """
+  @spec webhook!(world(), map()) :: term()
+  def webhook!(world, payload) do
+    result = Webhook.process(payload)
+    assert {:ok, _} = PrWatcher.refresh_now(pr_url(world))
+    result
+  end
+
+  @doc "An `issue_comment` `created` delivery for the world's PR (GitHub's documented shape)."
+  @spec issue_comment_payload(world(), String.t()) :: map()
+  def issue_comment_payload(world, body) do
+    %{
+      "action" => "created",
+      "issue" => %{
+        "html_url" => pr_url(world),
+        "pull_request" => %{"url" => "https://api.github.com/x"}
+      },
+      "comment" => %{"body" => body}
+    }
   end
 
   # -- reads --------------------------------------------------------------------------------
