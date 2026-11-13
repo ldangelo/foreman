@@ -152,6 +152,56 @@ defmodule ForemanServer.ProjectionStorePrWatchTest do
     assert [%{evidence: %{delivery_issue: nil}}] = ProjectionStore.pr_watch("r1")
   end
 
+  test "ReviewFindingsRecorded holds evidence.findings with its own head across a head move, and a replay agrees" do
+    findings =
+      ev("ReviewFindingsRecorded", %{
+        pr_url: @a,
+        head_sha: "h0",
+        status: "malformed",
+        findings: [],
+        defect: "multiple_blocks",
+        defect_detail: "two blocks",
+        artifact_path: "/w/review.md",
+        artifact_sha256: String.duplicate("a", 64),
+        digest: "0123456789abcdef",
+        recorded_at: 5
+      })
+
+    # `events/0` leaves the PR on head h1, so the record is bound to a head other than the PR's
+    all = events() ++ [findings]
+    :ok = ProjectionStore.apply_events(all)
+    assert [%{head_sha: head, evidence: %{findings: record}}] = ProjectionStore.pr_watch("r1")
+    assert head != "h0"
+
+    assert %{
+             head_sha: "h0",
+             status: "malformed",
+             defect: "multiple_blocks",
+             digest: "0123456789abcdef",
+             findings: []
+           } = record
+
+    live = ProjectionStore.pr_watch("r1")
+
+    json_events =
+      all
+      |> Jason.encode!()
+      |> Jason.decode!()
+      |> Enum.map(&%{event_type: &1["event_type"], payload: &1["payload"]})
+
+    ProjectionStoreReset.reset!()
+    assert :ok = ProjectionStore.apply_events(json_events)
+    assert strip(ProjectionStore.pr_watch("r1")) == strip(live)
+
+    :ok =
+      ProjectionStore.apply_events([
+        ev("PrUpdated", %{pr_url: @a, head_sha: "h9", pr_status: "open"})
+      ])
+
+    assert [%{head_sha: "h9", evidence: %{findings: %{head_sha: "h0", status: "malformed"}}}] =
+             ProjectionStore.pr_watch("r1")
+  end
+
   test "replay from the JSON event log (string keys) rebuilds the identical state" do
     :ok = ProjectionStore.apply_events(events())
     live = ProjectionStore.pr_watch("r1")

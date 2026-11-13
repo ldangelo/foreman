@@ -21,7 +21,8 @@ defmodule ForemanServer.CommandAllowlistParityTest do
 
   # Commands that exist but are system-only: they MUST stay off every operator surface.
   @system_only ~w(schedule.mark_fired schedule.skip_fire run.pr.rehold run.steer.consume
-                  review.record coordinator.append run.pr.fake run.pr.ready_failed)
+                  review.record coordinator.append run.pr.fake run.pr.ready_failed
+                  run.pr.findings)
 
   # One payload carrying every id field any operator command derives its stream from,
   # so the controller can resolve an aggregate id for every listed type.

@@ -483,8 +483,19 @@ defmodule ForemanServer.Aggregates.RunMultiGateTest do
 
     defp watched(state, repo_id), do: Map.fetch!(state.pr_watch, url_of(repo_id))
 
+    # Findings are part of every decision (TRD-015): these tests are about the waiver, so the
+    # record carries a clean review of the head being decided.
     defp eligibility(state, repo_id, head_sha, version \\ @policy) do
-      PrEvidence.evaluate(watched(state, repo_id), %{
+      record =
+        put_in(watched(state, repo_id).evidence.findings, %{
+          head_sha: head_sha,
+          status: "recorded",
+          findings: [],
+          defect: nil,
+          digest: "fd"
+        })
+
+      PrEvidence.evaluate(record, %{
         head_sha: head_sha,
         policy: %{required: [], version: version},
         now_ms: 1_000,
