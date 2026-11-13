@@ -107,6 +107,7 @@ defmodule ForemanServerWeb.DoctorController do
     watcher = ForemanServer.PrWatcher.enabled?()
     monitor = ForemanServer.PrMonitor.enabled?()
     webhook = webhook_secret_set?()
+    gated = gated_projects()
 
     detail =
       Enum.join(
@@ -115,20 +116,52 @@ defmodule ForemanServerWeb.DoctorController do
           "monitor: #{on_off(monitor)} (FOREMAN_PR_MONITOR_ENABLED=true; polls for a head that moves for any other reason)",
           "webhook secret: #{if webhook, do: "set", else: "not set"} (FOREMAN_GITHUB_WEBHOOK_SECRET; without it /webhooks/github answers 503)",
           "The merge gate does not depend on these: approval re-reads GitHub."
-        ],
+        ] ++ Enum.map(gated, &gated_line/1),
         "\n"
       )
 
-    if watcher do
-      check("pr_observation", :ok, "PR observation: #{summary(monitor, webhook)}", detail)
-    else
-      check(
-        "pr_observation",
-        :warn,
-        "PR watcher is off: fix pushes and PR events are not observed",
-        detail
-      )
+    cond do
+      gated != [] and not monitor and not webhook ->
+        check(
+          "pr_observation",
+          :warn,
+          "Gated project(s) #{Enum.join(gated, ", ")}: neither the monitor nor the webhook is on, " <>
+            "so a head or check change is not observed",
+          detail
+        )
+
+      watcher ->
+        check(
+          "pr_observation",
+          :ok,
+          "PR observation: #{summary(monitor, webhook)}",
+          detail
+        )
+
+      true ->
+        check(
+          "pr_observation",
+          :warn,
+          "PR watcher is off: fix pushes and PR events are not observed",
+          detail
+        )
     end
+  end
+
+  # Projects with `required_checks` set (`[]` included: the gate is on). Names, or ids when unnamed.
+  defp gated_projects do
+    for project <- ProjectionStore.list_projects(),
+        ForemanServer.ProjectSettings.from_config(Map.get(project, :config)).required_checks !=
+          nil do
+      Map.get(project, :name) || Map.get(project, :id) || Map.get(project, :project_id)
+    end
+  catch
+    :exit, _ -> []
+  end
+
+  defp gated_line(name) do
+    "gated project #{name}: required_checks is set; a PR with more than 100 checks is read from " <>
+      "the newest 100 only, so a required check outside them is checks_truncated and not eligible."
   end
 
   defp summary(true, true), do: "watcher on, monitor on, webhook secret set"

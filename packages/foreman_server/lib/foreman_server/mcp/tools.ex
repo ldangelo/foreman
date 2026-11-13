@@ -1450,6 +1450,12 @@ defmodule ForemanServer.MCP.Tools do
            message: "Unknown arguments: #{Enum.join(undeclared_string_keys, ", ")}"
          }}
 
+      # An atom-keyed `required_checks` would otherwise be dropped silently by the tool's
+      # whitelist; it is not an argument of any tool (operator-only, TRD-028).
+      Map.has_key?(args, :required_checks) ->
+        {:error,
+         %ToolError{code: "INVALID_PARAMS", message: "Unknown arguments: required_checks"}}
+
       true ->
         case Enum.reject(required, &Map.has_key?(args, &1)) do
           [] ->
@@ -2461,7 +2467,8 @@ defmodule ForemanServer.MCP.Tools do
   defp tool_foreman_project_settings_update(%{project_id: project_id} = args) do
     tool = "foreman_project_settings_update"
 
-    with :ok <- authorize_write(tool) do
+    with :ok <- authorize_write(tool),
+         :ok <- refuse_clearing_operator_only(Map.get(args, :clear)) do
       payload =
         args
         |> Map.take(@settings_update_keys)
@@ -2471,6 +2478,24 @@ defmodule ForemanServer.MCP.Tools do
       dispatch_project_command(tool, "project.update", project_id, payload, args)
     end
   end
+
+  # The gate is switched off only by the operator (`{:operator_only_setting, :required_checks}`):
+  # one bearer token authorises HTTP and MCP, so an MCP client must not be able to clear it.
+  defp refuse_clearing_operator_only(clear) when is_list(clear) do
+    if Enum.any?(clear, &(&1 in [:required_checks, "required_checks"])) do
+      {:error,
+       %ToolError{
+         code: "operator_only_setting",
+         message:
+           "required_checks is operator-only: it cannot be cleared over MCP " <>
+             "(use the operator API or `foreman project settings`)"
+       }}
+    else
+      :ok
+    end
+  end
+
+  defp refuse_clearing_operator_only(_clear), do: :ok
 
   defp put_cleared(payload, clear) when is_list(clear),
     do: Map.put(payload, :cleared_settings, clear)
