@@ -25,7 +25,7 @@ defmodule ForemanServer.PrDeliveryAdversarialKeysTest do
   alias ForemanServer.TelemetryTest.Handler
   alias ForemanServer.TestSupport.{EffectWorld, PrWatchSupport}
   alias ForemanServer.TestSupport.PrDeliveryWorld, as: World
-  alias ForemanServer.Workflow.PhasePR
+  alias ForemanServer.Workflow.{BootReconciliation, PhasePR}
   alias ForemanServerWeb.MCP.Tools.Doctor
 
   @terminal_event [:foreman_server, :workflow, :boot_reconciliation, :effect_on_terminal_run]
@@ -72,13 +72,13 @@ defmodule ForemanServer.PrDeliveryAdversarialKeysTest do
   end
 
   # What the sweep reports for a key of a run that ended: the verdict and why a block was not
-  # possible, and the counters of the sweep.
-  defp assert_terminal_verdict(ref, run, verdict, reason, counters) do
+  # possible, and the counters of the sweep (`deferred_unknown` is 0 unless the counters say).
+  defp assert_terminal_verdict(ref, run, verdict, reason, counters, class \\ "pr_create") do
     assert_receive {@terminal_event, ^ref, %{count: 1},
                     %{
                       run_id: run_id,
                       status: "completed",
-                      effect_class: "pr_create",
+                      effect_class: ^class,
                       effect_verdict: ^verdict,
                       reason: ^reason
                     }}
@@ -556,6 +556,7 @@ defmodule ForemanServer.PrDeliveryAdversarialKeysTest do
       assert_receive {@effect_event, ^ref,
                       %{
                         skipped: 1,
+                        deferred_unknown: 0,
                         on_terminal_run: 0,
                         blocked: 0,
                         retried: 0,
@@ -594,7 +595,9 @@ defmodule ForemanServer.PrDeliveryAdversarialKeysTest do
       World.sweep!(world)
       World.heal_gh!(world, :view)
 
-      assert_receive {@effect_event, ^ref, %{skipped: 1, on_terminal_run: 0, blocked: 0}, _}
+      assert_receive {@effect_event, ^ref,
+                      %{skipped: 1, on_terminal_run: 0, blocked: 0, deferred_unknown: 0}, _}
+
       refute_received {@terminal_event, ^ref, _, _}
       assert event_types(run) == before_types
       assert RunControl.intent(run.run_id) == nil
@@ -643,6 +646,300 @@ defmodule ForemanServer.PrDeliveryAdversarialKeysTest do
         project_id: run.project_id,
         task_id: run.task_id,
         pr_url: run.pr_url
+      })
+    end
+  end
+
+  describe "a pr_comment key on a run that has ended" do
+    # The run ended while the comment's key was `started`: the sweep never marks, blocks or cancels
+    # for a class that never blocks a run, so a terminal run is left exactly as it is.
+    defp ended_after_crash!(world, publisher, side) do
+      {run, key} = crashed_post!(world, publisher, side)
+      PrWatchSupport.complete_run!(run.run_id, run.project_id)
+      assert %{terminal?: true} = ProjectionStore.run(run.run_id)
+      {run, key}
+    end
+
+    for {side, verdict} <- [after: "done", before: "unknown"] do
+      test "#{verdict}: the key is skipped, the ended run is untouched and the report can still be published",
+           %{world: world, ref: ref} do
+        publisher = World.publisher!(world)
+        {run, key} = ended_after_crash!(world, publisher, unquote(side))
+        before_types = event_types(run)
+        if unquote(verdict) == "unknown", do: World.fail_gh!(world, :view)
+
+        World.sweep!(world)
+        World.heal_gh!(world, :view)
+
+        assert_receive {@effect_event, ^ref,
+                        %{
+                          skipped: 1,
+                          on_terminal_run: 0,
+                          audit_failed: 0,
+                          retried: 0,
+                          blocked: 0,
+                          unresolved: 0,
+                          deferred_unknown: 0
+                        }, _}
+
+        refute_received {@terminal_event, ^ref, _, _}
+        assert event_types(run) == before_types
+        assert RunControl.intent(run.run_id) == nil
+        assert %{terminal?: true} = ProjectionStore.run(run.run_id)
+        assert {:ok, %{status: :ambiguous, metadata: left}} = KeyStore.get(key)
+        assert KeyStore.unresolved_version(left) == :none
+        assert KeyStore.decision(left) == :none
+
+        assert {:ok, _} = request_report(run)
+        assert [published] = World.await_publications!(run, 1)
+        World.settle_publisher!(publisher)
+        assert Aggregate.get(published, :status) == "published"
+        assert length(World.comments(World.pr(world, run.pr_url))) == 1
+        assert {:ok, :completed} = KeyStore.status(key)
+      end
+    end
+
+    test "CONTROL: not_done of the same key is decided and the audit event rejected: the ended run is still untouched",
+         %{world: world, ref: ref} do
+      publisher = World.publisher!(world)
+      {run, key} = ended_after_crash!(world, publisher, :before)
+      before_types = event_types(run)
+
+      World.sweep!(world)
+
+      assert_receive {@terminal_event, ^ref, %{count: 1},
+                      %{
+                        run_id: run_id,
+                        status: "completed",
+                        effect_class: "pr_comment",
+                        effect_verdict: "not_done",
+                        reason: nil
+                      }}
+
+      assert run_id == run.run_id
+      assert_receive {@effect_event, ^ref, %{audit_failed: 1, skipped: 0, on_terminal_run: 0}, _}
+      assert event_types(run) == before_types
+      assert {:ok, %{metadata: decided}} = KeyStore.get(key)
+      assert KeyStore.decision(decided) == :not_done
+    end
+  end
+
+  describe "a branch push whose remote already holds the branch: the verdict follows the remote" do
+    test "not_done at the earlier tip, done at the pushed tip and unknown when another commit landed",
+         %{world: world, ref: ref} do
+      # not_done: origin holds the run's earlier tip and the push never reached it
+      run = World.delivery_run!(world)
+      :ok = EffectWorld.publish!(run.fx)
+      earlier = World.remote_tip(run)
+      later = EffectWorld.commit_on_head!(run.fx, "more.txt")
+      refute earlier == later
+      World.crash!(world, :push, :before, fn -> PrCreate.execute(run.run_id) end)
+      assert World.remote_tip(run) == earlier
+
+      World.sweep!(world)
+
+      assert_terminal_verdict(
+        ref,
+        run,
+        "not_done",
+        nil,
+        %{audit_failed: 1, on_terminal_run: 0, retried: 0, blocked: 0, unresolved: 0, skipped: 0},
+        "branch_push"
+      )
+
+      assert {:ok, _} = World.create_pr(run)
+      assert World.remote_tip(run) == later
+      assert World.executed(world, :push) == 1
+
+      # CONTROL: the same crash after the push reached origin is done
+      pushed = World.delivery_run!(world)
+      :ok = EffectWorld.publish!(pushed.fx)
+      pushed_tip = EffectWorld.commit_on_head!(pushed.fx, "more.txt")
+      World.crash!(world, :push, :after, fn -> PrCreate.execute(pushed.run_id) end)
+      assert World.remote_tip(pushed) == pushed_tip
+
+      World.sweep!(world)
+
+      assert_terminal_verdict(
+        ref,
+        pushed,
+        "done",
+        "effect_already_done",
+        %{on_terminal_run: 1, audit_failed: 0, retried: 0, blocked: 0, unresolved: 0, skipped: 0},
+        "branch_push"
+      )
+
+      # unknown: origin's branch moved to a commit that is neither the earlier nor the pushed tip
+      moved = World.delivery_run!(world)
+      World.crash!(world, :push, :before, fn -> PrCreate.execute(moved.run_id) end)
+      stranger = EffectWorld.land_other_commit!(moved.fx)
+      assert World.remote_tip(moved) == stranger
+      refute stranger == World.tip(moved)
+
+      World.sweep!(world)
+
+      assert_terminal_verdict(
+        ref,
+        moved,
+        "unknown",
+        "effect_outcome_ambiguous",
+        # the done key above is already marked: the sweep skips it
+        %{on_terminal_run: 1, audit_failed: 0, retried: 0, blocked: 0, unresolved: 0, skipped: 1},
+        "branch_push"
+      )
+
+      assert {:error, {:effect_unresolved, _push_key}} = World.create_pr(moved)
+      assert World.remote_tip(moved) == stranger
+      assert World.executed(world, :push) == 2
+    end
+  end
+
+  describe "Create PR: the list holds a fork's PR and this repository's" do
+    test "this repository's PR is adopted wherever it is listed, a fork's never",
+         %{world: world} do
+      forked_first = World.delivery_run!(world)
+      fork = World.open_by_hand!(world, forked_first, cross_repository: true)
+      own = World.open_by_hand!(world, forked_first)
+
+      assert {:ok, _} = World.create_pr(forked_first)
+
+      assert World.created_url!(forked_first) == own
+      refute own == fork
+      assert creates_for(world, forked_first) == []
+      assert World.remote_tip(forked_first) == nil
+
+      own_first = World.delivery_run!(world)
+      own2 = World.open_by_hand!(world, own_first)
+      _fork2 = World.open_by_hand!(world, own_first, cross_repository: true)
+
+      assert {:ok, _} = World.create_pr(own_first)
+
+      assert World.created_url!(own_first) == own2
+      assert creates_for(world, own_first) == []
+
+      # CONTROL: when the first PR listed is this repository's too, it is the one adopted
+      both = World.delivery_run!(world)
+      first = World.open_by_hand!(world, both)
+      _second = World.open_by_hand!(world, both)
+
+      assert {:ok, _} = World.create_pr(both)
+
+      assert World.created_url!(both) == first
+      assert World.executed(world, :create) == 0
+    end
+  end
+
+  describe "a running run's phase PR create key the sweep cannot read" do
+    test "unknown blocks the run effect_outcome_ambiguous and cancels its executor; the same crash with GitHub answering is retried",
+         %{world: world, ref: ref} do
+      run = World.phase_run!(world)
+      World.crash!(world, :create, :before, fn -> PhasePR.maybe_create(run.request) end)
+      World.fail_gh!(world, :list)
+
+      World.sweep!(world)
+
+      assert_receive {@effect_event, ^ref,
+                      %{
+                        blocked: 1,
+                        on_terminal_run: 0,
+                        retried: 0,
+                        audit_failed: 0,
+                        unresolved: 0,
+                        skipped: 0,
+                        deferred_unknown: 0
+                      }, _}
+
+      assert EffectWorld.status(run.run_id) == "blocked"
+      assert EffectWorld.block_reason(run.run_id) == "effect_outcome_ambiguous"
+      assert RunControl.intent(run.run_id) == :cancel
+      assert World.executed(world, :create) == 0
+
+      # CONTROL: GitHub answers, the PR was never made: retried, not blocked
+      control = World.phase_run!(world)
+      World.heal_gh!(world, :list)
+      World.crash!(world, :create, :before, fn -> PhasePR.maybe_create(control.request) end)
+
+      World.sweep!(world)
+
+      assert_receive {@effect_event, ^ref,
+                      %{retried: 1, blocked: 0, skipped: 1, deferred_unknown: 0}, _}
+
+      assert EffectWorld.status(control.run_id) != "blocked"
+      assert RunControl.intent(control.run_id) == nil
+      assert {:ok, %PhasePR.Record{status: "created"}} = PhasePR.maybe_create(control.request)
+    end
+  end
+
+  describe "the scan an undecided refusal casts (the production BootReconciliation process)" do
+    test "an unknown verdict on that scan is deferred: nothing is marked and the run is untouched; once GitHub answers the key is decided",
+         %{world: world, ref: ref} do
+      start_supervised!({BootReconciliation, []})
+      _booted = :sys.get_state(BootReconciliation, 15_000)
+
+      run = World.delivery_run!(world)
+      key = create_key(run)
+      crash_create!(world, run, :before)
+      World.fail_gh!(world, :list)
+      before_types = event_types(run)
+
+      assert {:error, {:effect_undecided, ^key}} = World.create_pr(run)
+
+      assert_receive {@effect_event, ^ref, %{deferred_unknown: 1, on_terminal_run: 0, blocked: 0},
+                      _},
+                     5_000
+
+      refute_received {@terminal_event, ^ref, _, _}
+      assert {:ok, %{status: :ambiguous, metadata: left}} = KeyStore.get(key)
+      assert KeyStore.unresolved_version(left) == :none
+      assert KeyStore.decision(left) == :none
+      assert event_types(run) == before_types
+      assert RunControl.intent(run.run_id) == nil
+
+      # still undecided (not unresolved): the next refusal casts the next scan
+      assert {:error, {:effect_undecided, ^key}} = World.create_pr(run)
+      assert_receive {@effect_event, ^ref, %{deferred_unknown: 1}, _}, 5_000
+
+      # CONTROL: GitHub answers: the scan decides the key not_done and Create PR runs
+      World.heal_gh!(world, :list)
+      assert {:error, {:effect_undecided, ^key}} = World.create_pr(run)
+
+      assert_receive {@effect_event, ^ref, %{audit_failed: 1, deferred_unknown: 0}, _}, 5_000
+      assert {:ok, %{metadata: decided}} = KeyStore.get(key)
+      assert KeyStore.decision(decided) == :not_done
+      assert {:ok, _} = World.create_pr(run)
+      assert World.executed(world, :create) == 1
+    end
+  end
+
+  describe "a key whose writer is alive" do
+    test "the sweep leaves it started; once the writer is dead it is reconciled",
+         %{world: world, ref: ref} do
+      run = World.delivery_run!(world)
+      key = create_key(run)
+      writer = World.hold!(world, :create, :after, fn -> PrCreate.execute(run.run_id) end)
+
+      assert {:ok, %{status: :started, metadata: meta}} = KeyStore.get(key)
+      assert Effect.writer_state(meta) == :alive
+
+      World.sweep!(world)
+
+      assert {:ok, :started} = KeyStore.status(key)
+      refute_received {@effect_event, ^ref, _, _}
+      refute_received {@terminal_event, ^ref, _, _}
+
+      # CONTROL: the writer is gone: the key is an orphan and the sweep decides it
+      World.kill_parked!(writer)
+      assert Effect.writer_state(meta) == :dead
+
+      World.sweep!(world)
+
+      assert_terminal_verdict(ref, run, "done", "effect_already_done", %{
+        on_terminal_run: 1,
+        audit_failed: 0,
+        retried: 0,
+        blocked: 0,
+        unresolved: 0,
+        skipped: 0
       })
     end
   end
