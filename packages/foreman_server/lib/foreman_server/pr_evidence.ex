@@ -64,8 +64,11 @@ defmodule ForemanServer.PrEvidence do
     * `checks` - `%{head_sha, items, truncated, observed_at, digest, evidence_digest,
       observation_ref, required, policy_version}`, stored for a `PrChecksChanged` whose `checks`
       is a list and left as it was for one that has none or a non-list.
-    * `waiver` - `%{head_sha, codes, policy_version, reason, waived_by, waived_at}`, `codes` a
-      sorted, de-duplicated list of strings; set by `PrEvidenceWaived` and replacing any earlier one.
+    * `waiver` - `%{head_sha, codes, policy_version, reason, waived_by, waived_at, risk_digest}`,
+      `codes` a sorted, de-duplicated list of strings; set by `PrEvidenceWaived` and replacing any
+      earlier one. `risk_digest` is the digest of the risk record the waiver was given for, set
+      only when the waiver names `risk_high` (`nil` otherwise, and for a waiver given with no
+      risk record of its head): a `risk_high` waiver covers that risk record and no other.
     * `risk` - `%{head_sha, level, rubric_version, digest, findings_digest, rationale,
       instructions, seq, recorded_at}`,
       set by `PrRiskRecorded` (TRD-018) with the head it was classified for; a head move keeps it.
@@ -211,7 +214,8 @@ defmodule ForemanServer.PrEvidence do
       policy_version: get(payload, :policy_version),
       reason: get(payload, :reason),
       waived_by: get(payload, :approver_identity),
-      waived_at: get(payload, :waived_at)
+      waived_at: get(payload, :waived_at),
+      risk_digest: get(payload, :risk_digest)
     })
   end
 
@@ -310,6 +314,18 @@ defmodule ForemanServer.PrEvidence do
   """
   @spec waivable_codes() :: [String.t()]
   def waivable_codes, do: Enum.map(@waivable, &Atom.to_string/1)
+
+  @doc """
+  The digest of the risk record of `record` when it was classified for `head_sha`, else `nil`:
+  what a `risk_high` waiver is bound to (the waive handler stamps it, `evaluate/2` compares it).
+  """
+  @spec risk_digest(map() | nil, String.t()) :: String.t() | nil
+  def risk_digest(record, head_sha) do
+    risk = record |> evidence_of() |> Map.get(:risk)
+
+    if get(risk, :head_sha) == head_sha and is_binary(get(risk, :digest)),
+      do: get(risk, :digest)
+  end
 
   @doc """
   The actions an operator may take on a PR whose eligibility is `eligibility` (TRD-023, reused by
@@ -446,7 +462,7 @@ defmodule ForemanServer.PrEvidence do
       {_status, reasons} ->
         reasons = reasons ++ findings_reasons(record, ctx) ++ risk_reasons(record, ctx)
         waiver = waiver_state(record, ctx)
-        {status, uncovered, covered} = apply_waiver(reasons, waiver)
+        {status, uncovered, covered} = apply_waiver(reasons, waiver, risk_waiver_current?(record))
         eligibility(ctx, status, uncovered, covered, waiver, inputs_for(record, ctx))
     end
   end
@@ -571,10 +587,11 @@ defmodule ForemanServer.PrEvidence do
 
   # No risk record is `risk_missing`; a record for another head than the one decided is
   # `risk_other_sha`. Neither is waivable: a waiver covers a check or a review gap, never the
-  # absence of the classification the approver reads. A record for the decided head whose level
-  # is `HIGH` is `risk_high`: waivable, so the operator can approve a HIGH PR with a recorded
-  # reason. `LOW` and `MEDIUM` are no reason. The rationale is untrusted text and is not copied
-  # into the reason.
+  # absence of the classification the approver reads. A record for the decided head is read by its
+  # level: `LOW` and `MEDIUM` are no reason, `HIGH` is `risk_high` (waivable, so the operator can
+  # approve a HIGH PR with a recorded reason) and anything else is `evidence_unreadable` (never
+  # waivable): a level this code does not know is never read as a pass. The rationale is
+  # untrusted text and is not copied into any reason.
   defp risk_reasons(record, ctx) do
     case record |> evidence_of() |> Map.get(:risk) do
       nil ->
@@ -583,24 +600,31 @@ defmodule ForemanServer.PrEvidence do
       %{} = risk ->
         head = get(risk, :head_sha)
 
-        cond do
-          head != ctx.head_sha ->
-            [
-              %Reason{
-                code: :risk_other_sha,
-                subject: nil,
-                detail: "risk recorded for #{inspect(head)}, decided #{inspect(ctx.head_sha)}"
-              }
-            ]
-
-          get(risk, :level) == "HIGH" ->
-            [%Reason{code: :risk_high, subject: nil, detail: "the recorded risk level is HIGH"}]
-
-          true ->
-            []
-        end
+        if head == ctx.head_sha,
+          do: level_reasons(get(risk, :level)),
+          else: [
+            %Reason{
+              code: :risk_other_sha,
+              subject: nil,
+              detail: "risk recorded for #{inspect(head)}, decided #{inspect(ctx.head_sha)}"
+            }
+          ]
     end
   end
+
+  defp level_reasons(level) when level in ["LOW", "MEDIUM"], do: []
+
+  defp level_reasons("HIGH"),
+    do: [%Reason{code: :risk_high, subject: nil, detail: "the recorded risk level is HIGH"}]
+
+  defp level_reasons(_unknown),
+    do: [
+      %Reason{
+        code: :evidence_unreadable,
+        subject: nil,
+        detail: "the recorded risk level is not LOW, MEDIUM or HIGH"
+      }
+    ]
 
   # -- findings reasons (TRD-015) ---------------------------------------------------
 
@@ -848,9 +872,18 @@ defmodule ForemanServer.PrEvidence do
     end
   end
 
-  defp apply_waiver(reasons, %{applies: true, codes: codes}) do
+  # A `risk_high` reason is covered only when the waiver names it AND the waiver was given for
+  # the risk record that is current now (`risk_waiver_current?/1`): the risk can turn HIGH for
+  # another reason without a push (the PR's base moved on GitHub, a new findings record), and a
+  # waiver of one risk is no waiver of another. The waiver stays in force for every other code.
+  defp apply_waiver(reasons, %{applies: true, codes: codes}, risk_waiver_current?) do
     {covered, uncovered} =
-      Enum.split_with(reasons, &(&1.code in @waivable and Atom.to_string(&1.code) in codes))
+      Enum.split_with(reasons, fn reason ->
+        reason.code in @waivable and Atom.to_string(reason.code) in codes and
+          (reason.code != :risk_high or risk_waiver_current?)
+      end)
+
+    uncovered = Enum.map(uncovered, &stale_risk_waiver_detail(&1, codes))
 
     status =
       if uncovered == [], do: if(covered == [], do: :eligible, else: :waived), else: :ineligible
@@ -858,8 +891,28 @@ defmodule ForemanServer.PrEvidence do
     {status, uncovered, covered}
   end
 
-  defp apply_waiver(reasons, _waiver),
+  defp apply_waiver(reasons, _waiver, _risk_waiver_current?),
     do: {if(reasons == [], do: :eligible, else: :ineligible), reasons, []}
+
+  # The waiver names `risk_high` but covers another risk record: say so on the reason.
+  defp stale_risk_waiver_detail(%Reason{code: :risk_high} = reason, codes) do
+    if "risk_high" in codes,
+      do: %{
+        reason
+        | detail: "the recorded risk level is HIGH; the waiver was given for another risk record"
+      },
+      else: reason
+  end
+
+  defp stale_risk_waiver_detail(reason, _codes), do: reason
+
+  # The waiver's risk digest is the current risk record's: both non-nil and equal.
+  defp risk_waiver_current?(record) do
+    evidence = evidence_of(record)
+    waived = evidence |> Map.get(:waiver) |> get(:risk_digest)
+    current = evidence |> Map.get(:risk) |> get(:digest)
+    is_binary(waived) and waived == current
+  end
 
   # -- inputs --------------------------------------------------------------------
 

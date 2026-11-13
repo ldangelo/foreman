@@ -145,7 +145,7 @@ defmodule ForemanServer.CommandGatewayApprovalEvidenceTest do
           Agent.get_and_update(gh, fn state ->
             reply =
               case state[:view_failure] do
-                nil -> {view_json(state.head), 0}
+                nil -> {view_json(state.head, Map.get(state, :view_patch, %{})), 0}
                 failure -> failure
               end
 
@@ -159,8 +159,8 @@ defmodule ForemanServer.CommandGatewayApprovalEvidenceTest do
     end)
   end
 
-  defp view_json(head) do
-    Jason.encode!(%{
+  defp view_json(head, patch) do
+    %{
       "state" => "OPEN",
       "mergeable" => "MERGEABLE",
       "headRefOid" => head,
@@ -181,12 +181,22 @@ defmodule ForemanServer.CommandGatewayApprovalEvidenceTest do
       "changedFiles" => 1,
       "additions" => 3,
       "deletions" => 1
-    })
+    }
+    |> Map.merge(patch)
+    |> Jason.encode!()
   end
 
   defp gh_views(gh), do: Agent.get(gh, & &1.views)
   defp gh_other(gh), do: Agent.get(gh, & &1.other)
   defp set_head!(gh, head), do: Agent.update(gh, &%{&1 | head: head})
+
+  # Change what GitHub's view of the PR answers from now on: `patch_view!(gh, "baseRefName",
+  # "develop")`, merged over the default view (a `nil` value reads as the field gone).
+  defp patch_view!(gh, key, value) do
+    Agent.update(gh, fn state ->
+      Map.update(state, :view_patch, %{key => value}, &Map.put(&1, key, value))
+    end)
+  end
 
   defp approve(run_id, extra \\ %{}) do
     CommandGateway.dispatch_operator(%{
@@ -523,6 +533,84 @@ defmodule ForemanServer.CommandGatewayApprovalEvidenceTest do
       assert {:error, _} = approve(run_id, %{approver_identity: "github:nobody-at-all"})
       assert gh_views(gh) == []
       assert after_ready(run_id) == []
+    end
+  end
+
+  # -- AC-003-2: a risk_high waiver and the approval's own re-observation ---------------------------
+
+  describe "a risk_high waiver, end to end through the gateway" do
+    # What the rubric reads as HIGH here: GitHub does not say how many files changed.
+    defp without_file_stats!(gh) do
+      for key <- ["files", "changedFiles", "additions", "deletions"],
+          do: patch_view!(gh, key, nil)
+    end
+
+    defp waive(run_id, reasons) do
+      CommandGateway.dispatch_operator(%{
+        command_id: "waive-#{token()}",
+        type: "run.pr.waive_evidence",
+        aggregate_id: "run:#{run_id}",
+        payload: %{
+          run_id: run_id,
+          approver: "leo",
+          approver_identity: @approver,
+          head_sha: "head-one",
+          reasons: reasons,
+          reason: "judged by hand"
+        }
+      })
+    end
+
+    defp risk_digests(run_id), do: for(e <- events(run_id, "PrRiskRecorded"), do: get(e, :digest))
+
+    test "nothing changed: the waiver given after the refusal still covers the risk the approval re-records",
+         %{gh: gh} do
+      {_project_id, %{run_id: run_id}} = gated_run!()
+      without_file_stats!(gh)
+
+      assert {:error, {:evidence_ineligible, "head-one", ["risk_high"]}, _detail} =
+               approve(run_id)
+
+      [refused_with] = Enum.uniq(risk_digests(run_id))
+      assert {:ok, _} = waive(run_id, ["risk_high"])
+      assert [waiver] = events(run_id, "PrEvidenceWaived")
+      assert get(waiver, :risk_digest) == refused_with
+
+      # the approval forces a re-observation and records the risk again: the same digest
+      assert {:ok, _} = approve(run_id)
+      assert Enum.uniq(risk_digests(run_id)) == [refused_with]
+
+      assert [approved] = events(run_id, "MergeGateApproved")
+      assert get(get(approved, :evidence), :status) == "waived"
+      assert get(get(approved, :evidence), :waived) == ["risk_high"]
+    end
+
+    test "the PR's base moved on GitHub after the waiver: refused naming risk_high, waivable again",
+         %{gh: gh} do
+      {_project_id, %{run_id: run_id}} = gated_run!()
+      without_file_stats!(gh)
+
+      assert {:error, {:evidence_ineligible, "head-one", ["risk_high"]}, _detail} =
+               approve(run_id)
+
+      assert {:ok, _} = waive(run_id, ["risk_high"])
+
+      # the head is unchanged; only the base the PR targets differs now
+      patch_view!(gh, "baseRefName", "develop")
+
+      assert {:error, {:evidence_ineligible, "head-one", ["risk_high"]}, detail} =
+               approve(run_id)
+
+      assert detail.waived == []
+      assert detail.waiver.applies == true
+      assert events(run_id, "MergeGateApproved") == []
+      assert length(Enum.uniq(risk_digests(run_id))) == 2
+
+      # waived again after the refreshed record: approved
+      assert {:ok, _} = waive(run_id, ["risk_high"])
+      assert {:ok, _} = approve(run_id)
+      assert [approved] = events(run_id, "MergeGateApproved")
+      assert get(get(approved, :evidence), :waived) == ["risk_high"]
     end
   end
 

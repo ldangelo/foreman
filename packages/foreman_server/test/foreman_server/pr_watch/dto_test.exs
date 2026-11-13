@@ -132,14 +132,21 @@ defmodule ForemanServer.PrWatch.DTOTest do
   defp with_waiver(record, codes, opts \\ []) do
     {:ok, %{version: version}} = policy()
 
-    fold(record, "PrEvidenceWaived", %{
+    payload = %{
       head_sha: Keyword.get(opts, :head, record.head_sha),
       reasons: codes,
       policy_version: Keyword.get(opts, :version, version),
       reason: "the unit job is skipped on docs changes",
       approver_identity: "github:ldangelo",
       waived_at: @now - 4_000
-    })
+    }
+
+    payload =
+      if Keyword.has_key?(opts, :risk_digest),
+        do: Map.put(payload, :risk_digest, Keyword.fetch!(opts, :risk_digest)),
+        else: payload
+
+    fold(record, "PrEvidenceWaived", payload)
   end
 
   # A record that is eligible under `policy()`.
@@ -171,7 +178,7 @@ defmodule ForemanServer.PrWatch.DTOTest do
         )
         |> with_risk(level: "HIGH")
         |> with_report()
-        |> with_waiver(["findings_absent", "risk_high"])
+        |> with_waiver(["findings_absent", "risk_high"], risk_digest: "risk-digest")
         |> fold("PrReadyFailed", %{stage: "signal", reason: "gh said no", failed_at: 55})
 
       dto = dto(record)
@@ -566,7 +573,7 @@ defmodule ForemanServer.PrWatch.DTOTest do
       assert %{reasons: [%{code: "risk_other_sha"}]} = dto(other).eligibility
 
       # a waiver of this head and policy covers it
-      waived = high |> with_waiver(["risk_high"])
+      waived = high |> with_waiver(["risk_high"], risk_digest: "risk-digest")
 
       assert %{status: "waived", reasons: [], waived: [%{code: "risk_high"}]} =
                dto(waived).eligibility

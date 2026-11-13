@@ -674,11 +674,13 @@ defmodule ForemanServer.PrDeliveryAdversarialApprovalTest do
 
       assert {:ok, _} = waive(world, run, "head-one", ["risk_high"])
 
-      assert {:error, {:evidence_ineligible, "head-one", ["failing"]}, detail} =
+      # the failing check also changes what the risk record reads (the checks are one of its
+      # inputs), so the waiver, given for the earlier risk record, no longer covers `risk_high`
+      assert {:error, {:evidence_ineligible, "head-one", ["failing", "risk_high"]}, detail} =
                World.approve(world, run)
 
-      assert [%{code: :failing}] = detail.reasons
-      assert ["risk_high"] = detail.waived
+      assert [%{code: :failing}, %{code: :risk_high}] = detail.reasons
+      assert [] = detail.waived
 
       for code <- ["risk_missing", "risk_other_sha"] do
         assert {:error, {:reason_not_waivable, ^code}} = waive(world, run, "head-one", [code])

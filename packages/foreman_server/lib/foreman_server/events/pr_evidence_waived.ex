@@ -12,6 +12,12 @@ defmodule ForemanServer.Events.PrEvidenceWaived do
   policy still has it. `waived_at` is a millisecond timestamp; `repo_id` is present only for a
   non-primary repository's PR. `PrEvidence` folds it into `evidence.waiver` for that head, and a
   later head change voids it.
+
+  `risk_digest` is the digest of the risk record of that head when the waiver names `risk_high`
+  (`nil` when the PR held no such record), and is absent from every other waiver: a `risk_high`
+  waiver covers that risk record only, so a risk record that read differently later (the PR's base
+  moved, a new findings record) is not covered by it. It is optional and never an enforced key, so
+  every waiver recorded before it existed still decodes.
   """
   @enforce_keys [
     :run_id,
@@ -34,7 +40,8 @@ defmodule ForemanServer.Events.PrEvidenceWaived do
           reason: String.t(),
           policy_version: String.t(),
           waived_at: non_neg_integer(),
-          repo_id: String.t() | nil
+          repo_id: String.t() | nil,
+          risk_digest: String.t() | nil
         }
   @derive Jason.Encoder
   defstruct [
@@ -47,6 +54,7 @@ defmodule ForemanServer.Events.PrEvidenceWaived do
     :reason,
     :policy_version,
     :waived_at,
-    repo_id: nil
+    repo_id: nil,
+    risk_digest: nil
   ]
 end

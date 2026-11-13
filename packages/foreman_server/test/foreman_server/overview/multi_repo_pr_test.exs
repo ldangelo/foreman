@@ -416,7 +416,7 @@ defmodule ForemanServer.Overview.MultiRepoPrTest do
           "PrRiskRecorded",
           repo(
             Map.merge(base, %{
-              level: "low",
+              level: "LOW",
               rubric_version: "1",
               digest: "rd-#{head}",
               findings_digest: "fd-#{head}",
@@ -442,7 +442,7 @@ defmodule ForemanServer.Overview.MultiRepoPrTest do
       assert a["pr_url"] == @url_a
       assert a["status"] == "eligible"
       assert a["reasons"] == []
-      assert a["risk"]["level"] == "low"
+      assert a["risk"]["level"] == "LOW"
       assert [%{"description" => description}] = a["findings"]["items"]
       assert description =~ "finding of sha-1"
 
