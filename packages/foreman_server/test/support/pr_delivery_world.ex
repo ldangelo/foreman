@@ -1011,6 +1011,104 @@ defmodule ForemanServer.TestSupport.PrDeliveryWorld do
     }
   end
 
+  # -- added for TRD-032 (the gate-input scenarios) -----------------------------------------
+
+  @doc """
+  The run's PR record as `ProjectionStore.pr_watch/1` holds it (the fold of the evidence events),
+  or `nil` when the run does not watch the PR.
+  """
+  @spec watch_record(run()) :: map() | nil
+  def watch_record(%{run_id: run_id, pr_url: pr_url}),
+    do: run_id |> ProjectionStore.pr_watch() |> Enum.find(&(&1.pr_url == pr_url))
+
+  @doc """
+  The `PrWatch.DTO` of the run's PR, read the way `GET /api/runs/:id/prs` and the MCP status tool
+  read it (`PrWatch.DTO.fetch/1`): the display of the evidence under the project's CURRENT policy.
+  """
+  @spec dto!(run()) :: ForemanServer.PrWatch.DTO.t()
+  def dto!(%{run_id: run_id, pr_url: pr_url}) do
+    assert {:ok, %{prs: prs}} = ForemanServer.PrWatch.DTO.fetch(run_id)
+    assert %{} = dto = Enum.find(prs, &(&1.pr_url == pr_url)), "the run shows no PR #{pr_url}"
+    dto
+  end
+
+  @doc """
+  The commands the observer would build for the PR as GitHub shows it now (the real builder over a
+  real read through the world's `gh`, under the project's current policy). `force: %{nonce:,
+  now_ms:}` makes it the gate's forced observation.
+  """
+  @spec observation_batch!(world(), run(), keyword()) :: [map()]
+  def observation_batch!(world, %{run_id: run_id, pr_url: pr_url} = run, opts \\ []) do
+    assert {:ok, status} = PrStatus.fetch(pr_url, command_runner: runner(world))
+
+    assert {:ok, batch} =
+             ForemanServer.PrObservation.commands(
+               run_id,
+               pr_url,
+               status,
+               watch_record(run),
+               nil,
+               [policy: Observer.observation_policy(run_id)] ++ opts
+             )
+
+    batch
+  end
+
+  @doc "Dispatch every command through `CommandGateway.dispatch_system/1`, each of which must be accepted."
+  @spec dispatch_all!([map()]) :: :ok
+  def dispatch_all!(commands) do
+    for command <- commands do
+      assert {:ok, _} = CommandGateway.dispatch_system(command)
+    end
+
+    :ok
+  end
+
+  @doc """
+  Record the run's PR base branch (`run.record_base_branch`, what the executor does when it starts):
+  without it the risk rubric reads "no base branch is recorded for the run" and the level is HIGH
+  whatever else is true.
+  """
+  @spec record_base!(run(), String.t()) :: :ok
+  def record_base!(%{run_id: run_id}, base \\ "main") do
+    assert {:ok, _} =
+             CommandGateway.dispatch_system(%{
+               type: "run.record_base_branch",
+               command_id: "base-#{run_id}",
+               aggregate_id: "run:#{run_id}",
+               payload: %{run_id: run_id, base_branch: base}
+             })
+
+    :ok
+  end
+
+  @doc """
+  `merge_approve` straight to the aggregate (`CommandRouter.dispatch/2`) with a stamp a test built
+  by hand (`GateEvidence.stamp/2`): how a caller that skipped the gateway's observation reaches
+  the aggregate. `evidence: :none` sends none at all.
+  """
+  @spec approve_direct(run(), String.t(), map() | :none) :: term()
+  def approve_direct(%{run_id: run_id}, head, evidence) do
+    payload = %{
+      run_id: run_id,
+      approver: "leo",
+      approver_identity: @approver,
+      head_sha: head
+    }
+
+    payload = if evidence == :none, do: payload, else: GateEvidence.stamp(payload, evidence)
+
+    ForemanServer.CommandRouter.dispatch(
+      %{
+        command_id: "approve-direct-#{token()}",
+        type: "merge_approve",
+        aggregate_id: "run:#{run_id}",
+        payload: payload
+      },
+      5_000
+    )
+  end
+
   # -- reads --------------------------------------------------------------------------------
 
   @doc "The `data` of every event of `type` on the run's stream, oldest first."
