@@ -231,6 +231,14 @@ defmodule ForemanServer.PrEvidence do
   @waivable ~w(no_checks_configured missing skipped findings_absent findings_legacy_format
                findings_other_sha)a
 
+  @doc """
+  The reason codes an operator may waive (§11), as the strings the `PrEvidenceWaived` event
+  carries. Every other code (a failure, a pending or stale check, a check of another head, a
+  truncated list, a malformed findings block, risk, an unreadable record) is never waivable.
+  """
+  @spec waivable_codes() :: [String.t()]
+  def waivable_codes, do: Enum.map(@waivable, &Atom.to_string/1)
+
   @type ctx :: %{
           head_sha: String.t() | nil,
           policy: %{required: [map()], version: String.t() | nil} | nil,
@@ -256,6 +264,11 @@ defmodule ForemanServer.PrEvidence do
   `:other_head` or `:policy_changed`), `nil` when there is none or the status is `:off` or
   `:unknown`. A `nil` `checks_ref` is a display read: freshness is not judged and age is never
   a reason.
+
+  With a non-nil policy and no `checks` record at all, a decision (`checks_ref` non-nil)
+  reads as the one reason `stale` (no observation is recorded for it) and a display read
+  (`checks_ref: nil`) as one `missing` per required entry. `stale` is never waivable; the gate
+  forces an observation before it decides (TRD-022), so a decision normally finds a record.
   """
   @spec evaluate(map() | nil, ctx()) :: Eligibility.t()
   def evaluate(record, ctx) do
@@ -329,12 +342,19 @@ defmodule ForemanServer.PrEvidence do
   on with no checks), `{:ok, nil}` when the setting is `nil` (gate off), and
   `{:error, {:policy_unavailable, reason}}` for a project the projection does not know or a
   projection that does not answer. Callers must not read the error as gate off.
+
+  `reader` is the projection read (`project_id -> map() | nil`); the default is the real
+  `ProjectionStore.project_projection/1`. An exit of the reader (a call that times out, a
+  store that is down) is the `{:exit, reason}` error.
   """
-  @spec project_policy(String.t() | nil) ::
+  @spec project_policy(String.t() | nil, (String.t() -> map() | nil)) ::
           {:ok, %{required: [map()], version: String.t()} | nil}
           | {:error, {:policy_unavailable, term()}}
-  def project_policy(project_id) when is_binary(project_id) and project_id != "" do
-    case ProjectionStore.project_projection(project_id) do
+  def project_policy(project_id, reader \\ &ProjectionStore.project_projection/1)
+
+  def project_policy(project_id, reader)
+      when is_binary(project_id) and project_id != "" and is_function(reader, 1) do
+    case reader.(project_id) do
       nil ->
         {:error, {:policy_unavailable, :project_not_found}}
 
@@ -353,11 +373,9 @@ defmodule ForemanServer.PrEvidence do
       other ->
         {:error, {:policy_unavailable, {:invalid_projection, other}}}
     end
-  catch
-    :exit, reason -> {:error, {:policy_unavailable, {:exit, reason}}}
   end
 
-  def project_policy(project_id),
+  def project_policy(project_id, _reader),
     do: {:error, {:policy_unavailable, {:invalid_project_id, project_id}}}
 
   defp normalise_ctx(%{} = ctx) do

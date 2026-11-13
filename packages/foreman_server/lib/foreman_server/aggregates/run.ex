@@ -967,6 +967,47 @@ defmodule ForemanServer.Aggregates.Run do
     end
   end
 
+  # run.pr.waive_evidence (TRD-012) - an operator waives missing or skipped evidence of the PR the
+  # addressed repository's gate holds, for one head and one policy version. Modelled on
+  # `merge_approve`: the gate must be :pending, the approver is checked by `validate_approval/1`,
+  # and the PR is the gate's pin, never the payload's `pr_url`. `policy_version` is stamped by
+  # `CommandGateway` (the operator cannot name one). Like `merge_approve` it does not call
+  # `allow_pr_lifecycle_on_terminal_runs/2`: a gate is normally still pending on a completed run.
+  def handle_command(state, %{type: "run.pr.waive_evidence", payload: payload}) do
+    with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
+         :ok <- require_exists(state, run_id),
+         {:ok, repo_key} <- repo_key(payload),
+         :ok <- ensure_merge_gate_pending(state, repo_key),
+         {:ok, %Approval{} = approval} <- validate_approval(payload),
+         {:ok, policy_version} <-
+           Aggregate.required_binary(Aggregate.get(payload, :policy_version), :policy_version),
+         {:ok, codes} <- waivable_codes(Aggregate.get(payload, :reasons)),
+         {:ok, reason} <- waiver_reason(Aggregate.get(payload, :reason)) do
+      %MergePin{pr_url: pr_url} = merge_pin(state, repo_key)
+
+      {:ok,
+       %{
+         stream_id: "run:#{run_id}",
+         event_type: "PrEvidenceWaived",
+         payload:
+           put_repo_id(
+             %{
+               run_id: run_id,
+               pr_url: pr_url,
+               head_sha: approval.head_sha,
+               approver: approval.approver,
+               approver_identity: approval.approver_identity,
+               reasons: codes,
+               reason: reason,
+               policy_version: policy_version,
+               waived_at: System.system_time(:millisecond)
+             },
+             repo_key
+           )
+       }}
+    end
+  end
+
   # run.pr.rehold (system, never operator-dispatched) - the PR head moved after the operator approved
   # it. `CommandGateway` sends it after every PR head observation and after a merge attempt that
   # found the head moved. The approval, and the head it pinned, are void: the gate returns to
@@ -1282,6 +1323,31 @@ defmodule ForemanServer.Aggregates.Run do
     end
   end
 
+  @max_waiver_reason 500
+
+  # `reasons` of a waiver: a non-empty list of waivable codes. A code outside the set is the typed
+  # `{:reason_not_waivable, code}`; the stored list is sorted and de-duplicated.
+  defp waivable_codes([_ | _] = reasons) do
+    waivable = ForemanServer.PrEvidence.waivable_codes()
+
+    case Enum.find(reasons, &(not (is_binary(&1) and &1 in waivable))) do
+      nil -> {:ok, reasons |> Enum.uniq() |> Enum.sort()}
+      code -> {:error, {:reason_not_waivable, code}}
+    end
+  end
+
+  defp waivable_codes(_other), do: {:error, {:missing_or_invalid, :reasons}}
+
+  defp waiver_reason(reason) when is_binary(reason) do
+    text = String.trim(reason)
+
+    if text != "" and String.length(text) <= @max_waiver_reason,
+      do: {:ok, text},
+      else: {:error, {:missing_or_invalid, :reason}}
+  end
+
+  defp waiver_reason(_other), do: {:error, {:missing_or_invalid, :reason}}
+
   defp required_integer(payload, key) do
     case Aggregate.get(payload, key) do
       value when is_integer(value) -> {:ok, value}
@@ -1289,7 +1355,7 @@ defmodule ForemanServer.Aggregates.Run do
     end
   end
 
-  @repo_pr_operator_types ~w(run.pr.retry)
+  @repo_pr_operator_types ~w(run.pr.retry run.pr.waive_evidence)
 
   @doc """
   Operator-only PR commands added by E12-S6 (`run.pr.retry`), declared here so

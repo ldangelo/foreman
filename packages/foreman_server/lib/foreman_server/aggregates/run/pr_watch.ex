@@ -61,7 +61,10 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
     "run.pr.watch_stop" => "PrWatchStopped",
     "run.pr.watch_start" => "PrWatchStarted",
     "run.pr.create" => "PrCreated",
-    "run.pr.ready_failed" => "PrReadyFailed"
+    "run.pr.ready_failed" => "PrReadyFailed",
+    # Operator-only and handled by `Run` beside `merge_approve` (it needs the merge gate), so it
+    # is in neither `command_types/0` nor `operator_types/0`: this entry makes `Run` fold the event.
+    "run.pr.waive_evidence" => "PrEvidenceWaived"
   }
 
   @checks_states ~w(none pending failing passing)
