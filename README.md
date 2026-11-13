@@ -49,7 +49,7 @@ foreman project update --goal "Ship the importer" --instructions-file ./INSTRUCT
 foreman project memory write --name conventions --file notes.md demo
 foreman project chat demo "triage the failing nightly build"
 foreman thread list --project demo
-foreman run approve-merge --id <run-id> --approver me --identity github:<login> --head-sha <sha>
+foreman run approve-merge --id <run-id> --approver me --identity github:<login> --head-sha <sha> --acknowledge-gate-off  # gate-off project (no required_checks); on a gated project drop the flag
 foreman run merge --id <run-id>
 ```
 

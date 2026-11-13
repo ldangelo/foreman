@@ -227,7 +227,7 @@ foreman run pause --id <id> --reason <text>  # stop now, resumable
 foreman run resume --id <id>                  # continue a paused run
 foreman run remove --id <id> # Remove run and clean worktree/branch
 foreman run reset --id <id>  # Clear failed/stuck run projection
-foreman run approve-merge --id <id> --approver <name> --identity <github:login> --head-sha <sha>  # open the merge gate for the head you reviewed
+foreman run approve-merge --id <id> --approver <name> --identity <github:login> --head-sha <sha> --acknowledge-gate-off  # open the merge gate for the head you reviewed (gate-off project; on a gated project drop the flag)
 foreman run merge --id <id>  # squash-merge the approved PR (pinned to the approved head; a push after approval voids the approval)
 ```
 
