@@ -2,8 +2,9 @@ defmodule ForemanServer.Idempotency.Reconcilers.PrCreateTest do
   @moduledoc """
   `Reconcilers.PrCreate` (TRD-013): GitHub is the source of truth for whether the PR
   exists. The query is `gh pr list --head <head> --base <base> --state all --json
-  url,number,state` in the key's `cwd`; a PR in any state is `:done`, none is
-  `:not_done`, and an answer that cannot be read is `:unknown`. The boot sweep reaches
+  url,number,state,isCrossRepository` in the key's `cwd`; this repository's PR in any state is
+  `:done`, none or only a fork's PR is `:not_done`, and an answer that cannot be read (or an
+  item the fork rule cannot be applied to) is `:unknown`. The boot sweep reaches
   it through the configured registry, here with a fake `gh` first on `PATH`.
   """
 
@@ -115,7 +116,7 @@ defmodule ForemanServer.Idempotency.Reconcilers.PrCreateTest do
                "--state",
                "all",
                "--json",
-               "url,number,state"
+               "url,number,state,isCrossRepository"
              ]
 
       assert opts[:cd] == cwd
@@ -125,7 +126,8 @@ defmodule ForemanServer.Idempotency.Reconcilers.PrCreateTest do
     for state <- ["OPEN", "CLOSED", "MERGED"] do
       test "a #{state} PR for the head and base is :done", %{cwd: cwd} do
         world = EffectWorld.start()
-        EffectWorld.add_pr!(world, @head, @base, unquote(state))
+        url = EffectWorld.add_pr!(world, @head, @base, unquote(state))
+        :ok = EffectWorld.report_pr!(world, url, cross_repository: false)
 
         assert PrCreate.reconcile(metadata(cwd), command_runner: EffectWorld.runner(world)) ==
                  :done
@@ -137,12 +139,51 @@ defmodule ForemanServer.Idempotency.Reconcilers.PrCreateTest do
       # `gh pr list` without `--state all` lists open PRs only: the scripted GitHub answers a
       # merged or closed PR to the `--state all` query alone.
       world = EffectWorld.start()
-      EffectWorld.add_pr!(world, @head, @base, "MERGED")
+      merged = EffectWorld.add_pr!(world, @head, @base, "MERGED")
+      :ok = EffectWorld.report_pr!(world, merged, cross_repository: false)
       runner = EffectWorld.runner(world)
 
       assert {"[]", 0} = runner.("gh", ["pr", "list", "--head", @head, "--base", @base], [])
 
       assert PrCreate.reconcile(metadata(cwd), command_runner: runner) == :done
+    end
+
+    test "only a fork's PR of the branch is :not_done, this repository's PR beside it is :done",
+         %{
+           cwd: cwd
+         } do
+      world = EffectWorld.start()
+      fork = EffectWorld.add_pr!(world, @head, @base)
+      :ok = EffectWorld.report_pr!(world, fork, cross_repository: true)
+
+      assert PrCreate.reconcile(metadata(cwd), command_runner: EffectWorld.runner(world)) ==
+               :not_done
+
+      own = EffectWorld.add_pr!(world, @head, @base, "CLOSED")
+      :ok = EffectWorld.report_pr!(world, own, cross_repository: false)
+
+      assert PrCreate.reconcile(metadata(cwd), command_runner: EffectWorld.runner(world)) ==
+               :done
+    end
+
+    test "a PR whose isCrossRepository is missing or not a boolean makes the answer :unknown, never :done",
+         %{cwd: cwd} do
+      for item <- [
+            ~s({"url":"https://github.com/a/b/pull/1","number":1,"state":"OPEN"}),
+            ~s({"url":"https://github.com/a/b/pull/1","number":1,"state":"OPEN","isCrossRepository":"false"}),
+            ~s({"url":"","number":1,"state":"OPEN","isCrossRepository":false})
+          ] do
+        # a usable same-repository PR beside the unusable item does not rescue the answer
+        answer =
+          "[" <>
+            ~s({"url":"https://github.com/a/b/pull/2","number":2,"state":"OPEN","isCrossRepository":false}) <>
+            "," <> item <> "]"
+
+        assert PrCreate.reconcile(metadata(cwd),
+                 command_runner: fn "gh", _args, _opts -> {answer, 0} end
+               ) ==
+                 :unknown
+      end
     end
 
     test "no PR for the head and base is :not_done, whatever other PRs exist", %{cwd: cwd} do
@@ -289,7 +330,7 @@ defmodule ForemanServer.Idempotency.Reconcilers.PrCreateTest do
          %{cwd: cwd, run_id: run_id, key: key, answers: answers, log: log} do
       File.write!(
         Path.join(answers, "prs.json"),
-        ~s([{"number":7,"state":"MERGED","url":"https://github.com/acme/widgets/pull/7"}])
+        ~s([{"number":7,"state":"MERGED","isCrossRepository":false,"url":"https://github.com/acme/widgets/pull/7"}])
       )
 
       crash_in_create(run_id, cwd)
@@ -305,7 +346,7 @@ defmodule ForemanServer.Idempotency.Reconcilers.PrCreateTest do
       assert [line] = File.read!(log) |> String.split("\n", trim: true)
 
       assert line ==
-               "#{String.trim(expected_cwd)}|pr list --head #{@head} --base #{@base} --state all --json url,number,state"
+               "#{String.trim(expected_cwd)}|pr list --head #{@head} --base #{@base} --state all --json url,number,state,isCrossRepository"
     end
 
     test "no PR means the create is retried: recorded, nothing blocked, key left for the next attempt",

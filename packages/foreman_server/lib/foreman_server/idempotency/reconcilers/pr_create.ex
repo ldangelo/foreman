@@ -15,11 +15,16 @@ defmodule ForemanServer.Idempotency.Reconcilers.PrCreate do
   `reconcile/2` asks GitHub, in the key's `cwd` (never the server's working
   directory):
 
-      gh pr list --head <head> --base <base> --state all --json url,number,state
+      gh pr list --head <head> --base <base> --state all --json url,number,state,isCrossRepository
 
   `--state all` is required: `gh pr list` lists only open PRs by default, and a PR
   that was merged or closed before recovery ran is still the PR this effect
-  created. A PR in any state is `:done`, none is `:not_done`, and a failed, timed out,
+  created. `--head` matches a branch name in any repository, so only a PR with
+  `isCrossRepository: false` (this repository's, in any state) is `:done`; none, or only
+  forks' PRs, is `:not_done` (`GitHub.PrLookup`'s rule: a fork's PR is never the run's PR).
+  The head commit is not compared (the intent holds no tip): a PR of this repository with
+  another head is `:done` by decision, and the adoption lookup of Create PR then refuses it
+  as `{:pr_lookup_mismatch, ...}`. A failed, timed out,
   unparsable or unexpected answer (or incomplete metadata) is `:unknown`.
 
   `gh` runs through a 3-arity runner (`opts[:command_runner]`, default
@@ -113,7 +118,7 @@ defmodule ForemanServer.Idempotency.Reconcilers.PrCreate do
         "--state",
         "all",
         "--json",
-        "url,number,state"
+        "url,number,state,isCrossRepository"
       ]
 
       case Command.run(runner, "gh", args, cd: cwd, timeout_ms: timeout_ms) do
@@ -126,15 +131,18 @@ defmodule ForemanServer.Idempotency.Reconcilers.PrCreate do
     end
   end
 
+  # Only a PR of THIS repository for the branch proves the create ran: `--head` matches a branch
+  # name whatever repository the PR's head is in, so a fork's PR of the same name is listed too
+  # (`isCrossRepository: true`, `PrLookup`'s rule) and is not the run's PR. Any item the rule
+  # cannot be applied to makes the whole answer `:unknown`, never `:done`.
   defp verdict(output, metadata) do
     case Jason.decode(String.trim(output)) do
-      {:ok, []} ->
-        :not_done
-
-      {:ok, [_ | _] = prs} ->
-        if Enum.any?(prs, &pr?/1),
-          do: :done,
-          else: unknown(metadata, {:unexpected_pr_list, String.slice(output, 0, 200)})
+      {:ok, prs} when is_list(prs) ->
+        case classify(prs) do
+          {:ok, []} -> :not_done
+          {:ok, [_ | _]} -> :done
+          :error -> unknown(metadata, {:unexpected_pr_list, String.slice(output, 0, 200)})
+        end
 
       {:ok, _other} ->
         unknown(metadata, {:unexpected_pr_list, String.slice(output, 0, 200)})
@@ -144,8 +152,17 @@ defmodule ForemanServer.Idempotency.Reconcilers.PrCreate do
     end
   end
 
-  defp pr?(%{"url" => url}) when is_binary(url), do: url != ""
-  defp pr?(_), do: false
+  # `{:ok, this repository's PRs}`, or `:error` when an item has no url or no boolean field.
+  defp classify(prs) do
+    Enum.reduce_while(prs, {:ok, []}, fn
+      %{"url" => url, "isCrossRepository" => cross}, {:ok, own}
+      when is_binary(url) and url != "" and is_boolean(cross) ->
+        {:cont, {:ok, if(cross, do: own, else: [url | own])}}
+
+      _item, _acc ->
+        {:halt, :error}
+    end)
+  end
 
   defp unknown(metadata, reason) do
     Logger.warning(
