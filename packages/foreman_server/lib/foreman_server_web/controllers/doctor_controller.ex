@@ -161,7 +161,7 @@ defmodule ForemanServerWeb.DoctorController do
   # Archived projects are skipped (they take no PRs); names are sorted.
   defp gated_projects do
     names =
-      for project <- ProjectionStore.list_projects(),
+      for project <- list_projects(),
           not archived?(project),
           ForemanServer.ProjectSettings.from_config(Map.get(project, :config)).required_checks !=
             nil do
@@ -173,6 +173,20 @@ defmodule ForemanServerWeb.DoctorController do
     {Enum.sort(names), nil}
   catch
     :exit, reason -> {[], inspect(reason, limit: 5)}
+  rescue
+    error -> {[], Exception.message(error)}
+  end
+
+  # The projection read; `:doctor_project_lister` (a zero-arity fun) replaces it in tests.
+  defp list_projects do
+    lister =
+      Application.get_env(
+        :foreman_server,
+        :doctor_project_lister,
+        &ProjectionStore.list_projects/0
+      )
+
+    lister.()
   end
 
   defp archived?(project),

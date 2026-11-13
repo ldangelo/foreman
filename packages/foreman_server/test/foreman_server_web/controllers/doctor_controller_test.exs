@@ -184,15 +184,24 @@ defmodule ForemanServerWeb.DoctorControllerTest do
 
     test "an unreadable projection is a warning naming the failure, never a silent ok (TRD-028)" do
       configure_observation(true, true, "s3cret-value")
-      :ok = :sys.suspend(ProjectionStore)
 
-      try do
+      on_exit(fn -> Application.delete_env(:foreman_server, :doctor_project_lister) end)
+
+      listers = [
+        {fn -> exit({:timeout, {GenServer, :call, [ProjectionStore, :list_projects, 5000]}}) end,
+         "timeout"},
+        {fn -> exit(:noproc) end, "noproc"},
+        {fn -> raise "projection exploded" end, "projection exploded"},
+        {fn -> [%{id: "p", config: :not_a_map}, :not_a_project] end, nil}
+      ]
+
+      for {lister, expected} <- listers do
+        Application.put_env(:foreman_server, :doctor_project_lister, lister)
         row = pr_observation_row()
         assert row["status"] == "warn"
         assert row["title"] =~ "Gated projects could not be read"
         assert row["detail"] =~ "gated projects could not be read:"
-      after
-        :ok = :sys.resume(ProjectionStore)
+        if expected, do: assert(row["detail"] =~ expected)
       end
     end
 
