@@ -58,6 +58,7 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 > foreman run remove        --id
 > foreman run reset         --id
 > foreman run approve-merge --approver --head-sha --id --identity
+> foreman run waive-evidence --approver --head-sha --id --identity --reason --waive
 > foreman run merge         --id
 > foreman run submit        --backend --base-branch --project-id --prompt --work-id --workflow
 > foreman run prs           <run-id>
@@ -703,7 +704,7 @@ Pipeline budgets are optional environment guards. `0` disables a budget: `FOREMA
 > `FOREMAN_MAX_PIPELINE_COST_USD`, `FOREMAN_MAX_PIPELINE_TOOL_CALLS`,
 > `FOREMAN_MAX_PIPELINE_REVIEW_LOOPS` or `FOREMAN_DEFAULT_MODEL` is read anywhere
 > in the server or CLI source, so no pipeline budget is enforced. `foreman run`
-> without a subcommand does not exist: `run` takes one of `list|get|cancel|pause|resume|remove|reset|submit|approve-merge|merge|prs|fix-ci|address-comments|resolve-conflicts|create-pr|watch-start|watch-stop`.
+> without a subcommand does not exist: `run` takes one of `list|get|cancel|pause|resume|remove|reset|submit|approve-merge|waive-evidence|merge|prs|fix-ci|address-comments|resolve-conflicts|create-pr|watch-start|watch-stop`.
 > Bound spend per project with `foreman project update --max-concurrent-runs --daily-thread-cap` and read it with `foreman usage`.
 
 ### `foreman run task`
@@ -832,6 +833,20 @@ The identity is a claim made by whoever holds the API token, not an authenticate
 Each PR of a multi-repository run has its own merge gate (`merge_gates`, keyed by `repo_id`; the primary's is `nil`), so one `approve-merge` call approves exactly one PR. There is no approve-all. An unknown `--repo-id` fails with `{:merge_gate_not_found, :run, "<repo-id>"}`; for the primary the legacy `{:merge_gate_not_found, :run}` is unchanged. An approved gate cannot be approved again (`merge_gate_already_approved`) until a push voids the approval, see below.
 
 **A push after approval voids the approval** (foreman-ehxy6). An approval covers one commit. When the PR head differs from it the gate returns to `pending`: the approval and its pin are cleared, `run merge` is refused (`pr_not_acceptable`), and `foreman run prs <run-id>` shows `merge_gate: pending` and the new `head_sha`. The server sees the move either through the PR watch (a webhook, a poll or a Fix CI push records the new head, and the gate is held again at once with a `MergeGatePending` event, `reason: "head_moved_since_approval"`, `approved_head_sha` and `head_sha`) or through `run merge` itself, which answers `head_moved_since_approval` and holds the gate again, so a PR watch that is off cannot strand an approved PR. Review the new commit and run `approve-merge --head-sha <new sha>`; the old SHA is refused as `head_sha_mismatch`. The new head is never adopted as the pin, and an approved head that returns later does not revive the old approval. The re-hold is the system command `run.pr.rehold`: it is not on the operator allowlist, not an MCP tool and not available to an agent or run token. An approval recorded before heads were pinned (its event carries no `head_sha`) is pinned to the head the PR watch had recorded at that time and is voided the same way.
+
+### `foreman run waive-evidence --id <run-id> --approver <name> --identity <github:login> --head-sha <sha> --waive <codes> --reason <text> [--repo-id <repo-id>]`
+
+Waives named evidence reasons that block a PR's merge gate (command `run.pr.waive_evidence`). `--waive` is a comma-separated list of reason codes, split and trimmed into the `reasons` list; an empty item is rejected. Every flag except `--repo-id` is required and a missing one fails before any request. `--head-sha` must be the live PR head; the server checks the approver allowlist and the codes, and stamps the policy version itself. Like `approve-merge` there is no MCP tool for it.
+
+| Option | Description |
+|--------|-------------|
+| `--id <run-id>` | Run ID (required). |
+| `--approver <name>` | Approver name (required). |
+| `--identity <github:login>` | Approver identity checked against the allowlist (required). |
+| `--head-sha <sha>` | Full head commit SHA of the PR as you reviewed it (required). |
+| `--waive <codes>` | Comma-separated reason codes to waive (required). |
+| `--reason <text>` | Why they are waived, at most 500 characters (required). |
+| `--repo-id <repo-id>` | Repository whose PR to waive for. Omit for the primary repository. |
 
 ### `foreman run merge --id <run-id> [--repo-id <repo-id>]`
 
