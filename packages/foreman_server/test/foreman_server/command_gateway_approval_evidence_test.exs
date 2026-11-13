@@ -27,6 +27,7 @@ defmodule ForemanServer.CommandGatewayApprovalEvidenceTest do
     original = Application.fetch_env(:foreman_server, @switch)
 
     on_exit(fn ->
+      Application.delete_env(:foreman_server, :merge_gate_readers)
       RunPrMerge.clear_command_runner()
 
       case original do
@@ -417,10 +418,68 @@ defmodule ForemanServer.CommandGatewayApprovalEvidenceTest do
       assert {:ok, _} = approve(open_run)
     end
 
-    test "a rejected command of the batch refuses the approval, fires the telemetry event",
-         %{gh: _gh} do
+    for type <- ["run.pr.update", "run.pr.checks", "run.pr.risk"] do
+      test "a rejected #{type} refuses the approval and fires the telemetry event" do
+        type = unquote(type)
+        {_project_id, %{run_id: run_id}} = gated_run!()
+        reject_type(type, :boom)
+        attach_refused!()
+
+        assert {:error, {:evidence_not_recorded, ^type, :boom}} = approve(run_id)
+        assert_receive {:refused, %{run_id: ^run_id, type: ^type, reason: :boom}}
+
+        refute "merge_approve" in types(after_ready(run_id))
+        assert events(run_id, "MergeGateApproved") == []
+      end
+    end
+
+    test "a batch command that times out (exits) refuses the approval like a rejected one" do
       {_project_id, %{run_id: run_id}} = gated_run!()
-      reject_type("run.pr.risk", :boom)
+
+      :meck.expect(CommandRouter, :dispatch, fn command, timeout ->
+        if command.type == "run.pr.checks",
+          do: exit({:timeout, {GenServer, :call, [:actor, :dispatch, timeout]}}),
+          else: :meck.passthrough([command, timeout])
+      end)
+
+      attach_refused!()
+
+      assert {:error, {:evidence_not_recorded, "run.pr.checks", {:exit, {:timeout, _}}}} =
+               approve(run_id)
+
+      assert_receive {:refused, %{run_id: ^run_id, type: "run.pr.checks"}}
+      refute "merge_approve" in types(after_ready(run_id))
+      assert events(run_id, "MergeGateApproved") == []
+    end
+
+    test "a policy read that exits, or an invalid stored policy, is policy_unavailable" do
+      {_project_id, %{run_id: run_id}} = gated_run!()
+
+      Application.put_env(:foreman_server, :merge_gate_readers,
+        run: fn _run_id -> exit(:projection_down) end
+      )
+
+      assert {:error, {:policy_unavailable, {:exit, :projection_down}}} = approve(run_id)
+
+      Application.put_env(:foreman_server, :merge_gate_readers,
+        run: fn _run_id -> %{project_id: "p"} end,
+        project: fn "p" -> exit(:timeout) end
+      )
+
+      assert {:error, {:policy_unavailable, {:exit, :timeout}}} = approve(run_id)
+
+      Application.put_env(:foreman_server, :merge_gate_readers,
+        run: fn _run_id -> %{project_id: "p"} end,
+        project: fn "p" -> %{config: %{required_checks: "not a list"}} end
+      )
+
+      assert {:error, {:policy_unavailable, {:invalid_required_checks, _}}} = approve(run_id)
+
+      assert after_ready(run_id) == []
+      assert events(run_id, "MergeGateApproved") == []
+    end
+
+    defp attach_refused! do
       test_pid = self()
       handler = "gate-refused-#{token()}"
 
@@ -432,12 +491,6 @@ defmodule ForemanServer.CommandGatewayApprovalEvidenceTest do
       )
 
       on_exit(fn -> :telemetry.detach(handler) end)
-
-      assert {:error, {:evidence_not_recorded, "run.pr.risk", :boom}} = approve(run_id)
-      assert_receive {:refused, %{run_id: ^run_id, type: "run.pr.risk", reason: :boom}}
-
-      refute "merge_approve" in types(after_ready(run_id))
-      assert events(run_id, "MergeGateApproved") == []
     end
 
     test "an approval the aggregate refuses before GitHub is read reads nothing", %{gh: gh} do

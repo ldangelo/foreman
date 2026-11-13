@@ -182,6 +182,11 @@ defmodule ForemanServerWeb.CommandControllerMergeTest do
       for %{event_type: ^type, data: data} <- events, do: data
     end
 
+    setup do
+      ForemanServer.TestSupport.MeckScope.new_once!([ForemanServer.CommandRouter])
+      :ok
+    end
+
     test "the approval records a forced observation for the head first, then approves", %{
       run_id: run_id
     } do
@@ -205,7 +210,22 @@ defmodule ForemanServerWeb.CommandControllerMergeTest do
 
       assert [forced] = gate_events(run_id, "PrChecksChanged")
       assert ForemanServer.Aggregate.get(forced, :source) == "gate"
-      assert ForemanServer.Aggregate.get(forced, :observation_ref) != "forged"
+      nonce = ForemanServer.Aggregate.get(forced, :observation_ref)
+
+      # what the gateway stamped on the approval it dispatched: its own evidence, not the forged one
+      assert [%{payload: %{evidence: evidence} = stamped}] =
+               for(
+                 {_pid,
+                  {ForemanServer.CommandRouter, :dispatch, [%{type: "merge_approve"} = c | _]},
+                  _result} <- :meck.history(ForemanServer.CommandRouter),
+                 do: c
+               )
+
+      refute Map.has_key?(stamped, "evidence")
+      assert evidence.checks_ref == nonce
+      assert [%{"name" => "unit"}] = evidence.policy.required
+      assert is_binary(evidence.policy.version)
+      assert is_integer(evidence.now_ms)
       assert [_] = gate_events(run_id, "PrRiskRecorded")
       assert [_] = gate_events(run_id, "MergeGateApproved")
     end

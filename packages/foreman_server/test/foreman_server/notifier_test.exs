@@ -612,7 +612,7 @@ defmodule ForemanServer.NotifierTest do
 
   # TRD-022: an approval of a gated project appends a forced `run.pr.checks` (`source: "gate"`)
   # for every attempt. With a failing check on the PR the Notifier must not say "CI failed" for
-  # it, however long ago the last notification was; an ordinary (watch) observation still does.
+  # it; an ordinary (watch) observation still does.
   describe "a gated approval's forced observation does not notify (TRD-022)" do
     alias ForemanServer.{CommandRouter, PrObservation, RunPrMerge}
     alias ForemanServer.TestSupport.MeckScope
@@ -621,12 +621,10 @@ defmodule ForemanServer.NotifierTest do
       MeckScope.new_once!([CommandRouter])
       MeckScope.restore_on_exit!([CommandRouter])
 
-      # a dedupe window of 1 ms, so two attempts 20 ms apart are further apart than the window
       Application.put_env(:foreman_server, :messaging,
         enabled: true,
         provider: :slack,
-        slack: [webhook_url: @secret_url],
-        dedupe_window_ms: 1
+        slack: [webhook_url: @secret_url]
       )
 
       required = [%{"name" => "unit", "kind" => "check_run"}]
@@ -695,7 +693,10 @@ defmodule ForemanServer.NotifierTest do
       events
     end
 
-    test "two approvals further apart than dedupe_window_ms enqueue nothing; a watch observation does",
+    # Forced gate events never notify, and they do not use up the dedupe slot of the PR's
+    # "CI failed" (same `pr_url` and digest): the watch observation that follows, inside the
+    # default 300 s window, is still delivered.
+    test "forced gate observations of two approvals enqueue nothing; a watch observation still does",
          %{run_id: run_id, pr_url: pr_url, required: required} do
       # attempt one is refused after its evidence was recorded, so a second attempt is possible
       :meck.expect(CommandRouter, :dispatch, fn command, timeout ->
@@ -705,7 +706,6 @@ defmodule ForemanServer.NotifierTest do
       end)
 
       assert {:error, :injected} = approve_head(run_id)
-      Process.sleep(20)
       :meck.delete(CommandRouter, :dispatch, 2)
       assert {:ok, _} = approve_head(run_id)
 

@@ -457,10 +457,21 @@ defmodule ForemanServer.CommandGateway do
 
   # The policy of the run's project as it stands now: an unknown run, an unknown project or a
   # projection that does not answer is `{:policy_unavailable, _}`, never gate off.
+  # `:merge_gate_readers` (`[run: (run_id -> map | nil), project: (project_id -> map | nil)]`) is
+  # a test seam for the two projection reads; the default is the real projection.
   defp run_policy(run_id) do
-    case ProjectionStore.run(run_id) do
-      %{project_id: project_id} -> PrEvidence.project_policy(project_id)
-      _no_run -> {:error, {:policy_unavailable, :run_unknown}}
+    readers = Application.get_env(:foreman_server, :merge_gate_readers, [])
+    run_reader = Keyword.get(readers, :run, &ProjectionStore.run/1)
+
+    case run_reader.(run_id) do
+      %{project_id: project_id} ->
+        case Keyword.fetch(readers, :project) do
+          {:ok, project_reader} -> PrEvidence.project_policy(project_id, project_reader)
+          :error -> PrEvidence.project_policy(project_id)
+        end
+
+      _no_run ->
+        {:error, {:policy_unavailable, :run_unknown}}
     end
   catch
     :exit, reason -> {:error, {:policy_unavailable, {:exit, reason}}}
@@ -486,13 +497,22 @@ defmodule ForemanServer.CommandGateway do
     :exit, reason -> evidence_refused(run_id, "observation", {:exit, reason})
   end
 
+  # Each command of the batch is dispatched with `dispatch_system/2`'s own 5 s bound (the gate's
+  # batch does not share the caller's `timeout`: at most three commands, each with its own
+  # bound). A command that times out (an exit) refuses the approval like a rejected one.
   defp dispatch_evidence_batch(run_id, batch) do
     Enum.reduce_while(batch, :ok, fn command, :ok ->
-      case dispatch_system(command) do
+      case dispatch_batch_command(command) do
         {:ok, _spec} -> {:cont, :ok}
         {:error, reason} -> {:halt, evidence_refused(run_id, command.type, reason)}
       end
     end)
+  end
+
+  defp dispatch_batch_command(command) do
+    dispatch_system(command)
+  catch
+    :exit, reason -> {:error, {:exit, reason}}
   end
 
   defp evidence_refused(run_id, type, reason) do
