@@ -2488,7 +2488,7 @@ defmodule ForemanServer.MCP.Tools do
          code: "operator_only_setting",
          message:
            "required_checks is operator-only: it cannot be cleared over MCP " <>
-             "(use the operator API or `foreman project settings`)"
+             "(an operator clears it with `foreman project update --clear required_checks <id>`)"
        }}
     else
       :ok

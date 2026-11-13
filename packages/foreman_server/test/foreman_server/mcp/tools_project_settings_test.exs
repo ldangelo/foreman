@@ -227,6 +227,7 @@ defmodule ForemanServer.MCP.ToolsProjectSettingsTest do
                })
 
       assert message =~ "required_checks"
+      assert message =~ "foreman project update --clear required_checks <id>"
     end
 
     assert events(id, "ProjectUpdated") == []

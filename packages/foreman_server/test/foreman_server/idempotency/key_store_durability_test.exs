@@ -478,10 +478,21 @@ defmodule ForemanServer.Idempotency.KeyStoreDurabilityTest do
       assert :ok = KeyStore.require_durable()
     end
 
-    test "a switch that is not a boolean is an error, never read as off" do
+    test "a switch that is not a boolean is read as on and refused with a note naming it, never a raise" do
       Application.put_env(:foreman_server, @switch, "false")
 
-      assert_raise ArgumentError, ~r/must be a boolean/, fn -> KeyStore.require_durable() end
+      assert {:error, {:store_not_durable, note}} = KeyStore.require_durable()
+      assert note =~ "must be a boolean"
+      assert note =~ ~s("false")
+      assert note =~ KeyStore.durability_note()
+
+      # the predicate keeps raising: only require_durable/0 is total
+      assert_raise ArgumentError, ~r/must be a boolean/, fn ->
+        KeyStore.durable_store_required?()
+      end
+
+      use_fake_repo()
+      assert :ok = KeyStore.require_durable()
     end
   end
 

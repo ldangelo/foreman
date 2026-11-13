@@ -107,7 +107,7 @@ defmodule ForemanServerWeb.DoctorController do
     watcher = ForemanServer.PrWatcher.enabled?()
     monitor = ForemanServer.PrMonitor.enabled?()
     webhook = webhook_secret_set?()
-    gated = gated_projects()
+    {gated, unreadable} = gated_projects()
 
     detail =
       Enum.join(
@@ -116,11 +116,19 @@ defmodule ForemanServerWeb.DoctorController do
           "monitor: #{on_off(monitor)} (FOREMAN_PR_MONITOR_ENABLED=true; polls for a head that moves for any other reason)",
           "webhook secret: #{if webhook, do: "set", else: "not set"} (FOREMAN_GITHUB_WEBHOOK_SECRET; without it /webhooks/github answers 503)",
           "The merge gate does not depend on these: approval re-reads GitHub."
-        ] ++ Enum.map(gated, &gated_line/1),
+        ] ++ unreadable_lines(unreadable) ++ Enum.flat_map(gated, &gated_lines/1),
         "\n"
       )
 
     cond do
+      unreadable != nil ->
+        check(
+          "pr_observation",
+          :warn,
+          "Gated projects could not be read: #{unreadable}",
+          detail
+        )
+
       gated != [] and not monitor and not webhook ->
         check(
           "pr_observation",
@@ -148,20 +156,48 @@ defmodule ForemanServerWeb.DoctorController do
     end
   end
 
-  # Projects with `required_checks` set (`[]` included: the gate is on). Names, or ids when unnamed.
+  # `{names, nil}`, or `{[], reason}` when the projection cannot be read: an unreadable
+  # projection must not look like "no gated project", so the row says so and warns.
+  # Archived projects are skipped (they take no PRs); names are sorted.
   defp gated_projects do
-    for project <- ProjectionStore.list_projects(),
-        ForemanServer.ProjectSettings.from_config(Map.get(project, :config)).required_checks !=
-          nil do
-      Map.get(project, :name) || Map.get(project, :id) || Map.get(project, :project_id)
-    end
+    names =
+      for project <- ProjectionStore.list_projects(),
+          not archived?(project),
+          ForemanServer.ProjectSettings.from_config(Map.get(project, :config)).required_checks !=
+            nil do
+        to_string(
+          Map.get(project, :name) || Map.get(project, :id) || Map.get(project, :project_id)
+        )
+      end
+
+    {Enum.sort(names), nil}
   catch
-    :exit, _ -> []
+    :exit, reason -> {[], inspect(reason, limit: 5)}
   end
 
-  defp gated_line(name) do
-    "gated project #{name}: required_checks is set; a PR with more than 100 checks is read from " <>
-      "the newest 100 only, so a required check outside them is checks_truncated and not eligible."
+  defp archived?(project),
+    do: Map.get(project, :status) == "archived" or Map.get(project, :archived?) == true
+
+  defp unreadable_lines(nil), do: []
+  defp unreadable_lines(reason), do: ["gated projects could not be read: #{reason}"]
+
+  defp gated_lines(name) do
+    durable =
+      case ForemanServer.Idempotency.KeyStore.require_durable() do
+        :ok ->
+          []
+
+        {:error, {:store_not_durable, _note}} ->
+          [
+            "gated project #{name}: the idempotency store is not durable (see the Phase 1 gating line)"
+          ]
+      end
+
+    [
+      "gated project #{name}: required_checks is set; a PR with more than 100 checks is read from " <>
+        "the newest 100 only, so a required check outside them is checks_truncated and not eligible."
+      | durable
+    ]
   end
 
   defp summary(true, true), do: "watcher on, monitor on, webhook secret set"

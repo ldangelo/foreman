@@ -58,7 +58,13 @@ defmodule ForemanServerWeb.DoctorControllerTest do
 
   describe "pr_observation check (TRD-009)" do
     setup do
-      keys = [:pr_watcher, :pr_monitor_enabled, :github_webhook_secret]
+      keys = [
+        :pr_watcher,
+        :pr_monitor_enabled,
+        :github_webhook_secret,
+        :require_durable_store_for_gating
+      ]
+
       saved = Map.new(keys, &{&1, Application.fetch_env(:foreman_server, &1)})
 
       ForemanServer.TestSupport.ProjectionStoreReset.reset!()
@@ -159,6 +165,47 @@ defmodule ForemanServerWeb.DoctorControllerTest do
       row = pr_observation_row()
       assert row["status"] == "ok"
       refute row["detail"] =~ "gated project"
+    end
+
+    test "gated projects are listed sorted, archived ones are skipped (TRD-028)" do
+      b = register_gated_project("zz-gated")
+      a = register_gated_project("aa-gated")
+      archived = register_gated_project("mm-gated-archived")
+      assert {:ok, _} = ForemanServer.ProjectStore.archive(archived)
+
+      configure_observation(true, true, nil)
+      detail = pr_observation_row()["detail"]
+
+      refute detail =~ archived
+      assert {ia, _} = :binary.match(detail, "gated project #{a}")
+      assert {ib, _} = :binary.match(detail, "gated project #{b}")
+      assert ia < ib
+    end
+
+    test "an unreadable projection is a warning naming the failure, never a silent ok (TRD-028)" do
+      configure_observation(true, true, "s3cret-value")
+      :ok = :sys.suspend(ProjectionStore)
+
+      try do
+        row = pr_observation_row()
+        assert row["status"] == "warn"
+        assert row["title"] =~ "Gated projects could not be read"
+        assert row["detail"] =~ "gated projects could not be read:"
+      after
+        :ok = :sys.resume(ProjectionStore)
+      end
+    end
+
+    test "a gated project says so when the idempotency store is not durable (TRD-028)" do
+      id = register_gated_project("gated-nondurable")
+      configure_observation(true, true, nil)
+
+      Application.put_env(:foreman_server, :require_durable_store_for_gating, true)
+      detail = pr_observation_row()["detail"]
+      assert detail =~ "gated project #{id}: the idempotency store is not durable"
+
+      Application.put_env(:foreman_server, :require_durable_store_for_gating, false)
+      refute pr_observation_row()["detail"] =~ "idempotency store is not durable"
     end
 
     defp unique_project(prefix), do: "#{prefix}-#{System.unique_integer([:positive])}"

@@ -363,18 +363,38 @@ defmodule ForemanServer.Idempotency.KeyStore do
   `:require_durable_store_for_gating` is false; otherwise
   `{:error, {:store_not_durable, note}}` with the `durability_note/0` text, so a gated
   project is never set up or approved while keys would not survive a restart (the
-  note names the switches to turn on, whether the repo is missing or unreachable).
+  note names the switches to turn on, whether the repo is missing or unreachable). Total: a
+  switch that is not a boolean is read as on, and the note names the bad value.
   """
   @spec require_durable() :: :ok | {:error, {:store_not_durable, String.t()}}
   def require_durable do
-    if durable_store_required?() do
-      case durability() do
-        :durable -> :ok
-        not_durable -> {:error, {:store_not_durable, note_for(not_durable)}}
-      end
-    else
-      :ok
+    case switch_state() do
+      :off ->
+        :ok
+
+      on_or_invalid ->
+        case durability() do
+          :durable -> :ok
+          not_durable -> {:error, {:store_not_durable, refusal_note(on_or_invalid, not_durable)}}
+        end
     end
+  end
+
+  # `require_durable/0` is total: a switch that is not a boolean is read as the documented
+  # default (on), never as off and never as a raise, so a mistyped switch cannot turn a gated
+  # write into a crash. The refusal note names the bad value.
+  defp switch_state do
+    if durable_store_required?(), do: :on, else: :off
+  rescue
+    ArgumentError ->
+      {:invalid, Application.get_env(:foreman_server, :require_durable_store_for_gating)}
+  end
+
+  defp refusal_note(:on, not_durable), do: note_for(not_durable)
+
+  defp refusal_note({:invalid, value}, not_durable) do
+    "config :foreman_server, :require_durable_store_for_gating must be a boolean, got " <>
+      "#{inspect(value, limit: 5)}; read as on (the default). " <> note_for(not_durable)
   end
 
   @doc """
