@@ -49,14 +49,28 @@ defmodule ForemanServer.PrReport.Publisher do
   for them. Nothing is retried here; nothing in this module blocks, cancels or refuses a run
   or reads the merge gate.
 
-  `publish/2` is the one publish step: the start-up scan of TRD-035 reuses it. `post/2` is its
+  `publish/2` is the one publish step: the start-up scan reuses its eligibility. `post/2` is its
   publication half without the eligibility check.
+
+  ## Start-up scan (TRD-035)
+
+  `init/1` subscribes first, then returns `{:continue, :scan}`: the scan reads
+  `ProjectionStore.watched_prs/0` for records that are watched and open, hold a risk record for
+  their current head and no `evidence.report` (published or refused) for that head and digest, and
+  publishes each through the same task path as an event (`publish_from_stream/3`: the
+  eligibility of `publish/2`, so an ungated project or an unreadable policy is skipped, then the
+  report of the stream's risk record, then `post/2`, the single flight and the keyed effect with
+  adoption by marker). A refused report is never retried here, only by the operator command.
+  At most two publications run at the same time while the scan drains its queue; the
+  application start waits for nothing, and a failed read of the projection is logged.
 
   Configuration: `config :foreman_server, :pr_report_publisher, enabled: boolean` (read as
   `enabled != false`; `config/test.exs` sets `false`). Options of `start_link/1`, passed to
   `publish/2`: `:command_runner` and `:timeout_ms` (for `gh`, see `GitHub.PrComment`),
   `:secrets_fun` (`project_id -> {:ok, [String.t()]} | {:error, term()}`, default
-  `ProjectEnvironment.fetch_secrets/1`) and `:now_fun` (`-> ms`).
+  `ProjectEnvironment.fetch_secrets/1`), `:now_fun` (`-> ms`) and `:scan` (default `true`; the
+  application starts the publisher without it, so the start-up scan always runs there: a test
+  that exercises only the live trigger passes `false`).
   """
 
   use GenServer
@@ -80,6 +94,7 @@ defmodule ForemanServer.PrReport.Publisher do
 
   @open_statuses ~w(open conflicted)
   @max_detail 500
+  @scan_concurrency 2
 
   @type result ::
           {:skipped, atom()}
@@ -136,9 +151,14 @@ defmodule ForemanServer.PrReport.Publisher do
   `{:error, {:risk_record_unreadable, why}}` and nothing is written.
   """
   @spec publish_requested(map(), keyword()) :: result()
-  def publish_requested(request, opts \\ []) when is_map(request) and is_list(opts) do
-    with {:ok, t} <- trigger(request),
-         :ok <- eligible(t, true),
+  def publish_requested(request, opts \\ []) when is_map(request) and is_list(opts),
+    do: publish_from_stream(request, true, opts)
+
+  # The eligibility of `publish/2` (`retry?` lets a refused report through), then the report of
+  # the risk record the stream holds for the head and digest.
+  defp publish_from_stream(payload, retry?, opts) do
+    with {:ok, t} <- trigger(payload),
+         :ok <- eligible(t, retry?),
          {:ok, risk} <- read_risk_record(t) do
       guarded_post(%{t | risk: risk}, opts)
     end
@@ -189,11 +209,41 @@ defmodule ForemanServer.PrReport.Publisher do
 
     case ProjectionStore.subscribe(replay_existing: false) do
       :ok ->
-        {:ok, %{supervisor: supervisor, opts: opts, running: %{}, flights: %{}, pending: %{}}}
+        state = %{
+          supervisor: supervisor,
+          opts: opts,
+          running: %{},
+          flights: %{},
+          pending: %{},
+          scan_queue: []
+        }
+
+        {:ok, state, if(Keyword.get(opts, :scan, true), do: {:continue, :scan}, else: :infinity)}
 
       {:error, reason} ->
         {:stop, {:projection_subscribe_failed, reason}}
     end
+  end
+
+  # TRD-035: the events appended while the publisher was down never reach the subscription, so
+  # after it has subscribed it scans the projection for the PRs that still need a report. The
+  # scan runs here, after `init/1` returned (the supervision tree never waits for it), only
+  # reads the projection, and a failure of the read is logged, not a crash.
+  @impl true
+  def handle_continue(:scan, state) do
+    queue =
+      try do
+        for record <- ProjectionStore.watched_prs(),
+            payload = scan_candidate(record),
+            key = key(payload),
+            do: {key, payload}
+      catch
+        kind, _value ->
+          Logger.error("PrReport.Publisher start-up scan failed: #{kind}")
+          []
+      end
+
+    {:noreply, pump_scan(%{state | scan_queue: queue})}
   end
 
   @impl true
@@ -285,17 +335,61 @@ defmodule ForemanServer.PrReport.Publisher do
     result
   end
 
+  defp run_trigger({:scan, payload}, opts), do: publish_from_stream(payload, false, opts)
   defp run_trigger(payload, opts), do: publish(payload, opts)
 
   defp finish(state, ref) do
     {key, flights} = Map.pop(state.flights, ref)
     state = %{state | flights: flights, running: Map.delete(state.running, key)}
 
-    case Map.pop(state.pending, key) do
-      {nil, _pending} -> state
-      {payload, pending} -> start(%{state | pending: pending}, key, payload)
+    state =
+      case Map.pop(state.pending, key) do
+        {nil, _pending} -> state
+        {payload, pending} -> start(%{state | pending: pending}, key, payload)
+      end
+
+    pump_scan(state)
+  end
+
+  # The scan starts a publish only while fewer than `@scan_concurrency` are in flight, so a
+  # burst of PRs never starts unbounded `gh` calls; each finished task starts the next.
+  defp pump_scan(%{scan_queue: [{key, payload} | rest]} = state)
+       when map_size(state.running) < @scan_concurrency do
+    state = %{state | scan_queue: rest}
+
+    # a publication already in flight for the PR answers a newer trigger than the scan's
+    if Map.has_key?(state.running, key),
+      do: pump_scan(state),
+      else: pump_scan(start(state, key, {:scan, payload}))
+  end
+
+  defp pump_scan(state), do: state
+
+  # A watched, open record holding a risk record for its current head and no report for that
+  # head and digest. Whether the project is gated is decided by the publication step itself.
+  defp scan_candidate(%{watching: true, status: status, head_sha: head, evidence: evidence} = rec)
+       when status in @open_statuses and is_binary(head) and is_map(evidence) do
+    with %{head_sha: ^head, digest: digest} when is_binary(digest) <- Map.get(evidence, :risk),
+         false <- reported?(Map.get(evidence, :report), head, digest) do
+      %{
+        run_id: rec.run_id,
+        pr_url: rec.pr_url,
+        project_id: rec.project_id,
+        task_id: rec.task_id,
+        repo_id: Map.get(rec, :repo_id),
+        head_sha: head,
+        digest: digest
+      }
+    else
+      _other -> nil
     end
   end
+
+  defp scan_candidate(_record), do: nil
+
+  # published or refused: a refusal is retried by the operator command only
+  defp reported?(%{head_sha: head, digest: digest}, head, digest), do: true
+  defp reported?(_report, _head, _digest), do: false
 
   defp log_result({:error, reason}),
     do: Logger.error("PrReport.Publisher could not record an outcome: #{inspect(reason)}")
