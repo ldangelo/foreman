@@ -179,3 +179,83 @@ func TestRunRetryPrRequiresRepoID(t *testing.T) {
 		t.Fatalf("server was hit without --repo-id: %+v", env)
 	}
 }
+
+var waiveBase = []string{
+	"-id", "run-7", "-approver", "leo", "-identity", "github:ldangelo",
+	"-head-sha", "abc123", "-waive", "ci_failing, review_missing", "-reason", "  accepted risk  ",
+}
+
+// waiveArgs returns waiveBase with the named flag (and its value) removed.
+func waiveArgs(without string) []string {
+	var out []string
+	for i := 0; i < len(waiveBase); i += 2 {
+		if waiveBase[i] != without {
+			out = append(out, waiveBase[i], waiveBase[i+1])
+		}
+	}
+	return out
+}
+
+func TestRunWaiveEvidencePostsReasonsAsList(t *testing.T) {
+	env := captureCommand(t, func(c *client.Client) error { return runWaiveEvidence(c, waiveBase) })
+	if env == nil {
+		t.Fatal("server was never hit")
+	}
+	if env.Type != "run.pr.waive_evidence" {
+		t.Fatalf("type = %q, want run.pr.waive_evidence", env.Type)
+	}
+	reasons, ok := env.Payload["reasons"].([]any)
+	if !ok || len(reasons) != 2 || reasons[0] != "ci_failing" || reasons[1] != "review_missing" {
+		t.Fatalf("reasons = %#v, want the list [ci_failing review_missing] (split and trimmed)", env.Payload["reasons"])
+	}
+	for k, want := range map[string]any{
+		"run_id": "run-7", "approver": "leo", "approver_identity": "github:ldangelo",
+		"head_sha": "abc123", "reason": "  accepted risk  ",
+	} {
+		if env.Payload[k] != want {
+			t.Errorf("payload[%s] = %v, want %v", k, env.Payload[k], want)
+		}
+	}
+	// repo_id only when given; the gateway stamps policy_version, the CLI never sends it.
+	for _, k := range []string{"repo_id", "policy_version"} {
+		if _, present := env.Payload[k]; present {
+			t.Errorf("payload carries %s without being asked", k)
+		}
+	}
+	if len(env.Payload) != 6 {
+		t.Errorf("payload = %+v, want exactly 6 keys", env.Payload)
+	}
+}
+
+func TestRunWaiveEvidenceCarriesRepoIDAndDispatches(t *testing.T) {
+	env := captureCommand(t, func(c *client.Client) error {
+		return runRun(c, append([]string{"waive-evidence", "-repo-id", "b"}, waiveBase...))
+	})
+	if env == nil || env.Type != "run.pr.waive_evidence" || env.Payload["repo_id"] != "b" {
+		t.Fatalf("envelope = %+v, want run.pr.waive_evidence with repo_id b", env)
+	}
+}
+
+func TestRunWaiveEvidenceRejectsBadFlagsBeforeAnyRequest(t *testing.T) {
+	cases := map[string][]string{}
+	for _, f := range []string{"-id", "-approver", "-identity", "-head-sha", "-waive", "-reason"} {
+		cases["missing "+f] = waiveArgs(f)
+	}
+	for name, waive := range map[string]string{
+		"empty --waive":     "",
+		"trailing comma":    "ci_failing,",
+		"blank middle item": "ci_failing, ,review_missing",
+		"only separators":   ",",
+	} {
+		cases[name] = append(waiveArgs("-waive"), "-waive", waive)
+	}
+	cases["empty --reason"] = append(waiveArgs("-reason"), "-reason", "")
+
+	for name, args := range cases {
+		t.Run(name, func(t *testing.T) {
+			if env := captureCommand(t, func(c *client.Client) error { return runWaiveEvidence(c, args) }); env != nil {
+				t.Fatalf("server was hit with %+v; flags must be validated client-side", env)
+			}
+		})
+	}
+}
