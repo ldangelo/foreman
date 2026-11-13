@@ -9,6 +9,7 @@ defmodule ForemanServer.Aggregates.RunMultiGateTest do
 
   alias ForemanServer.Aggregates.Run
   alias ForemanServer.PrGate
+  alias ForemanServer.TestSupport.GateEvidence
   alias ForemanServer.Workflow.MergeGate
 
   @run_id "run-multi-gate"
@@ -60,7 +61,8 @@ defmodule ForemanServer.Aggregates.RunMultiGateTest do
           run_id: @run_id,
           approver: "leo",
           approver_identity: identity,
-          head_sha: head_sha || head_of(repo_id)
+          head_sha: head_sha || head_of(repo_id),
+          evidence: GateEvidence.off()
         },
         repo_id
       )

@@ -12,6 +12,13 @@ defmodule ForemanServer.ProjectionStore do
   event log via `read_all_streams_forward`. This ensures the projection is always
   consistent with the event store at startup.
 
+  A log that cannot be read at startup is not an empty log: `init/1` reads once, stops at
+  once with `{:event_log_read_failed, reason}` and registers nothing. The application supervisor
+  restarts the store within its budget (`Application.supervisor_opts/0`) and then stops the
+  application, so the store never serves an empty model after a failed read. A log that reads
+  but is empty starts an empty model. Start options (tests): `:event_reader` (a
+  `(start, count -> {:ok, events} | {:error, reason})` function), `:name` and `:now_ms`.
+
   ## Command path
 
   After `CommandRouter.append_events` succeeds, it calls
@@ -52,7 +59,8 @@ defmodule ForemanServer.ProjectionStore do
 
   @spec start_link(term()) :: GenServer.on_start()
   def start_link(init_arg) do
-    GenServer.start_link(__MODULE__, init_arg, name: __MODULE__)
+    name = if is_list(init_arg), do: Keyword.get(init_arg, :name, __MODULE__), else: __MODULE__
+    GenServer.start_link(__MODULE__, init_arg, name: name)
   end
 
   @doc "Return the projected state for a project, or nil if not found."
@@ -1239,7 +1247,12 @@ defmodule ForemanServer.ProjectionStore do
 
   @impl true
   def init(init_arg) do
-    {:ok, init_now_ms_fun(init_arg) |> rebuild_from_event_log() |> restore_subscribers()}
+    reader = init_event_reader(init_arg)
+    Process.put(:projection_event_reader, reader)
+
+    with {:ok, rebuilt} <- rebuild_from_event_log(init_now_ms_fun(init_arg), reader) do
+      {:ok, restore_subscribers(rebuilt)}
+    end
   end
 
   @impl true
@@ -2181,15 +2194,38 @@ defmodule ForemanServer.ProjectionStore do
   # Projection logic
   # -------------------------------------------------------------------------
 
-  defp rebuild_from_event_log(now_ms_fun) when is_function(now_ms_fun, 0) do
-    case rebuild_state_from_event_log(now_ms_fun) do
-      {:ok, rebuilt_state} -> rebuilt_state
-      {:error, _reason} -> initial_state()
+  # The boot read (TRD-031, AC-005-3). A log that cannot be read is NOT an empty log: an
+  # empty model would show every run as absent and every PR as unwatched. The store reads
+  # once and, on failure, stops at once (no sleep: a stalled `init/1` would stall the
+  # supervisor too); the application supervisor restarts it within its budget and then stops
+  # the application (`Application.supervisor_opts/0`), so nothing serves an empty model.
+  defp rebuild_from_event_log(now_ms_fun, reader) when is_function(now_ms_fun, 0) do
+    case rebuild_state_from_event_log(now_ms_fun, reader) do
+      {:ok, rebuilt_state} ->
+        {:ok, rebuilt_state}
+
+      {:error, reason} ->
+        Logger.error(
+          "ProjectionStore: the event log could not be read: " <>
+            inspect(reason, limit: 5, printable_limit: 120)
+        )
+
+        {:stop, {:event_log_read_failed, reason}}
     end
   end
 
+  # A runtime `{:rebuild}` reads through the reader this process booted with, so a failed read
+  # replies the error and keeps the current state (the store is serving; it must not go empty).
   defp rebuild_state_from_event_log(now_ms_fun) when is_function(now_ms_fun, 0) do
-    case EventStore.read_all_streams_forward(0, 99_999_999) do
+    rebuild_state_from_event_log(
+      now_ms_fun,
+      Process.get(:projection_event_reader, &EventStore.read_all_streams_forward/2)
+    )
+  end
+
+  defp rebuild_state_from_event_log(now_ms_fun, reader)
+       when is_function(now_ms_fun, 0) and is_function(reader, 2) do
+    case reader.(0, 99_999_999) do
       {:ok, events} ->
         {:ok,
          Enum.reduce(events, initial_state(), fn event, acc ->
@@ -5671,6 +5707,18 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   defp init_now_ms_fun(_init_arg), do: resolve_now_ms_fun()
+
+  # The boot read of the event log. Production passes nothing and reads the real log; a test
+  # injects a reader (`fn start, count -> {:ok, events} | {:error, reason} end`) to prove the
+  # failed-read path without touching the global store.
+  defp init_event_reader(init_arg) when is_list(init_arg) do
+    case Keyword.get(init_arg, :event_reader) do
+      reader when is_function(reader, 2) -> reader
+      _ -> &EventStore.read_all_streams_forward/2
+    end
+  end
+
+  defp init_event_reader(_init_arg), do: &EventStore.read_all_streams_forward/2
 
   # An ABSENT declaration reads as the empty list, because "declared nothing"
   # and "declared an empty list" mean the same thing to the approval guard. A

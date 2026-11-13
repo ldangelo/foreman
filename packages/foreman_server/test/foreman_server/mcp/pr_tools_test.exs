@@ -8,12 +8,19 @@ defmodule ForemanServer.MCP.PrToolsTest do
   alias ForemanServer.MCP.{Dispatch, Policy, ToolError, Tools}
   alias ForemanServer.TestSupport.PrSurfaceSupport
   alias ForemanServer.TestSupport.PrWatchSupport
+  alias ForemanServer.TestSupport.MeckScope
 
   @endpoint ForemanServerWeb.Endpoint
   @token "pr-tools-token"
   @write_tools ["foreman_pr_fix", "foreman_pr_watch_stop"]
 
+  setup_all do
+    {:ok, _} = Application.ensure_all_started(:meck)
+    MeckScope.new_once!([ForemanServer.ProjectionStore])
+  end
+
   setup do
+    MeckScope.restore_on_exit!([ForemanServer.ProjectionStore])
     previous_mcp = Application.get_env(:foreman_server, :mcp, [])
     previous_token = Application.get_env(:foreman_server, :api_bearer_token)
     Application.put_env(:foreman_server, :api_bearer_token, @token)
@@ -47,6 +54,16 @@ defmodule ForemanServer.MCP.PrToolsTest do
     |> json_response(200)
   end
 
+  defp strip_clock(%{"prs" => prs} = body),
+    do: %{
+      body
+      | "prs" =>
+          Enum.map(
+            prs,
+            &update_in(&1, ["eligibility"], fn e -> Map.delete(e, "evaluated_at") end)
+          )
+    }
+
   # Replace the gateway's operator path with a recorder; everything else passes through.
   defp record_gateway(reply) do
     test = self()
@@ -62,7 +79,10 @@ defmodule ForemanServer.MCP.PrToolsTest do
 
   test "foreman_pr_status returns exactly what HTTP returns, as a read tool", ctx do
     assert {:ok, body} = Tools.call_tool("foreman_pr_status", %{run_id: ctx.run_id})
-    assert body |> Jason.encode!() |> Jason.decode!() == http_prs(ctx.run_id)
+    # `evaluated_at` is the clock of each read: the two reads differ in it and in nothing else.
+    assert strip_clock(body |> Jason.encode!() |> Jason.decode!()) ==
+             strip_clock(http_prs(ctx.run_id))
+
     assert length(body.prs) == 2
 
     assert {:error, %ToolError{code: "NOT_FOUND"}} =
@@ -72,6 +92,21 @@ defmodule ForemanServer.MCP.PrToolsTest do
   end
 
   defp tool_names, do: Enum.map(Dispatch.components(), & &1.name)
+
+  test "foreman_pr_status is a projection_unavailable tool error, never an empty list, when the store does not answer",
+       ctx do
+    :meck.expect(ForemanServer.ProjectionStore, :run, fn _run_id ->
+      exit({:timeout, {GenServer, :call, [ForemanServer.ProjectionStore, :x, 5000]}})
+    end)
+
+    assert {:error, %ToolError{code: "projection_unavailable", message: message}} =
+             Tools.call_tool("foreman_pr_status", %{run_id: ctx.run_id})
+
+    assert message =~ "unknown"
+    # The coarse cause only: no process names, hosts or stack frames.
+    assert message =~ "(timeout)"
+    refute message =~ "GenServer"
+  end
 
   describe "writes disallowed (default policy)" do
     test "the write tools are hidden and refused", ctx do

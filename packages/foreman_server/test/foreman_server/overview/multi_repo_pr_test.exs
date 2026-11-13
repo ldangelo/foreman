@@ -24,7 +24,20 @@ defmodule ForemanServer.Overview.MultiRepoPrTest do
   setup do
     ProjectionStoreReset.reset!()
     on_exit(&ProjectionStoreReset.reset!/0)
+    register_project!(%{})
     :ok
+  end
+
+  # A registered project: a PR of an unknown project has unknown evidence (TRD-024). `config`
+  # holds the project's settings (`required_checks` turns the evidence gate on).
+  defp register_project!(config) do
+    :ok =
+      ProjectionStore.apply_events([
+        %{
+          event_type: "ProjectRegistered",
+          payload: %{project_id: @project, path: "/r/" <> @project, config: config}
+        }
+      ])
   end
 
   defp ev(type, payload), do: %{event_type: type, payload: payload}
@@ -349,6 +362,243 @@ defmodule ForemanServer.Overview.MultiRepoPrTest do
 
       assert counts == overview.counts
       assert attention == overview.attention
+    end
+  end
+
+  # TRD-024: each PR of a run shows its OWN evidence, and the thread waits on the operator while
+  # a pending PR's evidence is ineligible or unknown.
+  describe "approval evidence per PR" do
+    @unit %{"name" => "unit", "kind" => "check_run"}
+    @hostile "<script>alert('f')</script>"
+
+    # Everything the gate reads for one PR: a passing required check, a clean findings record
+    # (with one declined minor finding carrying hostile text) and a risk record, all for `head`.
+    defp evidence(run_id, repo_id, url, head) do
+      base = %{run_id: run_id, pr_url: url, head_sha: head}
+
+      [
+        ev(
+          "PrChecksChanged",
+          repo(
+            Map.merge(base, %{
+              project_id: @project,
+              task_id: "t-" <> run_id,
+              pr_status: "open",
+              checks_state: "passing",
+              failing: [],
+              checks: [%{"name" => "unit", "kind" => "check_run", "state" => "passing"}],
+              observed_at: 1_000_000,
+              evidence_digest: "ed-#{head}",
+              digest: "d-#{head}",
+              observation_seq: 1
+            }),
+            repo_id
+          )
+        ),
+        ev(
+          "ReviewFindingsRecorded",
+          repo(
+            Map.merge(base, %{
+              status: "recorded",
+              digest: "fd-#{head}",
+              findings: [
+                %{
+                  "severity" => "minor",
+                  "disposition" => "declined",
+                  "description" => "finding of #{head}: #{@hostile}"
+                }
+              ]
+            }),
+            repo_id
+          )
+        ),
+        ev(
+          "PrRiskRecorded",
+          repo(
+            Map.merge(base, %{
+              level: "low",
+              rubric_version: "1",
+              digest: "rd-#{head}",
+              findings_digest: "fd-#{head}",
+              seq: 1
+            }),
+            repo_id
+          )
+        )
+      ]
+    end
+
+    setup do
+      register_project!(%{required_checks: [@unit]})
+    end
+
+    test "each PR of a run carries its own evidence, not the primary's" do
+      two_repo_run()
+      apply!(evidence(@run, nil, @url_a, "sha-1"))
+
+      assert %{"evidence" => a} = row_for(@url_a)
+      assert %{"evidence" => b} = row_for(@url_b)
+
+      assert a["pr_url"] == @url_a
+      assert a["status"] == "eligible"
+      assert a["reasons"] == []
+      assert a["risk"]["level"] == "low"
+      assert [%{"description" => description}] = a["findings"]["items"]
+      assert description =~ "finding of sha-1"
+
+      assert b["pr_url"] == @url_b
+      assert b["status"] == "ineligible"
+      codes = Enum.map(b["reasons"], & &1["code"])
+      assert "findings_absent" in codes and "risk_missing" in codes
+      assert b["findings"] == nil and b["risk"] == nil
+    end
+
+    test "a's evidence for its own head does not clear b's: the thread waits on the operator" do
+      two_repo_run()
+      apply!(evidence(@run, nil, @url_a, "sha-1"))
+
+      assert classification() == {:waiting_on_you, :evidence_blocked}
+      assert :evidence_blocked in Overview.attention(@project).reasons
+
+      apply!(evidence(@run, "b", @url_b, "sha-2"))
+      assert classification() == {:ready_for_review, :pr_ready}
+    end
+
+    test "evidence recorded for another head blocks the PR" do
+      two_repo_run()
+      apply!(evidence(@run, nil, @url_a, "sha-1") ++ evidence(@run, "b", @url_b, "sha-2"))
+
+      apply!([
+        ev("ReviewFindingsRecorded", %{
+          run_id: @run,
+          repo_id: "b",
+          pr_url: @url_b,
+          head_sha: "older-head",
+          status: "recorded",
+          findings: []
+        })
+      ])
+
+      assert classification() == {:waiting_on_you, :evidence_blocked}
+
+      assert %{"evidence" => %{"reasons" => reasons}} = row_for(@url_b)
+      assert "findings_other_sha" in Enum.map(reasons, & &1["code"])
+    end
+
+    test "evidence waived by the operator does not block: the thread is ready for review" do
+      two_repo_run()
+      apply!(evidence(@run, nil, @url_a, "sha-1"))
+
+      # b has no findings (waivable `findings_absent`) and an operator waiver for them
+      without_findings =
+        Enum.reject(
+          evidence(@run, "b", @url_b, "sha-2"),
+          &(&1.event_type == "ReviewFindingsRecorded")
+        )
+
+      apply!(without_findings)
+      assert classification() == {:waiting_on_you, :evidence_blocked}
+
+      apply!([
+        ev("PrEvidenceWaived", %{
+          run_id: @run,
+          repo_id: "b",
+          pr_url: @url_b,
+          head_sha: "sha-2",
+          reasons: ["findings_absent"],
+          policy_version: ForemanServer.PrEvidence.policy_version([@unit]),
+          reason: "review ran out of band",
+          approver_identity: "leo",
+          waived_at: 5
+        })
+      ])
+
+      assert %{"evidence" => %{"status" => "waived"}} = row_for(@url_b)
+      assert classification() == {:ready_for_review, :pr_ready}
+    end
+
+    test "a PR whose gate is not pending is not judged: bad evidence beside a pending eligible PR" do
+      two_repo_run()
+      apply!(evidence(@run, nil, @url_a, "sha-1"))
+      # b has no evidence at all but its gate was reset to none; a is pending and eligible
+      apply!([ev("PrReset", %{run_id: @run, repo_id: "b", pr_url: @url_b})])
+
+      assert %{"evidence" => %{"status" => "ineligible"}} = row_for(@url_b)
+      assert classification() == {:ready_for_review, :pr_ready}
+    end
+
+    test "b's approved gate lands the thread whatever a's evidence says" do
+      two_repo_run()
+      apply!([gate_approved(@run, "b")])
+      assert classification() == {:landing, :merge_in_flight}
+    end
+
+    test "a merged PR with bad evidence no longer blocks; the other PR's evidence decides" do
+      two_repo_run()
+      apply!(evidence(@run, "b", @url_b, "sha-2") ++ [merged(@run, nil, @url_a, 1)])
+      assert classification() == {:ready_for_review, :pr_ready}
+    end
+
+    test "with the gate off the same PRs read as they did before" do
+      register_project!(%{})
+      two_repo_run()
+
+      assert classification() == {:ready_for_review, :pr_ready}
+      assert %{"evidence" => %{"status" => "off", "reasons" => []}} = row_for(@url_a)
+    end
+
+    test "a PR of a project the store does not know has unknown evidence and blocks" do
+      ProjectionStoreReset.reset!()
+      two_repo_run()
+
+      assert classification() == {:waiting_on_you, :evidence_blocked}
+      assert %{"evidence" => %{"status" => "unknown", "reasons" => [reason]}} = row_for(@url_a)
+      assert reason["code"] == "evidence_unreadable"
+    end
+
+    test "the project's policy is read once per classification, not once per PR" do
+      for n <- 1..3 do
+        run = "many-#{n}"
+        apply!(started(run, []) ++ opened(run, nil, "https://github.com/acme/m/pull/#{n}", n))
+      end
+
+      calls =
+        count_calls({ForemanServer.PrEvidence, :project_policy, 2}, fn ->
+          %{counts: counts} = Overview.summary(@project)
+          assert counts.waiting_on_you == 3
+        end)
+
+      assert calls == 1
+    end
+  end
+
+  # The number of calls `mfa` receives in this process while `fun` runs, counted by a separate
+  # tracer process (a process does not receive its own trace messages).
+  defp count_calls({module, _function, _arity} = mfa, fun) do
+    test = self()
+    tracer = spawn_link(fn -> tracer_loop(test, 0) end)
+    {:module, ^module} = Code.ensure_loaded(module)
+    :erlang.trace_pattern(mfa, true, [:local])
+    :erlang.trace(self(), true, [:call, {:tracer, tracer}])
+
+    try do
+      fun.()
+    after
+      :erlang.trace(self(), false, [:call])
+      :erlang.trace_pattern(mfa, false, [:local])
+    end
+
+    ref = :erlang.trace_delivered(self())
+    assert_receive {:trace_delivered, _pid, ^ref}
+    send(tracer, :report)
+    assert_receive {:trace_calls, count}
+    count
+  end
+
+  defp tracer_loop(test, count) do
+    receive do
+      {:trace, _pid, :call, _mfa} -> tracer_loop(test, count + 1)
+      :report -> send(test, {:trace_calls, count})
     end
   end
 end

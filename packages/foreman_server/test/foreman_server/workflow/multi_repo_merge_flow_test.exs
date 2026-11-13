@@ -30,6 +30,12 @@ defmodule ForemanServer.Workflow.MultiRepoMergeFlowTest do
     :ok =
       ForemanServer.ProjectionStore.apply_events([%{event_type: "RunStarted", payload: started}])
 
+    # The gate reads the run's project policy: the project must be known to the projection.
+    :ok =
+      ForemanServer.ProjectionStore.apply_events([
+        %{event_type: "ProjectRegistered", payload: %{project_id: "project-mm", path: nil}}
+      ])
+
     # a first, b last: a merge that resolved "the last PrReady" would pick b's.
     ready(run_id, nil, @url_a, @sha_a)
     ready(run_id, "b", @url_b, @sha_b)

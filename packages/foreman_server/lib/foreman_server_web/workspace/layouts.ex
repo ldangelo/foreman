@@ -52,6 +52,14 @@ defmodule ForemanServerWeb.Workspace.Layouts do
           .ws-main { max-width: 1440px; margin: 0 auto; padding: 24px; }
           .ws-muted { color: var(--muted); }
           .ws-error { color: var(--err); font-weight: 600; }
+          .pr-evidence { margin: 6px 0; padding: 6px 10px; border-left: 3px solid var(--border);
+            font-size: 13px; overflow-wrap: anywhere; }
+          .pr-evidence p, .pr-evidence ul { margin: 2px 0; }
+          .pr-evidence ul { padding-left: 18px; }
+          .pr-evidence[data-evidence-status="eligible"] { border-left-color: var(--ok); }
+          .pr-evidence[data-evidence-status="waived"] { border-left-color: var(--warn); }
+          .pr-evidence[data-evidence-status="ineligible"],
+          .pr-evidence[data-evidence-status="unknown"] { border-left-color: var(--err); }
 
           /* header */
           .ws-header { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 12px 16px;

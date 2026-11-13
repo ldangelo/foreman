@@ -35,6 +35,12 @@ defmodule ForemanServer.RunPrMergeTest do
 
     :ok = ProjectionStore.apply_events([%{event_type: "RunStarted", payload: started}])
 
+    # The gate reads the run's project policy: the project must be known to the projection.
+    :ok =
+      ProjectionStore.apply_events([
+        %{event_type: "ProjectRegistered", payload: %{project_id: "project-pr-merge", path: nil}}
+      ])
+
     {:ok, _} =
       CommandGateway.dispatch_system(%{
         type: "run.pr.ready",
@@ -286,7 +292,9 @@ defmodule ForemanServer.RunPrMergeTest do
       assert [event] = events(run_id, "MergeGateApproved")
 
       assert Map.keys(event) |> Enum.sort() ==
-               ~w(approved_at approver approver_identity head_sha run_id)
+               ~w(approved_at approver approver_identity evidence head_sha run_id)
+
+      assert %{"status" => "off", "inputs" => %{"checks_head_sha" => nil}} = event["evidence"]
     end
 
     test "the head GitHub shows is the authority, not the one the PR watch last recorded", %{
@@ -679,6 +687,9 @@ defmodule ForemanServer.RunPrMergeTest do
           %EventStore.EventData{event_type: type, data: data, metadata: %{}}
         end)
       )
+
+    # The gate reads the run's project policy through the projection.
+    :ok = ProjectionStore.apply_events([%{event_type: "RunStarted", payload: ids}])
 
     %{run_id: run_id, pr_url: pr_url}
   end

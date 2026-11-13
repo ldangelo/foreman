@@ -9,6 +9,18 @@ defmodule ForemanServer.OverviewTest do
   setup do
     ProjectionStoreReset.reset!()
     on_exit(&ProjectionStoreReset.reset!/0)
+    # A PR whose project is unknown has unknown evidence (TRD-024): these fixtures use registered,
+    # gate-off projects, the shape of a real one.
+    :ok =
+      ProjectionStore.apply_events(
+        for project <- ["p", "q"] do
+          %{
+            event_type: "ProjectRegistered",
+            payload: %{project_id: project, path: "/r/" <> project, config: %{}}
+          }
+        end
+      )
+
     :ok
   end
 

@@ -28,6 +28,7 @@ defmodule ForemanServer.Overview.Group do
   |   |  | `:ci_failing` | `pr_state :open` and `checks_state :failing`, even while the merge gate is pending |
   |   |  | `:changes_requested` | `pr_state :open` and `review_state :changes_requested` (an outstanding CHANGES_REQUESTED review) |
   |   |  | `:review_threads` | `pr_state :open` and `review_state :threads_unresolved` (an unresolved review thread) |
+  |   |  | `:evidence_blocked` | `pr_state :open`, `merge_gate :pending` and `evidence_blocked?` (the approval gate's evidence is ineligible or unknown). Rule position: after `:merge_in_flight`, before `:pr_ready`, so an approved gate lands and a pending, blocked one waits on the operator |
   | 3 | `:landing` | `:merge_in_flight` | `pr_state :open` and `merge_gate :approved` |
   | 4 | `:ready_for_review` | `:pr_ready` | `pr_state :open` and `merge_gate :pending` |
   |   |  | `:review_ready` | status `completed`, verdict `met`/`partially_met`, `pr_state :open` |
@@ -76,6 +77,7 @@ defmodule ForemanServer.Overview.Group do
     :changes_requested,
     :review_threads,
     :merge_in_flight,
+    :evidence_blocked,
     :pr_ready,
     :review_ready,
     :in_flight,
@@ -106,6 +108,7 @@ defmodule ForemanServer.Overview.Group do
           | :changes_requested
           | :review_threads
           | :merge_in_flight
+          | :evidence_blocked
           | :pr_ready
           | :review_ready
           | :in_flight
@@ -148,6 +151,7 @@ defmodule ForemanServer.Overview.Group do
       i.pr_state == :open and i.checks_state == :failing -> {:waiting_on_you, :ci_failing}
       i.pr_state == :open and i.review_state != :none -> {:waiting_on_you, review_reason(i)}
       i.pr_state == :open and i.merge_gate == :approved -> {:landing, :merge_in_flight}
+      evidence_blocked?(i) -> {:waiting_on_you, :evidence_blocked}
       i.pr_state == :open and i.merge_gate == :pending -> {:ready_for_review, :pr_ready}
       reviewed_open_pr?(i) -> {:ready_for_review, :review_ready}
       i.status in @working -> {:working, :in_flight}
@@ -157,6 +161,11 @@ defmodule ForemanServer.Overview.Group do
       true -> {:idle, :no_pr}
     end
   end
+
+  defp evidence_blocked?(%Input{pr_state: :open, merge_gate: :pending, evidence_blocked?: true}),
+    do: true
+
+  defp evidence_blocked?(_input), do: false
 
   defp review_reason(%Input{review_state: :changes_requested}), do: :changes_requested
   defp review_reason(%Input{review_state: :threads_unresolved}), do: :review_threads

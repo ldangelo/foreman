@@ -66,7 +66,8 @@ defmodule ForemanServer.PrEvidence do
       is a list and left as it was for one that has none or a non-list.
     * `waiver` - `%{head_sha, codes, policy_version, reason, waived_by, waived_at}`, `codes` a
       sorted, de-duplicated list of strings; set by `PrEvidenceWaived` and replacing any earlier one.
-    * `risk` - `%{head_sha, level, rubric_version, digest, findings_digest, seq, recorded_at}`,
+    * `risk` - `%{head_sha, level, rubric_version, digest, findings_digest, rationale,
+      instructions, seq, recorded_at}`,
       set by `PrRiskRecorded` (TRD-018) with the head it was classified for; a head move keeps it.
     * `report` - `%{head_sha, digest, status, reason, detail, comment_id, comment_url,
       superseded, recorded_at}`, set by `PrCommentPublished` (TRD-021) with the head and digest
@@ -244,9 +245,10 @@ defmodule ForemanServer.PrEvidence do
   end
 
   # TRD-018: the risk record of the head it was classified for. Kept with ITS OWN head, like the
-  # findings, so a head move neither voids it nor lets it read as the new head's. Only what a
-  # reader compares is kept (the head, the two digests, the version, the level); the full
-  # record is in the event.
+  # findings, so a head move neither voids it nor lets it read as the new head's. What a reader
+  # compares (the head, the two digests, the version, the level) is kept, and the `rationale` and
+  # `instructions` the status read shows (TRD-023); both are bounded by the rubric and the
+  # handler. The rest of the record (evidence summary, unresolved findings) is in the event.
   defp apply_evidence(record, "PrRiskRecorded", payload) do
     put_evidence(record, :risk, %{
       head_sha: get(payload, :head_sha),
@@ -254,6 +256,8 @@ defmodule ForemanServer.PrEvidence do
       rubric_version: get(payload, :rubric_version),
       digest: get(payload, :digest),
       findings_digest: get(payload, :findings_digest),
+      rationale: list_or_empty(get(payload, :rationale)),
+      instructions: list_or_empty(get(payload, :instructions)),
       seq: get(payload, :seq),
       recorded_at: get(payload, :recorded_at)
     })
@@ -304,6 +308,96 @@ defmodule ForemanServer.PrEvidence do
   """
   @spec waivable_codes() :: [String.t()]
   def waivable_codes, do: Enum.map(@waivable, &Atom.to_string/1)
+
+  @doc """
+  The actions an operator may take on a PR whose eligibility is `eligibility` (TRD-023, reused by
+  TRD-024): a list of `%{action, command, codes}` in a fixed order, from a closed set.
+  `ctx` is `%{eligibility, merge_gate, run_status}` (`merge_gate` `:pending | "pending" | ...`,
+  `run_status` the run's status string).
+
+    * `fix_ci` (`run.pr.fix_ci`): a `failing` reason.
+    * `rerun_review` (`command: nil`: no command re-runs a review for a completed run): any
+      `findings_*` reason.
+    * `waive` (`run.pr.waive_evidence`): the gate is pending and a waivable reason (`waivable_codes/0`)
+      is not covered by an applying waiver; a waiver that no longer applies covers nothing, so it
+      is offered again.
+    * `publish` (`run.pr.publish_report`): a gated PR the command accepts (watched and open or conflicted, `PrWatch.watched_open?/1`) whose risk record for
+      its head has no published report for that head and digest.
+    * `reset` (`run.reset`): the run is `failed`, `stuck`, `blocked` or `paused` and a `findings_*`
+      reason is present.
+
+  Display only: it decides nothing and refuses nothing.
+  """
+  @spec next_actions(map() | nil, map()) :: [
+          %{action: String.t(), command: String.t() | nil, codes: [String.t()]}
+        ]
+  def next_actions(record, %{eligibility: %Eligibility{} = eligibility} = ctx) do
+    codes = eligibility.reasons |> Enum.map(& &1.code) |> Enum.uniq()
+    findings = Enum.filter(codes, &findings_code?/1)
+
+    [
+      action("fix_ci", "run.pr.fix_ci", Enum.filter(codes, &(&1 == :failing))),
+      action("rerun_review", nil, findings),
+      action("waive", "run.pr.waive_evidence", waive_codes(codes, ctx)),
+      publish_action(record, eligibility),
+      action(
+        "reset",
+        "run.reset",
+        if(get(ctx, :run_status) in ["failed", "stuck", "blocked", "paused"],
+          do: findings,
+          else: []
+        )
+      )
+    ]
+    |> Enum.reject(&is_nil/1)
+  end
+
+  def next_actions(_record, _ctx), do: []
+
+  defp action(_name, _command, []), do: nil
+
+  defp action(name, command, codes),
+    do: %{
+      action: name,
+      command: command,
+      codes: codes |> Enum.map(&Atom.to_string/1) |> Enum.sort()
+    }
+
+  defp findings_code?(code),
+    do:
+      code in [
+        :findings_absent,
+        :findings_malformed,
+        :findings_legacy_format,
+        :findings_other_sha
+      ]
+
+  defp waive_codes(codes, ctx) do
+    if get(ctx, :merge_gate) in [:pending, "pending"],
+      do: Enum.filter(codes, &(&1 in @waivable)),
+      else: []
+  end
+
+  # A gated, watched and open PR (what the command accepts), with a risk record for its head and no published
+  # report for that head and digest. A refused report is not a published one.
+  defp publish_action(record, %Eligibility{status: status, head_sha: head})
+       when status in [:eligible, :ineligible, :waived] and is_binary(head) do
+    evidence = evidence_of(record)
+    risk = Map.get(evidence, :risk)
+    report = Map.get(evidence, :report)
+
+    published? =
+      is_map(report) and get(report, :status) == "published" and get(report, :head_sha) == head and
+        get(report, :digest) == get(risk, :digest)
+
+    open? = ForemanServer.Aggregates.Run.PrWatch.watched_open?(record)
+
+    if open? and is_map(risk) and get(risk, :head_sha) == head and not published?,
+      do: %{action: "publish", command: "run.pr.publish_report", codes: []},
+      else: nil
+  end
+
+  defp publish_action(_record, _eligibility), do: nil
 
   @type ctx :: %{
           head_sha: String.t() | nil,

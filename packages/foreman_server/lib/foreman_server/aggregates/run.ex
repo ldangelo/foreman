@@ -934,12 +934,21 @@ defmodule ForemanServer.Aggregates.Run do
   # operator reviewed (`head_sha`, required): `CommandGateway` has already read it back from GitHub,
   # so what is recorded is a commit that was the PR's head when it was approved. A later push voids
   # the approval (`run.pr.rehold`); the pin is never moved to the new head.
+  #
+  # TRD-036: the approval is also decided on evidence. `CommandGateway` stamps `evidence`
+  # (`policy`, `checks_ref`, `now_ms`) after it has observed the PR for THIS approval (TRD-022);
+  # `decide_evidence/4` validates it, runs `PrEvidence.evaluate/2` over the record of the PR the gate
+  # holds and either refuses (nothing is appended, `PrGate` is not touched) or returns the decision
+  # that `MergeGateApproved` records. The decision reads no clock and no network: the time is the
+  # stamped `now_ms`. Only the approval's own `approved_at` is stamped here, as before.
   def handle_command(state, %{type: "merge_approve", payload: payload}) do
     with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
          :ok <- require_exists(state, run_id),
          {:ok, repo_key} <- repo_key(payload),
          :ok <- ensure_merge_gate_pending(state, repo_key),
-         {:ok, %Approval{} = approval} <- validate_approval(payload) do
+         {:ok, %Approval{} = approval} <- validate_approval(payload),
+         {:ok, decision} <-
+           decide_evidence(state, repo_key, approval, Aggregate.get(payload, :evidence)) do
       :ok =
         PrGate.record_approved(
           run_id,
@@ -959,7 +968,8 @@ defmodule ForemanServer.Aggregates.Run do
                approver: approval.approver,
                approver_identity: approval.approver_identity,
                head_sha: approval.head_sha,
-               approved_at: System.system_time(:millisecond)
+               approved_at: System.system_time(:millisecond),
+               evidence: decision
              },
              repo_key
            )
@@ -1322,6 +1332,121 @@ defmodule ForemanServer.Aggregates.Run do
       nil -> {:error, {:merge_gate_not_found, :run, repo_key}}
     end
   end
+
+  # TRD-036. The decision of `merge_approve` on the evidence `CommandGateway` stamped.
+  #
+  # `raw` is the payload's `evidence`: `%{policy: nil | %{required, version}, checks_ref, now_ms}`.
+  # It is validated first (`stamped_evidence/1`), then `PrEvidence.evaluate/2` runs over the record
+  # of the PR the gate holds (`merge_pin/2` names it, `state.pr_watch` holds it) with the head the
+  # operator approved. Whether the gate is on is the stamped policy's: never a policy read from the
+  # record, because the record's policy is whatever the last observation saw.
+  #
+  # Who can reach this: `CommandGateway.dispatch_operator/2` (the HTTP/CLI operator path) always
+  # replaces `evidence` with its own stamp (`CommandGateway.gate_evidence/2`), and the gateway
+  # drops a caller's `evidence` when it stamps none. Any other in-process caller of
+  # `CommandGateway.dispatch_system/2` or `CommandRouter.dispatch/2` can send a payload of its own:
+  # the aggregate cannot tell, it reads neither the settings nor the network, so such a caller is
+  # trusted exactly as it is for every other system command. A payload without `evidence` is
+  # refused, a forged non-nil policy still needs a `checks_ref` that is the `observation_ref` of the
+  # recorded checks for the approved head, and the stamped nil policy is the one thing it cannot
+  # check.
+  #
+  # A refusal is the three-tuple `{:error, {:evidence_ineligible, head_sha, codes}, detail}`; every
+  # value of `detail` encodes as JSON. A proceeding decision is returned as the map that
+  # `MergeGateApproved` records: the evaluator's output for this decision, not a reference to the
+  # live record.
+  defp decide_evidence(state, repo_key, %Approval{head_sha: head_sha}, raw) do
+    with {:ok, stamped} <- stamped_evidence(raw) do
+      record =
+        case merge_pin(state, repo_key) do
+          %MergePin{pr_url: pr_url} when is_binary(pr_url) -> Map.get(state.pr_watch, pr_url)
+          _no_pin -> nil
+        end
+
+      result =
+        ForemanServer.PrEvidence.evaluate(record, %{
+          head_sha: head_sha,
+          policy: stamped.policy,
+          now_ms: stamped.now_ms,
+          checks_ref: stamped.checks_ref
+        })
+
+      if result.status in [:off, :eligible, :waived] do
+        {:ok,
+         %{
+           status: Atom.to_string(result.status),
+           policy_version: result.policy_version,
+           required: stamped.policy && stamped.policy.required,
+           checks_ref: stamped.checks_ref,
+           now_ms: stamped.now_ms,
+           waived: reason_codes(result.waived),
+           inputs: result.inputs
+         }}
+      else
+        codes = reason_codes(result.reasons)
+
+        {:error, {:evidence_ineligible, head_sha, codes},
+         %{
+           status: result.status,
+           head_sha: head_sha,
+           policy_version: result.policy_version,
+           checks_ref: stamped.checks_ref,
+           now_ms: stamped.now_ms,
+           waived: reason_codes(result.waived),
+           waiver: result.waiver,
+           reasons: result.reasons,
+           inputs: result.inputs
+         }}
+      end
+    end
+  end
+
+  defp reason_codes(reasons), do: Enum.map(reasons, &Atom.to_string(&1.code))
+
+  # `evidence` must be a map holding a `policy` key (nil is the gate off) and an integer `now_ms`;
+  # a non-nil policy is a map whose `required` list validates and whose `version` is the version of
+  # that list, and needs a non-blank `checks_ref` (a nil would equal an observer batch's
+  # `observation_ref`). The gate-off `checks_ref` is not read: it is recorded as nil.
+  defp stamped_evidence(%{} = raw) do
+    with {:ok, policy} <- stamped_policy(Aggregate.get(raw, :policy, :absent)),
+         {:ok, now_ms} <- stamped_now_ms(Aggregate.get(raw, :now_ms)),
+         {:ok, checks_ref} <- stamped_checks_ref(policy, Aggregate.get(raw, :checks_ref)) do
+      {:ok, %{policy: policy, now_ms: now_ms, checks_ref: checks_ref}}
+    end
+  end
+
+  defp stamped_evidence(_absent_or_malformed),
+    do: {:error, {:missing_or_invalid, :evidence}}
+
+  defp stamped_policy(nil), do: {:ok, nil}
+
+  defp stamped_policy(%{} = policy) do
+    version = Aggregate.get(policy, :version)
+
+    with {:ok, required} when is_list(required) <-
+           ForemanServer.PrEvidence.validate_policy_required(Aggregate.get(policy, :required)),
+         true <- is_binary(version),
+         true <- version == ForemanServer.PrEvidence.policy_version(required) do
+      {:ok, %{required: required, version: version}}
+    else
+      _malformed -> {:error, {:missing_or_invalid, :evidence}}
+    end
+  end
+
+  defp stamped_policy(_absent_or_malformed), do: {:error, {:missing_or_invalid, :evidence}}
+
+  defp stamped_now_ms(now_ms) when is_integer(now_ms), do: {:ok, now_ms}
+  defp stamped_now_ms(_other), do: {:error, {:missing_or_invalid, :evidence}}
+
+  defp stamped_checks_ref(nil, _checks_ref), do: {:ok, nil}
+
+  defp stamped_checks_ref(_policy, checks_ref) when is_binary(checks_ref) do
+    if String.trim(checks_ref) == "",
+      do: {:error, {:missing_or_invalid, :checks_ref}},
+      else: {:ok, checks_ref}
+  end
+
+  defp stamped_checks_ref(_policy, _other), do: {:error, {:missing_or_invalid, :checks_ref}}
 
   @max_waiver_reason 500
 

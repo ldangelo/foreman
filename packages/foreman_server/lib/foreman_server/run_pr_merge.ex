@@ -72,7 +72,19 @@ defmodule ForemanServer.RunPrMerge do
   their own typed errors.
   """
   @spec verify_head(String.t(), String.t() | nil, term()) :: :ok | {:error, term()}
-  def verify_head(run_id, repo_id, head_sha)
+  def verify_head(run_id, repo_id, head_sha) do
+    with {:ok, _observed} <- observe_head(run_id, repo_id, head_sha), do: :ok
+  end
+
+  @doc """
+  The same check as `verify_head/3`, returning what it read: `{:ok, %{pr_url, status}}` with the
+  `PrStatus` whose head it compared (the gateway builds the gate's evidence batch from that one
+  read), or `{:ok, nil}` when the gate is not pending (nothing was read or compared). Errors are
+  those of `verify_head/3`.
+  """
+  @spec observe_head(String.t(), String.t() | nil, term()) ::
+          {:ok, %{pr_url: String.t(), status: PrStatus.t()} | nil} | {:error, term()}
+  def observe_head(run_id, repo_id, head_sha)
       when is_binary(run_id) and run_id != "" and (is_nil(repo_id) or is_binary(repo_id)) do
     with {:ok, named} <- Aggregate.required_binary(head_sha, :head_sha) do
       repo_key = if repo_id == "", do: nil, else: repo_id
@@ -84,14 +96,14 @@ defmodule ForemanServer.RunPrMerge do
           compare_live(pr_url, named)
 
         _approved_or_not_readied ->
-          :ok
+          {:ok, nil}
       end
     end
   end
 
   defp compare_live(pr_url, named) do
     case PrStatus.fetch(pr_url, runner_opts()) do
-      {:ok, %PrStatus{head_sha: ^named}} -> :ok
+      {:ok, %PrStatus{head_sha: ^named} = status} -> {:ok, %{pr_url: pr_url, status: status}}
       {:ok, %PrStatus{head_sha: live}} -> {:error, {:head_sha_mismatch, named, live}}
       {:error, _reason} = error -> error
     end

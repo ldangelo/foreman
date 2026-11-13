@@ -166,6 +166,101 @@ defmodule ForemanServerWeb.OperatorDashboardTest do
     end
   end
 
+  describe "reset in the action matrix (foreman-rsbx1)" do
+    alias ForemanServer.Aggregates.Run
+
+    @statuses ~w(awaiting_worker in_progress starting running paused blocked stuck needs_recovery
+                 unresponsive failed completed cancelled deleted removed)
+
+    test "reset is enabled for failed, stuck, needs_recovery, blocked and paused, and no other status" do
+      enabled =
+        for status <- @statuses,
+            OperatorDashboard.actions_for_status(status).reset.enabled,
+            do: status
+
+      assert Enum.sort(enabled) == Enum.sort(~w(failed stuck needs_recovery blocked paused))
+      refute OperatorDashboard.actions_for_status("completed").reset.enabled
+      refute OperatorDashboard.actions_for_status(nil).reset.enabled
+      assert OperatorDashboard.actions_for_status("blocked").reset.command == "run.reset"
+    end
+
+    # The matrix is advisory; the aggregate is the authority. Every status the dashboard enables
+    # reset for must be accepted by the aggregate, and a status the aggregate refuses (`completed`)
+    # must not be offered. `needs_recovery` is the one status the matrix offers that the
+    # aggregate's `require_resettable/1` does not list; this task leaves it as it was.
+    test "the reset the dashboard enables is the reset the aggregate accepts" do
+      for status <- @statuses -- ["needs_recovery"] do
+        state = %Run.State{
+          exists?: true,
+          run_id: "run-1",
+          project_id: "p",
+          status: status,
+          terminal?: false,
+          last_sequence: 1
+        }
+
+        accepted? =
+          match?(
+            {:ok, %{event_type: "RunReset"}},
+            Run.handle_command(state, %{type: "run.reset", payload: %{run_id: "run-1"}})
+          )
+
+        assert OperatorDashboard.actions_for_status(status).reset.enabled == accepted?,
+               "reset for #{status}: aggregate accepts #{accepted?}"
+      end
+    end
+
+    test "a blocked run is reset through the operator command path" do
+      Application.put_env(
+        :foreman_server,
+        :command_gateway_module,
+        ForemanServerWeb.OperatorDashboardTestGateway
+      )
+
+      assert {:ok, %{command: command}} = OperatorDashboard.reset_run("run-blocked")
+      assert command.type == "run.reset"
+      assert command.aggregate_id == "run:run-blocked"
+    end
+
+    # The page the operator sees: /dashboard/runs, Actions tab of the selected run.
+    test "the rendered Actions tab enables Restart / reset for a blocked and a paused run, not a completed one" do
+      events = fn run_id, event ->
+        [
+          %{
+            event_type: "RunStarted",
+            payload: %{run_id: run_id, project_id: "project-1", task_id: "t-" <> run_id}
+          },
+          %{event_type: event, payload: %{run_id: run_id, project_id: "project-1"}}
+        ]
+      end
+
+      :ok =
+        ProjectionStore.apply_events(
+          events.("run-blocked", "RunBlocked") ++
+            events.("run-paused", "RunPaused") ++ events.("run-done", "RunCompleted")
+        )
+
+      reset_disabled? = fn run_id ->
+        html =
+          build_conn()
+          |> get("/dashboard/runs?token=#{@token}&run_id=#{run_id}&tab=actions")
+          |> html_response(200)
+
+        [button] =
+          html
+          |> LazyHTML.from_document()
+          |> LazyHTML.query(~s(button[value="reset"]))
+          |> Enum.to_list()
+
+        LazyHTML.attribute(button, "disabled") != []
+      end
+
+      refute reset_disabled?.("run-blocked")
+      refute reset_disabled?.("run-paused")
+      assert reset_disabled?.("run-done")
+    end
+  end
+
   test "rejected command returns typed reason while preserving envelope" do
     Application.put_env(
       :foreman_server,
