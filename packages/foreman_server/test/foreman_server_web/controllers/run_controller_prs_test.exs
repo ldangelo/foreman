@@ -6,12 +6,19 @@ defmodule ForemanServerWeb.RunControllerPrsTest do
 
   alias ForemanServer.TestSupport.PrSurfaceSupport
   alias ForemanServer.TestSupport.PrWatchSupport
+  alias ForemanServer.TestSupport.MeckScope
 
   @endpoint ForemanServerWeb.Endpoint
   @evidence_keys ~w(eligibility checks findings risk waiver report delivery_issue next_actions)
   @token "run-prs-token"
 
+  setup_all do
+    {:ok, _} = Application.ensure_all_started(:meck)
+    MeckScope.new_once!([ForemanServer.ProjectionStore])
+  end
+
   setup do
+    MeckScope.restore_on_exit!([ForemanServer.ProjectionStore])
     previous = Application.get_env(:foreman_server, :api_bearer_token)
     Application.put_env(:foreman_server, :api_bearer_token, @token)
 
@@ -47,6 +54,7 @@ defmodule ForemanServerWeb.RunControllerPrsTest do
              "branch_name" => "foreman/#{run_id}/work",
              "checks_state" => "failing",
              "failing" => ["unit", "lint"],
+             "failing_truncated" => false,
              "review_decision" => "changes_requested",
              "comment_count" => 2,
              "watching" => true,
@@ -125,7 +133,8 @@ defmodule ForemanServerWeb.RunControllerPrsTest do
   # at the store's boundary; no global process is suspended.
   for {label, reason} <- [
         down: {:noproc, {GenServer, :call, [ForemanServer.ProjectionStore, :x, 5000]}},
-        timeout: {:timeout, {GenServer, :call, [ForemanServer.ProjectionStore, :x, 5000]}}
+        timeout: {:timeout, {GenServer, :call, [ForemanServer.ProjectionStore, :x, 5000]}},
+        crashed: {:badarg, [{:ets, :lookup, 2, []}]}
       ] do
     test "an unanswered projection store (#{label}) is 503 unknown, never an empty list" do
       %{run_id: run_id} = PrSurfaceSupport.seed_two_prs!()
@@ -136,15 +145,15 @@ defmodule ForemanServerWeb.RunControllerPrsTest do
       assert %{"error" => "projection_unavailable", "status" => "unknown", "run_id" => ^run_id} =
                body
 
-      assert is_binary(body["cause"]) and body["cause"] != ""
+      assert body["cause"] ==
+               unquote(if label == :down, do: "noproc", else: Atom.to_string(label))
+
       refute Map.has_key?(body, "prs")
     end
   end
 
+  # The store's read is replaced for this test only (`MeckScope` restores it on exit).
   defp store_exits!(reason) do
-    {:ok, _} = Application.ensure_all_started(:meck)
-    :meck.new(ForemanServer.ProjectionStore, [:passthrough, :no_link])
-    on_exit(fn -> :meck.unload(ForemanServer.ProjectionStore) end)
     :meck.expect(ForemanServer.ProjectionStore, :run, fn _run_id -> exit(reason) end)
   end
 

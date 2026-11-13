@@ -321,7 +321,7 @@ defmodule ForemanServer.PrEvidence do
     * `waive` (`run.pr.waive_evidence`): the gate is pending and a waivable reason (`waivable_codes/0`)
       is not covered by an applying waiver; a waiver that no longer applies covers nothing, so it
       is offered again.
-    * `publish` (`run.pr.publish_report`): a gated, not merged or closed PR whose risk record for
+    * `publish` (`run.pr.publish_report`): a gated PR the command accepts (watched and open or conflicted, `PrWatch.watched_open?/1`) whose risk record for
       its head has no published report for that head and digest.
     * `reset` (`run.reset`): the run is `failed`, `stuck`, `blocked` or `paused` and a `findings_*`
       reason is present.
@@ -378,7 +378,7 @@ defmodule ForemanServer.PrEvidence do
       else: []
   end
 
-  # A gated PR that is not merged or closed, with a risk record for its head and no published
+  # A gated, watched and open PR (what the command accepts), with a risk record for its head and no published
   # report for that head and digest. A refused report is not a published one.
   defp publish_action(record, %Eligibility{status: status, head_sha: head})
        when status in [:eligible, :ineligible, :waived] and is_binary(head) do
@@ -390,7 +390,7 @@ defmodule ForemanServer.PrEvidence do
       is_map(report) and get(report, :status) == "published" and get(report, :head_sha) == head and
         get(report, :digest) == get(risk, :digest)
 
-    open? = get(record, :status) not in ["merged", "closed"]
+    open? = ForemanServer.Aggregates.Run.PrWatch.watched_open?(record)
 
     if open? and is_map(risk) and get(risk, :head_sha) == head and not published?,
       do: %{action: "publish", command: "run.pr.publish_report", codes: []},

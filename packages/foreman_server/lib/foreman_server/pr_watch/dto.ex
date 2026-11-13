@@ -44,9 +44,12 @@ defmodule ForemanServer.PrWatch.DTO do
   observation older than 900 seconds in the display only; age is never a reason.
 
   Text written by an agent or read from GitHub (a finding's description, path and source, a
-  defect detail, a check's name, a rationale detail, a waiver reason) is untrusted: it is
-  scrubbed of invalid UTF-8 and control characters and cut at a fixed length here, and a
-  consumer that renders it into markdown or HTML must escape it again.
+  defect detail, a check's name, a rationale detail, a waiver reason, and the older fields:
+  `failing`, branch names, `stop_reason`, the agent review verdict and bead ids, the fix
+  outcomes) is untrusted: it is scrubbed of invalid UTF-8, control characters, line and
+  paragraph separators, zero-width characters and bidirectional controls, and cut at a fixed
+  length here (`failing` and `gap_bead_ids` are capped at 100, `failing_truncated` says when
+  `failing` was). A consumer that renders it into markdown or HTML must escape it again.
 
   Read-only and advisory: nothing here can merge, approve or refuse anything.
   """
@@ -75,6 +78,7 @@ defmodule ForemanServer.PrWatch.DTO do
     :branch_name,
     :checks_state,
     :failing,
+    :failing_truncated,
     :review_decision,
     :comment_count,
     :watching,
@@ -101,6 +105,7 @@ defmodule ForemanServer.PrWatch.DTO do
           branch_name: String.t() | nil,
           checks_state: String.t() | nil,
           failing: [String.t()],
+          failing_truncated: boolean(),
           review_decision: String.t() | nil,
           comment_count: non_neg_integer(),
           watching: boolean(),
@@ -146,10 +151,17 @@ defmodule ForemanServer.PrWatch.DTO do
   def fetch(run_id) when is_binary(run_id) and run_id != "" do
     read_projection(run_id)
   catch
-    :exit, reason -> {:error, {:projection_unavailable, bounded_inspect(reason)}}
+    :exit, reason ->
+      Logger.warning("PrWatch.DTO: the projection did not answer: #{bounded_inspect(reason)}")
+      {:error, {:projection_unavailable, exit_class(reason)}}
   end
 
   def fetch(_run_id), do: {:error, :run_not_found}
+
+  defp exit_class({:timeout, _detail}), do: "timeout"
+  defp exit_class({:noproc, _detail}), do: "noproc"
+  defp exit_class(:noproc), do: "noproc"
+  defp exit_class(_other), do: "crashed"
 
   defp read_projection(run_id) do
     case ProjectionStore.run(run_id) do
@@ -199,18 +211,19 @@ defmodule ForemanServer.PrWatch.DTO do
     evidence = evidence_of(record)
 
     %__MODULE__{
-      pr_url: record.pr_url,
-      repo_id: record.repo_id,
-      status: record.status,
-      head_sha: record.head_sha,
-      base_branch: record.base_branch,
-      branch_name: record.branch_name,
-      checks_state: record.checks_state,
-      failing: record.failing,
-      review_decision: record.review_decision,
+      pr_url: text(record.pr_url, @max_reason),
+      repo_id: text(record.repo_id, @max_path),
+      status: text(record.status, @max_short),
+      head_sha: text(record.head_sha, @max_short),
+      base_branch: text(record.base_branch, @max_path),
+      branch_name: text(record.branch_name, @max_path),
+      checks_state: text(record.checks_state, @max_short),
+      failing: record.failing |> list() |> Enum.take(@max_checks) |> texts(@max_path),
+      failing_truncated: length(list(record.failing)) > @max_checks,
+      review_decision: text(record.review_decision, @max_short),
       comment_count: length(record.comment_ids),
       watching: record.watching,
-      stop_reason: record.stop_reason,
+      stop_reason: text(record.stop_reason, @max_short),
       fixes: fixes(record.fix),
       agent_review: agent_review(Map.get(record, :agent_review)),
       eligibility: eligibility_view(eligibility),
@@ -497,8 +510,8 @@ defmodule ForemanServer.PrWatch.DTO do
     %{
       attempts: Map.new(@kinds, &{&1, Map.get(fix.attempts, &1, 0)}),
       in_flight: in_flight(fix),
-      last_outcome: fix.last_outcome,
-      exhausted: fix.exhausted
+      last_outcome: scalar_map(fix.last_outcome),
+      exhausted: scalar_map(fix.exhausted)
     }
   end
 
@@ -507,7 +520,7 @@ defmodule ForemanServer.PrWatch.DTO do
   defp in_flight(%{in_flight: :requested} = fix),
     do: %{
       state: "requested",
-      kind: fix.in_flight_kind,
+      kind: fix.in_flight_kind |> atom_text() |> text(@max_short),
       attempt: fix.in_flight_attempt,
       jobsite_id: nil
     }
@@ -515,15 +528,19 @@ defmodule ForemanServer.PrWatch.DTO do
   defp in_flight(%{in_flight: jobsite_id} = fix),
     do: %{
       state: "running",
-      kind: fix.in_flight_kind,
+      kind: fix.in_flight_kind |> atom_text() |> text(@max_short),
       attempt: fix.in_flight_attempt,
-      jobsite_id: jobsite_id
+      jobsite_id: text(jobsite_id, @max_short)
     }
 
   defp agent_review(nil), do: nil
 
   defp agent_review(review),
-    do: %{verdict: review.verdict, gap_bead_ids: review.gap_bead_ids, at: review.at}
+    do: %{
+      verdict: text(review.verdict, @max_short),
+      gap_bead_ids: review.gap_bead_ids |> list() |> Enum.take(@max_checks) |> texts(@max_short),
+      at: review.at
+    }
 
   defp gate(nil), do: nil
   defp gate(gate) when is_atom(gate), do: Atom.to_string(gate)
@@ -553,14 +570,15 @@ defmodule ForemanServer.PrWatch.DTO do
   defp positive_or_nil(value) when is_integer(value) and value > 0, do: value
   defp positive_or_nil(_other), do: nil
 
-  # Untrusted text: invalid UTF-8 and C0/C1 control characters (newline and tab included) are
-  # replaced by a space, the result is trimmed and cut at `max` characters. `nil` for anything
-  # that is not text or is empty after the scrub.
+  # Untrusted text: invalid UTF-8, C0/C1 control characters (newline and tab included), the line
+  # and paragraph separators, zero-width characters and bidirectional controls are replaced by a
+  # space, the result is trimmed and cut at `max` characters. `nil` for anything that is not
+  # text or is empty after the scrub.
   @spec text(term(), pos_integer()) :: String.t() | nil
   defp text(value, max) when is_binary(value) do
     scrubbed =
       for(<<char::utf8 <- String.replace_invalid(value, " ")>>, into: "") do
-        if char < 0x20 or (char >= 0x7F and char <= 0x9F), do: " ", else: <<char::utf8>>
+        if invisible?(char), do: " ", else: <<char::utf8>>
       end
 
     case scrubbed |> String.trim() |> String.slice(0, max) do
@@ -570,6 +588,23 @@ defmodule ForemanServer.PrWatch.DTO do
   end
 
   defp text(_other, _max), do: nil
+
+  defp invisible?(char),
+    do:
+      char < 0x20 or char in 0x7F..0x9F or char in 0x200B..0x200F or char in 0x2028..0x202E or
+        char in 0x2066..0x2069 or char == 0xFEFF
+
+  # A list of texts: each scrubbed and cut, the ones that hold none dropped.
+  defp texts(items, max), do: items |> Enum.map(&text(&1, max)) |> Enum.reject(&is_nil/1)
+
+  # A map of short scalars (the per-kind fix outcomes): keys and string values scrubbed.
+  defp scalar_map(map) when is_map(map) do
+    for {key, value} <- map, key = text(atom_text(key), @max_short), into: %{} do
+      {key, if(is_binary(value), do: text(value, @max_path), else: value)}
+    end
+  end
+
+  defp scalar_map(_other), do: %{}
 
   defp bounded_inspect(term),
     do: term |> inspect(limit: 5, printable_limit: 80) |> text(@max_text)

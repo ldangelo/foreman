@@ -940,6 +940,16 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
 
   defp note(_other), do: {:error, {:invalid_note, @max_note}}
 
+  @doc """
+  Whether a watch record is one the PR commands act on: watched and in an open status
+  (`open | conflicted`). `watched_open/2` and the status read's offered actions use this one
+  predicate, so an action is never offered that the command refuses `pr_not_watched` or
+  `pr_not_open`.
+  """
+  @spec watched_open?(term()) :: boolean()
+  def watched_open?(%{watching: true, status: status}), do: status in @open_statuses
+  def watched_open?(_record), do: false
+
   defp watched_open(state, pr_url) do
     case Map.get(state.pr_watch, pr_url) do
       %{watching: true, status: status} = record when status in @open_statuses -> {:ok, record}
