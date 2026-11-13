@@ -57,15 +57,16 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 > foreman run resume        --id
 > foreman run remove        --id
 > foreman run reset         --id
-> foreman run approve-merge --approver --head-sha --id --identity
-> foreman run waive-evidence --approver --head-sha --id --identity --reason --waive
-> foreman run merge         --id
+> foreman run approve-merge --approver --head-sha --id --identity --repo-id
+> foreman run waive-evidence --approver --head-sha --id --identity --reason --waive --repo-id
+> foreman run merge         --id --repo-id
 > foreman run submit        --backend --base-branch --project-id --prompt --work-id --workflow
 > foreman run prs           <run-id>
 > foreman run fix-ci        <run-id> --pr --note
 > foreman run address-comments <run-id> --pr --note
 > foreman run resolve-conflicts <run-id> --pr --note
 > foreman run create-pr     <run-id>
+> foreman run retry-pr      <run-id> --repo-id
 > foreman run watch-start   <run-id> --pr
 > foreman run watch-stop    <run-id> --pr
 > foreman run publish-report <run-id> --id --pr --repo-id
@@ -622,7 +623,7 @@ The workflow task shortcuts create tasks that require later approval. The `forem
 ### `foreman run`
 
 > **NOT IMPLEMENTED as described.** `foreman run` is not a dispatch verb; it
-> requires one of `list`, `get`, `cancel`, `pause`, `resume`, `remove`, `reset`, `submit`, `approve-merge`, `merge`, `prs`, `fix-ci`, `address-comments`, `resolve-conflicts`, `create-pr`, `watch-start`, `watch-stop`, `publish-report`, and a
+> requires one of `list`, `get`, `cancel`, `pause`, `resume`, `remove`, `reset`, `submit`, `approve-merge`, `waive-evidence`, `merge`, `prs`, `fix-ci`, `address-comments`, `resolve-conflicts`, `create-pr`, `retry-pr`, `watch-start`, `watch-stop`, `publish-report`, and a
 > bare `foreman run` returns `missing subcommand`. None of the twenty flags this
 > section documents exist anywhere in `run.go` — `--model`, `--watch`,
 > `--no-watch`, `--yes`, `--dry-run`, `--resume`, `--resume-failed`,
@@ -706,7 +707,7 @@ Pipeline budgets are optional environment guards. `0` disables a budget: `FOREMA
 > `FOREMAN_MAX_PIPELINE_COST_USD`, `FOREMAN_MAX_PIPELINE_TOOL_CALLS`,
 > `FOREMAN_MAX_PIPELINE_REVIEW_LOOPS` or `FOREMAN_DEFAULT_MODEL` is read anywhere
 > in the server or CLI source, so no pipeline budget is enforced. `foreman run`
-> without a subcommand does not exist: `run` takes one of `list|get|cancel|pause|resume|remove|reset|submit|approve-merge|waive-evidence|merge|prs|fix-ci|address-comments|resolve-conflicts|create-pr|watch-start|watch-stop|publish-report`.
+> without a subcommand does not exist: `run` takes one of `list|get|cancel|pause|resume|remove|reset|submit|approve-merge|waive-evidence|merge|prs|fix-ci|address-comments|resolve-conflicts|create-pr|retry-pr|watch-start|watch-stop|publish-report`.
 > Bound spend per project with `foreman project update --max-concurrent-runs --daily-thread-cap` and read it with `foreman usage`.
 
 ### `foreman run task`
@@ -822,7 +823,7 @@ Opens a run's merge gate once its PR is ready (the run has signalled `run.pr.rea
 
 `--head-sha` is the PR head you reviewed, as `foreman run prs <run-id>` (`head_sha`) or GitHub shows it, and there is no default. The CLI refuses a missing or empty one (`--head-sha is required`); the server answers `{:missing_or_invalid, :head_sha}` (HTTP 422) for a `merge_approve` that carries none. The server reads the PR head back from GitHub with `gh pr view` and refuses the approval unless it is exactly that commit: `{:head_sha_mismatch, "<yours>", "<GitHub's>"}`, naming both SHAs. An abbreviated SHA is a mismatch, not a prefix match. A head that cannot be read (`gh` missing or failing) is refused with the `gh` error, never assumed. The recorded head is not the authority: the PR watch lags a push by up to a poll interval and polling is opt-in. The approval pins the commit you named (`MergeGateApproved.head_sha`), and `run merge` merges exactly it.
 
-**Evidence gate (Phase 1 PR 8).** For a project with `required_checks` set (`[]` counts), the server then reads the project's policy, records a fresh observation of the PR, and refuses the approval unless the evidence for that head is `eligible` or `waived`: HTTP 422 `{"error": "{:evidence_ineligible, \"<head>\", [\"<code>\", ...]}", "detail": {"status", "head_sha", "policy_version", "reasons", "waived", "inputs", ...}}`, nothing approved. Other refusals: `{:policy_unavailable, _}` (the policy cannot be read; never read as gate off), `{:store_not_durable, note}`, `{:evidence_not_recorded, "<command>", reason}` (the observation could not be recorded in its 5 s bound) and `{:operator_only, "merge_approve"}` (a system caller). A project with `required_checks` unset is unchanged. The risk level never refuses by itself. The reason codes, what can be waived and what to do are in `docs/user-guide.md` ("Approval evidence", under PR watching and auto-fix). The decision is recorded on `MergeGateApproved.evidence`.
+**Evidence gate (Phase 1 PR 8).** For a project with `required_checks` set (`[]` counts), the server then reads the project's policy, records a fresh observation of the PR, and refuses the approval unless the evidence for that head is `eligible` or `waived`: HTTP 422 `{"error": "{:evidence_ineligible, \"<head>\", [\"<code>\", ...]}", "detail": {"status", "head_sha", "policy_version", "checks_ref", "now_ms", "waived", "reasons", "inputs"}}`, nothing approved (`reasons` and `waived` are lists of `{code, subject, detail}`; `inputs` has the eight keys `checks_head_sha`, `checks_observed_at`, `evidence_digest`, `checks_ref`, `findings_head_sha`, `findings_digest`, `risk_head_sha`, `risk_digest`, each nil when the PR held no such record). The reason codes are `no_checks_configured`, `missing`, `failing`, `pending`, `stale`, `skipped`, `other_sha`, `checks_truncated`, `findings_absent`, `findings_malformed`, `findings_legacy_format`, `findings_other_sha`, `risk_missing`, `risk_other_sha` and `evidence_unreadable`; only `no_checks_configured`, `missing`, `skipped`, `findings_absent`, `findings_legacy_format` and `findings_other_sha` can be waived. Other refusals: `{:policy_unavailable, _}` (the policy cannot be read; never read as gate off), `{:store_not_durable, note}`, `{:evidence_not_recorded, "<command>", reason}` (the observation could not be recorded in its 5 s bound) and `{:operator_only, "merge_approve"}` (a system caller). A project with `required_checks` unset is unchanged. The risk LEVEL never refuses by itself, and nothing here protects against an agent that controls the review artifact (the findings and the model judgement are claims it wrote); the known gaps are in `docs/decisions/phase-1-trustworthy-pr-delivery-exit.md`. What each code means and what to do are in `docs/user-guide.md` ("Approval evidence", under PR watching and auto-fix). The decision is recorded on `MergeGateApproved.evidence` (`status`, `policy_version`, `required`, `checks_ref`, `now_ms`, `waived`, `inputs`).
 
 The identity is a claim made by whoever holds the API token, not an authenticated login: the token is the trust boundary. For the same reason there is deliberately no MCP tool for this command; an agent must not be able to approve its own PR.
 
@@ -1346,7 +1347,7 @@ Reset Foreman to a clean operator state by intentionally dropping stale/obsolete
 
 ### `foreman run kill-switch`
 
-> **NOT IMPLEMENTED.** `foreman run kill-switch` is not a `run` subcommand. `runRun` dispatches exactly `list`, `get`, `cancel`, `pause`, `resume`, `remove`, `reset`, `approve-merge`, `merge`, `prs`, `fix-ci`, `address-comments`, `resolve-conflicts`, `create-pr`, `watch-stop`, `watch-start`, `publish-report`, `submit`. Nearest real: `foreman run cancel --id <run-id> --reason <text>` (now also kills the dispatched agent's OS-level process via `RunControl.cancel_agent/1`, not just the run projection) or, to stop and later continue the same run, `foreman run pause --id <run-id>` followed by `foreman run resume --id <run-id>` (resume re-runs the interrupted phase from its last committed partial work).
+> **NOT IMPLEMENTED.** `foreman run kill-switch` is not a `run` subcommand. `runRun` dispatches exactly `list`, `get`, `cancel`, `pause`, `resume`, `remove`, `reset`, `approve-merge`, `waive-evidence`, `merge`, `prs`, `fix-ci`, `address-comments`, `resolve-conflicts`, `create-pr`, `retry-pr`, `watch-stop`, `watch-start`, `publish-report`, `submit`. Nearest real: `foreman run cancel --id <run-id> --reason <text>` (now also kills the dispatched agent's OS-level process via `RunControl.cancel_agent/1`, not just the run projection) or, to stop and later continue the same run, `foreman run pause --id <run-id>` followed by `foreman run resume --id <run-id>` (resume re-runs the interrupted phase from its last committed partial work).
 
 Kill a stuck active run and route to a recovery phase without losing artifacts. This is the first-class operator kill-switch for stuck phases — it stops the active worker, marks the current phase as failed with `retryWith` routing, and preserves the worktree, PR, and reports by default.
 
