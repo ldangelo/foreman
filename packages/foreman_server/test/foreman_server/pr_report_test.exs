@@ -356,20 +356,81 @@ defmodule ForemanServer.PrReportTest do
       end
     end
 
-    test "hidden characters around the secret are kept, and legitimate combining marks are not touched" do
+    test "the built-in patterns see through invisible characters inside the token" do
+      for {text, leaked} <- [
+            {"Authorization: Bearer wxyz\u200Bqrstzz91", ["wxyz", "qrst", "zz91"]},
+            {"to\u200Bken=k9m8vqz", ["k9m8", "vqz"]},
+            {"api\u034F_key=k9m8vqz", ["k9m8", "vqz"]},
+            {"pass\uFE0Fword: hunter2hunter2", ["hunter2"]}
+          ] do
+        body =
+          render!(
+            record(%{unresolved_findings: [finding(%{"description" => "k #{text} k"})]}),
+            []
+          )
+
+        for part <- leaked, do: refute(body =~ part, "#{inspect(text)} leaked #{part}")
+        assert body =~ "\\[REDACTED\\]"
+      end
+    end
+
+    test "text without a pattern match keeps its combining marks" do
+      body =
+        render!(
+          record(%{
+            unresolved_findings: [finding(%{"description" => "caf\u0065\u0301 au lait"})]
+          }),
+          []
+        )
+
+      assert body =~ "caf\u0065\u0301 au lait"
+    end
+
+    test "an astral character or a ZWJ emoji next to a hidden secret is kept" do
+      secret = "secretvalue99"
+
       body =
         render!(
           record(%{
             unresolved_findings: [
-              finding(%{"description" => "caf\u0065\u0301 \u034Fsecretvalue99\u034F end"})
+              finding(%{
+                "description" =>
+                  "\u{1F600}secret\u034Fvalue99\u{1F600} \u{1F468}\u200D\u{1F469}secret\u034Fvalue99"
+              })
             ]
           }),
-          ["secretvalue99"]
+          [secret]
         )
 
-      assert body =~ "caf\u0065\u0301 "
-      assert body =~ "\\[REDACTED\\]"
-      refute body =~ "secretvalue99"
+      refute body =~ "secret"
+      assert body =~ "\u{1F600}\\[REDACTED\\]\u{1F600}"
+      assert body =~ "\u{1F468}\u{1F469}\\[REDACTED\\]"
+    end
+
+    test "overlapping secrets hidden by invisible characters are replaced longest first, in any order" do
+      for secrets <- [["secretvalue99", "secretvalue"], ["secretvalue", "secretvalue99"]] do
+        body =
+          render!(
+            record(%{
+              unresolved_findings: [finding(%{"description" => "k secret\u034Fvalue99 k"})]
+            }),
+            secrets
+          )
+
+        refute body =~ "99"
+        refute body =~ "secret"
+        assert body =~ "k \\[REDACTED\\] k"
+      end
+    end
+
+    test "a secret made only of invisible characters changes nothing and does not raise" do
+      body =
+        render!(
+          record(%{unresolved_findings: [finding(%{"description" => "plain text"})]}),
+          ["\u200B\u034F"]
+        )
+
+      assert body =~ "plain text"
     end
 
     test "a secret straddling a cut is redacted whole before anything is cut" do

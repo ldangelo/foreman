@@ -144,10 +144,22 @@ defmodule ForemanServer.PrReport do
   @hidden "(?![\\n\\r\\t])[\\p{Cc}\\p{Cf}\\p{Mn}\\p{Me}\\x{115F}\\x{1160}\\x{3164}\\x{FFA0}\\x{2800}\\x{180B}-\\x{180F}]"
 
   # Matching only, never published: `text` without its invisible characters.
-  defp skeleton(text), do: String.replace(text, Regex.compile!(@hidden, "u"), "")
+  defp skeleton(text), do: String.replace(text, hidden_re(), "")
 
-  defp hidden?(codepoint),
-    do: Regex.match?(Regex.compile!("\\A" <> @hidden <> "\\z", "u"), codepoint)
+  defp hidden?(codepoint), do: Regex.match?(hidden_re(), codepoint)
+
+  # Compiled once (a regex cannot live in a module attribute on OTP 28).
+  defp hidden_re do
+    case :persistent_term.get({__MODULE__, :hidden_re}, nil) do
+      nil ->
+        re = Regex.compile!(@hidden, "u")
+        :persistent_term.put({__MODULE__, :hidden_re}, re)
+        re
+
+      re ->
+        re
+    end
+  end
 
   # -- the body ---------------------------------------------------------------------------
 
@@ -398,10 +410,17 @@ defmodule ForemanServer.PrReport do
     bounded(redacted, @max_text)
   end
 
-  # `Redact.text/3` (the exact values and the built-in patterns), then each secret again where
-  # invisible characters hide it (`secret<U+034F>value`): neutralising would not remove those, so
-  # the published text would still read as the secret. The published text is otherwise unchanged.
+  # Three passes. (1) The built-in patterns (bearer, `api_key=`, private keys) over the text
+  # without its invisible characters, because neutralising deletes those afterwards and the
+  # published text must not read as a token the patterns never saw; the stripped copy replaces
+  # the text only when a pattern matched, so legitimate combining marks are not touched.
+  # (2) `Redact.text/3` with the exact secrets. (3) Each secret again where invisible characters
+  # hide it (`secret<U+034F>value`). The published text is otherwise unchanged.
   defp redact(text, secrets) do
+    bare = skeleton(text)
+    patterned = Redact.text(nil, bare, secrets: [])
+    text = if patterned == bare, do: text, else: patterned
+
     secrets
     |> Enum.sort_by(&String.length/1, :desc)
     |> Enum.reduce(Redact.text(nil, text, secrets: secrets), &redact_hidden(&2, &1))
