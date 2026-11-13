@@ -96,7 +96,10 @@ defmodule ForemanServer.PrReportTest do
       assert body =~ "## Foreman PR risk report: HIGH"
       assert body =~ "Rubric version: 1"
       assert body =~ @head
-      assert body =~ "[machine-observed] checks (HIGH): required checks not passing: check\\_failed"
+
+      assert body =~
+               "[machine-observed] checks (HIGH): required checks not passing: check\\_failed"
+
       assert body =~ "[agent-authored] judgement (HIGH)"
       assert body =~ "reason codes: check\\_failed, check\\_pending"
       assert body =~ "Review findings (agent-authored)"
