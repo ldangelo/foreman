@@ -556,7 +556,7 @@ stage_gates() {
   assert_eq "gate of a before any approval" "$(gate_of main)" "pending"
   assert_eq "gate of b before any approval" "$(gate_of b)" "pending"
 
-  fm run approve-merge --id "$GREEN_RUN" --approver e2e --identity github:ldangelo --head-sha "$(origin_branch_sha a "$GREEN_BRANCH")" >"$WORK/approve-a.out" 2>&1
+  fm run approve-merge --id "$GREEN_RUN" --approver e2e --identity github:ldangelo --head-sha "$(origin_branch_sha a "$GREEN_BRANCH")" --acknowledge-gate-off >"$WORK/approve-a.out" 2>&1
   assert_eq "merge_approve (repo a): exit status" "$?" "0"
   assert_eq "gate of a after approving a" "$(gate_of main)" "approved"
   assert_eq "gate of b after approving a only" "$(gate_of b)" "pending"
@@ -576,7 +576,7 @@ stage_gates() {
   assert_eq "fake gh: a merged once, pinned to its approved head" "$(gh_calls "pr merge $GREEN_URL_A --squash --match-head-commit $sha_a")" "1"
   assert_eq "fake gh: b not merged by a's merge" "$(gh_calls "pr merge $GREEN_URL_B")" "0"
 
-  fm run approve-merge --id "$GREEN_RUN" --approver e2e --identity github:ldangelo --head-sha "$(origin_branch_sha b "$GREEN_BRANCH")" --repo-id b >"$WORK/approve-b.out" 2>&1
+  fm run approve-merge --id "$GREEN_RUN" --approver e2e --identity github:ldangelo --head-sha "$(origin_branch_sha b "$GREEN_BRANCH")" --repo-id b --acknowledge-gate-off >"$WORK/approve-b.out" 2>&1
   assert_eq "merge_approve (repo b): exit status" "$?" "0"
   fm run merge --id "$GREEN_RUN" --repo-id b >"$WORK/merge-b.out" 2>&1
   assert_eq "run merge --repo-id b (approved): exit status" "$?" "0"
@@ -781,7 +781,7 @@ stage_realgit_body() {
   # --- 4. merge a ALONE, for real
   main_a0=$(origin_branch_sha a main); main_b0=$(origin_branch_sha b main)
   tip_a=$(origin_branch_sha a "$RG_BRANCH"); tip_b0=$(origin_branch_sha b "$RG_BRANCH")
-  fm run approve-merge --id "$RG_RUN" --approver e2e --identity github:ldangelo --head-sha "$tip_a" >"$WORK/rg-approve-a.out" 2>&1
+  fm run approve-merge --id "$RG_RUN" --approver e2e --identity github:ldangelo --head-sha "$tip_a" --acknowledge-gate-off >"$WORK/rg-approve-a.out" 2>&1
   assert_eq "merge_approve (repo a): exit status" "$?" "0"
   fm run merge --id "$RG_RUN" >"$WORK/rg-merge-a.out" 2>&1
   assert_eq "run merge (repo a): exit status" "$?" "0"
@@ -830,7 +830,7 @@ stage_realgit_body() {
     "$(api_get "/api/runs/$RG_RUN/prs" | jq -r --arg u "$RG_URL_B" '[.prs[]? | select(.pr_url == $u)][0] | [.checks_state, (.head_sha // "")] | join(" ")')" "passing $tip_b1"
 
   # --- 6. merge b, for real, fix included
-  fm run approve-merge --id "$RG_RUN" --approver e2e --identity github:ldangelo --head-sha "$tip_b1" --repo-id b >"$WORK/rg-approve-b.out" 2>&1
+  fm run approve-merge --id "$RG_RUN" --approver e2e --identity github:ldangelo --head-sha "$tip_b1" --repo-id b --acknowledge-gate-off >"$WORK/rg-approve-b.out" 2>&1
   assert_eq "merge_approve (repo b): exit status" "$?" "0"
   fm run merge --id "$RG_RUN" --repo-id b >"$WORK/rg-merge-b.out" 2>&1
   assert_eq "run merge --repo-id b: exit status" "$?" "0"

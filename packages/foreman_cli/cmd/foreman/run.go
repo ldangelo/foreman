@@ -21,7 +21,7 @@ func generateID(prefix string) string {
 var validBackends = map[string]bool{"pi": true, "claude": true, "codex": true, "opencode": true}
 
 func runRun(c *client.Client, args []string) error {
-	usage := "Usage:\n  foreman run list [--status <status>] [--project-id <id>] [--limit <n>]\n  foreman run get <id>\n  foreman run cancel --id <run-id> [--reason <reason>]\n  foreman run pause --id <run-id> [--reason <reason>]\n  foreman run resume --id <run-id>\n  foreman run remove --id <run-id>\n  foreman run reset --id <run-id>\n  foreman run approve-merge --id <run-id> --approver <name> --identity <github:login> --head-sha <sha> [--repo-id <repo-id>]\n  foreman run waive-evidence --id <run-id> --approver <name> --identity <github:login> --head-sha <sha> --waive <codes> --reason <text> [--repo-id <repo-id>]\n  foreman run merge --id <run-id> [--repo-id <repo-id>]\n  foreman run prs <id>\n  foreman run fix-ci <id> [--pr <url>] [--note <text>]\n  foreman run address-comments <id> [--pr <url>] [--note <text>]\n  foreman run resolve-conflicts <id> [--pr <url>] [--note <text>]\n  foreman run create-pr <id>\n  foreman run retry-pr <id> --repo-id <repo-id>\n  foreman run watch-stop <id> [--pr <url>]\n  foreman run watch-start <id> [--pr <url>]\n  foreman run publish-report <id> [--pr <url>] [--repo-id <repo-id>]\n  foreman run submit --workflow <name> --prompt <text> --project-id <id> [--work-id <id>] [--backend <backend>]"
+	usage := "Usage:\n  foreman run list [--status <status>] [--project-id <id>] [--limit <n>]\n  foreman run get <id>\n  foreman run cancel --id <run-id> [--reason <reason>]\n  foreman run pause --id <run-id> [--reason <reason>]\n  foreman run resume --id <run-id>\n  foreman run remove --id <run-id>\n  foreman run reset --id <run-id>\n  foreman run approve-merge --id <run-id> --approver <name> --identity <github:login> --head-sha <sha> [--repo-id <repo-id>] [--acknowledge-gate-off]\n  foreman run waive-evidence --id <run-id> --approver <name> --identity <github:login> --head-sha <sha> --waive <codes> --reason <text> [--repo-id <repo-id>]\n  foreman run merge --id <run-id> [--repo-id <repo-id>]\n  foreman run prs <id>\n  foreman run fix-ci <id> [--pr <url>] [--note <text>]\n  foreman run address-comments <id> [--pr <url>] [--note <text>]\n  foreman run resolve-conflicts <id> [--pr <url>] [--note <text>]\n  foreman run create-pr <id>\n  foreman run retry-pr <id> --repo-id <repo-id>\n  foreman run watch-stop <id> [--pr <url>]\n  foreman run watch-start <id> [--pr <url>]\n  foreman run publish-report <id> [--pr <url>] [--repo-id <repo-id>]\n  foreman run submit --workflow <name> --prompt <text> --project-id <id> [--work-id <id>] [--backend <backend>]"
 
 	if len(args) == 0 {
 		return usageTextError(
@@ -210,6 +210,7 @@ func runApproveMerge(c *client.Client, args []string) error {
 	identity := fs.String("identity", "", "Approver identity, e.g. github:<login> (required)")
 	headSHA := fs.String("head-sha", "", "Full head commit SHA of the PR as you reviewed it, e.g. from 'foreman run prs <id>' or GitHub (required)")
 	repoID := fs.String("repo-id", "", "Repository whose PR to approve (default: the run's primary repository)")
+	ackGateOff := fs.Bool("acknowledge-gate-off", false, "Approve a project that has no required_checks (merge gate off, no PR evidence checked); recorded in the approval event. Without it the server refuses such an approval")
 	if err := fs.parse(args); err != nil {
 		return err
 	}
@@ -235,6 +236,10 @@ func runApproveMerge(c *client.Client, args []string) error {
 	}
 	if *repoID != "" {
 		payload["repo_id"] = *repoID
+	}
+	// Only ever sent as true: absence is the default the server refuses on.
+	if *ackGateOff {
+		payload["acknowledge_gate_off"] = true
 	}
 
 	return postCommand(c, commandEnvelope{Type: "merge_approve", Payload: payload})
