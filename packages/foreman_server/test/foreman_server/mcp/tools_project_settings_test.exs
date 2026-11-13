@@ -204,6 +204,38 @@ defmodule ForemanServer.MCP.ToolsProjectSettingsTest do
     assert events(id, "ProjectUpdated") == []
   end
 
+  test "required_checks is refused as an argument (atom or string key) and cannot be cleared", %{
+    id: id
+  } do
+    writes(true)
+
+    for key <- [:required_checks, "required_checks"] do
+      assert {:error,
+              %ToolError{code: "INVALID_PARAMS", message: "Unknown arguments: required_checks"}} =
+               Tools.call_tool("foreman_project_settings_update", %{
+                 :project_id => id,
+                 :goal => "g",
+                 key => []
+               })
+    end
+
+    for cleared <- [["required_checks"], [:required_checks], ["goal", "required_checks"]] do
+      assert {:error, %ToolError{code: "operator_only_setting", message: message}} =
+               Tools.call_tool("foreman_project_settings_update", %{
+                 project_id: id,
+                 clear: cleared
+               })
+
+      assert message =~ "required_checks"
+    end
+
+    assert events(id, "ProjectUpdated") == []
+
+    # clearing another setting still works
+    assert {:ok, _} =
+             Tools.call_tool("foreman_project_settings_update", %{project_id: id, clear: ["goal"]})
+  end
+
   # The whitelist (`Aggregates.Project.Settings`) and this tool's schema must not drift apart: a
   # new setting is either settable over MCP or named here as operator-only, never silently neither.
   test "every project setting is either settable over MCP or declared operator-only" do

@@ -2283,6 +2283,194 @@ defmodule ForemanServer.CommandGatewayTest do
     end
   end
 
+  describe "required_checks durable-store guard (TRD-028)" do
+    alias ForemanServer.Idempotency.KeyStore
+    alias ForemanServer.TestSupport.KeyStoreReset
+
+    @switch :require_durable_store_for_gating
+    @store_config ForemanServer.Agents.JidoCheckpointStore
+
+    defmodule UpRepo do
+      @moduledoc false
+      # Answers the durability probe: the store counts as durable.
+      def all(_query), do: []
+    end
+
+    setup do
+      original_switch = Application.fetch_env(:foreman_server, @switch)
+      original_config = Application.get_env(:foreman_server, @store_config, [])
+
+      on_exit(fn ->
+        case original_switch do
+          {:ok, value} -> Application.put_env(:foreman_server, @switch, value)
+          :error -> Application.delete_env(:foreman_server, @switch)
+        end
+
+        Application.put_env(:foreman_server, @store_config, original_config)
+        restart_key_store()
+        KeyStoreReset.reset!()
+        ForemanServer.CommandGatewayTestHelper.reset_projection_store()
+      end)
+
+      Application.put_env(:foreman_server, @store_config, [])
+      Application.put_env(:foreman_server, @switch, true)
+      restart_key_store()
+      refute KeyStore.durable?()
+
+      project_id = unique_id("project")
+
+      assert {:ok, _} =
+               ProjectStore.save(%{
+                 project_id: project_id,
+                 path: "/tmp/#{project_id}",
+                 config: %{}
+               })
+
+      %{project_id: project_id}
+    end
+
+    defp restart_key_store do
+      Supervisor.terminate_child(ForemanServer.Application, KeyStore)
+      {:ok, _pid} = Supervisor.restart_child(ForemanServer.Application, KeyStore)
+      :ok
+    end
+
+    defp make_durable do
+      Application.put_env(:foreman_server, @store_config, repo: UpRepo)
+      restart_key_store()
+      assert KeyStore.durable?()
+    end
+
+    defp project_events(project_id, type) do
+      case ForemanServer.EventStore.read_stream_forward("project:#{project_id}", 0, 1_000) do
+        {:ok, events} -> Enum.filter(events, &(&1.event_type == type))
+        {:error, :stream_not_found} -> []
+      end
+    end
+
+    defp update(project_id, payload, via \\ :operator) do
+      command = %{
+        command_id: unique_id("command"),
+        aggregate_id: "project:#{project_id}",
+        type: "project.update",
+        payload: Map.put(payload, :project_id, project_id)
+      }
+
+      case via do
+        :operator -> CommandGateway.dispatch_operator(command)
+        :system -> CommandGateway.dispatch_system(command)
+      end
+    end
+
+    defp register(project_id, payload, via \\ :operator) do
+      command = %{
+        command_id: unique_id("command"),
+        aggregate_id: "project:#{project_id}",
+        type: "project.register",
+        payload: Map.merge(%{project_id: project_id, path: System.tmp_dir!()}, payload)
+      }
+
+      case via do
+        :operator -> CommandGateway.dispatch_operator(command)
+        :system -> CommandGateway.dispatch_system(command)
+      end
+    end
+
+    test "project.update setting required_checks is refused on a non-durable store, nothing appended",
+         %{project_id: id} do
+      for payload <- [
+            %{required_checks: []},
+            %{required_checks: [%{"name" => "ci", "kind" => "check_run"}]}
+          ],
+          via <- [:operator, :system] do
+        assert {:error, {:store_not_durable, note}} = update(id, payload, via)
+        assert note == KeyStore.durability_note()
+      end
+
+      assert project_events(id, "ProjectUpdated") == []
+    end
+
+    test "project.update setting required_checks is accepted on a durable store", %{
+      project_id: id
+    } do
+      make_durable()
+
+      assert {:ok, _} = update(id, %{required_checks: []})
+      assert [_] = project_events(id, "ProjectUpdated")
+      assert %{required_checks: []} = ProjectionStore.project_settings(id)
+    end
+
+    test "an update of another setting, or one that only clears required_checks, is not refused",
+         %{project_id: id} do
+      assert {:ok, _} = update(id, %{goal: "ship it"})
+      assert {:ok, _} = update(id, %{goal: "ship it", required_checks: nil})
+
+      refute match?(
+               {:error, {:store_not_durable, _}},
+               update(id, %{cleared_settings: ["required_checks"]})
+             )
+
+      refute match?(
+               {:error, {:store_not_durable, _}},
+               update(id, %{cleared_settings: ["required_checks"]}, :system)
+             )
+    end
+
+    test "a malformed config cannot slip a gate-enabling value past the guard, and nesting is seen",
+         %{project_id: id} do
+      for payload <- [
+            %{config: "oops", required_checks: []},
+            %{config: [1], required_checks: []},
+            %{config: %{required_checks: []}},
+            %{config: %{"required_checks" => []}},
+            %{required_checks: [], cleared_settings: ["required_checks"]},
+            %{required_checks: [], cleared_settings: "oops"}
+          ],
+          via <- [:operator, :system] do
+        assert {:error, {:store_not_durable, _}} = update(id, payload, via)
+      end
+
+      for payload <- [%{config: "oops", required_checks: []}, %{config: %{required_checks: []}}] do
+        assert {:error, {:store_not_durable, _}} = register(unique_id("project"), payload)
+      end
+
+      assert project_events(id, "ProjectUpdated") == []
+    end
+
+    test "a malformed config next to a top-level required_checks is still refused by the aggregate on a durable store",
+         %{project_id: id} do
+      make_durable()
+      assert {:error, _} = update(id, %{config: "oops", required_checks: []})
+      assert project_events(id, "ProjectUpdated") == []
+    end
+
+    test "with the guard switched off a non-durable store is not refused", %{project_id: id} do
+      Application.put_env(:foreman_server, @switch, false)
+      assert {:ok, _} = update(id, %{required_checks: []})
+    end
+
+    test "project.register with required_checks is refused on a non-durable store", %{} do
+      for via <- [:operator, :system] do
+        new_id = unique_id("project")
+
+        assert {:error, {:store_not_durable, _note}} =
+                 register(new_id, %{required_checks: []}, via)
+
+        assert project_events(new_id, "ProjectRegistered") == []
+      end
+    end
+
+    test "project.register with required_checks is accepted on a durable store, and without it on any" do
+      new_id = unique_id("project")
+      assert {:ok, _} = register(new_id, %{})
+
+      make_durable()
+      gated_id = unique_id("project")
+      assert {:ok, _} = register(gated_id, %{required_checks: []})
+      assert %{required_checks: []} = ProjectionStore.project_settings(gated_id)
+    end
+  end
+
   defp attach_telemetry(test_pid, events) do
     handler_id = "command-gateway-telemetry-#{unique_id("handler")}"
 

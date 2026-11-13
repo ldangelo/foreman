@@ -61,7 +61,11 @@ defmodule ForemanServerWeb.DoctorControllerTest do
       keys = [:pr_watcher, :pr_monitor_enabled, :github_webhook_secret]
       saved = Map.new(keys, &{&1, Application.fetch_env(:foreman_server, &1)})
 
+      ForemanServer.TestSupport.ProjectionStoreReset.reset!()
+
       on_exit(fn ->
+        ForemanServer.TestSupport.ProjectionStoreReset.reset!()
+
         for {key, saved} <- saved do
           case saved do
             {:ok, value} -> Application.put_env(:foreman_server, key, value)
@@ -118,6 +122,58 @@ defmodule ForemanServerWeb.DoctorControllerTest do
     test "an empty webhook secret counts as not set" do
       configure_observation(true, false, "")
       assert pr_observation_row()["detail"] =~ "webhook secret: not set"
+    end
+
+    test "a gated project with neither the monitor nor the webhook on is a warning naming it (TRD-028)" do
+      id = register_gated_project("gated-doctor")
+
+      configure_observation(true, false, nil)
+      row = pr_observation_row()
+
+      assert row["status"] == "warn"
+      assert row["title"] =~ id
+      assert row["detail"] =~ "gated project #{id}"
+      assert row["detail"] =~ "100 checks"
+      assert row["detail"] =~ "newest 100"
+    end
+
+    test "a gated project is not a warning when the monitor or the webhook is on (TRD-028)" do
+      id = register_gated_project("gated-doctor-on")
+
+      configure_observation(true, true, nil)
+      row = pr_observation_row()
+      assert row["status"] == "ok"
+      assert row["detail"] =~ "gated project #{id}"
+
+      configure_observation(true, false, "s3cret-value")
+      assert pr_observation_row()["status"] == "ok"
+    end
+
+    test "an ungated project and a project whose gate was never set do not warn (TRD-028)" do
+      id = unique_project("plain-doctor")
+
+      assert {:ok, _} =
+               ForemanServer.ProjectStore.save(%{project_id: id, path: "/tmp/#{id}", config: %{}})
+
+      configure_observation(true, false, nil)
+      row = pr_observation_row()
+      assert row["status"] == "ok"
+      refute row["detail"] =~ "gated project"
+    end
+
+    defp unique_project(prefix), do: "#{prefix}-#{System.unique_integer([:positive])}"
+
+    defp register_gated_project(prefix) do
+      id = unique_project(prefix)
+
+      assert {:ok, _} =
+               ForemanServer.ProjectStore.save(%{
+                 project_id: id,
+                 path: "/tmp/#{id}",
+                 config: %{required_checks: []}
+               })
+
+      id
     end
   end
 
