@@ -111,6 +111,41 @@ defmodule ForemanServer.Overview.TabsTest do
       assert "waive" in evidence["next_actions"]
     end
 
+    test "a merged or closed PR has no evidence block; an open one in the same project has" do
+      register(%{required_checks: [@unit]})
+
+      settled =
+        for {run, status} <- [{"r-merged", "merged"}, {"r-closed", "closed"}], reduce: [] do
+          acc ->
+            url = "https://g/p/" <> run
+
+            acc ++
+              [
+                %{
+                  event_type: "RunStarted",
+                  payload: %{run_id: run, task_id: "t-" <> run, project_id: "p"}
+                },
+                %{
+                  event_type: "PrReady",
+                  payload: %{run_id: run, project_id: "p", pr_url: url, pr_number: 7}
+                },
+                %{
+                  event_type: "PrUpdated",
+                  payload: %{run_id: run, pr_url: url, pr_status: status, observed_at: 2_000_000}
+                }
+              ]
+        end
+
+      :ok = ProjectionStore.apply_events(settled)
+
+      rows = Tabs.build("p").pull_requests.rows
+      by_run = Map.new(rows, &{&1["run_id"], &1})
+
+      assert %{"pr_state" => "merged", "evidence" => nil} = by_run["r-merged"]
+      assert %{"pr_state" => "closed", "evidence" => nil} = by_run["r-closed"]
+      assert %{"pr_state" => "open", "evidence" => %{"status" => "ineligible"}} = by_run["r1"]
+    end
+
     test "a project the store does not know reads unknown, never off" do
       assert %{rows: [%{"evidence" => %{"status" => "unknown", "reasons" => [reason]}}]} =
                Tabs.build("p").pull_requests

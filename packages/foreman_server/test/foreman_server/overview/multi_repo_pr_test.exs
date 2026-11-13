@@ -485,6 +485,48 @@ defmodule ForemanServer.Overview.MultiRepoPrTest do
       assert "findings_other_sha" in Enum.map(reasons, & &1["code"])
     end
 
+    test "evidence waived by the operator does not block: the thread is ready for review" do
+      two_repo_run()
+      apply!(evidence(@run, nil, @url_a, "sha-1"))
+
+      # b has no findings (waivable `findings_absent`) and an operator waiver for them
+      without_findings =
+        Enum.reject(
+          evidence(@run, "b", @url_b, "sha-2"),
+          &(&1.event_type == "ReviewFindingsRecorded")
+        )
+
+      apply!(without_findings)
+      assert classification() == {:waiting_on_you, :evidence_blocked}
+
+      apply!([
+        ev("PrEvidenceWaived", %{
+          run_id: @run,
+          repo_id: "b",
+          pr_url: @url_b,
+          head_sha: "sha-2",
+          reasons: ["findings_absent"],
+          policy_version: ForemanServer.PrEvidence.policy_version([@unit]),
+          reason: "review ran out of band",
+          approver_identity: "leo",
+          waived_at: 5
+        })
+      ])
+
+      assert %{"evidence" => %{"status" => "waived"}} = row_for(@url_b)
+      assert classification() == {:ready_for_review, :pr_ready}
+    end
+
+    test "a PR whose gate is not pending is not judged: bad evidence beside a pending eligible PR" do
+      two_repo_run()
+      apply!(evidence(@run, nil, @url_a, "sha-1"))
+      # b has no evidence at all but its gate was reset to none; a is pending and eligible
+      apply!([ev("PrReset", %{run_id: @run, repo_id: "b", pr_url: @url_b})])
+
+      assert %{"evidence" => %{"status" => "ineligible"}} = row_for(@url_b)
+      assert classification() == {:ready_for_review, :pr_ready}
+    end
+
     test "b's approved gate lands the thread whatever a's evidence says" do
       two_repo_run()
       apply!([gate_approved(@run, "b")])

@@ -537,6 +537,29 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
       assert has_element?(view, "#panel-pull_requests #pr-evidence-0 code", "findings_absent")
     end
 
+    test "a merged PR shows no evidence block, whatever its evidence was", %{id: id} do
+      seed_evidence(id, %{status: "absent", defect: "no_block"}, "touches CI")
+
+      :ok =
+        ProjectionStore.apply_events([
+          pr_event("PrUpdated", id, %{pr_status: "merged", observed_at: 2_000_000})
+        ])
+
+      {view, _} = mount_view(id)
+      open_thread(view, id, "run:r-pr2")
+      refute has_element?(view, "#thread-pane .pr-evidence")
+      refute has_element?(view, "#thread-pane .ws-error", "Approval blocked")
+
+      view |> element("#tab-pull_requests") |> render_click()
+      assert has_element?(view, "#panel-pull_requests li", "Second PR")
+
+      # the project's other open PR keeps its block; the merged one has none
+      rows = view |> pane_doc() |> LazyHTML.query("#panel-pull_requests li") |> Enum.to_list()
+      merged = Enum.find(rows, &(LazyHTML.text(&1) =~ "Second PR"))
+      assert merged
+      assert merged |> LazyHTML.query(".pr-evidence") |> Enum.count() == 0
+    end
+
     test "eligible evidence shows eligible and the thread is ready for review as before", %{
       id: id
     } do

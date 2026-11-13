@@ -32,6 +32,7 @@ defmodule ForemanServer.Overview.Tabs.PullRequests do
   alias ForemanServer.Threads.Thread
 
   @max_reasons 20
+  @settled ["merged", "closed"]
   @max_items 5
   @max_display 160
 
@@ -87,10 +88,13 @@ defmodule ForemanServer.Overview.Tabs.PullRequests do
   defp put_repo_id(row, nil), do: row
   defp put_repo_id(row, repo_id), do: Map.put(row, "repo_id", repo_id)
 
-  # The view of the watch record of this PR's URL, `nil` when the PR has none (never observed).
+  # The view of the watch record of this PR's URL. `nil` when the PR has no record (never
+  # observed) and when it is already merged or closed: evidence is the input of an approval
+  # decision and a settled PR has none left to take (decided by the record's status, explicitly).
   defp evidence(watch, %{pr_url: url} = pr, context) when is_binary(url) do
     case Enum.find(watch, &(&1.pr_url == url)) do
       nil -> nil
+      %{status: status} when status in @settled -> nil
       record -> record |> DTO.from_projection(pr.merge_gate, context) |> evidence_view()
     end
   end
@@ -117,7 +121,7 @@ defmodule ForemanServer.Overview.Tabs.PullRequests do
       gates_by_url(ProjectionStore.pr_state(run_id), ProjectionStore.repo_pr_states(run_id))
 
     {:ok,
-     for record <- ProjectionStore.pr_watch(run_id) do
+     for record <- ProjectionStore.pr_watch(run_id), record.status not in @settled do
        record |> DTO.from_projection(Map.get(gates, record.pr_url), context) |> evidence_view()
      end}
   catch
