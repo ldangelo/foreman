@@ -725,8 +725,10 @@ defmodule ForemanServer.PrReport.PublisherTest do
   end
 
   describe "the subscriber" do
+    # these tests exercise the live trigger: the start-up scan (TRD-035) would publish the
+    # setup's first record at once, so they start the publisher without it
     defp start_publisher(ctx, extra \\ []) do
-      start_supervised!({Publisher, Keyword.merge(ctx.opts, extra)})
+      start_supervised!({Publisher, Keyword.merge([scan: false] ++ ctx.opts, extra)})
     end
 
     defp deliver(pid, trigger),
@@ -793,7 +795,9 @@ defmodule ForemanServer.PrReport.PublisherTest do
         result
       end
 
-      {:ok, pid} = GenServer.start(Publisher, Keyword.put(ctx.opts, :command_runner, stuck))
+      {:ok, pid} =
+        GenServer.start(Publisher, [scan: false] ++ Keyword.put(ctx.opts, :command_runner, stuck))
+
       deliver(pid, ctx.trigger)
       assert_receive :created, 2_000
       Process.exit(pid, :kill)
@@ -1139,6 +1143,197 @@ defmodule ForemanServer.PrReport.PublisherTest do
 
       send(first, :go)
       Eventually.await(fn -> Publisher.inflight(pid) == 0 end, message: "publisher idle")
+    end
+  end
+
+  # TRD-035: the publisher is started for real (`start_supervised!`, as the application does,
+  # with the scan on) over a projection seeded by the real watcher, with the publisher DOWN
+  # while the risk records were appended: the subscription never saw them.
+  describe "the start-up scan (TRD-035)" do
+    defp start_scanning(ctx, extra \\ [], id \\ :scan),
+      do: start_supervised!({Publisher, Keyword.merge(ctx.opts, extra)}, id: id)
+
+    # the scan runs after `init/1`: this call is answered after it, and it returns 0 only
+    # when no publication is running and none is queued
+    defp settle(pid) do
+      Publisher.inflight(pid)
+      Eventually.await(fn -> Publisher.inflight(pid) == 0 end, message: "the scan has drained")
+    end
+
+    defp posted_runs(gh) do
+      for %{body: body} <- FakeGh.comments(gh),
+          {:ok, %{run_id: run_id}} <- [marker_of(body)],
+          do: run_id
+    end
+
+    defp writes_of(gh, run_id) do
+      for {_kind, _target, body} = write <- FakeGh.writes(gh),
+          {:ok, %{run_id: ^run_id}} <- [marker_of(body)],
+          do: write
+    end
+
+    test "a report missing at start is published once, and a restart does not repeat it", ctx do
+      assert [] = report_events(ctx.run_id)
+      pid = start_scanning(ctx, [], :first)
+
+      Eventually.await(fn -> match?([_], report_events(ctx.run_id)) end,
+        message: "the scan publishes the report the down publisher missed"
+      )
+
+      settle(pid)
+      digest = ctx.trigger.digest
+
+      assert [%{status: "published", head_sha: "sha-1", digest: ^digest}] =
+               report_events(ctx.run_id)
+
+      assert [_one] = writes_of(ctx.gh, ctx.run_id)
+      assert %{status: "published"} = report(ctx.run_id)
+
+      # the server restarts: the report is recorded for the head and digest, so nothing happens
+      stop_supervised!(:first)
+      settle(start_scanning(ctx, [], :second))
+
+      assert [_one] = report_events(ctx.run_id)
+      assert [_one] = writes_of(ctx.gh, ctx.run_id)
+      assert Enum.count(posted_runs(ctx.gh), &(&1 == ctx.run_id)) == 1
+    end
+
+    test "a start whose publication is slow does not wait for it", ctx do
+      test_pid = self()
+      base = ctx.runner
+
+      blocking = fn "gh", args, opts ->
+        if match?(["pr", "view", url | _] when url == ctx.pr_url, args) do
+          send(test_pid, {:listed, self()})
+
+          receive do
+            :go -> :ok
+          after
+            5_000 -> :ok
+          end
+        end
+
+        base.("gh", args, opts)
+      end
+
+      # `start_supervised!` returns while the first `gh` call is parked: the start never waits
+      pid = start_scanning(ctx, command_runner: blocking)
+      assert_receive {:listed, task}, 2_000
+      assert Publisher.inflight(pid) >= 1
+
+      send(task, :go)
+      Eventually.await(fn -> match?([_], report_events(ctx.run_id)) end)
+      settle(pid)
+    end
+
+    test "a refused report is not retried by the scan", ctx do
+      FakeGh.fail_write(ctx.gh, "HTTP 500")
+      assert {:refused, :gh_failed, _} = Publisher.publish(ctx.trigger, ctx.opts)
+      Agent.update(ctx.gh, &%{&1 | fail_write: nil})
+      assert %{status: "refused"} = report(ctx.run_id)
+      writes = writes_of(ctx.gh, ctx.run_id)
+
+      settle(start_scanning(ctx))
+
+      assert [%{status: "refused"}] = report_events(ctx.run_id)
+      assert ^writes = writes_of(ctx.gh, ctx.run_id)
+      refute ctx.run_id in posted_runs(ctx.gh)
+    end
+
+    test "ungated, unreadable-policy, closed and risk-less PRs get nothing", ctx do
+      ungated = register_project!(%{})
+      no_gate = Support.start_run!(project_id: ungated, complete: true)
+      stranger = Support.start_run!(project_id: "p-unknown-#{ctx.run_id}", complete: true)
+      closed = Support.start_run!(project_id: ctx.project_id, complete: true)
+      riskless = Support.start_run!(project_id: ctx.project_id, complete: true)
+
+      for other <- [no_gate, stranger, closed],
+          do: {:ok, _} = PrAssociate.store(other.run_id, other.pr_url)
+
+      for other <- [no_gate, stranger, closed],
+          do: {:ok, _} = PrWatcher.refresh_now(other.pr_url)
+
+      Agent.update(ctx.github, fn _ -> {:ok, Support.status(status: :closed)} end)
+      {:ok, _} = PrWatcher.refresh_now(closed.pr_url)
+      refute record(closed.run_id).status == "open"
+      # an open, watched record of a gated project that no risk record was ever appended for
+      :ok =
+        ProjectionStore.apply_events([
+          %{
+            event_type: "PrUpdated",
+            payload: %{
+              run_id: riskless.run_id,
+              pr_url: riskless.pr_url,
+              project_id: riskless.project_id,
+              task_id: riskless.task_id,
+              pr_status: "open",
+              head_sha: "sha-1"
+            }
+          }
+        ])
+
+      assert %{status: "open", watching: true, evidence: %{risk: nil}} = record(riskless.run_id)
+
+      settle(start_scanning(ctx))
+
+      Eventually.await(fn -> match?([_], report_events(ctx.run_id)) end,
+        message: "the open gated PR is published"
+      )
+
+      for other <- [no_gate, stranger, closed, riskless] do
+        assert [] = report_events(other.run_id)
+        refute other.run_id in posted_runs(ctx.gh)
+      end
+
+      assert ctx.run_id in posted_runs(ctx.gh)
+    end
+
+    test "thirty PRs are all published, at most two at the same time", ctx do
+      others =
+        for _ <- 1..29 do
+          other = Support.start_run!(project_id: ctx.project_id, complete: true)
+          {:ok, _} = PrAssociate.store(other.run_id, other.pr_url)
+          {:ok, _} = PrWatcher.refresh_now(other.pr_url)
+          other
+        end
+
+      runs = [ctx | others]
+      {:ok, gauge} = Agent.start_link(fn -> %{active: 0, max: 0} end)
+      base = ctx.runner
+
+      # a publication is the listing of the comments up to the write that follows it
+      gauged = fn "gh", args, opts ->
+        case args do
+          ["pr", "view" | _] ->
+            Agent.update(gauge, fn g ->
+              %{g | active: g.active + 1, max: max(g.max, g.active + 1)}
+            end)
+
+            Process.sleep(10)
+            base.("gh", args, opts)
+
+          ["api" | _] ->
+            result = base.("gh", args, opts)
+            Agent.update(gauge, &%{&1 | active: &1.active - 1})
+            result
+        end
+      end
+
+      pid = start_scanning(ctx, command_runner: gauged)
+
+      Eventually.await(
+        fn ->
+          Enum.all?(runs, &match?([%{status: "published"}], report_events(&1.run_id)))
+        end,
+        timeout: 30_000,
+        message: "all thirty reports are published"
+      )
+
+      settle(pid)
+      assert %{max: max, active: 0} = Agent.get(gauge, & &1)
+      assert max == 2
+      posted = posted_runs(ctx.gh)
+      assert Enum.all?(runs, fn run -> Enum.count(posted, &(&1 == run.run_id)) == 1 end)
     end
   end
 
