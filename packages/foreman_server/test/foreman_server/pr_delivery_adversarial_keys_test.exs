@@ -996,6 +996,8 @@ defmodule ForemanServer.PrDeliveryAdversarialKeysTest do
     # this repository for the run's branch proves the create ran, so the verdict is `done` even
     # though its head is not the tip; Create PR then adopts nothing (the lookup refuses the other
     # head) and the unresolved key refuses the effect: fail-closed, nothing is created.
+    # This pins the DECIDED behaviour (done for another head); it is not a regression test of the
+    # fork or the limit fix.
     test "a PR of this repository with another head is done by decision: Create PR creates nothing",
          %{world: world, ref: ref} do
       run = World.delivery_run!(world)

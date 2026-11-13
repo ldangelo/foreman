@@ -116,7 +116,9 @@ defmodule ForemanServer.Idempotency.Reconcilers.PrCreateTest do
                "--state",
                "all",
                "--json",
-               "url,number,state,isCrossRepository"
+               "url,number,state,isCrossRepository",
+               "--limit",
+               "100"
              ]
 
       assert opts[:cd] == cwd
@@ -193,6 +195,28 @@ defmodule ForemanServer.Idempotency.Reconcilers.PrCreateTest do
 
       assert PrCreate.reconcile(metadata(cwd), command_runner: EffectWorld.runner(world)) ==
                :not_done
+    end
+
+    test "a full list of 100 forks' PRs may have cut this repository's PR off: :unknown; 99 forks are :not_done; a full list with this repository's PR is :done",
+         %{cwd: cwd} do
+      item = fn n, cross ->
+        %{
+          "url" => "https://github.com/a/b/pull/#{n}",
+          "number" => n,
+          "state" => "OPEN",
+          "isCrossRepository" => cross
+        }
+      end
+
+      answer = fn items -> fn "gh", _args, _opts -> {Jason.encode!(items), 0} end end
+      forks = fn count -> for n <- 1..count, do: item.(n, true) end
+
+      assert PrCreate.reconcile(metadata(cwd), command_runner: answer.(forks.(100))) == :unknown
+      assert PrCreate.reconcile(metadata(cwd), command_runner: answer.(forks.(99))) == :not_done
+
+      full_with_own = forks.(99) ++ [item.(500, false)]
+      assert length(full_with_own) == 100
+      assert PrCreate.reconcile(metadata(cwd), command_runner: answer.(full_with_own)) == :done
     end
 
     test "a GitHub that cannot be queried is :unknown, never :not_done", %{cwd: cwd} do
@@ -346,7 +370,7 @@ defmodule ForemanServer.Idempotency.Reconcilers.PrCreateTest do
       assert [line] = File.read!(log) |> String.split("\n", trim: true)
 
       assert line ==
-               "#{String.trim(expected_cwd)}|pr list --head #{@head} --base #{@base} --state all --json url,number,state,isCrossRepository"
+               "#{String.trim(expected_cwd)}|pr list --head #{@head} --base #{@base} --state all --json url,number,state,isCrossRepository --limit 100"
     end
 
     test "no PR means the create is retried: recorded, nothing blocked, key left for the next attempt",

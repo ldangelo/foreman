@@ -15,16 +15,18 @@ defmodule ForemanServer.Idempotency.Reconcilers.PrCreate do
   `reconcile/2` asks GitHub, in the key's `cwd` (never the server's working
   directory):
 
-      gh pr list --head <head> --base <base> --state all --json url,number,state,isCrossRepository
+      gh pr list --head <head> --base <base> --state all --json url,number,state,isCrossRepository --limit 100
 
   `--state all` is required: `gh pr list` lists only open PRs by default, and a PR
   that was merged or closed before recovery ran is still the PR this effect
   created. `--head` matches a branch name in any repository, so only a PR with
   `isCrossRepository: false` (this repository's, in any state) is `:done`; none, or only
   forks' PRs, is `:not_done` (`GitHub.PrLookup`'s rule: a fork's PR is never the run's PR).
-  The head commit is not compared (the intent holds no tip): a PR of this repository with
-  another head is `:done` by decision, and the adoption lookup of Create PR then refuses it
-  as `{:pr_lookup_mismatch, ...}`. A failed, timed out,
+  `--limit 100` is `PrLookup`'s value (gh's default is 30): a list that is full (100 items)
+  and holds none of this repository's PRs may have cut it off, so it is `:unknown`, never
+  `:not_done`. The head commit is not compared (the intent holds no tip): a PR of this
+  repository with another head is `:done` by decision, and Create PR's adoption lookup does
+  not adopt it. A failed, timed out,
   unparsable or unexpected answer (or incomplete metadata) is `:unknown`.
 
   `gh` runs through a 3-arity runner (`opts[:command_runner]`, default
@@ -44,6 +46,9 @@ defmodule ForemanServer.Idempotency.Reconcilers.PrCreate do
   require Logger
 
   @type runner :: (String.t(), [String.t()], keyword() -> {String.t(), integer()})
+
+  # The same value as `GitHub.PrLookup`'s `@limit` (private there); gh's own default is 30.
+  @limit 100
 
   @doc """
   The effect key of the PR from `head_branch` into `base_branch` for `run_id`:
@@ -118,7 +123,9 @@ defmodule ForemanServer.Idempotency.Reconcilers.PrCreate do
         "--state",
         "all",
         "--json",
-        "url,number,state,isCrossRepository"
+        "url,number,state,isCrossRepository",
+        "--limit",
+        Integer.to_string(@limit)
       ]
 
       case Command.run(runner, "gh", args, cd: cwd, timeout_ms: timeout_ms) do
@@ -139,8 +146,10 @@ defmodule ForemanServer.Idempotency.Reconcilers.PrCreate do
     case Jason.decode(String.trim(output)) do
       {:ok, prs} when is_list(prs) ->
         case classify(prs) do
-          {:ok, []} -> :not_done
           {:ok, [_ | _]} -> :done
+          # a full list may have cut this repository's PR off: it cannot say none exists
+          {:ok, []} when length(prs) >= @limit -> unknown(metadata, {:list_truncated, @limit})
+          {:ok, []} -> :not_done
           :error -> unknown(metadata, {:unexpected_pr_list, String.slice(output, 0, 200)})
         end
 
