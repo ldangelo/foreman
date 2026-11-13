@@ -352,13 +352,22 @@ defmodule ForemanServer.PrReport do
     if String.length(whole) <= @max_text, do: whole, else: cut(raw, @max_text - 1)
   end
 
+  # The longest prefix of `raw` whose neutralised form fits in @max_text - 1 characters (the
+  # length of a neutralised prefix never shrinks as the prefix grows), then the ellipsis.
   defp cut(raw, cap) do
-    cut = neutralise(String.slice(raw, 0, cap))
-    excess = String.length(cut) - (@max_text - 1)
+    {_length, text} = longest_fit(raw, 0, cap, {0, ""})
+    text <> "…"
+  end
 
-    if excess > 0 and cap > 1,
-      do: cut(raw, max(cap - excess, 1)),
-      else: cut <> "…"
+  defp longest_fit(_raw, low, high, best) when low > high, do: best
+
+  defp longest_fit(raw, low, high, best) do
+    mid = div(low + high, 2)
+    candidate = neutralise(String.slice(raw, 0, mid))
+
+    if String.length(candidate) <= @max_text - 1,
+      do: longest_fit(raw, mid + 1, high, {mid, candidate}),
+      else: longest_fit(raw, low, mid - 1, best)
   end
 
   defp finish(body, secrets) do
