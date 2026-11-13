@@ -63,7 +63,7 @@ defmodule ForemanServer.PrWatcher do
   require Logger
 
   @refresh_timeout 120_000
-  @observe_events ~w(PrAssociated PrReady PrWatchStarted)
+  @observe_events ~w(PrAssociated PrReady PrWatchStarted ReviewFindingsRecorded)
   @jobsite_terminal ~w(JobsiteCompleted JobsiteFailed)
 
   @type server :: GenServer.server()

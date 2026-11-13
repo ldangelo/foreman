@@ -59,14 +59,16 @@ defmodule ForemanServer.PrEvidence do
   `Aggregates.Run.PrWatch.apply_event/3` (the aggregate) and `ForemanServer.PrWatchFold`
   (the projection) both call `apply_event/3` first, so the two records cannot disagree.
   The record is a map with the keys `checks`, `waiver`, `delivery_issue`, `findings`, `risk`
-  and `report`; a record with no `evidence` reads as empty. This module fills `checks` and
-  `waiver`; the other keys belong to later tasks and are only kept here.
+  and `report`; a record with no `evidence` reads as empty. This module fills every key but
+  `report`, which belongs to a later task and is only kept here.
 
     * `checks` - `%{head_sha, items, truncated, observed_at, digest, evidence_digest,
       observation_ref, required, policy_version}`, stored for a `PrChecksChanged` whose `checks`
       is a list and left as it was for one that has none or a non-list.
     * `waiver` - `%{head_sha, codes, policy_version, reason, waived_by, waived_at}`, `codes` a
       sorted, de-duplicated list of strings; set by `PrEvidenceWaived` and replacing any earlier one.
+    * `risk` - `%{head_sha, level, rubric_version, digest, findings_digest, seq, recorded_at}`,
+      set by `PrRiskRecorded` (TRD-018) with the head it was classified for; a head move keeps it.
 
   Head reset: of the PR events only `PrUpdated`, `PrReady`, `PrChecksChanged` and
   `PrReviewChanged` carry a head. When one brings a `head_sha` different from the record's
@@ -83,7 +85,8 @@ defmodule ForemanServer.PrEvidence do
   alias ForemanServer.{ProjectionStore, ProjectSettings}
 
   @head_events ~w(PrUpdated PrReady PrChecksChanged PrReviewChanged)
-  @events @head_events ++ ["PrEvidenceWaived", "PrReadyFailed", "ReviewFindingsRecorded"]
+  @events @head_events ++
+            ["PrEvidenceWaived", "PrReadyFailed", "ReviewFindingsRecorded", "PrRiskRecorded"]
 
   @max_checks 100
   @max_required 20
@@ -230,6 +233,22 @@ defmodule ForemanServer.PrEvidence do
     })
   end
 
+  # TRD-018: the risk record of the head it was classified for. Kept with ITS OWN head, like the
+  # findings, so a head move neither voids it nor lets it read as the new head's. Only what a
+  # reader compares is kept (the head, the two digests, the version, the level); the full
+  # record is in the event.
+  defp apply_evidence(record, "PrRiskRecorded", payload) do
+    put_evidence(record, :risk, %{
+      head_sha: get(payload, :head_sha),
+      level: get(payload, :level),
+      rubric_version: get(payload, :rubric_version),
+      digest: get(payload, :digest),
+      findings_digest: get(payload, :findings_digest),
+      seq: get(payload, :seq),
+      recorded_at: get(payload, :recorded_at)
+    })
+  end
+
   defp apply_evidence(record, _type, _payload), do: record
 
   defp list_or_empty(value) when is_list(value), do: value
@@ -302,7 +321,7 @@ defmodule ForemanServer.PrEvidence do
         eligibility(ctx, :unknown, reasons, [], nil, inputs_for(record, ctx))
 
       {_status, reasons} ->
-        reasons = reasons ++ findings_reasons(record, ctx)
+        reasons = reasons ++ findings_reasons(record, ctx) ++ risk_reasons(record, ctx)
         waiver = waiver_state(record, ctx)
         {status, uncovered, covered} = apply_waiver(reasons, waiver)
         eligibility(ctx, status, uncovered, covered, waiver, inputs_for(record, ctx))
@@ -423,6 +442,31 @@ defmodule ForemanServer.PrEvidence do
       inputs: inputs,
       evaluated_at: ctx.now_ms
     }
+  end
+
+  # -- risk reasons (TRD-018) -----------------------------------------------------
+
+  # No risk record is `risk_missing`; a record for another head than the one decided is
+  # `risk_other_sha`. Neither is waivable: a waiver covers a check or a review gap, never the
+  # absence of the classification the approver reads.
+  defp risk_reasons(record, ctx) do
+    case record |> evidence_of() |> Map.get(:risk) do
+      nil ->
+        [%Reason{code: :risk_missing, subject: nil, detail: "no risk record for the PR"}]
+
+      %{} = risk ->
+        head = get(risk, :head_sha)
+
+        if head == ctx.head_sha,
+          do: [],
+          else: [
+            %Reason{
+              code: :risk_other_sha,
+              subject: nil,
+              detail: "risk recorded for #{inspect(head)}, decided #{inspect(ctx.head_sha)}"
+            }
+          ]
+    end
   end
 
   # -- findings reasons (TRD-015) ---------------------------------------------------
@@ -742,6 +786,39 @@ defmodule ForemanServer.PrEvidence do
   end
 
   def validate_required(_other), do: :error
+
+  @doc """
+  Validate the `required` list of the policy snapshot a `run.pr.risk` carries: the same bounds
+  as `validate_required/1`, but each entry keeps its `workflow` and a true `allow_skipped`,
+  because `evaluate_checks/2` reads them (the `required` of `PrChecksChanged` is display only
+  and drops both, which would make a check of another workflow satisfy an entry). `nil` is the
+  gate off. String-keyed result.
+  """
+  @spec validate_policy_required(term()) :: {:ok, [map()] | nil} | :error
+  def validate_policy_required(nil), do: {:ok, nil}
+
+  def validate_policy_required(required)
+      when is_list(required) and length(required) <= @max_required do
+    each_ok(required, fn entry ->
+      with true <- is_map(entry),
+           {:ok, name} <- text(get(entry, :name), required: true),
+           {:ok, kind} <- text(get(entry, :kind), required: true),
+           {:ok, workflow} <- text(get(entry, :workflow), required: false),
+           true <- get(entry, :allow_skipped) in [nil, true, false] do
+        {:ok,
+         %{"name" => name, "kind" => kind}
+         |> put_if("workflow", workflow)
+         |> put_if("allow_skipped", if(get(entry, :allow_skipped) == true, do: true))}
+      else
+        _ -> :error
+      end
+    end)
+  end
+
+  def validate_policy_required(_other), do: :error
+
+  defp put_if(map, _key, nil), do: map
+  defp put_if(map, key, value), do: Map.put(map, key, value)
 
   @findings_statuses ~w(recorded absent malformed)
   @findings_defects ~w(unterminated_block multiple_blocks legacy_format invalid_json unknown_schema
