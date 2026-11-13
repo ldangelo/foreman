@@ -42,12 +42,17 @@ defmodule ForemanServer.Aggregate do
   - `{:ok, event_spec}`  — event as map with `stream_id`, `event_type`, `payload`
   - `{:ok, nil}`         — command was a no-op (e.g., duplicate detected)
   - `{:error, reason}`    — command rejected, state unchanged
+  - `{:error, reason, details}` — command rejected with machine-readable `details` for the
+    caller (the actor replies it unchanged; `Aggregates.Project` returns the run ids that block an
+    archive, `Aggregates.Run` the evidence a `merge_approve` was refused on). `details` must encode
+    as JSON, because `POST /api/commands` answers it as the `detail` of a 422.
   - `:unhandled`          — command not recognised, state unchanged (no append)
   """
   @callback handle_command(state :: aggregate_state(), command :: any()) ::
               {:ok, event_spec :: map()}
               | {:ok, nil}
               | {:error, reason :: any()}
+              | {:error, reason :: any(), details :: any()}
               | :unhandled
 
   @doc """
