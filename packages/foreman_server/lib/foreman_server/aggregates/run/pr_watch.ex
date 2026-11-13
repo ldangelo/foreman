@@ -50,7 +50,9 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
                    "run.pr.create",
                    "run.pr.ready_failed",
                    "run.pr.findings",
-                   "run.pr.risk"
+                   "run.pr.risk",
+                   "run.pr.comment_published",
+                   "run.pr.publish_report"
                  ] ++ Map.keys(@kinds)
 
   @events %{
@@ -68,6 +70,8 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
     "run.pr.ready_failed" => "PrReadyFailed",
     "run.pr.findings" => "ReviewFindingsRecorded",
     "run.pr.risk" => "PrRiskRecorded",
+    "run.pr.comment_published" => "PrCommentPublished",
+    "run.pr.publish_report" => "PrReportRequested",
     # Operator-only and handled by `Run` beside `merge_approve` (it needs the merge gate), so it
     # is in neither `command_types/0` nor `operator_types/0`: this entry makes `Run` fold the event.
     "run.pr.waive_evidence" => "PrEvidenceWaived"
@@ -81,6 +85,12 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
   @watch_start_reasons ~w(operator reopened)
   @ready_failed_stages ~w(head_read ready_dispatch)
   @open_statuses ~w(open conflicted)
+  @report_statuses ~w(published refused)
+  @report_reasons ~w(redaction_failed effect_refused gh_failed publisher_error)
+  @max_report_detail 500
+  @max_comment_url 500
+  @max_superseded 128
+  @max_requested_by 128
 
   @hard_cap 5
   @default_auto_cap 2
@@ -96,7 +106,7 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
   def event_types, do: @events |> Map.values() |> Enum.uniq()
 
   @operator_types ~w(run.pr.fix_ci run.pr.address_comments run.pr.resolve_conflicts
-                     run.pr.watch_stop run.pr.watch_start run.pr.create)
+                     run.pr.watch_stop run.pr.watch_start run.pr.create run.pr.publish_report)
 
   @doc """
   The PR commands an operator may issue (`CommandGateway` / `CommandController`
@@ -153,9 +163,13 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
              "run.pr.create",
              "run.pr.ready_failed",
              "run.pr.findings",
-             "run.pr.risk"
+             "run.pr.risk",
+             "run.pr.comment_published"
            ] ->
         {:error, {:missing_or_invalid, :pr_url}}
+
+      nil when type == "run.pr.publish_report" ->
+        report_pr_url(state, payload)
 
       nil ->
         single_watched_url(state, Aggregate.get(payload, :run_id))
@@ -541,6 +555,192 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
       end
     end
   end
+
+  # TRD-021: the outcome of publishing the report of the risk record `evidence.risk` holds
+  # (system-only, from `PrReport.Publisher`). The record is not derived here: the publisher
+  # names the head and digest it rendered, and the handler accepts them only when the folded
+  # risk record is that one, so an outcome can never claim a report for a record that does not
+  # exist. A `published` outcome carries the comment, a `refused` one a typed reason and a
+  # redacted detail; each is validated once here so the live and the replayed fold agree. A
+  # repeat of one command id dedupes at the gateway.
+  defp do_handle("run.pr.comment_published", state, run_id, pr_url, payload) do
+    with {:ok, ids} <- identity(state, payload),
+         :ok <- findings_repo_id(ids.repo_id),
+         {:ok, head_sha} <-
+           Aggregate.required_binary(Aggregate.get(payload, :head_sha), :head_sha),
+         {:ok, digest} <- Aggregate.required_binary(Aggregate.get(payload, :digest), :digest),
+         {:ok, record} <- watched_record(state, pr_url),
+         :ok <- report_for_known_risk(record, head_sha, digest),
+         {:ok, status} <- one_of(Aggregate.get(payload, :status), @report_statuses, :status),
+         {:ok, outcome} <- report_outcome(status, payload),
+         {:ok, recorded_at} <- non_neg_integer(Aggregate.get(payload, :recorded_at), :recorded_at) do
+      event(
+        "run.pr.comment_published",
+        run_id,
+        pr_url,
+        payload,
+        ids,
+        Map.merge(outcome, %{
+          head_sha: head_sha,
+          digest: digest,
+          status: status,
+          recorded_at: recorded_at
+        })
+      )
+    end
+  end
+
+  # TRD-030: the operator's request to publish the report of the PR's CURRENT risk record again
+  # (the retry of a refused publication). Operator-only (`operator_types/0`). The request names
+  # nothing it decides: a head, a digest or a level in the payload is refused, and the event
+  # carries the head and digest of the folded `evidence.risk`. Refused when the PR is not an open
+  # watched one, has no risk record, its risk record is for another head than the PR's, or
+  # `evidence.report` already holds a published report for that head and digest. A refused
+  # (`refused`) report does not refuse the request: it is what the request retries. Whether the
+  # project is gated is the publisher's to decide (the aggregate cannot read the policy).
+  defp do_handle("run.pr.publish_report", state, run_id, pr_url, payload) do
+    with {:ok, ids} <- identity(state, payload),
+         :ok <- findings_repo_id(ids.repo_id),
+         :ok <- no_named_report(payload),
+         {:ok, requested_by} <-
+           optional_bounded_text(
+             Aggregate.get(payload, :requested_by),
+             @max_requested_by,
+             :requested_by
+           ),
+         {:ok, requested_at} <- request_time(payload),
+         {:ok, record} <- watched_open(state, pr_url),
+         {:ok, risk} <- current_risk_record(record, pr_url),
+         :ok <- report_not_published(record, risk) do
+      event("run.pr.publish_report", run_id, pr_url, payload, ids, %{
+        head_sha: risk.head_sha,
+        digest: risk.digest,
+        requested_by: requested_by,
+        requested_at: requested_at
+      })
+    end
+  end
+
+  # The caller's own `requested_at` is a time, never another type; absent is the clock.
+  defp request_time(payload) do
+    case Aggregate.get(payload, :requested_at) do
+      nil -> {:ok, System.system_time(:millisecond)}
+      value -> non_neg_integer(value, :requested_at)
+    end
+  end
+
+  defp no_named_report(payload) do
+    case Enum.find(~w(head_sha digest level)a, &(not is_nil(Aggregate.get(payload, &1)))) do
+      nil -> :ok
+      key -> {:error, {:derived_field, key}}
+    end
+  end
+
+  defp current_risk_record(%{evidence: %{risk: %{head_sha: head} = risk}, head_sha: head}, _url),
+    do: {:ok, risk}
+
+  defp current_risk_record(%{evidence: %{risk: %{head_sha: risk_head}}, head_sha: head}, url),
+    do: {:error, {:risk_not_current, url, risk_head, head}}
+
+  defp current_risk_record(_record, url), do: {:error, {:no_risk_record, url}}
+
+  defp report_not_published(record, %{head_sha: head, digest: digest}) do
+    case record.evidence.report do
+      %{head_sha: ^head, digest: ^digest, status: "published"} ->
+        {:error, {:report_current, head, digest}}
+
+      _none_other_or_refused ->
+        :ok
+    end
+  end
+
+  # The PR the request is about: the one `repo_id` names through the merge gate's pin of that
+  # repository (the PR the gate was opened for), else the one watched PR.
+  defp report_pr_url(state, payload) do
+    case Aggregate.get(payload, :repo_id) do
+      repo_id when is_binary(repo_id) and repo_id != "" ->
+        case Map.get(state.merge_pins, repo_id) do
+          %{pr_url: url} when is_binary(url) and url != "" -> {:ok, url}
+          _no_pin -> {:error, {:pr_not_watched, nil}}
+        end
+
+      nil ->
+        single_watched_url(state, Aggregate.get(payload, :run_id))
+
+      _other ->
+        {:error, {:missing_or_invalid, :repo_id}}
+    end
+  end
+
+  defp report_for_known_risk(record, head_sha, digest) do
+    case record.evidence.risk do
+      %{head_sha: ^head_sha, digest: ^digest} -> :ok
+      _other -> {:error, {:report_for_unknown_risk, head_sha, digest}}
+    end
+  end
+
+  defp report_outcome("published", payload) do
+    with :ok <- absent(Aggregate.get(payload, :reason), :reason),
+         {:ok, detail} <-
+           optional_bounded_text(Aggregate.get(payload, :detail), @max_report_detail, :detail),
+         {:ok, comment_id} <- comment_id(Aggregate.get(payload, :comment_id)),
+         {:ok, comment_url} <-
+           required_bounded_text(
+             Aggregate.get(payload, :comment_url),
+             @max_comment_url,
+             :comment_url
+           ),
+         {:ok, superseded} <-
+           optional_bounded_text(
+             Aggregate.get(payload, :superseded),
+             @max_superseded,
+             :superseded
+           ) do
+      {:ok,
+       %{
+         reason: nil,
+         detail: detail,
+         comment_id: comment_id,
+         comment_url: comment_url,
+         superseded: superseded
+       }}
+    end
+  end
+
+  defp report_outcome("refused", payload) do
+    with {:ok, reason} <- one_of(Aggregate.get(payload, :reason), @report_reasons, :reason),
+         {:ok, detail} <-
+           required_bounded_text(Aggregate.get(payload, :detail), @max_report_detail, :detail),
+         :ok <- absent(Aggregate.get(payload, :comment_id), :comment_id),
+         :ok <- absent(Aggregate.get(payload, :comment_url), :comment_url),
+         :ok <- absent(Aggregate.get(payload, :superseded), :superseded) do
+      {:ok,
+       %{
+         reason: reason,
+         detail: detail,
+         comment_id: nil,
+         comment_url: nil,
+         superseded: nil
+       }}
+    end
+  end
+
+  defp absent(nil, _key), do: :ok
+  defp absent(_value, key), do: {:error, {:missing_or_invalid, key}}
+
+  defp comment_id(id) when is_integer(id) and id > 0, do: {:ok, id}
+  defp comment_id(_other), do: {:error, {:missing_or_invalid, :comment_id}}
+
+  defp optional_bounded_text(nil, _max, _key), do: {:ok, nil}
+  defp optional_bounded_text(value, max, key), do: required_bounded_text(value, max, key)
+
+  defp required_bounded_text(value, max, key) when is_binary(value) do
+    if value != "" and String.valid?(value) and String.length(value) <= max,
+      do: {:ok, value},
+      else: {:error, {:missing_or_invalid, key}}
+  end
+
+  defp required_bounded_text(_value, _max, key), do: {:error, {:missing_or_invalid, key}}
 
   # `identity/2` passes `repo_id` through unvalidated; the findings record is stricter.
   defp findings_repo_id(nil), do: :ok

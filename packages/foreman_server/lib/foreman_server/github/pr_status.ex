@@ -22,7 +22,9 @@ defmodule ForemanServer.GitHub.PrStatus do
       A comment's `bot` is `nil` until `fetch/2` ran with `threads: true`, which asks GraphQL who
       wrote each conversation comment (`gh pr view` gives a login only, and a GraphQL login carries
       no `[bot]` marker): `true` when GitHub says the author is a Bot actor (a review bot's
-      walkthrough), `false` for every other actor.
+      walkthrough), `false` for every other actor. `viewer_did_author` is `true` only when
+      `gh pr view` says (`viewerDidAuthor`) that the token's own user wrote the comment; an absent
+      field is `false`, never assumed true (TRD-030).
     * `merge_state_status` - the documented `mergeStateStatus` values plus
       `:unknown` (GitHub computes it lazily; `UNKNOWN` is not an error).
     * `files`, `changed_files`, `additions`, `deletions` - the machine-derived size
@@ -99,6 +101,7 @@ defmodule ForemanServer.GitHub.PrStatus do
           id: String.t(),
           author: String.t() | nil,
           bot: boolean() | nil,
+          viewer_did_author: boolean(),
           body: String.t(),
           url: String.t() | nil,
           created_at: String.t() | nil
@@ -329,7 +332,16 @@ defmodule ForemanServer.GitHub.PrStatus do
     end
   end
 
-  defp parse_pr_url(pr_url) do
+  @doc """
+  Owner, repository and number of a pull request URL: the first `github.com/<owner>/<repo>/pull/<n>`
+  found in it (lax: any scheme, host prefix, trailing segment, query or fragment), or a typed
+  `{:gh_unexpected_payload, {:unrecognised_pr_url, url}}`. `GitHub.PrComment.parse_pr_url/1` is
+  the strict form that a content write needs.
+  """
+  @spec parse_pr_url(String.t()) ::
+          {:ok, String.t(), String.t(), pos_integer()}
+          | {:error, {:gh_unexpected_payload, term()}}
+  def parse_pr_url(pr_url) do
     case Regex.run(~r{github\.com/([^/]+)/([^/]+)/pull/(\d+)}, pr_url) do
       [_, owner, name, number] -> {:ok, owner, name, String.to_integer(number)}
       nil -> {:error, {:gh_unexpected_payload, {:unrecognised_pr_url, pr_url}}}
@@ -560,6 +572,7 @@ defmodule ForemanServer.GitHub.PrStatus do
            id: id,
            author: login(Map.get(item, "author")),
            bot: nil,
+           viewer_did_author: Map.get(item, "viewerDidAuthor") == true,
            body: item |> Map.get("body", "") |> truncate_body(),
            url: blank_to_nil(Map.get(item, "url")),
            created_at: blank_to_nil(Map.get(item, "createdAt"))

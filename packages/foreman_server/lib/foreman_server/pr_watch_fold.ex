@@ -25,7 +25,8 @@ defmodule ForemanServer.PrWatchFold do
 
   @events ~w(PrUpdated PrReady PrMerged PrChecksChanged PrReviewChanged PrFixRequested
              PrFixStarted PrFixFinished PrFixExhausted PrWatchStopped PrWatchStarted
-             PrEvidenceWaived PrReadyFailed ReviewFindingsRecorded PrRiskRecorded)
+             PrEvidenceWaived PrReadyFailed ReviewFindingsRecorded PrRiskRecorded
+             PrCommentPublished)
 
   @type watch_record :: map()
   @type t :: %{String.t() => %{String.t() => watch_record()}}
@@ -210,6 +211,8 @@ defmodule ForemanServer.PrWatchFold do
   defp apply_event(record, "ReviewFindingsRecorded", _payload), do: record
 
   defp apply_event(record, "PrRiskRecorded", _payload), do: record
+
+  defp apply_event(record, "PrCommentPublished", _payload), do: record
 
   defp update_fix(record, fun), do: %{record | fix: fun.(record.fix)}
 

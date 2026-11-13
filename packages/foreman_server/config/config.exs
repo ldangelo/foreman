@@ -53,6 +53,7 @@ config :foreman_server, ForemanServer.Idempotency.Reconciler,
   classes: %{
     "branch_push" => ForemanServer.Idempotency.Reconcilers.BranchPush,
     "pr_create" => ForemanServer.Idempotency.Reconcilers.PrCreate,
+    "pr_comment" => ForemanServer.Idempotency.Reconcilers.PrComment,
     "task_provider" => ForemanServer.Idempotency.Reconcilers.TaskProvider
   }
 

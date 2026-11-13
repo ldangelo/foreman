@@ -90,6 +90,160 @@ defmodule ForemanServer.PrObservationTest do
     end
   end
 
+  # TRD-030: the report comment the publisher posts reaches the watcher as an ordinary comment
+  # (the `issue_comment` webhook, a poll). It is Foreman's own words, not feedback.
+  describe "the feedback-loop guard (TRD-030)" do
+    alias ForemanServer.PrReport
+
+    defp marker_body(extra \\ "report text"),
+      do: PrReport.marker("run-1", "sha-1", "d1") <> "\n" <> extra
+
+    defp comment(id, body, viewer_did_author) do
+      %{
+        id: id,
+        author: "x",
+        bot: false,
+        viewer_did_author: viewer_did_author,
+        body: body,
+        url: nil,
+        created_at: nil
+      }
+    end
+
+    test "the token's own comment that starts with the marker is not counted, nor does it move the digest" do
+      own = Support.status(comments: [comment("IC_own", marker_body(), true)])
+
+      assert PrObservation.comment_ids(own) == []
+      assert PrObservation.review_digest(own) == PrObservation.review_digest(Support.status())
+    end
+
+    test "a marker comment written by anyone else is counted" do
+      foreign = Support.status(comments: [comment("IC_foreign", marker_body(), false)])
+
+      assert PrObservation.comment_ids(foreign) == ["IC_foreign"]
+      refute PrObservation.review_digest(foreign) == PrObservation.review_digest(Support.status())
+    end
+
+    test "a comment with no author flag at all is counted, even with the marker" do
+      bare = %{id: "IC_bare", author: "x", body: marker_body(), url: nil, created_at: nil}
+
+      assert PrObservation.comment_ids(Support.status(comments: [bare])) == ["IC_bare"]
+    end
+
+    test "one rule decides what an own report is: the first line must be exactly a marker" do
+      lookalikes = [
+        "<!-- foreman:pr-report v1 hi",
+        PrReport.marker_prefix() <> "run=r head=h digest=d",
+        PrReport.marker_prefix() <> "run=r head=h digest=d --> trailing words",
+        PrReport.marker_prefix() <> "\nsecond line"
+      ]
+
+      for body <- lookalikes do
+        assert PrReport.parse_marker(body) == :error, body
+        status = Support.status(comments: [comment("IC_human", body, true)])
+        assert PrObservation.comment_ids(status) == ["IC_human"], body
+      end
+
+      assert {:ok, _} = PrReport.parse_marker(marker_body())
+
+      assert PrObservation.comment_ids(
+               Support.status(comments: [comment("IC_own", marker_body(), true)])
+             ) == []
+    end
+
+    test "an own report stored with CRLF line endings is still the token's own report" do
+      crlf = PrReport.marker("run-1", "sha-1", "d1") <> "\r\nreport text\r\nmore"
+
+      status = Support.status(comments: [comment("IC_crlf", crlf, true)])
+      assert PrObservation.comment_ids(status) == []
+      assert PrObservation.review_digest(status) == PrObservation.review_digest(Support.status())
+
+      # written by someone else it is still feedback
+      other = Support.status(comments: [comment("IC_crlf", crlf, false)])
+      assert PrObservation.comment_ids(other) == ["IC_crlf"]
+    end
+
+    test "the token's own comment is counted unless its body STARTS with the marker prefix" do
+      quoting = "I agree with:\n" <> marker_body()
+      indented = " " <> marker_body()
+      plain = "please fix the nil check"
+
+      status =
+        Support.status(
+          comments: [
+            comment("IC_quote", quoting, true),
+            comment("IC_space", indented, true),
+            comment("IC_plain", plain, true)
+          ]
+        )
+
+      assert PrObservation.comment_ids(status) == ["IC_plain", "IC_quote", "IC_space"]
+    end
+
+    test "own and foreign marker comments side by side: only the foreign one is feedback" do
+      status =
+        Support.status(
+          comments: [
+            comment("IC_own", marker_body(), true),
+            comment("IC_f", marker_body(), false)
+          ]
+        )
+
+      assert PrObservation.comment_ids(status) == ["IC_f"]
+    end
+
+    test "from a real `gh pr view` payload: only viewerDidAuthor true hides a marker comment" do
+      item = fn id, extra ->
+        Map.merge(
+          %{
+            "id" => id,
+            "author" => %{"login" => "foreman-bot"},
+            "body" => marker_body(),
+            "url" => "https://github.com/acme/repo/pull/7#issuecomment-#{id}",
+            "createdAt" => "2026-11-13T00:00:00Z"
+          },
+          extra
+        )
+      end
+
+      view =
+        Jason.encode!(%{
+          "state" => "OPEN",
+          "mergeable" => "MERGEABLE",
+          "headRefOid" => "abc123def456",
+          "headRefName" => "b",
+          "baseRefName" => "main",
+          "comments" => [
+            item.("IC_own", %{"viewerDidAuthor" => true}),
+            item.("IC_other", %{"viewerDidAuthor" => false}),
+            item.("IC_absent", %{})
+          ]
+        })
+
+      assert {:ok, status} =
+               ForemanServer.GitHub.PrStatus.fetch("https://github.com/acme/repo/pull/7",
+                 command_runner: fn "gh", _args, _opts -> {view, 0} end
+               )
+
+      assert PrObservation.comment_ids(status) == ["IC_absent", "IC_other"]
+    end
+
+    test "observing the publisher's own comment emits no run.pr.review; a foreign one does",
+         ctx do
+      status = Support.status()
+      {:ok, first} = PrObservation.commands(ctx.run_id, ctx.pr_url, status, nil)
+      record = apply!(first, ctx.run_id, ctx.pr_url)
+
+      own = %{status | comments: [comment("IC_own", marker_body(), true)]}
+      assert {:ok, []} = PrObservation.commands(ctx.run_id, ctx.pr_url, own, record)
+
+      foreign = %{status | comments: [comment("IC_f", marker_body(), false)]}
+      assert {:ok, [review]} = PrObservation.commands(ctx.run_id, ctx.pr_url, foreign, record)
+      assert review.type == "run.pr.review"
+      assert review.payload.comment_ids == ["IC_f"]
+    end
+  end
+
   describe "commands/4" do
     test "a first sighting of a PR with nothing to report is just the run.pr.update", %{
       run_id: run_id,

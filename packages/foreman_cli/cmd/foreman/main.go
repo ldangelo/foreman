@@ -105,6 +105,7 @@ Commands:
   run retry-pr        Re-open the PR of one repository of a multi-repo run (--id --repo-id)
   run watch-start <id> Start watching a run's PR (--pr)
   run watch-stop <id>  Stop watching a run's PR (--pr)
+  run publish-report <id> Publish a run's PR risk report again (--pr --repo-id)
   thread list         List a project's threads (--project <id>)
   thread get <id>     Fetch a thread
   thread stop <id>    Stop a thread (workflow run or jobsite)

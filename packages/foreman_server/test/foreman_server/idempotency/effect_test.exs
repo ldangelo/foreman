@@ -449,4 +449,114 @@ defmodule ForemanServer.Idempotency.EffectTest do
       refute_received :ran
     end
   end
+
+  describe "the pr_comment class (TRD-020)" do
+    @pr_url "https://github.com/acme/widgets/pull/7"
+
+    defp comment_key(head, digest),
+      do: ForemanServer.Idempotency.Reconcilers.PrComment.key(@run_id, head, digest)
+
+    defp comment_meta(head, digest) do
+      ForemanServer.Idempotency.Reconcilers.PrComment.intent(@run_id, @pr_url, head, digest)
+    end
+
+    defp post(head, digest) do
+      Effect.run(
+        :pr_comment,
+        comment_key(head, digest),
+        fn -> :posted end,
+        comment_meta(head, digest)
+      )
+    end
+
+    test "the key names the run, the head and the digest: another head or digest is another effect" do
+      assert comment_key("h1", "d1") == "effect:pr_comment:#{@run_id}:h1:d1"
+      assert comment_key("h1", "d1") == comment_key("h1", "d1")
+      refute comment_key("h1", "d1") == comment_key("h2", "d1")
+      refute comment_key("h1", "d1") == comment_key("h1", "d2")
+    end
+
+    test "a part with a character outside A-Za-z0-9._- is refused, so (a:b, c) and (a, b:c) cannot share a key" do
+      for {head, digest} <- [{"a:b", "c"}, {"a", "b:c"}, {"a b", "c"}, {"a", ""}] do
+        assert_raise ArgumentError, fn -> comment_key(head, digest) end
+      end
+
+      shared = Effect.key(:pr_comment, @run_id, "a:b:c")
+
+      for {head, digest, field} <- [{"a:b", "c", "head_sha"}, {"a", "b:c", "digest"}] do
+        assert {:error, {:intent_not_recorded, {:invalid_metadata, ^field}}} =
+                 Effect.run(
+                   :pr_comment,
+                   shared,
+                   fn -> flunk("ran") end,
+                   comment_meta(head, digest)
+                 )
+      end
+
+      assert KeyStore.status(shared) == :not_found
+
+      assert {:error, {:intent_not_recorded, {:invalid_metadata, "run_id"}}} =
+               Effect.run(
+                 :pr_comment,
+                 shared,
+                 fn -> flunk("ran") end,
+                 ForemanServer.Idempotency.Reconcilers.PrComment.intent(
+                   "run:1",
+                   @pr_url,
+                   "a",
+                   "b"
+                 )
+               )
+    end
+
+    test "a key settled completed for H1 and d1 does not stop the effect for H2 or d2" do
+      assert :posted == post("h1", "d1")
+      assert {:ok, :completed} = KeyStore.status(comment_key("h1", "d1"))
+
+      assert :posted == post("h2", "d1")
+      assert :posted == post("h1", "d2")
+      assert {:ok, :completed} = KeyStore.status(comment_key("h2", "d1"))
+      assert {:ok, :completed} = KeyStore.status(comment_key("h1", "d2"))
+    end
+
+    test "the intent records the three fields and no cwd, and the effect runs without one" do
+      key = comment_key("h1", "d1")
+      test_pid = self()
+
+      assert :posted ==
+               Effect.run(
+                 :pr_comment,
+                 key,
+                 fn ->
+                   send(test_pid, {:inside, KeyStore.get(key)})
+                   :posted
+                 end,
+                 comment_meta("h1", "d1")
+               )
+
+      assert_received {:inside, {:ok, %{status: :started, metadata: metadata}}}
+
+      assert %{
+               "run_id" => @run_id,
+               "effect_class" => "pr_comment",
+               "pr_url" => @pr_url,
+               "head_sha" => "h1",
+               "digest" => "d1"
+             } = metadata
+
+      refute Map.has_key?(metadata, "cwd")
+    end
+
+    test "a missing pr_url, head_sha or digest records no intent and does not run the effect" do
+      for field <- [:pr_url, :head_sha, :digest] do
+        meta = Map.delete(comment_meta("h1", "d1"), field)
+        name = Atom.to_string(field)
+
+        assert {:error, {:intent_not_recorded, {:missing_metadata, ^name}}} =
+                 Effect.run(:pr_comment, comment_key("h1", "d1"), fn -> flunk("ran") end, meta)
+
+        assert KeyStore.status(comment_key("h1", "d1")) == :not_found
+      end
+    end
+  end
 end

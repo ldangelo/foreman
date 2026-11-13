@@ -161,6 +161,7 @@ defmodule ForemanServer.Application do
       maybe_coordinator_children() ++
       maybe_stuck_detector_child() ++
       maybe_pr_watcher_child() ++
+      maybe_pr_report_publisher_child() ++
       maybe_pr_monitor_child() ++
       maybe_schedule_ticker_child() ++
       maybe_trigger_poller_child() ++
@@ -732,6 +733,16 @@ defmodule ForemanServer.Application do
   # stays opt-in through PrMonitor.
   defp maybe_pr_watcher_child do
     if ForemanServer.PrWatcher.enabled?(), do: [ForemanServer.PrWatcher], else: []
+  end
+
+  # TRD-021: the PR report publisher subscribes to ProjectionStore and dispatches through
+  # CommandRouter, and its comment effect needs the key store, so it starts after PrWatcher
+  # (which appends the PrRiskRecorded it reacts to). On by default; the test env turns it
+  # off (tests start it with start_supervised!).
+  defp maybe_pr_report_publisher_child do
+    if ForemanServer.PrReport.Publisher.enabled?(),
+      do: [ForemanServer.PrReport.Publisher],
+      else: []
   end
 
   # After ProjectionStore and CommandRouter (earlier in this list) so the first

@@ -68,6 +68,7 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 > foreman run create-pr     <run-id>
 > foreman run watch-start   <run-id> --pr
 > foreman run watch-stop    <run-id> --pr
+> foreman run publish-report <run-id> --id --pr --repo-id
 >
 > foreman commands          inventory|generate|install|validate
 > foreman doctor            --project --strict --format
@@ -621,7 +622,7 @@ The workflow task shortcuts create tasks that require later approval. The `forem
 ### `foreman run`
 
 > **NOT IMPLEMENTED as described.** `foreman run` is not a dispatch verb; it
-> requires one of `list`, `get`, `cancel`, `pause`, `resume`, `remove`, `reset`, `submit`, `approve-merge`, `merge`, `prs`, `fix-ci`, `address-comments`, `resolve-conflicts`, `create-pr`, `watch-start`, `watch-stop`, and a
+> requires one of `list`, `get`, `cancel`, `pause`, `resume`, `remove`, `reset`, `submit`, `approve-merge`, `merge`, `prs`, `fix-ci`, `address-comments`, `resolve-conflicts`, `create-pr`, `watch-start`, `watch-stop`, `publish-report`, and a
 > bare `foreman run` returns `missing subcommand`. None of the twenty flags this
 > section documents exist anywhere in `run.go` — `--model`, `--watch`,
 > `--no-watch`, `--yes`, `--dry-run`, `--resume`, `--resume-failed`,
@@ -705,7 +706,7 @@ Pipeline budgets are optional environment guards. `0` disables a budget: `FOREMA
 > `FOREMAN_MAX_PIPELINE_COST_USD`, `FOREMAN_MAX_PIPELINE_TOOL_CALLS`,
 > `FOREMAN_MAX_PIPELINE_REVIEW_LOOPS` or `FOREMAN_DEFAULT_MODEL` is read anywhere
 > in the server or CLI source, so no pipeline budget is enforced. `foreman run`
-> without a subcommand does not exist: `run` takes one of `list|get|cancel|pause|resume|remove|reset|submit|approve-merge|waive-evidence|merge|prs|fix-ci|address-comments|resolve-conflicts|create-pr|watch-start|watch-stop`.
+> without a subcommand does not exist: `run` takes one of `list|get|cancel|pause|resume|remove|reset|submit|approve-merge|waive-evidence|merge|prs|fix-ci|address-comments|resolve-conflicts|create-pr|watch-start|watch-stop|publish-report`.
 > Bound spend per project with `foreman project update --max-concurrent-runs --daily-thread-cap` and read it with `foreman usage`.
 
 ### `foreman run task`
@@ -1260,6 +1261,12 @@ Operator commands `run.pr.fix_ci`, `run.pr.address_comments`, `run.pr.resolve_co
 
 The `--note` text is redacted of the project's secret values (every secret-store value of 8 or more characters, whatever its name, plus the values of secret-named environment variables) before the command reaches the run, so the stored `PrFixRequested.note` and the fix prompt carry `[REDACTED]`, like the coordinator's conversation text; a secret store that cannot be read costs only the store's values. Redaction lengthens the text (`[REDACTED]` is longer than a short secret), so a note close to the 2000-character cap that contains a secret can be refused as `invalid_note` after redaction. A note on a run the server does not know is refused (`not_found`) instead of stored. Events stored before this change are not rewritten.
 
+### `foreman run publish-report <run-id> [--id <run-id>] [--pr <url>] [--repo-id <repo-id>]`
+
+Publishes the risk report of a run's PR again (`run.pr.publish_report`, an operator command: it is reachable through the CLI and `POST /api/commands` only, never through an MCP tool, the coordinator or an approval). The report is normally posted by the server when the risk record is made; this verb is the retry after a refused publication (`redaction_failed`, `effect_refused`, `gh_failed`, `publisher_error`, shown in the PR's `evidence.report`). It names no head, digest or level: the server republishes the report of the PR's CURRENT risk record for the PR's current head, and the request refuses a payload that names one (`derived_field`). The PR is `--pr`, else the PR the merge gate holds for `--repo-id`, else the one watched PR; the run id is the first argument or `--id`, and a missing run id is a usage error before any request. Each call posts the command for `run:<run-id>` with its own random command id, so two requests are two requests. The server appends `PrReportRequested` (`run_id`, `project_id`, `task_id`, `pr_url`, `repo_id`, `head_sha`, `digest`, `requested_by`, `requested_at`) and `PrReport.Publisher` publishes that record's report; the outcome is the usual `run.pr.comment_published`. Refusals: `{no_risk_record, pr_url}` (the PR has no risk record), `{risk_not_current, pr_url, risk_head, head}` (its record is for another head), `{report_current, head_sha, digest}` (that report is already published) and `pr_not_open` / `pr_not_watched`. A project whose gate is off publishes nothing (the publisher skips the request: publication follows the gate switch).
+
+**An accepted request is not a posted report.** The server records the request (`PrReportRequested`, the CLI answers with the accepted command and prints a note on stderr) whatever the project's gate says, and the publisher then acts only for a project whose `required_checks` gate is on, an open watched PR, and the PR's current risk record for its current head: a project with the gate off (or whose policy cannot be read), a PR that has since moved to another head or a report that was published in the meantime publishes nothing, and the publisher logs the reason once at info level (`the requested report of run <id> was not published (ungated | policy_unavailable | risk_not_current | already_reported | ...)`). Look at the PR's `evidence.report` (`foreman run prs <run-id>`) for the outcome: a `published` or `refused` report with its reason. `requested_at` and `requested_by`, when sent, are validated (a non-negative integer and at most 128 characters).
+
 ### `foreman run create-pr <run-id>` / `foreman run watch-stop|watch-start <run-id> [--pr <url>]`
 
 `create-pr` (`run.pr.create`) opens the PR for a run that has none and puts it in the merge gate like a run's own PR (`run.pr.ready` with the head GitHub shows, so `approve-merge` and `merge` work on it); a failed gate signal is an error (`pr_ready_signal_failed`, carrying `{:head_read_failed, reason}` when GitHub could not be read for the head (`gh` missing or failing, a 30 s timeout) or `{:ready_dispatch_failed, reason}` when the signal was refused; the failure is also recorded on the PR's watch record) and a retry resumes the open PR. `watch-stop` / `watch-start` (`run.pr.watch_stop`, `run.pr.watch_start`; MCP `foreman_pr_watch_stop`) pause or resume PR watching. None of them merge or approve: use `approve-merge` and `merge`.
@@ -1337,7 +1344,7 @@ Reset Foreman to a clean operator state by intentionally dropping stale/obsolete
 
 ### `foreman run kill-switch`
 
-> **NOT IMPLEMENTED.** `foreman run kill-switch` is not a `run` subcommand. `runRun` dispatches exactly `list`, `get`, `cancel`, `pause`, `resume`, `remove`, `reset`, `approve-merge`, `merge`, `prs`, `fix-ci`, `address-comments`, `resolve-conflicts`, `create-pr`, `watch-stop`, `watch-start`, `submit`. Nearest real: `foreman run cancel --id <run-id> --reason <text>` (now also kills the dispatched agent's OS-level process via `RunControl.cancel_agent/1`, not just the run projection) or, to stop and later continue the same run, `foreman run pause --id <run-id>` followed by `foreman run resume --id <run-id>` (resume re-runs the interrupted phase from its last committed partial work).
+> **NOT IMPLEMENTED.** `foreman run kill-switch` is not a `run` subcommand. `runRun` dispatches exactly `list`, `get`, `cancel`, `pause`, `resume`, `remove`, `reset`, `approve-merge`, `merge`, `prs`, `fix-ci`, `address-comments`, `resolve-conflicts`, `create-pr`, `watch-stop`, `watch-start`, `publish-report`, `submit`. Nearest real: `foreman run cancel --id <run-id> --reason <text>` (now also kills the dispatched agent's OS-level process via `RunControl.cancel_agent/1`, not just the run projection) or, to stop and later continue the same run, `foreman run pause --id <run-id>` followed by `foreman run resume --id <run-id>` (resume re-runs the interrupted phase from its last committed partial work).
 
 Kill a stuck active run and route to a recovery phase without losing artifacts. This is the first-class operator kill-switch for stuck phases — it stops the active worker, marks the current phase as failed with `retryWith` routing, and preserves the worktree, PR, and reports by default.
 

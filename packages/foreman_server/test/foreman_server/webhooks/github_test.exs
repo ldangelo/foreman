@@ -181,4 +181,101 @@ defmodule ForemanServer.Webhooks.GithubTest do
       assert :ignored = Github.process(%{"action" => "closed"})
     end
   end
+
+  # TRD-030: the report comment the publisher posts comes back as an `issue_comment` delivery,
+  # which asks the watcher to re-read the PR. The re-read must not see Foreman's own comment as
+  # review feedback, or every report would move the review digest and emit `run.pr.review`.
+  describe "the publisher's own report comment (TRD-030)" do
+    alias ForemanServer.{PrReport, PrWatcher, ProjectionStore}
+    alias ForemanServer.TestSupport.Eventually
+    alias ForemanServer.TestSupport.PrWatchSupport, as: Support
+
+    @describetag :capture_log
+
+    defp comment_delivery(pr_url) do
+      %{
+        "action" => "created",
+        "issue" => %{"html_url" => pr_url, "pull_request" => %{"url" => "x"}},
+        "comment" => %{"body" => "hi"}
+      }
+    end
+
+    defp pr_comment(id, viewer_did_author) do
+      %{
+        id: id,
+        author: "x",
+        bot: false,
+        viewer_did_author: viewer_did_author,
+        body: PrReport.marker("run-1", "sha-1", "d1") <> "\nreport text",
+        url: nil,
+        created_at: nil
+      }
+    end
+
+    defp review_events(run_id),
+      do: Enum.filter(Support.run_events(run_id), &(&1.event_type == "PrReviewChanged"))
+
+    defp review_digest(run_id, pr_url),
+      do: Enum.find(ProjectionStore.pr_watch(run_id), &(&1.pr_url == pr_url)).review_digest
+
+    setup do
+      run = Support.start_run!(complete: true)
+      {:ok, _} = PrAssociate.store(run.run_id, run.pr_url)
+      test_pid = self()
+      {:ok, agent} = Agent.start_link(fn -> Support.status() end)
+
+      fetch = fn _url ->
+        send(test_pid, :fetched)
+        {:ok, Agent.get(agent, & &1)}
+      end
+
+      start_supervised!({PrWatcher, fetch_fun: fetch})
+      assert {:ok, _} = PrWatcher.refresh_now(run.pr_url)
+      assert_received :fetched
+
+      {:ok, Map.put(run, :agent, agent)}
+    end
+
+    defp events_of(run_id, type),
+      do: Enum.filter(Support.run_events(run_id), &(&1.event_type == type))
+
+    # The webhook alone asks for the re-read: nothing else calls the watcher, so the fetch and
+    # the observation counted after it are the webhook's. Returns once that observation is done.
+    defp deliver_comment(ctx, comments) do
+      before = PrWatcher.stats().observations
+      Agent.update(ctx.agent, &%{&1 | comments: comments})
+      refute_received :fetched
+
+      assert :ok = Github.process(comment_delivery(ctx.pr_url))
+      assert_receive :fetched, 5_000, "the webhook did not make the watcher re-read the PR"
+
+      Eventually.await(fn -> PrWatcher.stats().observations == before + 1 end,
+        message: "the watcher finished the webhook's observation"
+      )
+
+      refute_received :fetched
+    end
+
+    test "the token's own marker comment moves no review digest and emits no run.pr.review",
+         ctx do
+      digest = review_digest(ctx.run_id, ctx.pr_url)
+      risks = length(events_of(ctx.run_id, "PrRiskRecorded"))
+
+      deliver_comment(ctx, [pr_comment("IC_own", true)])
+
+      assert review_events(ctx.run_id) == []
+      assert review_digest(ctx.run_id, ctx.pr_url) == digest
+      assert length(events_of(ctx.run_id, "PrRiskRecorded")) == risks
+      assert events_of(ctx.run_id, "PrCommentPublished") == []
+    end
+
+    test "the same marker written by someone else is feedback: run.pr.review is emitted", ctx do
+      digest = review_digest(ctx.run_id, ctx.pr_url)
+
+      deliver_comment(ctx, [pr_comment("IC_foreign", false)])
+
+      assert [%{data: %{comment_ids: ["IC_foreign"]}}] = review_events(ctx.run_id)
+      refute review_digest(ctx.run_id, ctx.pr_url) == digest
+    end
+  end
 end

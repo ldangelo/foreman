@@ -1142,6 +1142,192 @@ defmodule ForemanServer.Workflow.BootReconciliationEffectKeysTest do
     end
   end
 
+  describe "the pr_comment class through the real registry (TRD-020)" do
+    @pr_url "https://github.com/acme/widgets/pull/7"
+    @head_sha "0123456789abcdef0123456789abcdef01234567"
+    @digest "d1d1d1d1"
+
+    # A fake `gh` first on PATH: `gh pr view <url> --json comments` answers the scripted
+    # file, or fails when `fail` exists. Nothing else is answered, so a write would fail.
+    setup do
+      dir = Path.join(System.tmp_dir!(), "pr-comment-sweep-#{System.unique_integer([:positive])}")
+      bin = Path.join(dir, "bin")
+      File.mkdir_p!(bin)
+      File.write!(Path.join(dir, "comments.json"), ~s({"comments":[]}))
+
+      File.write!(Path.join(bin, "gh"), """
+      #!/bin/sh
+      echo "$*" >> "#{dir}/gh.log"
+      if [ -e "#{dir}/fail" ]; then echo "error connecting to api.github.com" >&2; exit 1; fi
+      case "$*" in
+        "pr view #{@pr_url} --json comments") cat "#{dir}/comments.json" ;;
+        *) echo "unexpected: $*" >&2; exit 2 ;;
+      esac
+      """)
+
+      File.chmod!(Path.join(bin, "gh"), 0o755)
+      path = System.get_env("PATH")
+      System.put_env("PATH", bin <> ":" <> path)
+
+      on_exit(fn ->
+        System.put_env("PATH", path)
+        File.rm_rf(dir)
+      end)
+
+      {:ok, dir: dir}
+    end
+
+    defp comments!(dir, comments) do
+      File.write!(Path.join(dir, "comments.json"), Jason.encode!(%{comments: comments}))
+    end
+
+    defp comment(body, own?) do
+      %{
+        "id" => "IC_1",
+        "url" => @pr_url <> "#issuecomment-1",
+        "body" => body,
+        "viewerDidAuthor" => own?,
+        "isMinimized" => false,
+        "createdAt" => "2026-11-12T10:00:00Z"
+      }
+    end
+
+    defp marker_body(run_id, digest \\ @digest),
+      do: ForemanServer.PrReport.marker(run_id, @head_sha, digest) <> "\n\nreport"
+
+    # What a crash between the post and the settle leaves: a `started` key with the intent.
+    defp crash_in_post(run_id) do
+      test = self()
+
+      {pid, mref} =
+        spawn_monitor(fn ->
+          Effect.run(
+            :pr_comment,
+            ForemanServer.Idempotency.Reconcilers.PrComment.key(run_id, @head_sha, @digest),
+            fn ->
+              send(test, :in_effect)
+              Process.sleep(:infinity)
+            end,
+            ForemanServer.Idempotency.Reconcilers.PrComment.intent(
+              run_id,
+              @pr_url,
+              @head_sha,
+              @digest
+            )
+          )
+        end)
+
+      assert_receive :in_effect
+      Process.exit(pid, :kill)
+      assert_receive {:DOWN, ^mref, :process, ^pid, :killed}
+      ForemanServer.Idempotency.Reconcilers.PrComment.key(run_id, @head_sha, @digest)
+    end
+
+    defp finish(_run_id, nil), do: :ok
+    defp finish(run_id, ending), do: end_run(run_id, ending)
+
+    defp ended?(ending), do: ending != nil
+    defp status_after(nil), do: "awaiting_worker"
+    defp status_after(ending), do: ending
+
+    defp assert_untouched(run_id, key, expected_status) do
+      assert status(run_id) == expected_status
+      assert RunControl.intent(run_id) == nil
+      assert {:ok, %{status: :ambiguous, metadata: metadata}} = KeyStore.get(key)
+      assert KeyStore.unresolved_version(metadata) == :none
+      assert KeyStore.decision(metadata) == :none
+
+      intent =
+        ForemanServer.Idempotency.Reconcilers.PrComment.intent(
+          run_id,
+          @pr_url,
+          @head_sha,
+          @digest
+        )
+
+      assert :ran == Effect.run(:pr_comment, key, fn -> :ran end, intent)
+    end
+
+    for {where, ending} <- [{"a live run", nil}, {"a completed run", "completed"}] do
+      test "the token user's own marker is :done on #{where}: nothing is blocked, cancelled or marked, and the effect is not refused",
+           %{run_id: run_id, ref: ref, dir: dir} do
+        key = crash_in_post(run_id)
+        finish(run_id, unquote(ending))
+        comments!(dir, [comment(marker_body(run_id), true)])
+        before_events = events(run_id)
+
+        sweep_with(Reconciler.classes())
+
+        assert events(run_id) == before_events
+
+        assert_receive {@effect_event, ^ref,
+                        %{skipped: 1, blocked: 0, on_terminal_run: 0, unresolved: 0, retried: 0},
+                        _}
+
+        refute_received {@terminal_event, ^ref, _, _}
+        assert File.read!(Path.join(dir, "gh.log")) =~ "pr view #{@pr_url} --json comments"
+        assert_untouched(run_id, key, status_after(unquote(ending)))
+      end
+
+      test "no marker is :not_done on #{where}: the key is decided and the effect runs",
+           %{run_id: run_id, ref: ref, dir: dir} do
+        key = crash_in_post(run_id)
+        finish(run_id, unquote(ending))
+        comments!(dir, [comment(marker_body(run_id, "other-digest"), true)])
+
+        sweep_with(Reconciler.classes())
+
+        # A run that has ended rejects the audit command (counted audit_failed); the key is
+        # decided all the same.
+        if ended?(unquote(ending)) do
+          assert_receive {@effect_event, ^ref, %{audit_failed: 1, retried: 0, blocked: 0}, _}
+        else
+          assert_receive {@effect_event, ^ref, %{retried: 1, skipped: 0, blocked: 0}, _}
+        end
+
+        assert {:ok, %{status: :ambiguous, metadata: decided}} = KeyStore.get(key)
+        assert KeyStore.decision(decided) == :not_done
+        refute status(run_id) == "blocked"
+      end
+    end
+
+    test "a marker typed by another user proves nothing: :not_done",
+         %{run_id: run_id, ref: ref, dir: dir} do
+      key = crash_in_post(run_id)
+      comments!(dir, [comment(marker_body(run_id), false)])
+
+      sweep_with(Reconciler.classes())
+
+      assert_receive {@effect_event, ^ref, %{retried: 1, skipped: 0}, _}
+      assert {:ok, %{metadata: decided}} = KeyStore.get(key)
+      assert KeyStore.decision(decided) == :not_done
+    end
+
+    test "a gh that fails is :unknown: the run is left running, the key undecided and unmarked, the effect not refused",
+         %{run_id: run_id, ref: ref, dir: dir} do
+      key = crash_in_post(run_id)
+      File.write!(Path.join(dir, "fail"), "")
+
+      sweep_with(Reconciler.classes())
+
+      assert_receive {@effect_event, ^ref, %{skipped: 1, blocked: 0, unresolved: 0, retried: 0},
+                      _}
+
+      assert_untouched(run_id, key, "awaiting_worker")
+    end
+
+    test "with the registry entry removed the class blocks the run `effect_class_unregistered`",
+         %{run_id: run_id} do
+      key = crash_in_post(run_id)
+
+      sweep_with(Map.delete(Reconciler.classes(), "pr_comment"))
+
+      assert status(run_id) == "blocked"
+      assert get(List.last(events(run_id)).payload, :reason) == "effect_class_unregistered"
+      assert {:ok, :ambiguous} = KeyStore.status(key)
+    end
+  end
+
   # --- helpers ---
 
   defp meta(run_id), do: %{"run_id" => run_id, "effect_class" => "branch_push"}

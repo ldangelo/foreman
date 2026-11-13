@@ -97,7 +97,7 @@ defmodule ForemanServer.Idempotency.ReconcilerTest do
     end
 
     test "the configured registry holds the push, PR-create and task-provider reconcilers" do
-      assert Reconciler.classes() == %{
+      assert Map.take(Reconciler.classes(), ["branch_push", "pr_create", "task_provider"]) == %{
                "branch_push" => ForemanServer.Idempotency.Reconcilers.BranchPush,
                "pr_create" => ForemanServer.Idempotency.Reconcilers.PrCreate,
                "task_provider" => ForemanServer.Idempotency.Reconcilers.TaskProvider
