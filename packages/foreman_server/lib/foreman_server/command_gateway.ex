@@ -250,8 +250,8 @@ defmodule ForemanServer.CommandGateway do
   # fields are checked first with the aggregate's check (`Run.validate_approval/1`), so a
   # malformed or unauthorized approval cannot make the server read GitHub at all.
   defp perform_operator_side_effects(%{type: "merge_approve", payload: payload} = command) do
-    with {:ok, _approval} <- verify_named_head(payload) do
-      {:ok, command}
+    with {:ok, _approval, observed} <- observe_named_head(payload) do
+      gate_evidence(command, observed)
     end
   end
 
@@ -397,14 +397,116 @@ defmodule ForemanServer.CommandGateway do
   # fields (`Run.validate_approval/1`, so a malformed or unauthorized request cannot make the
   # server read GitHub) and then GitHub's head for the PR the gate holds.
   defp verify_named_head(payload) do
+    with {:ok, approval, _observed} <- observe_named_head(payload), do: {:ok, approval}
+  end
+
+  # The same, keeping what GitHub showed: `observed` is `%{pr_url, status}` (`RunPrMerge.observe_head/3`)
+  # or `nil` when the gate is not pending.
+  defp observe_named_head(payload) do
     run_id = get_value(payload, :run_id) || get_value(payload, "run_id")
     repo_id = get_value(payload, :repo_id) || get_value(payload, "repo_id")
 
     with :ok <- valid_repo_id(gate_repo(repo_id), true),
          {:ok, approval} <- Run.validate_approval(payload),
-         :ok <- RunPrMerge.verify_head(run_id, gate_repo(repo_id), approval.head_sha) do
-      {:ok, approval}
+         {:ok, observed} <- RunPrMerge.observe_head(run_id, gate_repo(repo_id), approval.head_sha) do
+      {:ok, approval, observed}
     end
+  end
+
+  # TRD-022: the approval is decided on evidence read for it. After the head check (one GitHub
+  # read, `observed`) the project's policy is read as it stands now. A policy that cannot be
+  # read refuses (never gate off). Gate off dispatches nothing and stamps a nil policy. For a
+  # gated project the durable-store guard is applied again, the evidence batch (`run.pr.update`,
+  # a forced `run.pr.checks` with a fresh nonce, `run.pr.risk`) is built from the SAME
+  # `PrStatus` and dispatched in order, and the approval is stamped with `evidence`
+  # (`policy`, `checks_ref`, `now_ms`), which replaces anything the caller sent. A command of the
+  # batch that fails refuses the approval (fail closed). A gate that is not pending is left to
+  # the aggregate's own refusal; only the caller's `evidence` key is dropped.
+  defp gate_evidence(%{payload: payload} = command, nil),
+    do: {:ok, drop_evidence(command, payload)}
+
+  defp gate_evidence(%{payload: payload} = command, %{pr_url: pr_url, status: status}) do
+    run_id = get_value(payload, :run_id) || get_value(payload, "run_id")
+    repo_id = gate_repo(get_value(payload, :repo_id) || get_value(payload, "repo_id"))
+    now_ms = System.system_time(:millisecond)
+
+    with {:ok, policy} <- run_policy(run_id) do
+      case policy do
+        nil ->
+          {:ok, put_evidence(command, payload, %{policy: nil, checks_ref: nil, now_ms: now_ms})}
+
+        %{} ->
+          with :ok <- ForemanServer.Idempotency.KeyStore.require_durable(),
+               nonce = Base.encode16(:crypto.strong_rand_bytes(16), case: :lower),
+               {:ok, batch} <-
+                 evidence_batch(run_id, repo_id, pr_url, status, policy, nonce, now_ms),
+               :ok <- dispatch_evidence_batch(run_id, batch) do
+            evidence = %{policy: policy, checks_ref: nonce, now_ms: now_ms}
+            {:ok, put_evidence(command, payload, evidence)}
+          end
+      end
+    end
+  end
+
+  defp drop_evidence(command, payload),
+    do: %{command | payload: payload |> Map.delete(:evidence) |> Map.delete("evidence")}
+
+  defp put_evidence(command, payload, evidence) do
+    %{command | payload: payload |> Map.delete("evidence") |> Map.put(:evidence, evidence)}
+  end
+
+  # The policy of the run's project as it stands now: an unknown run, an unknown project or a
+  # projection that does not answer is `{:policy_unavailable, _}`, never gate off.
+  defp run_policy(run_id) do
+    case ProjectionStore.run(run_id) do
+      %{project_id: project_id} -> PrEvidence.project_policy(project_id)
+      _no_run -> {:error, {:policy_unavailable, :run_unknown}}
+    end
+  catch
+    :exit, reason -> {:error, {:policy_unavailable, {:exit, reason}}}
+  end
+
+  defp evidence_batch(run_id, repo_id, pr_url, status, policy, nonce, now_ms) do
+    previous =
+      run_id |> ProjectionStore.pr_watch() |> Enum.find(&(&1.pr_url == pr_url))
+
+    case ForemanServer.PrObservation.commands(
+           run_id,
+           pr_url,
+           status,
+           previous,
+           ForemanServer.PrUpdate.payload_repo_id(run_id, repo_id),
+           policy: policy,
+           force: %{nonce: nonce, now_ms: now_ms}
+         ) do
+      {:ok, batch} -> {:ok, batch}
+      {:error, reason} -> evidence_refused(run_id, "observation", reason)
+    end
+  catch
+    :exit, reason -> evidence_refused(run_id, "observation", {:exit, reason})
+  end
+
+  defp dispatch_evidence_batch(run_id, batch) do
+    Enum.reduce_while(batch, :ok, fn command, :ok ->
+      case dispatch_system(command) do
+        {:ok, _spec} -> {:cont, :ok}
+        {:error, reason} -> {:halt, evidence_refused(run_id, command.type, reason)}
+      end
+    end)
+  end
+
+  defp evidence_refused(run_id, type, reason) do
+    Logger.error(
+      "merge_approve run_id=#{run_id}: evidence not recorded (#{type}): #{inspect(reason)}"
+    )
+
+    Telemetry.execute([:foreman_server, :merge_gate, :evidence_refused], %{}, %{
+      run_id: run_id,
+      type: type,
+      reason: reason
+    })
+
+    {:error, {:evidence_not_recorded, type, reason}}
   end
 
   # Enabling `required_checks` (`[]` included) turns the merge gate on, and the gate's approvals

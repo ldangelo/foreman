@@ -31,6 +31,12 @@ defmodule ForemanServerWeb.CommandControllerMergeTest do
     :ok =
       ForemanServer.ProjectionStore.apply_events([%{event_type: "RunStarted", payload: started}])
 
+    # The gate reads the run's project policy: the project must be known to the projection.
+    :ok =
+      ForemanServer.ProjectionStore.apply_events([
+        %{event_type: "ProjectRegistered", payload: %{project_id: "project-http", path: nil}}
+      ])
+
     {:ok, _} =
       CommandGateway.dispatch_system(%{
         type: "run.pr.ready",
