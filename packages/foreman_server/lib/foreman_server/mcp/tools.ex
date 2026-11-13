@@ -1494,6 +1494,14 @@ defmodule ForemanServer.MCP.Tools do
 
       {:error, :run_not_found} ->
         {:error, %ToolError{code: "NOT_FOUND", message: "Run not found"}}
+
+      # TRD-031: a store that does not answer is `unknown`, never an empty PR list.
+      {:error, {:projection_unavailable, reason}} ->
+        {:error,
+         %ToolError{
+           code: "projection_unavailable",
+           message: "PR status is unknown: the projection could not be read (#{reason})"
+         }}
     end
   end
 

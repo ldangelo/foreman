@@ -134,9 +134,24 @@ defmodule ForemanServer.PrWatch.DTO do
   @doc """
   The PRs of a run as `%{run_id: id, prs: [t()]}`, or `{:error, :run_not_found}`
   for an unknown run (a known run with no observed PR yields `prs: []`).
+
+  When `ProjectionStore` does not answer (it is down, restarting after a failed boot read of
+  the event log, or the call times out) the answer is `{:error, {:projection_unavailable, reason}}`
+  (TRD-031, AC-005-3): the status of the PRs is unknown, never an empty list and never clean.
   """
-  @spec fetch(String.t()) :: {:ok, %{run_id: String.t(), prs: [t()]}} | {:error, :run_not_found}
+  @spec fetch(String.t()) ::
+          {:ok, %{run_id: String.t(), prs: [t()]}}
+          | {:error, :run_not_found}
+          | {:error, {:projection_unavailable, String.t()}}
   def fetch(run_id) when is_binary(run_id) and run_id != "" do
+    read_projection(run_id)
+  catch
+    :exit, reason -> {:error, {:projection_unavailable, bounded_inspect(reason)}}
+  end
+
+  def fetch(_run_id), do: {:error, :run_not_found}
+
+  defp read_projection(run_id) do
     case ProjectionStore.run(run_id) do
       nil ->
         {:error, :run_not_found}
@@ -162,11 +177,9 @@ defmodule ForemanServer.PrWatch.DTO do
     end
   end
 
-  def fetch(_run_id), do: {:error, :run_not_found}
-
   # The one place the policy of a PR is read. A policy that cannot be read is an error with its
-  # reason, shown as `unknown`, never as `off`. TRD-031 (the boot-failure state of the
-  # store) adds its case here: a source that answers `{:error, detail}` is all this needs.
+  # reason, shown as `unknown`, never as `off`. A store that does not answer at all never gets
+  # this far: `fetch/1` answers `{:error, {:projection_unavailable, reason}}` for the whole run.
   @spec policy_source(map()) :: {:ok, map() | nil} | {:error, String.t()}
   defp policy_source(record) do
     case PrEvidence.project_policy(Map.get(record, :project_id)) do

@@ -60,6 +60,17 @@ defmodule ForemanServerWeb.RunController do
         conn
         |> put_status(:not_found)
         |> json(%{error: "run_not_found", run_id: run_id})
+
+      # TRD-031 (AC-005-3): unreadable means unknown, never an empty list.
+      {:error, {:projection_unavailable, cause}} ->
+        conn
+        |> put_status(:service_unavailable)
+        |> json(%{
+          error: "projection_unavailable",
+          status: "unknown",
+          run_id: run_id,
+          cause: cause
+        })
     end
   end
 
