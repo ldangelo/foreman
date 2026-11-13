@@ -212,22 +212,42 @@ defmodule ForemanServer.PrWatcher.Observer do
   # The project's `required_checks` policy as it stands now. A project that cannot be read is
   # observed with no policy (the checks event then records `required: nil`) and the error is
   # logged; the gate never reads this snapshot, it reads the policy itself (TRD-011).
-  defp observation_policy(run_id) do
-    with %{project_id: project_id} <- ProjectionStore.run(run_id),
-         {:ok, policy} <- PrEvidence.project_policy(project_id) do
-      policy
-    else
+  #
+  # `:project_not_found` is logged at warning, not error: a run whose project the projection
+  # does not hold (an unregistered or removed project) would otherwise log an error on every
+  # poll of every PR it has. A real read failure (a call that exits, a malformed setting, a
+  # run without a project id) stays an error. `run_reader` is the run read, injectable so the
+  # exit path is testable without suspending the store.
+  @doc false
+  @spec observation_policy(String.t(), (String.t() -> map() | nil)) :: map() | nil
+  def observation_policy(run_id, run_reader \\ &ProjectionStore.run/1) do
+    case read_policy(run_id, run_reader) do
+      {:ok, policy} ->
+        policy
+
+      {:error, {:policy_unavailable, :project_not_found} = reason} ->
+        Logger.warning(
+          "PrWatcher run_id=#{run_id}: required_checks policy unreadable: #{inspect(reason)}"
+        )
+
+        nil
+
       {:error, reason} ->
         Logger.error(
           "PrWatcher run_id=#{run_id}: required_checks policy unreadable: #{inspect(reason)}"
         )
 
         nil
-
-      _no_run ->
-        Logger.error("PrWatcher run_id=#{run_id}: required_checks policy unreadable: run unknown")
-        nil
     end
+  end
+
+  defp read_policy(run_id, run_reader) do
+    case run_reader.(run_id) do
+      %{project_id: project_id} -> PrEvidence.project_policy(project_id)
+      _no_run -> {:error, {:policy_unavailable, :run_unknown}}
+    end
+  catch
+    :exit, reason -> {:error, {:policy_unavailable, {:exit, reason}}}
   end
 
   # Merged/closed ends the watch; open again after `closed` restarts it.

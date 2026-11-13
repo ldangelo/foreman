@@ -2,6 +2,7 @@ defmodule ForemanServer.PrWatcherTest do
   use ExUnit.Case, async: false
 
   alias ForemanServer.{PrAssociate, PrWatcher, ProjectionStore}
+  alias ForemanServer.PrWatcher.Observer
   alias ForemanServer.TestSupport.PrWatchSupport, as: Support
   alias ForemanServer.TestSupport.UniqueIds
 
@@ -305,19 +306,45 @@ defmodule ForemanServer.PrWatcherTest do
       assert [%{data: %{required: nil, policy_version: nil}}] = checks_events(ctx.run_id)
     end
 
-    test "a projection that does not answer is policy_unavailable, not gate off" do
+    test "an unregistered project logs at warning, a failed read at error; both observe with no policy" do
       project_id = register_project!([@a])
-      pid = Process.whereis(ProjectionStore)
+      run = Support.start_run!(project_id: project_id)
+      unregistered = Support.start_run!()
 
-      result =
-        try do
-          :sys.suspend(pid)
-          Task.async(fn -> PrEvidence.project_policy(project_id) end) |> Task.await(15_000)
-        after
-          :sys.resume(pid)
-        end
+      known =
+        capture_log([level: :debug], fn ->
+          assert %{required: [@a]} = Observer.observation_policy(run.run_id)
+        end)
 
-      assert {:error, {:policy_unavailable, {:exit, {:timeout, _}}}} = result
+      refute known =~ "unreadable"
+
+      warned =
+        capture_log([level: :debug], fn ->
+          assert nil == Observer.observation_policy(unregistered.run_id)
+        end)
+
+      assert warned =~ "[warning]"
+      assert warned =~ "project_not_found"
+      refute warned =~ "[error]"
+
+      failed =
+        capture_log([level: :debug], fn ->
+          assert nil == Observer.observation_policy(run.run_id, fn _ -> exit(:noproc) end)
+        end)
+
+      assert failed =~ "[error]"
+      assert failed =~ "policy_unavailable"
+      assert failed =~ ":noproc"
+    end
+
+    test "a run read that exits degrades to no policy instead of crashing the observation" do
+      stub = spawn(fn -> Process.sleep(:infinity) end)
+      on_exit(fn -> Process.exit(stub, :kill) end)
+
+      capture_log(fn ->
+        assert nil ==
+                 Observer.observation_policy("run-x", fn _ -> GenServer.call(stub, :run, 20) end)
+      end)
     end
   end
 end

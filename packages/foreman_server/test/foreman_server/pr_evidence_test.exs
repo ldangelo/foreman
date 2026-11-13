@@ -871,5 +871,18 @@ defmodule ForemanServer.PrEvidenceTest do
 
       assert {:error, {:policy_unavailable, _}} = PrEvidence.project_policy(nil)
     end
+
+    test "a projection that does not answer is policy_unavailable, not gate off" do
+      stub = spawn(fn -> Process.sleep(:infinity) end)
+      on_exit(fn -> Process.exit(stub, :kill) end)
+
+      reader = fn id -> GenServer.call(stub, {:project_projection, id}, 20) end
+
+      assert {:error, {:policy_unavailable, {:exit, {:timeout, _}}}} =
+               PrEvidence.project_policy("p-1", reader)
+
+      assert {:error, {:policy_unavailable, {:exit, :noproc}}} =
+               PrEvidence.project_policy("p-1", fn _ -> exit(:noproc) end)
+    end
   end
 end

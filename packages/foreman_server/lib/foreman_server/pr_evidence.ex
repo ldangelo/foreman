@@ -373,6 +373,8 @@ defmodule ForemanServer.PrEvidence do
       other ->
         {:error, {:policy_unavailable, {:invalid_projection, other}}}
     end
+  catch
+    :exit, reason -> {:error, {:policy_unavailable, {:exit, reason}}}
   end
 
   def project_policy(project_id, _reader),
