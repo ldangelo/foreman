@@ -452,4 +452,263 @@ defmodule ForemanServer.Aggregates.RunMultiGateTest do
                })
     end
   end
+
+  # TRD-012: the operator waiver, beside `merge_approve`.
+  describe "run.pr.waive_evidence" do
+    alias ForemanServer.PrEvidence
+
+    @policy "policy-v1"
+    @never_waivable ~w(failing pending stale other_sha checks_truncated findings_malformed
+                       risk_missing risk_other_sha evidence_unreadable)
+
+    defp waive_result(state, repo_id, overrides \\ %{}) do
+      payload =
+        %{
+          run_id: @run_id,
+          approver: "leo",
+          approver_identity: @identity,
+          head_sha: head_of(repo_id),
+          reasons: ["no_checks_configured"],
+          reason: "this repository has no CI",
+          policy_version: @policy
+        }
+        |> Map.merge(overrides)
+        |> put_repo(repo_id)
+
+      Run.handle_command(state, %{type: "run.pr.waive_evidence", payload: payload})
+    end
+
+    defp waive(state, repo_id, overrides \\ %{}),
+      do: apply_spec(state, waive_result(state, repo_id, overrides))
+
+    defp watched(state, repo_id), do: Map.fetch!(state.pr_watch, url_of(repo_id))
+
+    defp eligibility(state, repo_id, head_sha, version \\ @policy) do
+      PrEvidence.evaluate(watched(state, repo_id), %{
+        head_sha: head_sha,
+        policy: %{required: [], version: version},
+        now_ms: 1_000,
+        checks_ref: nil
+      })
+    end
+
+    test "records the waiver on the gate's PR and head, and the evaluator reads it", %{
+      state: state
+    } do
+      state = ready(state, nil)
+      assert eligibility(state, nil, "sha-main").status == :ineligible
+
+      assert {:ok, spec} = waive_result(state, nil)
+      assert spec.stream_id == "run:#{@run_id}"
+      assert spec.event_type == "PrEvidenceWaived"
+
+      assert %{
+               run_id: @run_id,
+               pr_url: "https://github.com/o/main/pull/1",
+               head_sha: "sha-main",
+               approver: "leo",
+               approver_identity: @identity,
+               reasons: ["no_checks_configured"],
+               reason: "this repository has no CI",
+               policy_version: @policy,
+               waived_at: waived_at
+             } = spec.payload
+
+      assert is_integer(waived_at)
+      refute Map.has_key?(spec.payload, :repo_id)
+
+      waived = waive(state, nil)
+
+      assert %{head_sha: "sha-main", codes: ["no_checks_configured"]} =
+               watched(waived, nil).evidence.waiver
+
+      assert %{status: :waived, waived: [%{code: :no_checks_configured}]} =
+               eligibility(waived, nil, "sha-main")
+
+      # It is for that head and that policy version only.
+      assert eligibility(waived, nil, "sha-other").status == :ineligible
+      assert eligibility(waived, nil, "sha-main", "policy-v2").status == :ineligible
+    end
+
+    test "the PR is the gate's pin, never the payload's pr_url", %{state: state} do
+      state = ready(state, nil)
+
+      assert {:ok, %{payload: %{pr_url: pr_url}}} =
+               waive_result(state, nil, %{pr_url: "https://github.com/evil/other/pull/9"})
+
+      assert pr_url == url_of(nil)
+    end
+
+    test "a waiver for another head is a second head's waiver: a head change voids it, a head it names survives",
+         %{state: state} do
+      state = state |> ready(nil) |> waive(nil, %{head_sha: "sha-next"})
+      url = url_of(nil)
+
+      survives = fold(state, "PrUpdated", %{pr_url: url, head_sha: "sha-next"})
+      assert %{head_sha: "sha-next"} = watched(survives, nil).evidence.waiver
+      assert eligibility(survives, nil, "sha-next").status == :waived
+
+      voided = fold(state, "PrUpdated", %{pr_url: url, head_sha: "sha-moved"})
+      assert watched(voided, nil).evidence.waiver == nil
+      assert eligibility(voided, nil, "sha-moved").status == :ineligible
+    end
+
+    test "a head that moves after the waiver voids it and the reasons stand again", %{
+      state: state
+    } do
+      waived = state |> ready(nil) |> waive(nil)
+      assert eligibility(waived, nil, "sha-main").status == :waived
+
+      moved = fold(waived, "PrUpdated", %{pr_url: url_of(nil), head_sha: "sha-moved"})
+      assert watched(moved, nil).evidence.waiver == nil
+
+      assert %{status: :ineligible, reasons: [%{code: :no_checks_configured}]} =
+               eligibility(moved, nil, "sha-moved")
+    end
+
+    test "the aggregate and projection folds agree on the waiver through a head move", %{
+      state: state
+    } do
+      url = url_of(nil)
+      ready_state = ready(state, nil)
+      {:ok, spec} = waive_result(ready_state, nil, %{head_sha: "sha-next"})
+
+      events = [
+        {"PrReady", %{pr_url: url, head_sha: "sha-main", base_branch: "main"}},
+        {spec.event_type, spec.payload},
+        {"PrUpdated", %{pr_url: url, head_sha: "sha-next"}},
+        {"PrUpdated", %{pr_url: url, head_sha: "sha-moved"}}
+      ]
+
+      {aggregate, projection} =
+        Enum.reduce(events, {state, %{}}, fn {type, payload}, {agg, watch} ->
+          payload = Map.put(payload, :run_id, @run_id)
+
+          {Run.apply_event(agg, %{event_type: type, payload: payload}),
+           ForemanServer.PrWatchFold.fold(watch, type, payload)}
+        end)
+        |> then(fn {agg, watch} -> {agg.pr_watch[url], watch[@run_id][url]} end)
+
+      assert aggregate.evidence.waiver == nil
+      assert projection.evidence.waiver == nil
+
+      # Stopping at the head the waiver names keeps it, identically in both.
+      kept =
+        Enum.reduce(Enum.take(events, 3), {state, %{}}, fn {type, payload}, {agg, watch} ->
+          payload = Map.put(payload, :run_id, @run_id)
+
+          {Run.apply_event(agg, %{event_type: type, payload: payload}),
+           ForemanServer.PrWatchFold.fold(watch, type, payload)}
+        end)
+
+      {agg, watch} = kept
+      assert agg.pr_watch[url].evidence.waiver == watch[@run_id][url].evidence.waiver
+
+      assert %{head_sha: "sha-next", codes: ["no_checks_configured"]} =
+               watch[@run_id][url].evidence.waiver
+    end
+
+    test "a second waiver for the same head replaces the first", %{state: state} do
+      twice =
+        state
+        |> ready(nil)
+        |> waive(nil, %{reasons: ["no_checks_configured", "missing"], reason: "first"})
+        |> waive(nil, %{reasons: ["skipped"], reason: "second"})
+
+      assert %{codes: ["skipped"]} = watched(twice, nil).evidence.waiver
+    end
+
+    test "only the waivable set is accepted; every other code is a typed refusal", %{
+      state: state
+    } do
+      state = ready(state, nil)
+
+      for code <- ~w(no_checks_configured missing skipped findings_absent findings_legacy_format
+                     findings_other_sha) do
+        assert {:ok, _} = waive_result(state, nil, %{reasons: [code]}), code
+      end
+
+      for code <- @never_waivable ++ ["made_up"] do
+        assert {:error, {:reason_not_waivable, ^code}} =
+                 waive_result(state, nil, %{reasons: [code]})
+
+        # One refused code refuses the whole waiver, even beside waivable ones.
+        assert {:error, {:reason_not_waivable, ^code}} =
+                 waive_result(state, nil, %{reasons: ["missing", code]})
+      end
+
+      assert {:error, {:reason_not_waivable, 5}} = waive_result(state, nil, %{reasons: [5]})
+    end
+
+    test "malformed fields are refused with the field's name", %{state: state} do
+      state = ready(state, nil)
+
+      for reasons <- [[], nil, "missing", %{}] do
+        assert {:error, {:missing_or_invalid, :reasons}} =
+                 waive_result(state, nil, %{reasons: reasons})
+      end
+
+      for reason <- [nil, "", "   \n", 5, String.duplicate("x", 501)] do
+        assert {:error, {:missing_or_invalid, :reason}} =
+                 waive_result(state, nil, %{reason: reason})
+      end
+
+      assert {:ok, %{payload: %{reason: "ok"}}} = waive_result(state, nil, %{reason: "  ok "})
+      assert {:ok, _} = waive_result(state, nil, %{reason: String.duplicate("x", 500)})
+
+      # The version is the gateway's stamp; the aggregate never invents one.
+      for version <- [nil, "", 5] do
+        assert {:error, {:missing_or_invalid, :policy_version}} =
+                 waive_result(state, nil, %{policy_version: version})
+      end
+
+      assert {:error, {:missing_or_invalid, :head_sha}} =
+               waive_result(state, nil, %{head_sha: nil})
+
+      assert {:error, {:missing_or_invalid, :approver}} =
+               waive_result(state, nil, %{approver: ""})
+
+      assert {:error, :unauthorized_approver} =
+               waive_result(state, nil, %{approver_identity: "github:someone-else"})
+    end
+
+    test "the gate must be pending", %{state: state} do
+      assert {:error, {:merge_gate_not_found, :run}} = waive_result(state, nil)
+
+      state = ready(state, nil)
+      assert {:error, {:merge_gate_not_found, :run, "zzz"}} = waive_result(state, "zzz")
+
+      approved = approve(state, nil)
+      assert {:error, :merge_gate_already_approved} = waive_result(approved, nil)
+    end
+
+    test "a completed run whose gate is pending accepts the waiver, like merge_approve", %{
+      state: state
+    } do
+      terminal =
+        state
+        |> ready(nil)
+        |> then(&Run.apply_event(&1, %{event_type: "RunCompleted", payload: %{run_id: @run_id}}))
+
+      assert terminal.terminal?
+      assert Run.merge_gate(terminal, nil) == :pending
+      assert {:ok, %{event_type: "PrEvidenceWaived"}} = waive_result(terminal, nil)
+    end
+
+    test "a waiver of one repository covers no other", %{state: state} do
+      state = state |> ready(nil) |> ready("b")
+
+      waived = waive(state, "b")
+      assert %{head_sha: "sha-b"} = watched(waived, "b").evidence.waiver
+      assert watched(waived, nil).evidence.waiver == nil
+      assert eligibility(waived, "b", "sha-b").status == :waived
+      assert eligibility(waived, nil, "sha-main").status == :ineligible
+
+      assert {:ok, %{payload: %{repo_id: "b", pr_url: "https://github.com/o/b/pull/1"}}} =
+               waive_result(state, "b")
+
+      # The head of one repository's PR is not accepted as the other's by the fold.
+      assert eligibility(waived, "b", "sha-main").status == :ineligible
+    end
+  end
 end

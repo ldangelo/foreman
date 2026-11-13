@@ -30,7 +30,7 @@ end
 defmodule ForemanServer.CommandGatewayTest do
   use ExUnit.Case, async: false
 
-  alias ForemanServer.{CommandGateway, ProjectStore, ProjectionStore}
+  alias ForemanServer.{Aggregate, CommandGateway, ProjectStore, ProjectionStore}
 
   describe "envelope validation" do
     test "rejects command without command_id" do
@@ -2484,6 +2484,225 @@ defmodule ForemanServer.CommandGatewayTest do
     )
 
     handler_id
+  end
+
+  # TRD-012: `run.pr.waive_evidence` through the real gateway and Run aggregate; only `gh` is
+  # stubbed. The gateway reads GitHub's head and the project's policy before dispatch.
+  describe "run.pr.waive_evidence" do
+    alias ForemanServer.{EventStore, PrEvidence, RunPrMerge}
+    alias ForemanServer.Workflow.MergeGate
+
+    @live_head "livehead111"
+    @waive_pr_url "https://github.com/acme/repo/pull/12"
+
+    setup do
+      MergeGate.clear()
+      test_pid = self()
+
+      RunPrMerge.set_command_runner(fn "gh", args, _opts ->
+        send(test_pid, {:gh, args})
+
+        {Jason.encode!(%{
+           "state" => "OPEN",
+           "mergeable" => "MERGEABLE",
+           "headRefOid" => @live_head,
+           "headRefName" => "foreman/task/run",
+           "baseRefName" => "main"
+         }), 0}
+      end)
+
+      on_exit(fn ->
+        RunPrMerge.clear_command_runner()
+        ForemanServer.CommandGatewayTestHelper.reset_projection_store()
+      end)
+
+      %{
+        gate_on: start_waiver_run(%{required_checks: []}),
+        gate_off: start_waiver_run(%{}),
+        unknown_project: start_waiver_run(nil)
+      }
+    end
+
+    # A run with a pending gate on `config`'s project; `nil` config leaves the project unknown.
+    defp start_waiver_run(config) do
+      project_id = unique_id("project-waive")
+      run_id = unique_id("run-waive")
+
+      if config do
+        :ok =
+          ProjectionStore.apply_events([
+            %{
+              event_type: "ProjectRegistered",
+              payload: %{project_id: project_id, path: "/tmp/#{project_id}", config: config}
+            }
+          ])
+      end
+
+      started = %{run_id: run_id, project_id: project_id, task_id: "task-waive"}
+
+      :ok =
+        EventStore.append_to_stream("run:#{run_id}", 0, [
+          %Elixir.EventStore.EventData{event_type: "RunStarted", data: started, metadata: %{}}
+        ])
+
+      :ok = ProjectionStore.apply_events([%{event_type: "RunStarted", payload: started}])
+
+      {:ok, _} =
+        CommandGateway.dispatch_system(%{
+          type: "run.pr.ready",
+          command_id: unique_id("ready"),
+          aggregate_id: "run:#{run_id}",
+          payload: %{
+            run_id: run_id,
+            project_id: project_id,
+            task_id: "task-waive",
+            pr_url: @waive_pr_url,
+            branch_name: "foreman/task/run",
+            head_sha: @live_head,
+            base_branch: "main"
+          }
+        })
+
+      run_id
+    end
+
+    defp waive_evidence(run_id, overrides \\ %{}) do
+      CommandGateway.dispatch_operator(%{
+        type: "run.pr.waive_evidence",
+        command_id: unique_id("waive"),
+        aggregate_id: "run:#{run_id}",
+        payload:
+          Map.merge(
+            %{
+              run_id: run_id,
+              approver: "leo",
+              approver_identity: "github:ldangelo",
+              head_sha: @live_head,
+              reasons: ["no_checks_configured"],
+              reason: "no CI in this repository"
+            },
+            overrides
+          )
+      })
+    end
+
+    defp waivers(run_id) do
+      {:ok, events} = EventStore.read_stream_forward("run:#{run_id}", 0, 1_000)
+      Enum.filter(events, &(&1.event_type == "PrEvidenceWaived"))
+    end
+
+    defp gh_calls do
+      Stream.repeatedly(fn ->
+        receive do
+          {:gh, args} -> args
+        after
+          0 -> :done
+        end
+      end)
+      |> Enum.take_while(&(&1 != :done))
+    end
+
+    test "a waiver for the live head is recorded for the gate's PR under the project's policy version",
+         %{gate_on: run_id} do
+      assert {:ok, _} = waive_evidence(run_id)
+
+      assert [%{data: data}] = waivers(run_id)
+      assert Aggregate.get(data, :head_sha) == @live_head
+      assert Aggregate.get(data, :pr_url) == @waive_pr_url
+      assert Aggregate.get(data, :policy_version) == PrEvidence.policy_version([])
+      assert Aggregate.get(data, :reasons) == ["no_checks_configured"]
+    end
+
+    test "a head that is not GitHub's is refused with both SHAs and nothing is appended", %{
+      gate_on: run_id
+    } do
+      assert {:error, {:head_sha_mismatch, "stale-head", @live_head}} =
+               waive_evidence(run_id, %{head_sha: "stale-head"})
+
+      assert waivers(run_id) == []
+    end
+
+    test "the policy version the caller names is replaced by the project's, whatever the key type",
+         %{gate_on: run_id} do
+      assert {:ok, _} =
+               waive_evidence(run_id, %{
+                 policy_version: "forged-version",
+                 pr_url: "https://github.com/evil/other/pull/9"
+               })
+
+      assert {:ok, _} =
+               waive_evidence(run_id, %{"policy_version" => "forged-string-key"})
+
+      assert [first, second] = waivers(run_id)
+
+      for %{data: data} <- [first, second] do
+        assert Aggregate.get(data, :policy_version) == PrEvidence.policy_version([])
+        assert Aggregate.get(data, :pr_url) == @waive_pr_url
+      end
+    end
+
+    test "a system dispatch carries no stamp: the aggregate refuses a waiver without policy_version",
+         %{gate_on: run_id} do
+      assert {:error, {:missing_or_invalid, :policy_version}} =
+               CommandGateway.dispatch_system(%{
+                 type: "run.pr.waive_evidence",
+                 command_id: unique_id("waive-system"),
+                 aggregate_id: "run:#{run_id}",
+                 payload: %{
+                   run_id: run_id,
+                   approver: "leo",
+                   approver_identity: "github:ldangelo",
+                   head_sha: @live_head,
+                   reasons: ["no_checks_configured"],
+                   reason: "x"
+                 }
+               })
+
+      assert waivers(run_id) == []
+    end
+
+    test "the stored waiver replays into the aggregate's evidence record", %{gate_on: run_id} do
+      assert {:ok, _} = waive_evidence(run_id, %{reasons: ["missing", "skipped"]})
+      assert {:ok, _} = waive_evidence(run_id, %{reasons: ["skipped"], reason: "narrower"})
+
+      {state, _version} = Aggregate.load(ForemanServer.Aggregates.Run, "run:#{run_id}")
+
+      assert %{head_sha: @live_head, codes: ["skipped"], reason: "narrower"} =
+               state.pr_watch[@waive_pr_url].evidence.waiver
+    end
+
+    test "a project whose policy cannot be read refuses the waiver", %{unknown_project: run_id} do
+      assert {:error, {:policy_unavailable, :project_not_found}} = waive_evidence(run_id)
+      assert waivers(run_id) == []
+    end
+
+    test "a project whose gate is off refuses the waiver", %{gate_off: run_id} do
+      assert {:error, :gate_off} = waive_evidence(run_id)
+      assert waivers(run_id) == []
+    end
+
+    test "an unauthorized or malformed request is refused before GitHub is read", %{
+      gate_on: run_id
+    } do
+      assert {:error, :unauthorized_approver} =
+               waive_evidence(run_id, %{approver_identity: "github:intruder"})
+
+      assert {:error, {:missing_or_invalid, :head_sha}} = waive_evidence(run_id, %{head_sha: nil})
+      assert gh_calls() == []
+      assert waivers(run_id) == []
+    end
+
+    test "a reason code that is never waivable is refused and nothing is appended", %{
+      gate_on: run_id
+    } do
+      assert {:error, {:reason_not_waivable, "failing"}} =
+               waive_evidence(run_id, %{reasons: ["failing"]})
+
+      assert {:error, {:reason_not_waivable, "checks_truncated"}} =
+               waive_evidence(run_id, %{reasons: ["no_checks_configured", "checks_truncated"]})
+
+      assert waivers(run_id) == []
+    end
   end
 
   defp unique_id(prefix) do

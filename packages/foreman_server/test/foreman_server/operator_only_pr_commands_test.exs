@@ -1,7 +1,7 @@
 defmodule ForemanServer.OperatorOnlyPrCommandsTest do
   @moduledoc """
-  The merge gate stays operator-only (E12-S6): `merge_approve`, `run.pr.merge`
-  and `run.pr.retry` are reachable through the operator envelope, and through
+  The merge gate stays operator-only (E12-S6): `merge_approve`, `run.pr.merge`,
+  `run.pr.retry` and the evidence waiver `run.pr.waive_evidence` (TRD-012) are reachable through the operator envelope, and through
   none of the surfaces an agent or automation drives - no MCP tool, no
   coordinator / approvals dispatch, no PR-watch system command.
   """
@@ -13,7 +13,7 @@ defmodule ForemanServer.OperatorOnlyPrCommandsTest do
   alias ForemanServer.Coordinator.Dispatch, as: CoordinatorDispatch
   alias ForemanServer.MCP.{Policy, Tools}
 
-  @operator_only ~w(merge_approve run.pr.merge run.pr.retry)
+  @operator_only ~w(merge_approve run.pr.merge run.pr.retry run.pr.waive_evidence)
   # `run.pr.rehold` voids a stale approval (foreman-ehxy6): automation sends it after a PR head
   # observation, and it can only ever make the gate stricter - but no operator, agent or tool may
   # dispatch it.
@@ -133,6 +133,40 @@ defmodule ForemanServer.OperatorOnlyPrCommandsTest do
 
       assert {:error, {:forbidden_command, @type_name}} =
                CoordinatorDispatch.system(CommandGateway, %{type: @type_name, payload: %{}})
+    end
+  end
+
+  # TRD-012: the waiver is declared with the operator PR types beside `merge_approve` (it needs
+  # the merge gate the aggregate keeps), never as a PR-watch command the watcher could issue.
+  describe "run.pr.waive_evidence is operator-only" do
+    @waive "run.pr.waive_evidence"
+
+    test "it is in the operator allowlist, as merge_approve is, and in no automation list" do
+      assert @waive in CommandGateway.operator_types()
+      assert @waive in CommandGateway.command_endpoint_types()
+      assert @waive in CommandGateway.pr_operator_types()
+      assert @waive in ForemanServer.Aggregates.Run.repo_pr_operator_types()
+      assert "merge_approve" in CommandGateway.operator_types()
+
+      refute @waive in PrWatch.command_types()
+      refute @waive in PrWatch.operator_types()
+      refute @waive in CoordinatorDispatch.command_types()
+      refute @waive in ApprovalsDispatch.command_types()
+    end
+
+    test "coordinator and approvals dispatch refuse it" do
+      assert {:error, {:forbidden_command, @waive}} =
+               CoordinatorDispatch.system(CommandGateway, %{type: @waive, payload: %{}})
+    end
+
+    test "the operator envelope addresses it to the run stream" do
+      assert {:error, {:invalid_envelope, :aggregate_id_mismatch}} =
+               CommandGateway.dispatch_operator(%{
+                 type: @waive,
+                 command_id: "c-waive-mismatch",
+                 aggregate_id: "run:other",
+                 payload: %{run_id: "none"}
+               })
     end
   end
 end
