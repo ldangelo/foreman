@@ -947,12 +947,28 @@ defmodule ForemanServer.TestSupport.PrDeliveryWorld do
   @spec stop_publisher!(atom()) :: :ok
   def stop_publisher!(name), do: ExUnit.Callbacks.stop_supervised!(name)
 
-  @doc "Wait until the publisher has no publication in flight."
+  @doc """
+  Wait until the publisher has handled every event the test appended so far and has no publication
+  in flight. `inflight == 0` alone proves nothing: the publisher may not have read the event that
+  starts a publication yet. The barrier is positive: every event is applied to the projection and
+  broadcast to the subscribers BEFORE the command that appended it replies
+  (`ProjectionStore.apply_events/1`, called by `CommandRouter`), so the event is already in the
+  publisher's mailbox when the test calls this, and a round trip through that mailbox
+  (`:sys.get_state/1`) returns only after the publisher handled it (a publication in flight is then
+  counted by `inflight/1`). `inflight == 0` is read after a round trip twice, so a trigger that
+  waited for the publication just finished (one in flight per PR) has started and finished too.
+  """
   @spec settle_publisher!(atom()) :: :ok
   def settle_publisher!(name) do
-    Eventually.await(fn -> Publisher.inflight(name) == 0 end,
-      message: "the publisher still has a publication in flight"
-    )
+    for _pass <- 1..2 do
+      Eventually.await(
+        fn ->
+          _mailbox_handled = :sys.get_state(name)
+          Publisher.inflight(name) == 0
+        end,
+        message: "the publisher still has a publication in flight"
+      )
+    end
 
     :ok
   end

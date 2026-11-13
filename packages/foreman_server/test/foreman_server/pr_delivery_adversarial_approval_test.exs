@@ -1044,6 +1044,40 @@ defmodule ForemanServer.PrDeliveryAdversarialApprovalTest do
     end
   end
 
+  describe "the harness: settling the publisher is a barrier, not a hope" do
+    # Every negative assertion of this file ("nothing more was published") reads after
+    # `World.settle_publisher!/1`. If it returned before the publisher handled the event the last
+    # observation appended, those assertions would pass on an empty window: so after each
+    # observation, with no wait of its own, the outcome it triggered must already be recorded.
+    test "returns only after the publication the last observation triggered is recorded",
+         %{world: world} do
+      publisher = World.publisher!(world)
+      run = gated_run!(world)
+      passing!(world)
+      World.observe!(world, run)
+      World.settle_publisher!(publisher)
+      assert [%{} = first] = World.publications(run)
+      assert get(first, :head_sha) == "head-one"
+
+      for n <- 2..6 do
+        head = "head-#{n}"
+        World.push!(world, head)
+        passing!(world)
+        World.observe!(world, run)
+        World.settle_publisher!(publisher)
+
+        assert length(World.publications(run)) == n
+        assert head == get(List.last(World.publications(run)), :head_sha)
+      end
+
+      # CONTROL: nothing changed, so nothing more is published
+      World.observe!(world, run)
+      World.settle_publisher!(publisher)
+      assert length(World.publications(run)) == 6
+      assert length(World.comments(world)) == 1
+    end
+  end
+
   # -- AC-003-4: redaction ------------------------------------------------------------------------
 
   describe "AC-003-4: a project secret that survives the render blocks the publication" do
