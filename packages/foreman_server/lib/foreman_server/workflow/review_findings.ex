@@ -39,6 +39,8 @@ defmodule ForemanServer.Workflow.ReviewFindings do
   @finding_keys ~w(severity path line description disposition source)
   @top_keys ~w(schema reviewed findings)
   @max_block_bytes 32_768
+  @max_artifact_bytes 4 * 1024 * 1024
+  @max_line 1_000_000_000
   @max_findings 100
   @max_description 1000
   @max_path 1024
@@ -97,7 +99,9 @@ defmodule ForemanServer.Workflow.ReviewFindings do
 
   @doc """
   Reads the artifact once and parses it. `nil` is `:absent`; a file that cannot
-  be read is `{:error, {:unreadable, reason}}` (never a clean record).
+  be read is `{:error, {:unreadable, reason}}` (never a clean record); a file
+  over #{@max_artifact_bytes} bytes is `{:malformed, :too_large}` and is not
+  read.
   """
   @spec read(String.t() | nil) ::
           {:recorded, Record.t()}
@@ -107,8 +111,14 @@ defmodule ForemanServer.Workflow.ReviewFindings do
   def read(nil), do: :absent
 
   def read(path) when is_binary(path) do
-    case File.read(path) do
-      {:ok, contents} -> parse(contents)
+    with {:ok, %File.Stat{size: size}} when size <= @max_artifact_bytes <- File.stat(path),
+         {:ok, contents} <- File.read(path) do
+      # The file may have grown between the stat and the read.
+      if byte_size(contents) > @max_artifact_bytes,
+        do: {:malformed, :too_large},
+        else: parse(contents)
+    else
+      {:ok, %File.Stat{}} -> {:malformed, :too_large}
       {:error, reason} -> {:error, {:unreadable, reason}}
     end
   end
@@ -345,7 +355,10 @@ defmodule ForemanServer.Workflow.ReviewFindings do
     {_fence, starts, ends} =
       lines
       |> Enum.with_index()
-      |> Enum.reduce({nil, [], []}, fn {line, idx}, {fence, starts, ends} ->
+      |> Enum.reduce({nil, [], []}, fn {raw, idx}, {fence, starts, ends} ->
+        # A CRLF artifact: the line ending is not part of the line.
+        line = String.trim_trailing(raw, "\r")
+
         case fence do
           nil ->
             trimmed = String.trim_trailing(line)
@@ -366,7 +379,7 @@ defmodule ForemanServer.Workflow.ReviewFindings do
 
   # A fence opens on up to three spaces then three or more backticks or tildes.
   # A backtick fence's info string may not hold a backtick (so an inline code
-  # span such as ```x``` is not a fence).
+  # span such as ```x``` is not a fence); a tilde fence's may.
   defp fence_open(line) do
     case Regex.run(~r/^ {0,3}(`{3,}|~{3,})(.*)$/, line) do
       [_, ticks, info] ->
@@ -403,20 +416,49 @@ defmodule ForemanServer.Workflow.ReviewFindings do
   end
 
   defp decode_block(block, contents) do
-    case Jason.decode(block) do
+    # `:ordered_objects` keeps a repeated key visible, which a plain map decode
+    # would silently collapse to the last value.
+    case Jason.decode(block, objects: :ordered_objects) do
       {:error, _} ->
         {:malformed, :invalid_json}
 
-      {:ok, %{"schema" => @schema} = doc} ->
-        validate_doc(doc, contents)
-
-      {:ok, %{}} ->
-        {:malformed, :unknown_schema}
-
-      {:ok, _other} ->
-        {:malformed, :invalid_json}
+      {:ok, decoded} ->
+        case unique_keys(decoded) do
+          :duplicate_key -> {:malformed, :invalid_field}
+          {:ok, doc} -> dispatch_doc(doc, contents)
+        end
     end
   end
+
+  defp dispatch_doc(%{"schema" => @schema} = doc, contents), do: validate_doc(doc, contents)
+  defp dispatch_doc(%{}, _contents), do: {:malformed, :unknown_schema}
+  defp dispatch_doc(_other, _contents), do: {:malformed, :invalid_json}
+
+  defp unique_keys(%Jason.OrderedObject{values: pairs}) do
+    Enum.reduce_while(pairs, {:ok, %{}}, fn {key, value}, {:ok, acc} ->
+      with false <- Map.has_key?(acc, key),
+           {:ok, value} <- unique_keys(value) do
+        {:cont, {:ok, Map.put(acc, key, value)}}
+      else
+        _ -> {:halt, :duplicate_key}
+      end
+    end)
+  end
+
+  defp unique_keys(list) when is_list(list) do
+    Enum.reduce_while(list, {:ok, []}, fn item, {:ok, acc} ->
+      case unique_keys(item) do
+        {:ok, item} -> {:cont, {:ok, [item | acc]}}
+        :duplicate_key -> {:halt, :duplicate_key}
+      end
+    end)
+    |> case do
+      {:ok, acc} -> {:ok, Enum.reverse(acc)}
+      :duplicate_key -> :duplicate_key
+    end
+  end
+
+  defp unique_keys(scalar), do: {:ok, scalar}
 
   defp validate_doc(doc, contents) do
     cond do
@@ -461,10 +503,14 @@ defmodule ForemanServer.Workflow.ReviewFindings do
          } = item,
          true <- severity in @severities,
          true <- disposition in @dispositions,
-         true <- bounded_string?(path, @max_path),
-         true <- bounded_string?(description, @max_description) and String.trim(description) != "",
-         true <- bounded_string?(source, @max_source) and String.trim(source) != "",
-         true <- is_nil(line) or (is_integer(line) and line > 0) do
+         true <- bounded_string?(path, @max_path) and clean_text?(path, :line),
+         true <-
+           bounded_string?(description, @max_description) and String.trim(description) != "" and
+             clean_text?(description, :multiline),
+         true <-
+           bounded_string?(source, @max_source) and String.trim(source) != "" and
+             clean_text?(source, :line),
+         true <- is_nil(line) or (is_integer(line) and line > 0 and line <= @max_line) do
       {:ok,
        %Finding{
          severity: Map.fetch!(@severity_atoms, severity),
@@ -482,4 +528,10 @@ defmodule ForemanServer.Workflow.ReviewFindings do
   defp build_finding(_), do: :error
 
   defp bounded_string?(value, max), do: is_binary(value) and String.length(value) <= max
+
+  # The agent's text reaches the event store and the PR body: no NUL, ESC, CR or
+  # other C0 control character and no DEL. A description may keep `\n` and `\t`;
+  # a path and a source are one line and keep neither.
+  defp clean_text?(value, :multiline), do: not Regex.match?(~r/[\x00-\x08\x0B-\x1F\x7F]/u, value)
+  defp clean_text?(value, :line), do: not Regex.match?(~r/[\x00-\x1F\x7F]/u, value)
 end

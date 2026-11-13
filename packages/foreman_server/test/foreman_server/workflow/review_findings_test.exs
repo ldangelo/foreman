@@ -177,6 +177,148 @@ defmodule ForemanServer.Workflow.ReviewFindingsTest do
     end
   end
 
+  describe "parse/1 exact block size" do
+    test "a block of exactly 32768 bytes is accepted, one more byte is too_large" do
+      json = Jason.encode!(doc())
+      exact = json <> String.duplicate(" ", 32_768 - byte_size(json))
+      assert byte_size(exact) == 32_768
+      assert {:recorded, _} = ReviewFindings.parse(block(exact))
+      assert ReviewFindings.parse(block(exact <> " ")) == {:malformed, :too_large}
+    end
+  end
+
+  describe "parse/1 control characters" do
+    test "NUL, ESC, CR, DEL and other C0 characters in any string are invalid_field" do
+      for key <- ["description", "path", "source"],
+          bad <- ["\u0000", "\e", "\r", "\u007F", "\u0001", "\u001F"] do
+        assert ReviewFindings.parse(block(doc([finding(%{key => "a#{bad}b"})]))) ==
+                 {:malformed, :invalid_field},
+               "#{key} with #{inspect(bad)}"
+      end
+    end
+
+    test "a description may hold a newline and a tab, a path and a source may not" do
+      assert {:recorded, _} =
+               ReviewFindings.parse(block(doc([finding(%{"description" => "a\nb\tc"})])))
+
+      for key <- ["path", "source"], ws <- ["\n", "\t"] do
+        assert ReviewFindings.parse(block(doc([finding(%{key => "a#{ws}b"})]))) ==
+                 {:malformed, :invalid_field}
+      end
+    end
+
+    test "ordinary unicode text is accepted" do
+      assert {:recorded, %{findings: [f]}} =
+               ReviewFindings.parse(block(doc([finding(%{"description" => "naïve — 日本語 ✓"})])))
+
+      assert f.description == "naïve — 日本語 ✓"
+    end
+  end
+
+  describe "parse/1 line bound" do
+    test "line 1_000_000_000 is accepted, one more is invalid_field" do
+      assert {:recorded, _} =
+               ReviewFindings.parse(block(doc([finding(%{"line" => 1_000_000_000})])))
+
+      assert ReviewFindings.parse(block(doc([finding(%{"line" => 1_000_000_001})]))) ==
+               {:malformed, :invalid_field}
+    end
+  end
+
+  describe "parse/1 duplicate keys" do
+    test "a repeated reviewed key is invalid_field, even when the last value is true" do
+      text =
+        ~s({"schema": "foreman.review_findings/1", "reviewed": false, "reviewed": true, "findings": []})
+
+      assert ReviewFindings.parse(block(text)) == {:malformed, :invalid_field}
+    end
+
+    test "a repeated key inside a finding is invalid_field" do
+      text =
+        ~s({"schema": "foreman.review_findings/1", "reviewed": true, "findings": [{"severity": "minor", "severity": "critical", "path": "a", "line": 1, "description": "d", "disposition": "open", "source": "s"}]})
+
+      assert ReviewFindings.parse(block(text)) == {:malformed, :invalid_field}
+    end
+  end
+
+  describe "parse/1 fences" do
+    @fenced_block "```\n#{@start}\n```\n"
+
+    test "a closing fence with trailing text does not close" do
+      # The fence stays open, so the real block after it is inside the fence.
+      assert ReviewFindings.parse("```\ncode\n``` x\n" <> valid_block()) == :absent
+    end
+
+    test "a closing fence indented four spaces does not close" do
+      assert ReviewFindings.parse("```\ncode\n    ```\n" <> valid_block()) == :absent
+    end
+
+    test "a tilde fence whose info string holds a backtick is a fence" do
+      # The quoted marker inside the fence is not counted, so one pair remains.
+      assert {:recorded, _} = ReviewFindings.parse("~~~ a`b\n#{@start}\n~~~\n" <> valid_block())
+    end
+
+    test "a backtick fence whose info string holds a backtick is not a fence" do
+      assert {:recorded, _} = ReviewFindings.parse("``` a`b\n" <> valid_block())
+    end
+
+    test "a CRLF artifact with a closed fence before the real block is recorded" do
+      contents =
+        String.replace(@fenced_block <> "text\n" <> valid_block(), "\n", "\r\n")
+
+      assert {:recorded, _} = ReviewFindings.parse(contents)
+    end
+
+    test "a CRLF fence opened with a quoted marker and never closed hides a later block" do
+      contents = String.replace("```\n#{@start}\ntext\n" <> valid_block(), "\n", "\r\n")
+      assert ReviewFindings.parse(contents) == :absent
+    end
+  end
+
+  describe "read/1 size cap" do
+    @cap 4 * 1024 * 1024
+
+    defp tmp_file!(name, contents) do
+      dir = Path.join(System.tmp_dir!(), "review-findings-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf(dir) end)
+      path = Path.join(dir, name)
+      File.write!(path, contents)
+      path
+    end
+
+    test "an artifact of exactly the cap is read and parsed, one byte more is too_large" do
+      base = valid_block()
+      exact = base <> String.duplicate("x", @cap - byte_size(base))
+      assert byte_size(exact) == @cap
+
+      assert {:recorded, %{artifact_sha256: sha}} = ReviewFindings.read(tmp_file!("a.md", exact))
+      assert sha == :crypto.hash(:sha256, exact) |> Base.encode16(case: :lower)
+
+      assert ReviewFindings.read(tmp_file!("b.md", exact <> "x")) == {:malformed, :too_large}
+    end
+
+    test "an oversized sparse file is too_large, not unreadable and not absent" do
+      dir = Path.join(System.tmp_dir!(), "review-findings-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf(dir) end)
+      path = Path.join(dir, "sparse.md")
+      {:ok, io} = File.open(path, [:write, :raw])
+      {:ok, _} = :file.position(io, 1024 * 1024 * 1024)
+      :ok = :file.write(io, "x")
+      :ok = File.close(io)
+
+      assert ReviewFindings.read(path) == {:malformed, :too_large}
+    end
+
+    test "a missing file is still unreadable" do
+      assert ReviewFindings.read(
+               Path.join(System.tmp_dir!(), "no-such-#{System.unique_integer([:positive])}")
+             ) ==
+               {:error, {:unreadable, :enoent}}
+    end
+  end
+
   describe "parse/1 earlier format" do
     test "a bullet block is legacy_format, not invalid_json" do
       assert ReviewFindings.parse(block("- `lib/foo.ex:12` Major — unchecked nil")) ==
