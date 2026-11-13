@@ -4,7 +4,7 @@ Status: PENDING operator acceptance (see "Acceptance" at the end). This is an ev
 
 ## Context
 
-Phase 1 is the PRD `docs/PRD/PRD-2026-c12e5f93-phase-1-trustworthy-pr-delivery.md` (1.1.3, 21 acceptance criteria in 5 requirements) as planned by the TRD `docs/TRD/TRD-2026-c12e5f93-phase-1-trustworthy-pr-delivery.md` (1.1.9 on main after PR 9; the record was written against 1.1.8 and the PR 9 amendments are in TRD section 14), built in nine PRs:
+Phase 1 is the PRD `docs/PRD/PRD-2026-c12e5f93-phase-1-trustworthy-pr-delivery.md` (1.1.3, 21 acceptance criteria in 5 requirements) as planned by the TRD `docs/TRD/TRD-2026-c12e5f93-phase-1-trustworthy-pr-delivery.md` (1.1.10 on main after the PR 9 corrections; the record was written against 1.1.8 and the PR 9 amendments are in TRD section 14), built in nine PRs:
 
 | PR | What | Merged |
 |---|---|---|
