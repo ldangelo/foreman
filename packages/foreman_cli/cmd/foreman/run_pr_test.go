@@ -1,8 +1,10 @@
 package main
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -205,5 +207,51 @@ func TestRunPublishReportRejectsSurplusArguments(t *testing.T) {
 	}
 	if runErr == nil || !strings.Contains(runErr.Error(), "unexpected argument") {
 		t.Fatalf("err = %v, want unexpected argument usage error", runErr)
+	}
+}
+
+// An accepted request is not a posted report: the CLI says so on stderr after the answer, and
+// not at all when the request failed.
+func TestRunPublishReportSaysWhatAcceptedMeans(t *testing.T) {
+	readStderr := func(fn func()) string {
+		old := os.Stderr
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		os.Stderr = w
+		defer func() { os.Stderr = old }()
+
+		fn()
+		w.Close()
+		out, _ := io.ReadAll(r)
+		return string(out)
+	}
+
+	got := readStderr(func() {
+		captureCommand(t, func(c *client.Client) error {
+			return runRun(c, []string{"publish-report", "run-7"})
+		})
+	})
+	for _, want := range []string{"request is recorded", "required_checks gate is on", "current risk record"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("stderr %q lacks %q", got, want)
+		}
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"error":"no_risk_record"}`, http.StatusUnprocessableEntity)
+	}))
+	defer srv.Close()
+
+	var runErr error
+	got = readStderr(func() {
+		runErr = runRun(&client.Client{BaseURL: srv.URL, HTTP: srv.Client()}, []string{"publish-report", "run-7"})
+	})
+	if runErr == nil {
+		t.Fatal("a refused request must be an error")
+	}
+	if strings.Contains(got, "request is recorded") {
+		t.Errorf("a refused request printed the accepted note: %q", got)
 	}
 }

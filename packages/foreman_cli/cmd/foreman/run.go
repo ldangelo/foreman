@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/url"
+	"os"
 	"strings"
 
 	"github.com/fortium/foreman/packages/foreman_cli/internal/client"
@@ -607,10 +608,20 @@ func runPublishReport(c *client.Client, args []string) error {
 		payload["repo_id"] = *repoID
 	}
 
-	return postCommand(c, commandEnvelope{
+	if err := postCommand(c, commandEnvelope{
 		Type:        "run.pr.publish_report",
 		CommandID:   generateID("publish-report"),
 		AggregateID: "run:" + *runID,
 		Payload:     payload,
-	})
+	}); err != nil {
+		return err
+	}
+
+	// The server records the request whatever the project's gate says; say what that means.
+	fmt.Fprintln(os.Stderr, publishReportNote)
+	return nil
 }
+
+// publishReportNote is printed (to stderr, so the JSON answer stays parseable) after an
+// accepted publish-report request.
+const publishReportNote = "publish-report: the request is recorded; the report is posted only for a project whose required_checks gate is on, and only for the PR's current risk record (a project with the gate off publishes nothing)."

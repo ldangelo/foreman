@@ -759,9 +759,9 @@ defmodule ForemanServer.PrReport.PublisherTest do
 
       deliver(pid, ctx.trigger)
       assert_receive {:listed, first}, 2_000
-      older = %{ctx.trigger | digest: "older"}
+      # ten events for one PR: the first runs, the other nine wait and only the newest stays
+      for i <- 1..8, do: deliver(pid, %{ctx.trigger | digest: "older-#{i}"})
       newest = %{ctx.trigger | digest: "newest"}
-      deliver(pid, older)
       deliver(pid, newest)
       assert Publisher.inflight(pid) == 1
 
@@ -1025,6 +1025,80 @@ defmodule ForemanServer.PrReport.PublisherTest do
       assert {:skipped, :ungated} = Publisher.publish_requested(request_of(trigger), ctx.opts)
       assert [] = FakeGh.writes(ctx.gh)
       assert [] = report_events(other.run_id)
+    end
+
+    test "a request that publishes nothing says why in the log, once", ctx do
+      ungated = register_project!(%{})
+      other = Support.start_run!(project_id: ungated, complete: true)
+      {:ok, _} = PrAssociate.store(other.run_id, other.pr_url)
+      pid = start_publisher(ctx)
+      {:ok, _} = PrWatcher.refresh_now(other.pr_url)
+
+      log =
+        ExUnit.CaptureLog.capture_log([level: :info], fn ->
+          assert {:ok, _} = request_report(other)
+          # the call is answered after the event reached the publisher; the log line precedes
+          # the task's result
+          Publisher.inflight(pid)
+          Eventually.await(fn -> Publisher.inflight(pid) == 0 end)
+        end)
+
+      assert log =~ "requested report of run #{other.run_id} was not published (ungated)"
+      assert length(String.split(log, "was not published")) == 2
+    end
+
+    test "a gh failure's detail holds no secret: quotes, backslashes and the 200-character cut",
+         ctx do
+      quoted = ~S(pa"ss\\word-1234567)
+      straddling = "ZZSECRETVALUE0123456789"
+      opts = Keyword.put(ctx.opts, :secrets_fun, fn _project -> {:ok, [quoted, straddling]} end)
+
+      outputs = [
+        "HTTP 403: token #{quoted} rejected",
+        String.duplicate("x", 190) <> straddling <> " trailing"
+      ]
+
+      for output <- outputs do
+        FakeGh.fail_write(ctx.gh, output)
+
+        assert {:refused, :gh_failed, detail} =
+                 Publisher.post(ctx.trigger, [
+                   {:now_fun, fn -> System.unique_integer([:positive]) end} | opts
+                 ])
+
+        for secret <- [quoted, String.replace(quoted, ~S(\\), ~S(\\\\)), "ZZSECRETVA", "pa\"ss"] do
+          refute detail =~ secret, "the detail leaks #{inspect(secret)}: #{detail}"
+        end
+
+        assert detail =~ "gh failed"
+      end
+
+      for %{detail: stored} <- report_events(ctx.run_id) do
+        refute stored =~ "ZZSECRETVA"
+        refute stored =~ "pa\"ss"
+      end
+    end
+
+    test "a crashed publication task logs the kind of crash, never its reason", ctx do
+      secret = "ghp_CRASHSECRET1234567"
+
+      crashing = fn "gh", _args, _opts ->
+        Process.exit(self(), {:crash, [secret]})
+        Process.sleep(:infinity)
+      end
+
+      pid = start_publisher(ctx, command_runner: crashing)
+
+      log =
+        ExUnit.CaptureLog.capture_log([level: :error], fn ->
+          deliver(pid, ctx.trigger)
+          Publisher.inflight(pid)
+          Eventually.await(fn -> Publisher.inflight(pid) == 0 end)
+        end)
+
+      assert log =~ "PrReport.Publisher task crashed"
+      refute log =~ secret
+      assert Process.alive?(pid)
     end
 
     test "a waiting operator request is not replaced by a risk trigger of the same record", ctx do

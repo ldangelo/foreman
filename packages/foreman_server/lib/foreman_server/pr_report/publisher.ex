@@ -224,11 +224,19 @@ defmodule ForemanServer.PrReport.Publisher do
   end
 
   def handle_info({:DOWN, ref, :process, _pid, reason}, state) do
-    Logger.error("PrReport.Publisher task crashed: #{inspect(reason)}")
+    Logger.error("PrReport.Publisher task crashed: #{crash_kind(reason)}")
     {:noreply, finish(state, ref)}
   end
 
   def handle_info(_other, state), do: {:noreply, state}
+
+  # What kind of crash, never its stacktrace (frames carry function arguments).
+  defp crash_kind({%{__struct__: module}, stacktrace}) when is_list(stacktrace),
+    do: inspect(module)
+
+  defp crash_kind({kind, _value}) when kind in [:throw, :exit, :error], do: Atom.to_string(kind)
+  defp crash_kind(reason) when is_atom(reason), do: Atom.to_string(reason)
+  defp crash_kind(_reason), do: "unknown"
 
   @impl true
   def handle_call(:inflight, _from, state), do: {:reply, map_size(state.running), state}
@@ -261,7 +269,22 @@ defmodule ForemanServer.PrReport.Publisher do
     }
   end
 
-  defp run_trigger({:request, request}, opts), do: publish_requested(request, opts)
+  defp run_trigger({:request, request}, opts) do
+    result = publish_requested(request, opts)
+
+    # The command is accepted whatever the project's gate says, so a request that publishes
+    # nothing says why, once.
+    with {:skipped, why} <- result do
+      Logger.info(
+        "PrReport.Publisher: the requested report of run #{get(request, :run_id)} was not " <>
+          "published (#{why}): it publishes only for a project whose required_checks gate is " <>
+          "on, for the PR's current risk record"
+      )
+    end
+
+    result
+  end
+
   defp run_trigger(payload, opts), do: publish(payload, opts)
 
   defp finish(state, ref) do
@@ -406,19 +429,13 @@ defmodule ForemanServer.PrReport.Publisher do
           publish_outcome(t, outcome, opts)
 
         {:error, {:post_failed, error}} ->
-          refuse(
-            t,
-            :gh_failed,
-            "gh failed: #{inspect(error, limit: 20, printable_limit: 200)}",
-            secrets,
-            opts
-          )
+          refuse(t, :gh_failed, "gh failed: #{describe(error, secrets)}", secrets, opts)
 
         {:error, refusal} ->
           refuse(
             t,
             :effect_refused,
-            "the effect was refused: #{inspect(refusal, limit: 20, printable_limit: 200)}",
+            "the effect was refused: #{describe(refusal, secrets)}",
             secrets,
             opts
           )
@@ -442,6 +459,26 @@ defmodule ForemanServer.PrReport.Publisher do
       )
     end
   end
+
+  # A failure term goes into a stored, operator-visible detail. Every string in it is redacted
+  # against the project's secrets BEFORE `inspect` escapes it or cuts it at 200 characters: a
+  # secret holding a quote or a backslash would no longer match once escaped, and one straddling
+  # the cut would leave its prefix behind.
+  defp describe(term, secrets),
+    do: term |> scrub(secrets) |> inspect(limit: 20, printable_limit: 200)
+
+  defp scrub(text, secrets) when is_binary(text), do: Redact.text(nil, text, secrets: secrets)
+  defp scrub(%_{} = struct, secrets), do: struct |> Map.from_struct() |> scrub(secrets)
+
+  defp scrub(map, secrets) when is_map(map),
+    do: Map.new(map, fn {k, v} -> {k, scrub(v, secrets)} end)
+
+  defp scrub(list, secrets) when is_list(list), do: Enum.map(list, &scrub(&1, secrets))
+
+  defp scrub(tuple, secrets) when is_tuple(tuple),
+    do: tuple |> Tuple.to_list() |> Enum.map(&scrub(&1, secrets)) |> List.to_tuple()
+
+  defp scrub(other, _secrets), do: other
 
   # The effect function: one list of the PR's comments, then adopt, edit or create.
   defp write(t, body, gh) do

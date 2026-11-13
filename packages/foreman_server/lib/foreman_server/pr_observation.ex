@@ -96,10 +96,12 @@ defmodule ForemanServer.PrObservation do
   comments" on every PR of an account that has a review bot (foreman-v9y3x). A comment whose
   author type is unknown (`bot: nil`: the fetch did not read it) counts, as every comment did
   before. A comment that is Foreman's own report (TRD-030) is not feedback either: its body
-  starts with `PrReport.marker_prefix/0` AND the token's own user wrote it
+  first line is exactly a report marker (`PrReport.parse_marker/1`, the rule the publisher uses to
+  recognise its own report) AND the token's own user wrote it
   (`viewer_did_author`, read from `gh pr view`). Without that guard the publisher's comment would
   reach the watcher through the `issue_comment` webhook and move the review digest. A comment
-  by another user that starts with the marker proves nothing and is counted.
+  by another user that carries the marker proves nothing and is counted, and so is the token
+  user's own comment that merely starts like a marker.
   """
   @spec comment_ids(PrStatus.t()) :: [String.t()]
   def comment_ids(%PrStatus{comments: comments}) do
@@ -110,7 +112,7 @@ defmodule ForemanServer.PrObservation do
   defp feedback?(%{bot: true}), do: false
 
   defp feedback?(%{viewer_did_author: true, body: body}) when is_binary(body),
-    do: not String.starts_with?(body, PrReport.marker_prefix())
+    do: PrReport.parse_marker(body) == :error
 
   defp feedback?(_comment), do: true
 

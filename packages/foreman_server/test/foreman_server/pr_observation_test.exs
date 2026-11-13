@@ -130,6 +130,27 @@ defmodule ForemanServer.PrObservationTest do
       assert PrObservation.comment_ids(Support.status(comments: [bare])) == ["IC_bare"]
     end
 
+    test "one rule decides what an own report is: the first line must be exactly a marker" do
+      lookalikes = [
+        "<!-- foreman:pr-report v1 hi",
+        PrReport.marker_prefix() <> "run=r head=h digest=d",
+        PrReport.marker_prefix() <> "run=r head=h digest=d --> trailing words",
+        PrReport.marker_prefix() <> "\nsecond line"
+      ]
+
+      for body <- lookalikes do
+        assert PrReport.parse_marker(body) == :error, body
+        status = Support.status(comments: [comment("IC_human", body, true)])
+        assert PrObservation.comment_ids(status) == ["IC_human"], body
+      end
+
+      assert {:ok, _} = PrReport.parse_marker(marker_body())
+
+      assert PrObservation.comment_ids(
+               Support.status(comments: [comment("IC_own", marker_body(), true)])
+             ) == []
+    end
+
     test "the token's own comment is counted unless its body STARTS with the marker prefix" do
       quoting = "I agree with:\n" <> marker_body()
       indented = " " <> marker_body()

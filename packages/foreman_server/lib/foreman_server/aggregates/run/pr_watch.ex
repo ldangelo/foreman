@@ -608,6 +608,7 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
              @max_requested_by,
              :requested_by
            ),
+         {:ok, requested_at} <- request_time(payload),
          {:ok, record} <- watched_open(state, pr_url),
          {:ok, risk} <- current_risk_record(record, pr_url),
          :ok <- report_not_published(record, risk) do
@@ -615,8 +616,16 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
         head_sha: risk.head_sha,
         digest: risk.digest,
         requested_by: requested_by,
-        requested_at: Aggregate.get(payload, :requested_at) || System.system_time(:millisecond)
+        requested_at: requested_at
       })
+    end
+  end
+
+  # The caller's own `requested_at` is a time, never another type; absent is the clock.
+  defp request_time(payload) do
+    case Aggregate.get(payload, :requested_at) do
+      nil -> {:ok, System.system_time(:millisecond)}
+      value -> non_neg_integer(value, :requested_at)
     end
   end
 

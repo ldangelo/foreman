@@ -390,4 +390,105 @@ defmodule ForemanServer.OperatorOnlyPrCommandsTest do
                })
     end
   end
+
+  # `run.pr.comment_published` and `run.pr.publish_report` are not PR head observations
+  # (`@pr_head_observations`): a head observation is checked against the merge approval and
+  # voids it when the head differs. The report commands carry the head of a risk record, and
+  # taking that path would let posting a comment void an approval.
+  describe "the report commands take no head-observation path" do
+    alias ForemanServer.Aggregate
+    alias ForemanServer.Aggregates.Run
+
+    # A run approved at `sha-1` whose PR was then seen at `sha-2` (appended straight to the
+    # stream, as an observation that has not reached the gate yet) with a risk record for it.
+    defp approved_run_seen_at_a_newer_head do
+      run_id = "run-report-#{System.unique_integer([:positive])}"
+      pr_url = "https://github.com/acme/report/pull/#{System.unique_integer([:positive])}"
+      ids = %{run_id: run_id, project_id: "project-report", task_id: "task-report"}
+      pr = fn extra -> Map.merge(ids, Map.merge(%{pr_url: pr_url}, extra)) end
+
+      events = [
+        {"RunStarted", ids},
+        {"PrReady", pr.(%{branch_name: "b", head_sha: "sha-1", base_branch: "main"})},
+        {"MergeGateApproved",
+         %{run_id: run_id, approver: "leo", approver_identity: "github:leo", approved_at: 1}},
+        {"PrUpdated",
+         pr.(%{branch_name: "b", head_sha: "sha-2", base_branch: "main", pr_status: "open"})},
+        {"PrRiskRecorded",
+         pr.(%{
+           head_sha: "sha-2",
+           level: "HIGH",
+           rubric_version: "1",
+           digest: "dg-1",
+           seq: 1,
+           recorded_at: 1
+         })}
+      ]
+
+      :ok =
+        ForemanServer.EventStore.append_to_stream(
+          "run:#{run_id}",
+          0,
+          Enum.map(events, fn {type, data} ->
+            %EventStore.EventData{event_type: type, data: data, metadata: %{}}
+          end)
+        )
+
+      %{run_id: run_id, pr_url: pr_url}
+    end
+
+    defp gate(run_id) do
+      {state, _version} = Aggregate.load(Run, "run:#{run_id}")
+      {Run.merge_gate(state), Run.merge_pin(state).head_sha}
+    end
+
+    defp dispatch_system(run_id, type, payload) do
+      CommandGateway.dispatch_system(%{
+        type: type,
+        command_id: "head-obs-#{System.unique_integer([:positive])}",
+        aggregate_id: "run:#{run_id}",
+        payload: Map.put(payload, :run_id, run_id)
+      })
+    end
+
+    test "a head observation for the newer head voids the approval (the control)" do
+      %{run_id: run_id, pr_url: pr_url} = approved_run_seen_at_a_newer_head()
+      assert {:approved, "sha-1"} = gate(run_id)
+
+      assert {:ok, _} =
+               dispatch_system(run_id, "run.pr.checks", %{
+                 pr_url: pr_url,
+                 head_sha: "sha-2",
+                 digest: "c1",
+                 checks_state: "passing",
+                 pr_status: "open",
+                 observation_seq: 1
+               })
+
+      assert {:pending, nil} = gate(run_id)
+    end
+
+    test "the published outcome and the operator's request leave the approval alone" do
+      %{run_id: run_id, pr_url: pr_url} = approved_run_seen_at_a_newer_head()
+      assert {:approved, "sha-1"} = gate(run_id)
+
+      assert {:ok, %{"event_type" => "PrReportRequested"}} =
+               dispatch_system(run_id, "run.pr.publish_report", %{pr_url: pr_url})
+
+      assert {:approved, "sha-1"} = gate(run_id)
+
+      assert {:ok, %{"event_type" => "PrCommentPublished"}} =
+               dispatch_system(run_id, "run.pr.comment_published", %{
+                 pr_url: pr_url,
+                 head_sha: "sha-2",
+                 digest: "dg-1",
+                 status: "published",
+                 comment_id: 11,
+                 comment_url: pr_url <> "#issuecomment-11",
+                 recorded_at: 2
+               })
+
+      assert {:approved, "sha-1"} = gate(run_id)
+    end
+  end
 end

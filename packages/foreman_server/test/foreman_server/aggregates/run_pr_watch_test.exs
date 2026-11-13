@@ -1918,6 +1918,19 @@ defmodule ForemanServer.Aggregates.RunPrWatchTest do
                reject(state, "run.pr.publish_report", %{repo_id: 5})
     end
 
+    test "requested_at is a non-negative integer or absent: any other type is refused" do
+      {state, _head, _digest} = reported_world()
+
+      for bad <- ["40", %{"a" => 1}, [1], -1, 1.5, true] do
+        assert {:error, {:missing_or_invalid, :requested_at}} =
+                 reject(state, "run.pr.publish_report", request(%{requested_at: bad})),
+               "accepted #{inspect(bad)}"
+      end
+
+      assert {_next, %{payload: %{requested_at: 0}}} =
+               accept(state, "run.pr.publish_report", request(%{requested_at: 0}))
+    end
+
     test "requested_by is bounded text, requested_at defaults to the clock" do
       {state, _head, _digest} = reported_world()
 
