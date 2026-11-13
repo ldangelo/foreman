@@ -659,19 +659,20 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
   defp count_or_nil(value, _key) when is_integer(value) and value >= 0, do: {:ok, value}
   defp count_or_nil(_value, key), do: {:error, {:missing_or_invalid, key}}
 
+  # A list the handler cannot hold (over `@max_files` items, or a path over `@max_path` bytes) is
+  # UNAVAILABLE, never refused and never truncated: the record is still written, with `files: nil`
+  # (the rubric reads it as HIGH, "the changed-path list is unavailable"), so the PR is not left
+  # without a risk record that nothing may waive. A payload of the wrong type stays an error,
+  # whatever else the list holds.
   defp risk_files(nil), do: {:ok, nil}
 
-  defp risk_files(files) when is_list(files) and length(files) <= @max_files do
-    files
-    |> Enum.reduce_while({:ok, []}, fn file, {:ok, acc} ->
-      case risk_file(file) do
-        {:ok, normalised} -> {:cont, {:ok, [normalised | acc]}}
-        :error -> {:halt, {:error, {:missing_or_invalid, :files}}}
-      end
-    end)
-    |> case do
-      {:ok, list} -> {:ok, Enum.reverse(list)}
-      error -> error
+  defp risk_files(files) when is_list(files) do
+    results = Enum.map(files, &risk_file/1)
+
+    cond do
+      :error in results -> {:error, {:missing_or_invalid, :files}}
+      :oversized in results or length(files) > @max_files -> {:ok, nil}
+      true -> {:ok, Enum.map(results, fn {:ok, file} -> file end)}
     end
   end
 
@@ -682,10 +683,17 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
     additions = Aggregate.get(file, :additions)
     deletions = Aggregate.get(file, :deletions)
 
-    if is_binary(path) and path != "" and String.valid?(path) and byte_size(path) <= @max_path and
-         is_integer(additions) and additions >= 0 and is_integer(deletions) and deletions >= 0,
-       do: {:ok, %{path: path, additions: additions, deletions: deletions}},
-       else: :error
+    cond do
+      not (is_binary(path) and path != "" and String.valid?(path) and is_integer(additions) and
+             additions >= 0 and is_integer(deletions) and deletions >= 0) ->
+        :error
+
+      byte_size(path) > @max_path ->
+        :oversized
+
+      true ->
+        {:ok, %{path: path, additions: additions, deletions: deletions}}
+    end
   end
 
   defp risk_file(_other), do: :error

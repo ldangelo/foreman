@@ -1392,6 +1392,43 @@ defmodule ForemanServer.Aggregates.RunPrWatchTest do
       assert spec.payload.level in ["MEDIUM", "HIGH"]
     end
 
+    test "a changed path over the bound is an unavailable list: a recorded HIGH, not a refusal" do
+      state = risk_world()
+      long = String.duplicate("p", 2000)
+
+      files = [
+        %{path: "lib/x.ex", additions: 3, deletions: 1},
+        %{path: long, additions: 1, deletions: 0}
+      ]
+
+      assert {:ok, %{event_type: "PrRiskRecorded"}} =
+               reject(state, "run.pr.risk", risk_cmd(%{files: files, changed_files: 2}))
+
+      {state, spec} = risk(state, %{files: files, changed_files: 2, additions: 4})
+      assert spec.payload.level == "HIGH"
+      assert rule_detail(spec, "paths") =~ "unavailable"
+      assert spec.payload.evidence["files"]["listed"] == nil
+      assert spec.payload.evidence["files"]["incomplete"] == true
+      assert spec.payload.evidence["sensitive_hits"] == []
+      refute Jason.encode!(spec.payload) =~ long
+      assert state.pr_watch[@url].evidence.risk.head_sha == "sha-1"
+    end
+
+    test "a list over 100 items is unavailable too, and a path of exactly the bound is kept" do
+      state = risk_world()
+      many = List.duplicate(%{path: "lib/x.ex", additions: 1, deletions: 0}, 101)
+      {_, spec} = risk(state, %{files: many, changed_files: 101, additions: 101, deletions: 0})
+      assert spec.payload.level == "HIGH"
+      assert rule_detail(spec, "paths") =~ "unavailable"
+      assert spec.payload.evidence["files"]["listed"] == nil
+
+      exact = %{path: String.duplicate("p", 1024), additions: 1, deletions: 0}
+      {_, kept} = risk(state, %{files: [exact], changed_files: 1, additions: 1, deletions: 0})
+      assert kept.payload.evidence["files"]["listed"] == 1
+      assert kept.payload.evidence["files"]["incomplete"] == false
+      assert rule_detail(kept, "paths") =~ "complete"
+    end
+
     test "an invalid fact is refused, never recorded as an empty or complete value" do
       state = risk_world()
 
@@ -1399,7 +1436,10 @@ defmodule ForemanServer.Aggregates.RunPrWatchTest do
         {%{files: "all"}, :files},
         {%{files: [%{path: "", additions: 1, deletions: 1}]}, :files},
         {%{files: [%{path: "a", additions: -1, deletions: 1}]}, :files},
-        {%{files: List.duplicate(%{path: "a", additions: 1, deletions: 1}, 101)}, :files},
+        {%{files: ["lib/a.ex"]}, :files},
+        {%{files: [%{path: String.duplicate("p", 2000), additions: 1, deletions: -1}]}, :files},
+        {%{files: [%{path: String.duplicate("p", 2000), additions: 1, deletions: 1}, "x"]},
+         :files},
         {%{changed_files: -1}, :changed_files},
         {%{additions: "3"}, :additions},
         {%{deletions: 1.5}, :deletions},

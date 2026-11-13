@@ -849,6 +849,36 @@ defmodule ForemanServer.PrObservationTest do
       assert event.data.level == "HIGH"
       assert event.data.evidence["files"]["listed"] == 1
     end
+
+    test "a PR with a path the handler cannot hold still dispatches its risk: HIGH, no refusal",
+         ctx do
+      long = String.duplicate("p", 2000)
+
+      status = %{
+        ctx.status
+        | files: [%{path: long, additions: 3, deletions: 1}],
+          changed_files: 1
+      }
+
+      {:ok, commands} = PrObservation.commands(ctx.run_id, ctx.pr_url, status, nil)
+      assert [risk] = risk_cmds(commands)
+      assert hd(risk.payload.files).path == long
+
+      for command <- commands,
+          do: assert({:ok, _} = ForemanServer.CommandGateway.dispatch_system(command))
+
+      assert [event] =
+               ctx.run_id
+               |> Support.run_events()
+               |> Enum.filter(&(&1.event_type == "PrRiskRecorded"))
+
+      assert event.data.level == "HIGH"
+      assert event.data.evidence["files"]["listed"] == nil
+
+      record = Enum.find(ProjectionStore.pr_watch(ctx.run_id), &(&1.pr_url == ctx.pr_url))
+      assert record.evidence.risk.head_sha == "sha-1"
+      assert {:ok, []} = PrObservation.commands(ctx.run_id, ctx.pr_url, status, record)
+    end
   end
 
   defp step(ctx, status, previous) do
