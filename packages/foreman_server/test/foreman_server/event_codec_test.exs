@@ -517,6 +517,61 @@ defmodule ForemanServer.EventCodecTest do
     end
   end
 
+  describe "PrCommentPublished" do
+    @published_data %{
+      run_id: "r1",
+      project_id: "p1",
+      task_id: "t1",
+      pr_url: "https://github.com/acme/repo/pull/7",
+      repo_id: "repo-b",
+      head_sha: "h1",
+      digest: "fedcba9876543210",
+      status: "published",
+      reason: nil,
+      detail: "adopted",
+      comment_id: 4242,
+      comment_url: "https://github.com/acme/repo/pull/7#issuecomment-4242",
+      superseded: "h0",
+      recorded_at: 7
+    }
+
+    test "round-trips through the codec and through JSON with every declared field" do
+      assert %ForemanServer.Events.PrCommentPublished{} =
+               decoded = EventCodec.decode!("PrCommentPublished", @published_data)
+
+      assert Map.from_struct(decoded) == @published_data
+
+      assert Enum.sort(Map.keys(@published_data)) ==
+               Enum.sort(decoded |> Map.from_struct() |> Map.keys())
+
+      replayed = @published_data |> Jason.encode!() |> Jason.decode!()
+
+      assert Map.from_struct(EventCodec.decode!("PrCommentPublished", replayed)) ==
+               @published_data
+    end
+
+    test "an unknown key is refused and the enforced keys are required" do
+      assert_raise ArgumentError, fn ->
+        EventCodec.decode!("PrCommentPublished", Map.put(@published_data, :bogus, "x"))
+      end
+
+      for key <- [
+            :run_id,
+            :project_id,
+            :task_id,
+            :pr_url,
+            :head_sha,
+            :digest,
+            :status,
+            :recorded_at
+          ] do
+        assert_raise ArgumentError, fn ->
+          EventCodec.decode!("PrCommentPublished", Map.delete(@published_data, key))
+        end
+      end
+    end
+  end
+
   describe "PhaseContextRecorded" do
     @data %{
       run_id: "r1",

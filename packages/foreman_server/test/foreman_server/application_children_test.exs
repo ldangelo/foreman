@@ -19,6 +19,7 @@ defmodule ForemanServer.ApplicationChildrenTest do
     CommandRouter,
     EventStore,
     PrMonitor,
+    PrReport,
     PrWatcher,
     ProjectionStore
   }
@@ -31,7 +32,13 @@ defmodule ForemanServer.ApplicationChildrenTest do
   @config_dir Path.expand("../../config", __DIR__)
 
   # Every key a test below writes; restored after each test, deleting a key that was unset.
-  @app_env_keys [:pr_watcher, :pr_monitor_enabled, :schedule, :secret_log_filter]
+  @app_env_keys [
+    :pr_watcher,
+    :pr_report_publisher,
+    :pr_monitor_enabled,
+    :schedule,
+    :secret_log_filter
+  ]
 
   # The operator switches `config/runtime.exs` reads. Cleared before a config is evaluated so a
   # developer's shell cannot change a test's outcome.
@@ -103,6 +110,38 @@ defmodule ForemanServer.ApplicationChildrenTest do
       watcher(false)
 
       refute PrWatcher in child_ids()
+    end
+  end
+
+  describe "PrReport.Publisher (TRD-021)" do
+    defp publisher(on?),
+      do: Application.put_env(:foreman_server, :pr_report_publisher, enabled: on?)
+
+    test "is supervised after the PrWatcher whose PrRiskRecorded it reacts to, while enabled" do
+      watcher(true)
+      publisher(true)
+
+      assert_started_after(child_ids(), PrReport.Publisher, [
+        ProjectionStore,
+        CommandRouter,
+        PrWatcher
+      ])
+    end
+
+    test "is not supervised once it is disabled, which is how the test environment runs" do
+      watcher(true)
+      publisher(false)
+
+      refute PrReport.Publisher in child_ids()
+      assert PrWatcher in child_ids()
+    end
+
+    test "is on when the key is unset, and the test configuration turns it off" do
+      Application.delete_env(:foreman_server, :pr_report_publisher)
+      assert PrReport.Publisher in child_ids()
+
+      test_config = Config.Reader.read!(Path.join(@config_dir, "test.exs"), env: :test)
+      assert test_config[:foreman_server][:pr_report_publisher] == [enabled: false]
     end
   end
 

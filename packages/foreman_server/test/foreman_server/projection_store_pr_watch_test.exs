@@ -256,6 +256,80 @@ defmodule ForemanServer.ProjectionStorePrWatchTest do
              ProjectionStore.pr_watch("r1")
   end
 
+  test "PrCommentPublished holds evidence.report with its own head across a head move, and a replay agrees" do
+    published =
+      ev("PrCommentPublished", %{
+        pr_url: @a,
+        head_sha: "h1",
+        digest: "0123456789abcdef",
+        status: "published",
+        reason: nil,
+        detail: nil,
+        comment_id: 4242,
+        comment_url: @a <> "#issuecomment-4242",
+        superseded: "h0",
+        recorded_at: 9
+      })
+
+    all = events() ++ [published]
+    :ok = ProjectionStore.apply_events(all)
+
+    expected = %{
+      head_sha: "h1",
+      digest: "0123456789abcdef",
+      status: "published",
+      reason: nil,
+      detail: nil,
+      comment_id: 4242,
+      comment_url: @a <> "#issuecomment-4242",
+      superseded: "h0",
+      recorded_at: 9
+    }
+
+    assert [%{head_sha: "h1", evidence: %{report: ^expected}}] = ProjectionStore.pr_watch("r1")
+
+    live = ProjectionStore.pr_watch("r1")
+
+    json_events =
+      all
+      |> Jason.encode!()
+      |> Jason.decode!()
+      |> Enum.map(&%{event_type: &1["event_type"], payload: &1["payload"]})
+
+    ProjectionStoreReset.reset!()
+    assert :ok = ProjectionStore.apply_events(json_events)
+    assert strip(ProjectionStore.pr_watch("r1")) == strip(live)
+
+    :ok =
+      ProjectionStore.apply_events([
+        ev("PrUpdated", %{pr_url: @a, head_sha: "h9", pr_status: "open"})
+      ])
+
+    assert [%{head_sha: "h9", evidence: %{report: ^expected}}] = ProjectionStore.pr_watch("r1")
+
+    refused =
+      ev("PrCommentPublished", %{
+        pr_url: @a,
+        head_sha: "h9",
+        digest: "aaaa",
+        status: "refused",
+        reason: "gh_failed",
+        detail: "gh failed",
+        recorded_at: 10
+      })
+
+    :ok = ProjectionStore.apply_events([refused])
+
+    assert [
+             %{
+               evidence: %{
+                 report: %{head_sha: "h9", digest: "aaaa", status: "refused", comment_id: nil}
+               }
+             }
+           ] =
+             ProjectionStore.pr_watch("r1")
+  end
+
   describe "the judgement on ReviewFindingsRecorded (TRD-041)" do
     defp findings_event(extra) do
       ev(
