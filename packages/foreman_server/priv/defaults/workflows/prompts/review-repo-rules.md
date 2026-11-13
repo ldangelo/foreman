@@ -66,12 +66,14 @@ Leave your fixes uncommitted. Foreman commits this phase's work itself.
 ## Carry forward the previous phase's findings
 
 The previous phase wrote `REVIEW_CODERABBIT_REPORT.md` beside your own artifact
-(same directory as `{{artifact_path}}`). Read it and copy every bullet from
-between its `FOREMAN_REVIEW_FINDINGS_START` / `FOREMAN_REVIEW_FINDINGS_END`
-markers into your own findings block, dropping only the ones you fixed in this
-phase. Your artifact is the one attached to the pull request, so a finding you
-do not carry forward is a finding nobody sees. If that file is absent, say so
-under `## Review engine` and continue.
+(same directory as `{{artifact_path}}`). Read its findings block and copy each
+finding object from its `findings` array into the `findings` array of your own
+block, keeping its `source`, with `disposition` `fixed` or `declined` for what
+this phase fixed or declined. Never copy the marker lines, and never copy a
+previous judgement block. Your artifact is the one attached to the pull
+request, so a finding you do not carry forward is a finding nobody sees. If
+that file is absent, or has no readable findings block, say so under
+`## Review engine` and continue.
 
 ## Output
 
@@ -90,14 +92,44 @@ Sections, in order:
 4. **Declined** — per finding: file, the finding, the reason.
 5. **Verification** — commands run and their exit codes.
 
-Then, as the last thing in the file, the unresolved-findings block — one
-Markdown bullet per finding a human still needs to act on (including every
-bullet carried forward from the previous phase that you did not fix), each
-with `path:line`, severity, and one sentence. Emit the markers even when empty:
+Then, as the last thing in the file, the findings block: a machine-read JSON
+document between two marker lines. It is your own claim about the review and
+Foreman reads it as such; a declined critical or major finding is still shown
+to the operator as unresolved.
+
+The rules of the block:
+
+- Write it exactly once, as the last thing in the file. Each marker line stands
+  alone at the start of a line, outside any code fence, with the raw JSON
+  directly between them.
+- The fence below is this prompt's formatting only. Write the two marker lines
+  and the JSON straight into the file, outside any fence, and do not wrap the
+  JSON in a fence: a block copied with its fence is ignored and reads as
+  absent.
+- If your report must quote a marker line (a diff hunk of the marker code, a
+  Declined entry about the parser), put the quote inside a code fence, where
+  the parser ignores it. A marker line alone at the start of a line outside a
+  fence counts as a second block and makes the whole block unreadable.
+- The JSON has exactly the keys `schema` (the string
+  `foreman.review_findings/1`), `reviewed` and `findings`. Write
+  `"reviewed": true` only because a review ran; a review that found nothing
+  still writes `"reviewed": true` with `"findings": []`. A review that did not
+  run writes no block at all.
+- Each entry of `findings` has exactly the keys `severity` (one of `critical`,
+  `major`, `minor`, `nitpick`), `path` (a string), `line` (a positive integer,
+  or `null`), `description` (one sentence), `disposition` and `source` (a short
+  name of the review that found it: `repo-rules` for your own, the carried
+  value for a carried one).
+- `disposition` follows your triage: `fixed` for a finding you fixed,
+  `declined` for one you declined, `open` for any other finding a human still
+  needs to act on (including every unfixed finding carried forward). List the
+  fixed and declined findings too.
+
+Example (replace the placeholder entry with your real findings):
 
 ```
 <!-- FOREMAN_REVIEW_FINDINGS_START -->
-- `path/to/file.ex:12` Major — one-sentence description.
+{"schema": "foreman.review_findings/1", "reviewed": true, "findings": [{"severity": "major", "path": "path/to/file.ex", "line": 12, "description": "PLACEHOLDER: replace with one sentence.", "disposition": "open", "source": "repo-rules"}]}
 <!-- FOREMAN_REVIEW_FINDINGS_END -->
 ```
 

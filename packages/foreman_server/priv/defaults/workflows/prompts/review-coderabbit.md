@@ -33,8 +33,10 @@ Run at most **3** rounds. Each round:
    - If `coderabbit` is not on `PATH`, or it exits non-zero with an
      authentication error, do NOT fail the phase and do NOT retry it in a later
      round: record the exact command, exit code and message under
-     `## Review engine`, emit an empty findings block, and finish the phase.
-     The next phase's independent review still runs.
+     `## Review engine`, write NO findings block (the evidence then reads as
+     absent, never as a clean review nobody ran), say why under
+     `## Review engine`, and finish the phase. The next phase's independent
+     review still runs.
 2. **Triage every finding before acting on it.** Verify it against the code as
    it currently is — a finding describing code that no longer looks that way is
    stale, and "fixing" it introduces a bug. Choose exactly one per finding:
@@ -73,13 +75,42 @@ Sections, in order:
 4. **Declined** — per finding: file, the finding, the reason.
 5. **Verification** — commands run and their exit codes.
 
-Then, as the last thing in the file, the unresolved-findings block — one
-Markdown bullet per finding a human still needs to act on, each with
-`path:line`, severity, and one sentence. Emit the markers even when empty:
+Then, as the last thing in the file, the findings block: a machine-read JSON
+document between two marker lines. It is your own claim about the review and
+Foreman reads it as such; a declined critical or major finding is still shown
+to the operator as unresolved.
+
+The rules of the block:
+
+- Write it exactly once, as the last thing in the file. Each marker line stands
+  alone at the start of a line, outside any code fence, with the raw JSON
+  directly between them.
+- The fence below is this prompt's formatting only. Write the two marker lines
+  and the JSON straight into the file, outside any fence, and do not wrap the
+  JSON in a fence: a block copied with its fence is ignored and reads as
+  absent.
+- If your report must quote a marker line (a diff hunk of the marker code, a
+  Declined entry about the parser), put the quote inside a code fence, where
+  the parser ignores it. A marker line alone at the start of a line outside a
+  fence counts as a second block and makes the whole block unreadable.
+- The JSON has exactly the keys `schema` (the string
+  `foreman.review_findings/1`), `reviewed` and `findings`. Write
+  `"reviewed": true` only because a review ran; a review that found nothing
+  still writes `"reviewed": true` with `"findings": []`. A review that did not
+  run writes no block at all.
+- Each entry of `findings` has exactly the keys `severity` (one of `critical`,
+  `major`, `minor`, `nitpick`), `path` (a string), `line` (a positive integer,
+  or `null`), `description` (one sentence), `disposition` and `source` (a short
+  name of this review, here `coderabbit`).
+- `disposition` follows your triage: `fixed` for a finding you fixed,
+  `declined` for one you declined, `open` for any other finding a human still
+  needs to act on. List the fixed and declined findings too.
+
+Example (replace the placeholder entry with your real findings):
 
 ```
 <!-- FOREMAN_REVIEW_FINDINGS_START -->
-- `path/to/file.ex:12` Major — one-sentence description.
+{"schema": "foreman.review_findings/1", "reviewed": true, "findings": [{"severity": "major", "path": "path/to/file.ex", "line": 12, "description": "PLACEHOLDER: replace with one sentence.", "disposition": "open", "source": "coderabbit"}]}
 <!-- FOREMAN_REVIEW_FINDINGS_END -->
 ```
 

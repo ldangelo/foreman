@@ -604,19 +604,6 @@ defmodule ForemanServer.Workflow.PhasePR do
 
   defp blank?(value), do: not is_binary(value) or value == ""
 
-  defp findings_section(artifact_path) do
-    case ForemanServer.Workflow.ReviewFindings.extract(artifact_path) do
-      {:ok, block} -> "\n## Unresolved review findings\n\n" <> block <> "\n"
-      :none -> ""
-      {:error, :unterminated_block} -> unterminated_findings_section(artifact_path)
-    end
-  end
-
-  defp unterminated_findings_section(artifact_path) do
-    Logger.warning(
-      "PhasePR could not read unresolved review findings: unterminated block in #{artifact_path}"
-    )
-
-    ForemanServer.Workflow.ReviewFindings.unterminated_section(artifact_path)
-  end
+  defp findings_section(artifact_path),
+    do: ForemanServer.Workflow.ReviewFindings.pr_section(artifact_path, "PhasePR")
 end

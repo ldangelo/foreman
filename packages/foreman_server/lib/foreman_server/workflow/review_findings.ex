@@ -1,31 +1,27 @@
 defmodule ForemanServer.Workflow.ReviewFindings do
   @moduledoc """
-  Extracts the unresolved-review-findings block a `review` phase writes into
-  its artifact, for inclusion in a PR body.
+  The typed findings block a `review` phase writes into its artifact, and the
+  PR-body section rendered from it.
 
-  The block is delimited by literal HTML comments so it survives Markdown
-  rendering in the artifact itself:
+  The block is a JSON document between two literal HTML-comment marker lines
+  (so it survives Markdown rendering in the artifact itself):
 
       <!-- FOREMAN_REVIEW_FINDINGS_START -->
-      - `lib/foo.ex:12` Major — unchecked nil
+      {"schema": "foreman.review_findings/1", "reviewed": true, "findings": [...]}
       <!-- FOREMAN_REVIEW_FINDINGS_END -->
 
-  Absent and empty blocks are `:none` — a review phase that genuinely found
-  nothing has no findings to surface. An unterminated block (a start marker
-  with no matching end marker) is a distinct outcome, `{:error,
-  :unterminated_block}`: the phase wrote findings and failed to close its
-  markers, so the findings exist in the artifact but must not silently
-  vanish — that is exactly the silent-drop failure mode this module exists
-  to prevent (AGENTS.md §5.3: absent and malformed are not one code).
-  Callers log a warning and surface the artifact path in the PR body instead
-  of dropping the block.
+  `read/1` and `parse/1` answer `{:recorded, record}`, `:absent` (no block: the
+  review evidence is missing, which is NOT a clean review) or `{:malformed,
+  reason}`; `section/1` and `pr_section/2` render the one PR-body section both
+  `AutoPR` and `PhasePR` use (AGENTS.md 5.7: one implementation). The findings
+  are the review agent's claims: parsed and bounded here, never verified.
   """
+
+  require Logger
 
   # The typed schema (TRD-013). The findings are claims written by the review
   # agent: this parser makes them typed and bounded, it cannot make them true,
-  # so they are never a machine-observed input of the risk rubric. `extract/1`
-  # and `extract_from/1` below are the earlier, untyped reader the PR-body
-  # builders still call until TRD-014/TRD-034 move them onto `read/1`.
+  # so they are never a machine-observed input of the risk rubric.
 
   @start_marker "<!-- FOREMAN_REVIEW_FINDINGS_START -->"
   @end_marker "<!-- FOREMAN_REVIEW_FINDINGS_END -->"
@@ -208,6 +204,120 @@ defmodule ForemanServer.Workflow.ReviewFindings do
 
   defp unresolved?(%Finding{}), do: false
 
+  # --- PR-body section (TRD-014) ---
+
+  @max_listed 20
+  @listed_description 300
+  @listed_path 200
+  @severity_order %{critical: 0, major: 1, minor: 2, nitpick: 3}
+  @section_heading "\n## Review findings (the review agent's report)\n\n"
+
+  @doc """
+  Reads the artifact at `artifact_path` and renders the PR-body section (see
+  `section/1`). A block that is not `:recorded` is logged as a warning naming
+  `caller` (`"AutoPR"`, `"PhasePR"`), so the missing evidence is visible in the
+  server log as well as in the body.
+  """
+  @spec pr_section(String.t() | nil, String.t()) :: String.t()
+  def pr_section(artifact_path, caller) when is_binary(caller) do
+    result = read(artifact_path)
+
+    case result do
+      {:recorded, _record} ->
+        :ok
+
+      :absent ->
+        Logger.warning("#{caller} found no review findings block in #{inspect(artifact_path)}")
+
+      other ->
+        {defect, detail} = defect(other)
+
+        Logger.warning(
+          "#{caller} could not read review findings in #{inspect(artifact_path)}: #{defect} (#{detail})"
+        )
+    end
+
+    section(result)
+  end
+
+  @doc """
+  Renders the one PR-body section from a `read/1` result. The text is bounded:
+  at most #{@max_listed} unresolved findings are listed, each path and
+  description cut and flattened to one line, because the body is a `gh` write
+  and the findings are the agent's untrusted text.
+
+  `:recorded` lists the unresolved findings (every `open` one and every
+  `declined` critical or major one) and counts the fixed and declined ones;
+  `:absent` says the review evidence is missing; `{:malformed, _}` and an
+  unreadable artifact name the defect. None of them says a block that could not
+  be read held no findings.
+  """
+  @spec section(
+          {:recorded, Record.t()}
+          | :absent
+          | {:malformed, reason}
+          | {:error, {:unreadable, File.posix()}}
+        ) :: String.t()
+  def section({:recorded, %Record{findings: findings}}) do
+    unresolved =
+      findings
+      |> Enum.filter(&unresolved?/1)
+      |> Enum.sort_by(&Map.fetch!(@severity_order, &1.severity))
+
+    fixed = Enum.count(findings, &(&1.disposition == :fixed))
+    declined = Enum.count(findings, &(&1.disposition == :declined))
+
+    @section_heading <>
+      "Written by the review agent and not verified by Foreman.\n\n" <>
+      unresolved_text(unresolved) <>
+      "\nFixed: #{fixed}. Declined: #{declined} " <>
+      "(a declined critical or major finding is listed above as unresolved).\n"
+  end
+
+  def section(:absent) do
+    @section_heading <>
+      "The review evidence is missing: the review artifact has no findings block. " <>
+      "This is not a clean review. Check the review artifact.\n"
+  end
+
+  def section(error) do
+    {defect, detail} = defect(error)
+
+    @section_heading <>
+      "The review evidence is malformed or unreadable (`#{defect}`): #{detail}. " <>
+      "This is not a clean review. Check the review artifact.\n"
+  end
+
+  defp unresolved_text([]), do: "The review agent reported nothing unresolved.\n"
+
+  defp unresolved_text(unresolved) do
+    listed = Enum.take(unresolved, @max_listed)
+    more = length(unresolved) - length(listed)
+
+    "Unresolved (#{length(unresolved)}):\n\n" <>
+      Enum.map_join(listed, "", &finding_line/1) <>
+      if(more > 0,
+        do: "- … and #{more} more unresolved; see the review artifact.\n",
+        else: ""
+      )
+  end
+
+  defp finding_line(%Finding{} = f) do
+    path = flatten(f.path, @listed_path)
+    location = if f.line, do: "#{path}:#{f.line}", else: path
+    declined = if f.disposition == :declined, do: " (declined by the agent)", else: ""
+
+    "- **#{f.severity}** `#{String.replace(location, "`", "'")}`#{declined} — " <>
+      flatten(f.description, @listed_description) <> "\n"
+  end
+
+  # One line, bounded: the agent's text must not break the list or grow the body.
+  defp flatten(text, max) do
+    flat = text |> String.split() |> Enum.join(" ")
+
+    if String.length(flat) > max, do: String.slice(flat, 0, max) <> "…", else: flat
+  end
+
   defp reason_detail(:unterminated_block),
     do: "a findings marker has no matching partner, or the markers are out of order"
 
@@ -372,88 +482,4 @@ defmodule ForemanServer.Workflow.ReviewFindings do
   defp build_finding(_), do: :error
 
   defp bounded_string?(value, max), do: is_binary(value) and String.length(value) <= max
-
-  @max_bytes 4000
-  @truncation_notice "\n… truncated; see the phase artifact for the full list."
-
-  @doc """
-  Extracts the findings block from the artifact at `path`.
-
-  Reads the file and delegates to `extract_from/1`. Returns `:none` for a
-  `nil` path or a missing/unreadable file (the artifact itself is already
-  named in the PR body by path, so an unreadable file is not surfaced as a
-  distinct error here). See `extract_from/1` for the unterminated-block
-  outcome.
-  """
-  @spec extract(String.t() | nil) :: {:ok, String.t()} | :none | {:error, :unterminated_block}
-  def extract(nil), do: :none
-
-  def extract(path) when is_binary(path) do
-    case File.read(path) do
-      {:ok, contents} -> extract_from(contents)
-      {:error, _reason} -> :none
-    end
-  end
-
-  @doc """
-  Extracts the findings block from already-read artifact `contents`.
-
-  Returns `{:ok, block}` with the trimmed (and possibly truncated) text
-  between the start/end markers, `:none` when the start marker is absent or
-  the delimited block is blank, or `{:error, :unterminated_block}` when a
-  start marker has no matching end marker.
-  """
-  @spec extract_from(String.t()) :: {:ok, String.t()} | :none | {:error, :unterminated_block}
-  def extract_from(contents) when is_binary(contents) do
-    case String.split(contents, @start_marker, parts: 2) do
-      [_before, rest] ->
-        case String.split(rest, @end_marker, parts: 2) do
-          [block, _after] ->
-            case String.trim(block) do
-              "" -> :none
-              trimmed -> {:ok, truncate(trimmed)}
-            end
-
-          _ ->
-            {:error, :unterminated_block}
-        end
-
-      _ ->
-        :none
-    end
-  end
-
-  # Truncates a findings block over 4000 bytes, appending a truncation notice
-  # suffix. Byte-safe: `String.slice/3` counts grapheme clusters, not bytes,
-  # so a block full of multi-byte characters could exceed `@max_bytes` after
-  # "truncation" under a grapheme-based slice.
-  defp truncate(block) when byte_size(block) <= @max_bytes, do: block
-
-  defp truncate(block) do
-    block
-    |> binary_slice(0, @max_bytes)
-    |> drop_partial_codepoint()
-    |> Kernel.<>(@truncation_notice)
-  end
-
-  defp drop_partial_codepoint(binary) do
-    if String.valid?(binary),
-      do: binary,
-      else: drop_partial_codepoint(binary_part(binary, 0, byte_size(binary) - 1))
-  end
-
-  @doc """
-  Builds the PR-body section for an unterminated findings block.
-
-  Shared by `PhasePR` and `AutoPR` (AGENTS.md §5.7: one implementation, not
-  duplicated per caller) so an unterminated block still names the artifact in
-  the PR body instead of silently vanishing. Callers additionally log a
-  warning naming their own module.
-  """
-  @spec unterminated_section(String.t()) :: String.t()
-  def unterminated_section(artifact_path) do
-    "\n## Unresolved review findings\n\n" <>
-      "The review phase left an unterminated findings block in `#{artifact_path}`; " <>
-      "its content could not be extracted. Check that artifact directly.\n"
-  end
 end
