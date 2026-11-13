@@ -435,6 +435,7 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
   # The same content for the same head is a no-op repeat.
   defp do_handle("run.pr.findings", state, run_id, pr_url, payload) do
     with {:ok, ids} <- identity(state, payload),
+         :ok <- findings_repo_id(ids.repo_id),
          :ok <- no_supplied_digest(payload),
          {:ok, head_sha} <-
            Aggregate.required_binary(Aggregate.get(payload, :head_sha), :head_sha),
@@ -472,6 +473,11 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
       end
     end
   end
+
+  # `identity/2` passes `repo_id` through unvalidated; the findings record is stricter.
+  defp findings_repo_id(nil), do: :ok
+  defp findings_repo_id(id) when is_binary(id) and id != "", do: :ok
+  defp findings_repo_id(_other), do: {:error, {:missing_or_invalid, :repo_id}}
 
   defp no_supplied_digest(payload) do
     if is_nil(Aggregate.get(payload, :digest)),

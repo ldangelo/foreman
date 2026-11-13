@@ -808,7 +808,10 @@ defmodule ForemanServer.Aggregates.RunPrWatchTest do
         {%{recorded_at: "now"}, :recorded_at},
         {%{recorded_at: nil}, :recorded_at},
         {%{recorded_at: -1}, :recorded_at},
-        {%{project_id: "other"}, :project_id}
+        {%{project_id: "other"}, :project_id},
+        {%{repo_id: ""}, :repo_id},
+        {%{repo_id: 7}, :repo_id},
+        {%{defect_detail: "a clean review has no defect text"}, :defect_detail}
       ]
 
       for {override, key} <- bad do
@@ -850,6 +853,21 @@ defmodule ForemanServer.Aggregates.RunPrWatchTest do
       # A, then B, then A again for one head is a change each time
       {state3, _} = accept(state, "run.pr.findings", findings_cmd(%{findings: []}))
       assert {:ok, %{}} = reject(state3, "run.pr.findings", findings_cmd())
+    end
+
+    test "the same content from a different artifact appends nothing and keeps the first artifact" do
+      {state, first} = accept(started(), "run.pr.findings", findings_cmd())
+
+      # TRD-015: "the same content recorded twice for one head (the same `digest`), then the
+      # second command appends nothing". The artifact is not part of the digest, so a re-record
+      # of the same findings from another artifact is that no-op and `evidence.findings` keeps
+      # the first artifact's path and hash (TRD-034/TRD-041 must not rely on a refresh).
+      again =
+        findings_cmd(%{artifact_path: "/w/other.md", artifact_sha256: String.duplicate("d", 64)})
+
+      assert {:ok, nil} = reject(state, "run.pr.findings", again)
+      assert state.pr_watch[@url].evidence.findings.artifact_sha256 == String.duplicate("c", 64)
+      assert state.pr_watch[@url].evidence.findings.artifact_path == first.payload.artifact_path
     end
 
     test "it is not a head observation: the PR's head, checks and watching are untouched" do

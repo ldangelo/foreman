@@ -782,10 +782,18 @@ defmodule ForemanServer.PrEvidence do
     with {:ok, status} <- string_enum(status, @findings_statuses, :status),
          {:ok, findings} <- findings_list(status, findings),
          {:ok, defect} <- findings_defect(status, defect),
-         {:ok, detail} <- optional_bounded(defect_detail, @max_defect_detail, :defect_detail) do
+         {:ok, detail} <- findings_detail(status, defect_detail) do
       {:ok, %{status: status, findings: findings, defect: defect, defect_detail: detail}}
     end
   end
+
+  # A clean review has nothing to explain; `absent` and `malformed` carry the text the operator
+  # reads (TRD-015: "an absent or malformed record carries its defect text").
+  defp findings_detail("recorded", nil), do: {:ok, nil}
+  defp findings_detail("recorded", _detail), do: {:error, :defect_detail}
+
+  defp findings_detail(_status, detail),
+    do: optional_bounded(detail, @max_defect_detail, :defect_detail)
 
   @doc """
   The digest of a findings record: the first 16 hex characters of the SHA-256 of the normalised

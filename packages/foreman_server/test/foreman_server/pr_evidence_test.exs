@@ -949,6 +949,12 @@ defmodule ForemanServer.PrEvidenceTest do
              ) == [:findings_legacy_format]
     end
 
+    test "a display read with no head reads a recorded review as findings_other_sha" do
+      # TRD-015: `recorded` for a head other than `ctx.head_sha` is `findings_other_sha`. A caller
+      # that supplies no head has no head the review can be bound to, so it is never read as clean.
+      assert :findings_other_sha in fcodes(frec(recorded(@fh)), fctx(nil, %{checks_ref: nil}))
+    end
+
     test "a display read judges findings the same way" do
       assert fcodes(frec(recorded("sha-f0")), fctx(@fh, %{checks_ref: nil})) == [
                :findings_other_sha
