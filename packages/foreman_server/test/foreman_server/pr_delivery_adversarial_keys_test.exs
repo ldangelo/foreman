@@ -944,6 +944,84 @@ defmodule ForemanServer.PrDeliveryAdversarialKeysTest do
     end
   end
 
+  describe "the sweep's pr_create verdict follows the lookup's rule about forks" do
+    test "a fork's PR of the same branch and tip is not proof the create ran: not_done, the run is not blocked and Create PR opens its own PR once",
+         %{world: world, ref: ref} do
+      run = World.delivery_run!(world, complete: false)
+      key = create_key(run)
+      crash_create!(world, run, :before)
+      fork = World.open_by_hand!(world, run, cross_repository: true)
+      assert World.executed(world, :create) == 0
+
+      World.sweep!(world)
+
+      assert_receive {@effect_event, ^ref,
+                      %{
+                        retried: 1,
+                        blocked: 0,
+                        on_terminal_run: 0,
+                        audit_failed: 0,
+                        unresolved: 0,
+                        skipped: 0,
+                        deferred_unknown: 0
+                      }, _}
+
+      assert %{terminal?: false} = ProjectionStore.run(run.run_id)
+      refute "RunBlocked" in event_types(run)
+      assert RunControl.intent(run.run_id) == nil
+      assert {:ok, %{metadata: decided}} = KeyStore.get(key)
+      assert KeyStore.decision(decided) == :not_done
+
+      assert {:ok, _} = World.create_pr(run)
+
+      own = World.created_url!(run)
+      refute own == fork
+      assert World.created_prs(world) == [own]
+      assert World.executed(world, :create) == 1
+      assert length(creates_for(world, run)) == 2
+
+      # CONTROL: the same PR of this repository proves the create ran: done, the run is blocked
+      control = World.delivery_run!(world, complete: false)
+      crash_create!(world, control, :before)
+      _mine = World.open_by_hand!(world, control)
+
+      World.sweep!(world)
+
+      assert_receive {@effect_event, ^ref, %{blocked: 1, retried: 0}, _}
+      assert EffectWorld.status(control.run_id) == "blocked"
+      assert EffectWorld.block_reason(control.run_id) == "effect_already_done"
+    end
+
+    # DELIBERATE: the reconciler does not compare heads (the key's intent holds no tip). A PR of
+    # this repository for the run's branch proves the create ran, so the verdict is `done` even
+    # though its head is not the tip; Create PR then adopts nothing (the lookup refuses the other
+    # head) and the unresolved key refuses the effect: fail-closed, nothing is created.
+    test "a PR of this repository with another head is done by decision: Create PR creates nothing",
+         %{world: world, ref: ref} do
+      run = World.delivery_run!(world)
+      key = create_key(run)
+      crash_create!(world, run, :before)
+      _other = World.open_by_hand!(world, run, head: @other_head)
+
+      World.sweep!(world)
+
+      assert_terminal_verdict(ref, run, "done", "effect_already_done", %{
+        on_terminal_run: 1,
+        audit_failed: 0,
+        retried: 0,
+        blocked: 0,
+        unresolved: 0,
+        skipped: 0
+      })
+
+      assert {:error, {:effect_unresolved, ^key}} = World.create_pr(run)
+      assert length(creates_for(world, run)) == 1
+      assert World.executed(world, :create) == 0
+      assert World.created_prs(world) == []
+      assert {:error, :not_found} = ProjectionStore.pr_association(run.run_id)
+    end
+  end
+
   defp reset(run) do
     CommandGateway.dispatch_system(%{
       type: "run.reset",
