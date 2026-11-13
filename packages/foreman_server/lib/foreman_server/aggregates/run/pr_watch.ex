@@ -31,6 +31,7 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
 
   alias ForemanServer.Aggregate
   alias ForemanServer.PrEvidence
+  alias ForemanServer.PrRisk
 
   @kinds %{
     "run.pr.fix_ci" => "ci",
@@ -48,7 +49,8 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
                    "run.pr.watch_start",
                    "run.pr.create",
                    "run.pr.ready_failed",
-                   "run.pr.findings"
+                   "run.pr.findings",
+                   "run.pr.risk"
                  ] ++ Map.keys(@kinds)
 
   @events %{
@@ -65,6 +67,7 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
     "run.pr.create" => "PrCreated",
     "run.pr.ready_failed" => "PrReadyFailed",
     "run.pr.findings" => "ReviewFindingsRecorded",
+    "run.pr.risk" => "PrRiskRecorded",
     # Operator-only and handled by `Run` beside `merge_approve` (it needs the merge gate), so it
     # is in neither `command_types/0` nor `operator_types/0`: this entry makes `Run` fold the event.
     "run.pr.waive_evidence" => "PrEvidenceWaived"
@@ -149,7 +152,8 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
              "run.pr.review",
              "run.pr.create",
              "run.pr.ready_failed",
-             "run.pr.findings"
+             "run.pr.findings",
+             "run.pr.risk"
            ] ->
         {:error, {:missing_or_invalid, :pr_url}}
 
@@ -448,6 +452,9 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
                Aggregate.get(payload, :defect_detail)
              )
            ),
+         {:ok, judgement} <-
+           validated_findings(PrEvidence.validate_judgement(Aggregate.get(payload, :judgement))),
+         content = Map.put(content, :judgement, judgement),
          {:ok, artifact_path} <- bounded_path(Aggregate.get(payload, :artifact_path)),
          {:ok, artifact_sha256} <- sha256_hex(Aggregate.get(payload, :artifact_sha256)),
          {:ok, recorded_at} <- non_neg_integer(Aggregate.get(payload, :recorded_at), :recorded_at) do
@@ -468,6 +475,67 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
             artifact_sha256: artifact_sha256,
             digest: digest,
             recorded_at: recorded_at
+          })
+        )
+      end
+    end
+  end
+
+  # The risk of the PR head the observation saw (system-only, from `PrObservation` through the
+  # Observer). Deterministic: it takes only the payload (GitHub-derived facts, the policy
+  # snapshot, `checks_ref`, `observed_at`; the aggregate has no clock) and the aggregate's
+  # `pr_watch` record and recorded base. Nothing the handler derives is read from the payload.
+  defp do_handle("run.pr.risk", state, run_id, pr_url, payload) do
+    with {:ok, ids} <- identity(state, payload),
+         :ok <- findings_repo_id(ids.repo_id),
+         :ok <- no_derived_fields(payload),
+         {:ok, head_sha} <-
+           Aggregate.required_binary(Aggregate.get(payload, :head_sha), :head_sha),
+         {:ok, record} <- watched_record(state, pr_url),
+         :ok <- head_agrees(head_sha, record),
+         {:ok, input} <- risk_payload(payload) do
+      ctx = %{
+        head_sha: head_sha,
+        policy: input.policy,
+        now_ms: input.observed_at,
+        checks_ref: input.checks_ref
+      }
+
+      {checks_status, reasons} = PrEvidence.evaluate_checks(record, ctx)
+
+      # A secondary repository's PR has no findings record (TRD-015): it is classified without one.
+      findings = if is_nil(ids.repo_id), do: record.evidence.findings
+
+      content =
+        PrRisk.record(%{
+          identity: Map.put(ids, :run_id, run_id) |> Map.put(:pr_url, pr_url),
+          head_sha: head_sha,
+          files: input.files,
+          changed_files: input.changed_files,
+          additions: input.additions,
+          deletions: input.deletions,
+          base_branch: input.base_branch,
+          recorded_base: state.base_branch,
+          checks: %{status: checks_status, reasons: reasons},
+          findings: findings,
+          policy_version: input.policy_version
+        })
+
+      stored = record.evidence.risk
+
+      if stored_risk?(stored, head_sha, content.digest) do
+        {:ok, nil}
+      else
+        event(
+          "run.pr.risk",
+          run_id,
+          pr_url,
+          payload,
+          ids,
+          Map.merge(content, %{
+            head_sha: head_sha,
+            seq: stored_seq(stored) + 1,
+            recorded_at: input.observed_at
           })
         )
       end
@@ -514,6 +582,121 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
       _other -> false
     end
   end
+
+  # -- risk (TRD-018) ------------------------------------------------------------
+
+  @risk_derived ~w(level rationale instructions sensitive_hits unresolved_findings judgement
+                   evidence digest seq rubric_version findings_digest recorded_at)a
+  @max_files 100
+  @max_path 1024
+
+  defp no_derived_fields(payload) do
+    case Enum.find(@risk_derived, &(not is_nil(Aggregate.get(payload, &1)))) do
+      nil -> :ok
+      key -> {:error, {:derived_field, key}}
+    end
+  end
+
+  defp watched_record(state, pr_url) do
+    case Map.get(state.pr_watch, pr_url) do
+      %{} = record -> {:ok, record}
+      nil -> {:error, {:pr_not_watched, pr_url}}
+    end
+  end
+
+  defp head_agrees(head_sha, %{head_sha: head_sha}), do: :ok
+
+  defp head_agrees(head_sha, record),
+    do: {:error, {:head_mismatch, head_sha, Map.get(record, :head_sha)}}
+
+  defp stored_risk?(%{head_sha: head, digest: digest}, head, digest), do: true
+  defp stored_risk?(_stored, _head, _digest), do: false
+
+  defp stored_seq(%{seq: seq}) when is_integer(seq), do: seq
+  defp stored_seq(_none), do: 0
+
+  # The facts of one observation, each checked for its type. A missing list or count stays `nil`
+  # (the rubric reads it as unavailable and HIGH); a value of the wrong type is refused, and a
+  # boolean such as `files_incomplete` is never read.
+  defp risk_payload(payload) do
+    with {:ok, files} <- risk_files(Aggregate.get(payload, :files)),
+         {:ok, changed_files} <-
+           count_or_nil(Aggregate.get(payload, :changed_files), :changed_files),
+         {:ok, additions} <- count_or_nil(Aggregate.get(payload, :additions), :additions),
+         {:ok, deletions} <- count_or_nil(Aggregate.get(payload, :deletions), :deletions),
+         {:ok, base_branch} <- text_field(payload, :base_branch),
+         {:ok, required} <-
+           validated(
+             PrEvidence.validate_policy_required(Aggregate.get(payload, :required)),
+             :required
+           ),
+         {:ok, policy_version} <- text_field(payload, :policy_version),
+         :ok <- policy_version_agrees(required, policy_version),
+         {:ok, checks_ref} <- text_field(payload, :checks_ref),
+         {:ok, observed_at} <- non_neg_integer(Aggregate.get(payload, :observed_at), :observed_at) do
+      {:ok,
+       %{
+         files: files,
+         changed_files: changed_files,
+         additions: additions,
+         deletions: deletions,
+         base_branch: base_branch,
+         policy: required && %{required: required, version: policy_version},
+         policy_version: policy_version,
+         checks_ref: checks_ref,
+         observed_at: observed_at
+       }}
+    end
+  end
+
+  defp policy_version_agrees(required, policy_version) do
+    if PrEvidence.policy_version(required) == policy_version,
+      do: :ok,
+      else: {:error, {:missing_or_invalid, :policy_version}}
+  end
+
+  defp count_or_nil(nil, _key), do: {:ok, nil}
+  defp count_or_nil(value, _key) when is_integer(value) and value >= 0, do: {:ok, value}
+  defp count_or_nil(_value, key), do: {:error, {:missing_or_invalid, key}}
+
+  # A list the handler cannot hold (over `@max_files` items, or a path over `@max_path` bytes) is
+  # UNAVAILABLE, never refused and never truncated: the record is still written, with `files: nil`
+  # (the rubric reads it as HIGH, "the changed-path list is unavailable"), so the PR is not left
+  # without a risk record that nothing may waive. A payload of the wrong type stays an error,
+  # whatever else the list holds.
+  defp risk_files(nil), do: {:ok, nil}
+
+  defp risk_files(files) when is_list(files) do
+    results = Enum.map(files, &risk_file/1)
+
+    cond do
+      :error in results -> {:error, {:missing_or_invalid, :files}}
+      :oversized in results or length(files) > @max_files -> {:ok, nil}
+      true -> {:ok, Enum.map(results, fn {:ok, file} -> file end)}
+    end
+  end
+
+  defp risk_files(_other), do: {:error, {:missing_or_invalid, :files}}
+
+  defp risk_file(%{} = file) do
+    path = Aggregate.get(file, :path)
+    additions = Aggregate.get(file, :additions)
+    deletions = Aggregate.get(file, :deletions)
+
+    cond do
+      not (is_binary(path) and path != "" and String.valid?(path) and is_integer(additions) and
+             additions >= 0 and is_integer(deletions) and deletions >= 0) ->
+        :error
+
+      byte_size(path) > @max_path ->
+        :oversized
+
+      true ->
+        {:ok, %{path: path, additions: additions, deletions: deletions}}
+    end
+  end
+
+  defp risk_file(_other), do: :error
 
   # -- shared helpers ----------------------------------------------------------
 

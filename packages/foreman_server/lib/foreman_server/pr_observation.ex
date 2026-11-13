@@ -4,13 +4,16 @@ defmodule ForemanServer.PrObservation do
   commands that record what changed (E9-S1). Pure: the only outside read is
   `ProjectionStore.run/1` (through `PrUpdate.command/3`).
 
-  A reading yields zero to three commands:
+  A reading yields zero to four commands:
 
     * `run.pr.update` - when the PR status, head SHA or base branch differs from the
-      previous record (the same builder the webhook uses, so a webhook and a
-      poll converge on one deterministic `command_id`);
+      previous record (the same builder the webhook uses, so a webhook and a poll converge
+      on one deterministic `command_id`);
     * `run.pr.checks` - when the *checks digest* differs;
-    * `run.pr.review` - when the *review digest* differs.
+    * `run.pr.review` - when the *review digest* differs;
+    * `run.pr.risk` (TRD-018) - last, when the batch carries `run.pr.update` or
+      `run.pr.checks`, or the stored risk is missing, for another head, from another findings
+      record or from another rubric version.
 
   Each digest is a short hash of exactly what that event records, so an edited
   comment elsewhere never re-fires the checks event. The two digests are
@@ -29,6 +32,7 @@ defmodule ForemanServer.PrObservation do
   """
 
   alias ForemanServer.GitHub.PrStatus
+  alias ForemanServer.PrRisk.Rubric
   alias ForemanServer.PrUpdate
 
   @type previous :: map() | nil
@@ -142,18 +146,31 @@ defmodule ForemanServer.PrObservation do
 
       case force do
         nil ->
-          {:ok,
-           update_commands(update, status, previous) ++
-             checks_commands(run_id, pr_url, status, previous, base, policy) ++
-             review_commands(run_id, pr_url, status, previous, base)}
+          batch =
+            update_commands(update, status, previous) ++
+              checks_commands(run_id, pr_url, status, previous, base, policy) ++
+              review_commands(run_id, pr_url, status, previous, base)
+
+          {:ok, batch ++ risk_commands(run_id, pr_url, status, previous, base, policy, batch)}
 
         %{nonce: nonce, now_ms: now_ms}
         when is_binary(nonce) and nonce != "" and is_integer(now_ms) ->
+          batch = [
+            update,
+            forced_checks_command(run_id, pr_url, status, previous, base, nonce, now_ms, policy)
+          ]
+
           {:ok,
-           [
-             update,
-             forced_checks_command(run_id, pr_url, status, previous, base, nonce, now_ms, policy)
-           ]}
+           batch ++
+             risk_commands(
+               run_id,
+               pr_url,
+               status,
+               previous,
+               %{base | observed_at: now_ms},
+               policy,
+               batch
+             )}
       end
     end
   end
@@ -255,6 +272,92 @@ defmodule ForemanServer.PrObservation do
       "evidence",
       policy
     )
+  end
+
+  # -- risk (TRD-018) -------------------------------------------------------------------------
+
+  # `run.pr.risk` ends the batch when the batch carries `run.pr.update` or `run.pr.checks` (the
+  # head moved, the PR changed, or the checks did), or when the stored risk record is missing,
+  # is for another head, was computed from another findings record (its `findings_digest`
+  # differs from `evidence.findings.digest`) or under another rubric version. A batch with none
+  # of these and a current record carries none. A forced batch always has a `run.pr.checks`.
+  #
+  # The command is the facts of the one `PrStatus` and the policy snapshot; it carries no level:
+  # the aggregate classifies. `checks_ref` is the `observation_ref` of the batch's own checks
+  # command (the forced nonce, `nil` for an observer's batch), else the stored checks record's.
+  defp risk_commands(run_id, pr_url, status, previous, base, policy, batch) do
+    checks = Enum.find(batch, &(&1.type == "run.pr.checks"))
+
+    if risk_due?(status, previous, base, batch) do
+      seq = (stored_risk(previous) |> Map.get(:seq) || 0) + 1
+
+      [
+        %{
+          type: "run.pr.risk",
+          command_id: "pr_risk:#{run_id}:#{url_hash(pr_url)}:#{status.head_sha}:#{seq}",
+          aggregate_id: "run:#{run_id}",
+          payload: %{
+            run_id: run_id,
+            pr_url: pr_url,
+            project_id: base.project_id,
+            task_id: base.task_id,
+            repo_id: base.repo_id,
+            head_sha: status.head_sha,
+            base_branch: status.base_branch,
+            files: status.files,
+            changed_files: status.changed_files,
+            additions: status.additions,
+            deletions: status.deletions,
+            required: policy.required,
+            policy_version: policy.version,
+            checks_ref: risk_checks_ref(checks, previous),
+            observed_at: base.observed_at
+          }
+        }
+      ]
+    else
+      []
+    end
+  end
+
+  defp risk_due?(status, previous, base, batch) do
+    risk = stored_risk(previous)
+
+    Enum.any?(batch, &(&1.type in ["run.pr.update", "run.pr.checks"])) or
+      risk == %{} or Map.get(risk, :head_sha) != status.head_sha or
+      Map.get(risk, :rubric_version) != Rubric.version() or
+      Map.get(risk, :findings_digest) != stored_findings_digest(previous, base.repo_id)
+  end
+
+  defp risk_checks_ref(%{payload: %{observation_ref: ref}}, _previous), do: ref
+
+  defp risk_checks_ref(nil, previous) do
+    case stored_evidence(previous, :checks) do
+      %{} = checks -> Map.get(checks, :observation_ref)
+      _none -> nil
+    end
+  end
+
+  defp stored_risk(previous), do: stored_evidence(previous, :risk) || %{}
+
+  # A secondary repository's PR is classified without a findings record (the handler's rule), so
+  # its stored findings digest is read as `nil` here too.
+  defp stored_findings_digest(_previous, repo_id) when is_binary(repo_id), do: nil
+
+  defp stored_findings_digest(previous, nil) do
+    case stored_evidence(previous, :findings) do
+      %{} = findings -> Map.get(findings, :digest)
+      _none -> nil
+    end
+  end
+
+  defp stored_evidence(previous, key) do
+    with %{} = record <- previous,
+         %{} = evidence <- Map.get(record, :evidence) do
+      Map.get(evidence, key)
+    else
+      _ -> nil
+    end
   end
 
   defp next_checks_seq(previous), do: (previous_value(previous, :checks_seq) || 0) + 1

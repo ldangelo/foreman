@@ -194,6 +194,57 @@ defmodule ForemanServer.OperatorOnlyPrCommandsTest do
     end
   end
 
+  # TRD-018: the risk record is a `PrWatch` command only `PrObservation` builds (the Observer
+  # dispatches it): no operator envelope, MCP tool, coordinator or approvals dispatch.
+  describe "run.pr.risk is system-only" do
+    @risk_type "run.pr.risk"
+
+    test "it is a PrWatch command but in no operator list" do
+      assert @risk_type in PrWatch.command_types()
+      refute @risk_type in PrWatch.operator_types()
+      refute @risk_type in CommandGateway.operator_types()
+      refute @risk_type in CommandGateway.command_endpoint_types()
+      refute @risk_type in CommandGateway.pr_operator_types()
+      refute @risk_type in ForemanServer.Aggregates.Run.repo_pr_operator_types()
+    end
+
+    test "the operator envelope refuses it, even naming every field" do
+      assert {:error, {:command_not_allowed, @risk_type}} =
+               CommandGateway.dispatch_operator(%{
+                 type: @risk_type,
+                 command_id: "c-risk",
+                 aggregate_id: "run:none",
+                 payload: %{
+                   run_id: "none",
+                   pr_url: "https://github.com/a/b/pull/1",
+                   head_sha: "h1",
+                   level: "LOW"
+                 }
+               })
+    end
+
+    test "no MCP tool is, or is named after, it" do
+      names = Enum.map(Tools.list_tools(), & &1.name)
+      refute @risk_type in names
+      refute Enum.any?(names, &String.contains?(&1, "pr_risk"))
+
+      previous = Application.get_env(:foreman_server, :mcp)
+      Application.put_env(:foreman_server, :mcp, allow_workflow_writes: true)
+      on_exit(fn -> Application.put_env(:foreman_server, :mcp, previous || []) end)
+
+      assert {:error, %{code: "METHOD_NOT_FOUND"}} =
+               Tools.call_tool("foreman_run_pr_risk", %{run_id: "none"})
+    end
+
+    test "coordinator and approvals cannot dispatch it" do
+      refute @risk_type in CoordinatorDispatch.command_types()
+      refute @risk_type in ApprovalsDispatch.command_types()
+
+      assert {:error, {:forbidden_command, @risk_type}} =
+               CoordinatorDispatch.system(CommandGateway, %{type: @risk_type, payload: %{}})
+    end
+  end
+
   # TRD-012: the waiver is declared with the operator PR types beside `merge_approve` (it needs
   # the merge gate the aggregate keeps), never as a PR-watch command the watcher could issue.
   describe "run.pr.waive_evidence is operator-only" do

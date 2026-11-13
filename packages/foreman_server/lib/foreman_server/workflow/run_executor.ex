@@ -83,6 +83,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   alias ForemanServer.TaskProvider.Registry, as: TaskProviderRegistry
   alias ForemanServer.Aggregate.Actor
   alias ForemanServer.Incarnation
+  alias ForemanServer.PrRisk
   alias ForemanServer.Workflow.OrphanReaper
   alias ForemanServer.Workflow.Worktree
   alias ForemanServer.Workflow.RepoPr
@@ -2631,7 +2632,11 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   defp record_review_findings(state, pr_url, head) when is_binary(head) do
     artifact_path = completion_artifact_path(state)
-    outcome = ReviewFindings.read(artifact_path)
+    # One read: the findings, the judgement and the digest of the artifact all come from the
+    # same bytes.
+    loaded = ReviewFindings.load(artifact_path)
+    outcome = parse_loaded_findings(loaded)
+    judgement = parse_loaded_judgement(loaded)
     recorded_at = System.system_time(:millisecond)
 
     payload =
@@ -2642,7 +2647,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
         pr_url: pr_url,
         head_sha: head,
         artifact_path: artifact_path,
-        artifact_sha256: artifact_sha256(outcome, artifact_path),
+        artifact_sha256: artifact_sha256(loaded, artifact_path),
+        judgement: judgement,
         recorded_at: recorded_at
       }
       |> Map.merge(findings_payload(outcome))
@@ -2689,16 +2695,26 @@ defmodule ForemanServer.Workflow.RunExecutor do
     }
   end
 
-  defp artifact_sha256({:recorded, %ReviewFindings.Record{artifact_sha256: sha}}, _path), do: sha
+  defp parse_loaded_findings({:ok, contents}), do: ReviewFindings.parse(contents)
+  defp parse_loaded_findings(other), do: other
 
-  defp artifact_sha256(_outcome, path) when is_binary(path) do
+  # TRD-041: an artifact that was not read has no judgement block either.
+  defp parse_loaded_judgement({:ok, contents}), do: PrRisk.parse_judgement(contents)
+  defp parse_loaded_judgement(_not_loaded), do: PrRisk.absent()
+
+  # The sha of the bytes the findings and the judgement were parsed from. An artifact that could
+  # not be loaded within the bound (too large) is still hashed, so the operator can name it.
+  defp artifact_sha256({:ok, contents}, _path) when is_binary(contents),
+    do: :crypto.hash(:sha256, contents) |> Base.encode16(case: :lower)
+
+  defp artifact_sha256(_loaded, path) when is_binary(path) do
     case File.read(path) do
       {:ok, bytes} -> :crypto.hash(:sha256, bytes) |> Base.encode16(case: :lower)
       {:error, _} -> nil
     end
   end
 
-  defp artifact_sha256(_outcome, _path), do: nil
+  defp artifact_sha256(_loaded, _path), do: nil
 
   # AutoPR's `{:ok, pr_url}` used to be logged and dropped here, so a PR could
   # exist on GitHub while every read model denied it:

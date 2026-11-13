@@ -202,6 +202,137 @@ defmodule ForemanServer.ProjectionStorePrWatchTest do
              ProjectionStore.pr_watch("r1")
   end
 
+  test "PrRiskRecorded holds evidence.risk with its own head across a head move, and a replay agrees" do
+    risk =
+      ev("PrRiskRecorded", %{
+        pr_url: @a,
+        head_sha: "h1",
+        level: "HIGH",
+        rubric_version: "1",
+        rationale: [],
+        evidence: %{},
+        unresolved_findings: [],
+        instructions: [],
+        judgement: nil,
+        findings_digest: "fd",
+        digest: "0123456789abcdef",
+        seq: 1,
+        recorded_at: 5
+      })
+
+    all = events() ++ [risk]
+    :ok = ProjectionStore.apply_events(all)
+
+    assert [%{head_sha: "h1", evidence: %{risk: record}}] = ProjectionStore.pr_watch("r1")
+
+    assert record == %{
+             head_sha: "h1",
+             level: "HIGH",
+             rubric_version: "1",
+             digest: "0123456789abcdef",
+             findings_digest: "fd",
+             seq: 1,
+             recorded_at: 5
+           }
+
+    live = ProjectionStore.pr_watch("r1")
+
+    json_events =
+      all
+      |> Jason.encode!()
+      |> Jason.decode!()
+      |> Enum.map(&%{event_type: &1["event_type"], payload: &1["payload"]})
+
+    ProjectionStoreReset.reset!()
+    assert :ok = ProjectionStore.apply_events(json_events)
+    assert strip(ProjectionStore.pr_watch("r1")) == strip(live)
+
+    :ok =
+      ProjectionStore.apply_events([
+        ev("PrUpdated", %{pr_url: @a, head_sha: "h9", pr_status: "open"})
+      ])
+
+    assert [%{head_sha: "h9", evidence: %{risk: %{head_sha: "h1", digest: "0123456789abcdef"}}}] =
+             ProjectionStore.pr_watch("r1")
+  end
+
+  describe "the judgement on ReviewFindingsRecorded (TRD-041)" do
+    defp findings_event(extra) do
+      ev(
+        "ReviewFindingsRecorded",
+        Map.merge(
+          %{
+            pr_url: @a,
+            head_sha: "h0",
+            status: "recorded",
+            findings: [],
+            defect: nil,
+            defect_detail: nil,
+            artifact_path: "/w/review.md",
+            artifact_sha256: String.duplicate("a", 64),
+            digest: "0123456789abcdef",
+            recorded_at: 5
+          },
+          extra
+        )
+      )
+    end
+
+    test "the judgement is held with the findings, for the event's own head, and a JSON replay agrees" do
+      judgement = %{
+        status: "recorded",
+        level: "HIGH",
+        rationale: "touches auth",
+        defect: nil,
+        defect_detail: nil
+      }
+
+      all = events() ++ [findings_event(%{judgement: judgement})]
+      :ok = ProjectionStore.apply_events(all)
+
+      assert [%{head_sha: pr_head, evidence: %{findings: record}}] =
+               ProjectionStore.pr_watch("r1")
+
+      # bound to the head of the findings record, not to the PR's current head
+      assert record.head_sha == "h0"
+      assert pr_head != "h0"
+      assert record.judgement == judgement
+      live = ProjectionStore.pr_watch("r1")
+
+      json_events =
+        all
+        |> Jason.encode!()
+        |> Jason.decode!()
+        |> Enum.map(&%{event_type: &1["event_type"], payload: &1["payload"]})
+
+      ProjectionStoreReset.reset!()
+      assert :ok = ProjectionStore.apply_events(json_events)
+      assert strip(ProjectionStore.pr_watch("r1")) == strip(live)
+    end
+
+    test "an event written before the field has no judgement and reads as absent" do
+      :ok = ProjectionStore.apply_events(events() ++ [findings_event(%{})])
+
+      assert [%{evidence: %{findings: %{judgement: judgement}}}] = ProjectionStore.pr_watch("r1")
+
+      assert judgement == %{
+               status: "absent",
+               level: nil,
+               rationale: nil,
+               defect: nil,
+               defect_detail: nil
+             }
+    end
+
+    test "a judgement that does not validate reads as absent, never as a level" do
+      bad = %{status: "recorded", level: "CRITICAL", rationale: "x"}
+      :ok = ProjectionStore.apply_events(events() ++ [findings_event(%{judgement: bad})])
+
+      assert [%{evidence: %{findings: %{judgement: %{status: "absent", level: nil}}}}] =
+               ProjectionStore.pr_watch("r1")
+    end
+  end
+
   test "replay from the JSON event log (string keys) rebuilds the identical state" do
     :ok = ProjectionStore.apply_events(events())
     live = ProjectionStore.pr_watch("r1")

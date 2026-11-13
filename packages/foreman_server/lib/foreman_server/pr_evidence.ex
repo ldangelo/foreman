@@ -59,14 +59,16 @@ defmodule ForemanServer.PrEvidence do
   `Aggregates.Run.PrWatch.apply_event/3` (the aggregate) and `ForemanServer.PrWatchFold`
   (the projection) both call `apply_event/3` first, so the two records cannot disagree.
   The record is a map with the keys `checks`, `waiver`, `delivery_issue`, `findings`, `risk`
-  and `report`; a record with no `evidence` reads as empty. This module fills `checks` and
-  `waiver`; the other keys belong to later tasks and are only kept here.
+  and `report`; a record with no `evidence` reads as empty. This module fills every key but
+  `report`, which belongs to a later task and is only kept here.
 
     * `checks` - `%{head_sha, items, truncated, observed_at, digest, evidence_digest,
       observation_ref, required, policy_version}`, stored for a `PrChecksChanged` whose `checks`
       is a list and left as it was for one that has none or a non-list.
     * `waiver` - `%{head_sha, codes, policy_version, reason, waived_by, waived_at}`, `codes` a
       sorted, de-duplicated list of strings; set by `PrEvidenceWaived` and replacing any earlier one.
+    * `risk` - `%{head_sha, level, rubric_version, digest, findings_digest, seq, recorded_at}`,
+      set by `PrRiskRecorded` (TRD-018) with the head it was classified for; a head move keeps it.
 
   Head reset: of the PR events only `PrUpdated`, `PrReady`, `PrChecksChanged` and
   `PrReviewChanged` carry a head. When one brings a `head_sha` different from the record's
@@ -83,7 +85,8 @@ defmodule ForemanServer.PrEvidence do
   alias ForemanServer.{ProjectionStore, ProjectSettings}
 
   @head_events ~w(PrUpdated PrReady PrChecksChanged PrReviewChanged)
-  @events @head_events ++ ["PrEvidenceWaived", "PrReadyFailed", "ReviewFindingsRecorded"]
+  @events @head_events ++
+            ["PrEvidenceWaived", "PrReadyFailed", "ReviewFindingsRecorded", "PrRiskRecorded"]
 
   @max_checks 100
   @max_required 20
@@ -222,9 +225,26 @@ defmodule ForemanServer.PrEvidence do
       findings: list_or_empty(get(payload, :findings)),
       defect: get(payload, :defect),
       defect_detail: get(payload, :defect_detail),
+      judgement: normalise_judgement(get(payload, :judgement)),
       artifact_path: get(payload, :artifact_path),
       artifact_sha256: get(payload, :artifact_sha256),
       digest: get(payload, :digest),
+      recorded_at: get(payload, :recorded_at)
+    })
+  end
+
+  # TRD-018: the risk record of the head it was classified for. Kept with ITS OWN head, like the
+  # findings, so a head move neither voids it nor lets it read as the new head's. Only what a
+  # reader compares is kept (the head, the two digests, the version, the level); the full
+  # record is in the event.
+  defp apply_evidence(record, "PrRiskRecorded", payload) do
+    put_evidence(record, :risk, %{
+      head_sha: get(payload, :head_sha),
+      level: get(payload, :level),
+      rubric_version: get(payload, :rubric_version),
+      digest: get(payload, :digest),
+      findings_digest: get(payload, :findings_digest),
+      seq: get(payload, :seq),
       recorded_at: get(payload, :recorded_at)
     })
   end
@@ -301,7 +321,7 @@ defmodule ForemanServer.PrEvidence do
         eligibility(ctx, :unknown, reasons, [], nil, inputs_for(record, ctx))
 
       {_status, reasons} ->
-        reasons = reasons ++ findings_reasons(record, ctx)
+        reasons = reasons ++ findings_reasons(record, ctx) ++ risk_reasons(record, ctx)
         waiver = waiver_state(record, ctx)
         {status, uncovered, covered} = apply_waiver(reasons, waiver)
         eligibility(ctx, status, uncovered, covered, waiver, inputs_for(record, ctx))
@@ -422,6 +442,31 @@ defmodule ForemanServer.PrEvidence do
       inputs: inputs,
       evaluated_at: ctx.now_ms
     }
+  end
+
+  # -- risk reasons (TRD-018) -----------------------------------------------------
+
+  # No risk record is `risk_missing`; a record for another head than the one decided is
+  # `risk_other_sha`. Neither is waivable: a waiver covers a check or a review gap, never the
+  # absence of the classification the approver reads.
+  defp risk_reasons(record, ctx) do
+    case record |> evidence_of() |> Map.get(:risk) do
+      nil ->
+        [%Reason{code: :risk_missing, subject: nil, detail: "no risk record for the PR"}]
+
+      %{} = risk ->
+        head = get(risk, :head_sha)
+
+        if head == ctx.head_sha,
+          do: [],
+          else: [
+            %Reason{
+              code: :risk_other_sha,
+              subject: nil,
+              detail: "risk recorded for #{inspect(head)}, decided #{inspect(ctx.head_sha)}"
+            }
+          ]
+    end
   end
 
   # -- findings reasons (TRD-015) ---------------------------------------------------
@@ -742,6 +787,39 @@ defmodule ForemanServer.PrEvidence do
 
   def validate_required(_other), do: :error
 
+  @doc """
+  Validate the `required` list of the policy snapshot a `run.pr.risk` carries: the same bounds
+  as `validate_required/1`, but each entry keeps its `workflow` and a true `allow_skipped`,
+  because `evaluate_checks/2` reads them (the `required` of `PrChecksChanged` is display only
+  and drops both, which would make a check of another workflow satisfy an entry). `nil` is the
+  gate off. String-keyed result.
+  """
+  @spec validate_policy_required(term()) :: {:ok, [map()] | nil} | :error
+  def validate_policy_required(nil), do: {:ok, nil}
+
+  def validate_policy_required(required)
+      when is_list(required) and length(required) <= @max_required do
+    each_ok(required, fn entry ->
+      with true <- is_map(entry),
+           {:ok, name} <- text(get(entry, :name), required: true),
+           {:ok, kind} <- text(get(entry, :kind), required: true),
+           {:ok, workflow} <- text(get(entry, :workflow), required: false),
+           true <- get(entry, :allow_skipped) in [nil, true, false] do
+        {:ok,
+         %{"name" => name, "kind" => kind}
+         |> put_if("workflow", workflow)
+         |> put_if("allow_skipped", if(get(entry, :allow_skipped) == true, do: true))}
+      else
+        _ -> :error
+      end
+    end)
+  end
+
+  def validate_policy_required(_other), do: :error
+
+  defp put_if(map, _key, nil), do: map
+  defp put_if(map, key, value), do: Map.put(map, key, value)
+
   @findings_statuses ~w(recorded absent malformed)
   @findings_defects ~w(unterminated_block multiple_blocks legacy_format invalid_json unknown_schema
                        invalid_field too_large too_many_findings unreadable)
@@ -797,7 +875,9 @@ defmodule ForemanServer.PrEvidence do
 
   @doc """
   The digest of a findings record: the first 16 hex characters of the SHA-256 of the normalised
-  `status`, `defect`, `findings` and `judgement` (`nil` until TRD-041). Derived by the handler,
+  `status`, `defect`, `findings` and `judgement` (TRD-041; an absent judgement is `nil` in the
+  digest, so a record with no judgement keeps the digest it had before the field existed).
+  Derived by the handler,
   never read from a payload.
   """
   @spec findings_digest(map()) :: String.t()
@@ -807,12 +887,97 @@ defmodule ForemanServer.PrEvidence do
       get(normalised, :status),
       get(normalised, :defect),
       get(normalised, :findings),
-      get(normalised, :judgement)
+      digest_judgement(get(normalised, :judgement))
     }
 
     :crypto.hash(:sha256, :erlang.term_to_binary(term, [:deterministic]))
     |> Base.encode16(case: :lower)
     |> binary_part(0, 16)
+  end
+
+  defp digest_judgement(nil), do: nil
+
+  defp digest_judgement(judgement) do
+    case normalise_judgement(judgement) do
+      %{status: "absent"} -> nil
+      normalised -> normalised
+    end
+  end
+
+  @judgement_levels ~w(LOW MEDIUM HIGH)
+  @max_rationale 1000
+  @judgement_keys ~w(status level rationale defect defect_detail)a
+
+  @doc """
+  Validate and normalise the review agent's risk judgement (TRD-041) carried by a findings
+  record. `nil` is the absent judgement. Otherwise one map (atom or string keys, no other key)
+  with `status` one of `findings_statuses/0`: `recorded` needs a `level` (`LOW`, `MEDIUM` or
+  `HIGH`) and a non-empty `rationale` of at most 1000 characters; `malformed` needs a `defect`
+  (one of `findings_defects/0`) and may carry a `defect_detail` of at most 500 characters;
+  `absent` carries nothing else. The result is always the atom-keyed map `status`, `level`,
+  `rationale`, `defect`, `defect_detail`, so the live and the replayed fold read identical
+  values. Values over their bound are refused, never cut.
+  """
+  @spec validate_judgement(term()) :: {:ok, map()} | {:error, :judgement}
+  def validate_judgement(nil), do: {:ok, absent_judgement()}
+
+  def validate_judgement(%{} = raw) do
+    known = @judgement_keys ++ Enum.map(@judgement_keys, &Atom.to_string/1)
+
+    with true <- Enum.all?(Map.keys(raw), &(&1 in known)),
+         {:ok, status} <- string_enum(get(raw, :status), @findings_statuses, :judgement),
+         {:ok, normalised} <- judgement_for(status, raw) do
+      {:ok, normalised}
+    else
+      _ -> {:error, :judgement}
+    end
+  end
+
+  def validate_judgement(_other), do: {:error, :judgement}
+
+  @doc """
+  The judgement of a findings record as the fold stores it: `validate_judgement/1`'s result, or
+  the absent judgement when there is none or it does not validate (an event written before
+  TRD-041 has no judgement and reads as absent).
+  """
+  @spec normalise_judgement(term()) :: map()
+  def normalise_judgement(raw) do
+    case validate_judgement(raw) do
+      {:ok, normalised} -> normalised
+      {:error, _} -> absent_judgement()
+    end
+  end
+
+  defp absent_judgement,
+    do: %{status: "absent", level: nil, rationale: nil, defect: nil, defect_detail: nil}
+
+  defp judgement_for("absent", raw) do
+    if Enum.all?([:level, :rationale, :defect, :defect_detail], &is_nil(get(raw, &1))),
+      do: {:ok, absent_judgement()},
+      else: {:error, :judgement}
+  end
+
+  defp judgement_for("recorded", raw) do
+    level = get(raw, :level)
+    rationale = get(raw, :rationale)
+
+    if level in @judgement_levels and is_binary(rationale) and String.valid?(rationale) and
+         String.trim(rationale) != "" and String.length(rationale) <= @max_rationale and
+         not Regex.match?(~r/[\x00-\x08\x0B-\x1F\x7F]/u, rationale) and
+         is_nil(get(raw, :defect)) and is_nil(get(raw, :defect_detail)),
+       do: {:ok, %{absent_judgement() | status: "recorded", level: level, rationale: rationale}},
+       else: {:error, :judgement}
+  end
+
+  defp judgement_for("malformed", raw) do
+    with true <- is_nil(get(raw, :level)) and is_nil(get(raw, :rationale)),
+         {:ok, defect} <- string_enum(get(raw, :defect), @findings_defects, :judgement),
+         {:ok, detail} <-
+           optional_bounded(get(raw, :defect_detail), @max_defect_detail, :judgement) do
+      {:ok, %{absent_judgement() | status: "malformed", defect: defect, defect_detail: detail}}
+    else
+      _ -> {:error, :judgement}
+    end
   end
 
   defp findings_list("recorded", items) when is_list(items) and length(items) <= @max_findings do

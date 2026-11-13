@@ -25,6 +25,17 @@ defmodule ForemanServer.GitHub.PrStatus do
       walkthrough), `false` for every other actor.
     * `merge_state_status` - the documented `mergeStateStatus` values plus
       `:unknown` (GitHub computes it lazily; `UNKNOWN` is not an error).
+    * `files`, `changed_files`, `additions`, `deletions` - the machine-derived size
+      and changed paths of the PR, from the same `gh pr view` response as the head
+      SHA and the checks. `files` is `[%{path, additions, deletions}]` (the
+      `changeType` is not kept), at most `@max_list` items as GitHub lists them
+      (it lists 100 of a 223-file PR); `changed_files`, `additions` and
+      `deletions` are the PR's own totals, so an incomplete list still gives the
+      size of the whole diff. A response that omits a field leaves it `nil`
+      (never an empty or zero default); a field present with the wrong shape
+      (a negative count, a file item without a `path`) is a typed
+      `{:gh_unexpected_payload, _}`. `files_incomplete?/1` is true when the list
+      is shorter than `changed_files` or either is unavailable.
     * `threads` - `nil` until `fetch_threads/2` (or `fetch/2` with
       `threads: true`) read the review threads via GraphQL; inline review
       comments and their resolved state are not part of `gh pr view`.
@@ -43,6 +54,10 @@ defmodule ForemanServer.GitHub.PrStatus do
     :base_branch,
     :review_decision,
     :merge_state_status,
+    :files,
+    :changed_files,
+    :additions,
+    :deletions,
     checks: [],
     checks_state: :none,
     checks_truncated: false,
@@ -89,6 +104,8 @@ defmodule ForemanServer.GitHub.PrStatus do
           created_at: String.t() | nil
         }
 
+  @type file :: %{path: String.t(), additions: non_neg_integer(), deletions: non_neg_integer()}
+
   @type thread_comment :: %{
           id: String.t(),
           author: String.t() | nil,
@@ -113,6 +130,10 @@ defmodule ForemanServer.GitHub.PrStatus do
           base_branch: String.t(),
           review_decision: review_decision(),
           merge_state_status: merge_state_status(),
+          files: [file()] | nil,
+          changed_files: non_neg_integer() | nil,
+          additions: non_neg_integer() | nil,
+          deletions: non_neg_integer() | nil,
           checks: [check()],
           checks_state: checks_state(),
           checks_truncated: boolean(),
@@ -130,7 +151,7 @@ defmodule ForemanServer.GitHub.PrStatus do
           | {:gh_unparsable, String.t()}
           | {:gh_unexpected_payload, term()}
 
-  @json_fields "state,mergeable,headRefOid,headRefName,baseRefName,statusCheckRollup,reviewDecision,reviews,comments,mergeStateStatus"
+  @json_fields "state,mergeable,headRefOid,headRefName,baseRefName,statusCheckRollup,reviewDecision,reviews,comments,mergeStateStatus,files,changedFiles,additions,deletions"
 
   @max_list 100
 
@@ -338,7 +359,11 @@ defmodule ForemanServer.GitHub.PrStatus do
          {:ok, decision} <- review_decision(Map.get(payload, "reviewDecision")),
          {:ok, merge_state} <- merge_state_status(Map.get(payload, "mergeStateStatus")),
          {:ok, reviews} <- reviews(Map.get(payload, "reviews")),
-         {:ok, comments} <- comments(Map.get(payload, "comments")) do
+         {:ok, comments} <- comments(Map.get(payload, "comments")),
+         {:ok, files} <- files(Map.get(payload, "files")),
+         {:ok, changed_files} <- count(payload, "changedFiles"),
+         {:ok, additions} <- count(payload, "additions"),
+         {:ok, deletions} <- count(payload, "deletions") do
       {check_list, checks_truncated} = bound(checks)
       {review_list, reviews_truncated} = bound(reviews)
       {comment_list, comments_truncated} = bound(comments)
@@ -351,6 +376,10 @@ defmodule ForemanServer.GitHub.PrStatus do
          base_branch: base,
          review_decision: decision,
          merge_state_status: merge_state,
+         files: files,
+         changed_files: changed_files,
+         additions: additions,
+         deletions: deletions,
          checks: check_list,
          checks_state: checks_state(checks),
          checks_truncated: checks_truncated,
@@ -570,6 +599,54 @@ defmodule ForemanServer.GitHub.PrStatus do
   defp truncate_body(_body), do: ""
 
   # Newest kept: GitHub returns oldest first.
+  # -- files / size -------------------------------------------------------
+
+  @doc """
+  True when the changed-path list cannot be taken as the whole diff: GitHub listed
+  fewer files than `changed_files`, or the response did not carry the list or the
+  count at all (the evidence is unavailable, never an empty complete list).
+  """
+  @spec files_incomplete?(t()) :: boolean()
+  def files_incomplete?(%__MODULE__{files: files, changed_files: changed})
+      when is_list(files) and is_integer(changed),
+      do: length(files) < changed
+
+  def files_incomplete?(%__MODULE__{}), do: true
+
+  defp files(nil), do: {:ok, nil}
+
+  defp files(items) when is_list(items) do
+    items
+    |> Enum.take(@max_list)
+    |> Enum.reduce_while({:ok, []}, fn item, {:ok, acc} ->
+      case file(item) do
+        {:ok, file} -> {:cont, {:ok, [file | acc]}}
+        :error -> {:halt, {:error, {:gh_unexpected_payload, item}}}
+      end
+    end)
+    |> case do
+      {:ok, list} -> {:ok, Enum.reverse(list)}
+      error -> error
+    end
+  end
+
+  defp files(other), do: {:error, {:gh_unexpected_payload, {:files, other}}}
+
+  defp file(%{"path" => path, "additions" => add, "deletions" => del})
+       when is_binary(path) and path != "" and is_integer(add) and add >= 0 and
+              is_integer(del) and del >= 0,
+       do: {:ok, %{path: path, additions: add, deletions: del}}
+
+  defp file(_other), do: :error
+
+  defp count(payload, key) do
+    case Map.get(payload, key) do
+      nil -> {:ok, nil}
+      n when is_integer(n) and n >= 0 -> {:ok, n}
+      other -> {:error, {:gh_unexpected_payload, {key, other}}}
+    end
+  end
+
   defp bound(list) do
     if length(list) > @max_list, do: {Enum.take(list, -@max_list), true}, else: {list, false}
   end

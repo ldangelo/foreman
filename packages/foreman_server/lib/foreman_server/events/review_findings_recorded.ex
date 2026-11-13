@@ -16,6 +16,11 @@ defmodule ForemanServer.Events.ReviewFindingsRecorded do
 
   `PrEvidence` folds it into `evidence.findings`, which keeps ITS OWN `head_sha` across a head
   change: readers compare it with the head being decided.
+
+  `judgement` (TRD-041) is the review agent's risk judgement parsed from the same artifact bytes
+  as the findings: `%{status: "recorded" | "absent" | "malformed", level, rationale, defect,
+  defect_detail}`. It is bound to this event's own `head_sha`. An event written before TRD-041
+  has no `judgement` (`nil`) and reads as absent; the handler always stores a normalised map.
   """
   @enforce_keys [
     :run_id,
@@ -38,6 +43,7 @@ defmodule ForemanServer.Events.ReviewFindingsRecorded do
           findings: [map()],
           defect: String.t() | nil,
           defect_detail: String.t() | nil,
+          judgement: map() | nil,
           artifact_path: String.t() | nil,
           artifact_sha256: String.t() | nil,
           digest: String.t(),
@@ -57,6 +63,7 @@ defmodule ForemanServer.Events.ReviewFindingsRecorded do
     findings: [],
     defect: nil,
     defect_detail: nil,
+    judgement: nil,
     artifact_path: nil,
     artifact_sha256: nil
   ]

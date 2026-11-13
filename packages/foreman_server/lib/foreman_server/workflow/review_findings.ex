@@ -108,16 +108,34 @@ defmodule ForemanServer.Workflow.ReviewFindings do
           | :absent
           | {:malformed, reason}
           | {:error, {:unreadable, File.posix()}}
-  def read(nil), do: :absent
+  def read(path) do
+    case load(path) do
+      {:ok, contents} -> parse(contents)
+      other -> other
+    end
+  end
 
-  def read(path) when is_binary(path) do
+  @doc """
+  The bounded read behind `read/1`: `{:ok, contents}`, or `read/1`'s non-record outcome for
+  `nil`, an artifact over #{@max_artifact_bytes} bytes and a file that cannot be read. A caller
+  that needs the bytes for more than the findings (the risk judgement, TRD-041; the digest of
+  the artifact) parses them itself, so the artifact is read once.
+  """
+  @spec load(String.t() | nil) ::
+          {:ok, String.t()}
+          | :absent
+          | {:malformed, :too_large}
+          | {:error, {:unreadable, File.posix()}}
+  def load(nil), do: :absent
+
+  def load(path) when is_binary(path) do
     with {:ok, %File.Stat{type: :regular, size: size}} when size <= @max_artifact_bytes <-
            File.stat(path),
          {:ok, contents} <- File.read(path) do
       # The file may have grown between the stat and the read.
       if byte_size(contents) > @max_artifact_bytes,
         do: {:malformed, :too_large},
-        else: parse(contents)
+        else: {:ok, contents}
     else
       {:ok, %File.Stat{type: :regular}} -> {:malformed, :too_large}
       # A FIFO or a device (a symlink to /dev/zero) reports size 0 and would be
