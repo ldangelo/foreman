@@ -28,6 +28,7 @@ defmodule ForemanServer.PrWatcher.Observer do
   alias ForemanServer.CommandGateway
   alias ForemanServer.GitHub.PrStatus
   alias ForemanServer.PrWatcher.AutoFix
+  alias ForemanServer.PrEvidence
   alias ForemanServer.PrObservation
   alias ForemanServer.PrUpdate
   alias ForemanServer.ProjectionStore
@@ -185,7 +186,10 @@ defmodule ForemanServer.PrWatcher.Observer do
   end
 
   defp dispatch_run(run_id, repo_id, record, pr_url, status) do
-    with {:ok, observation} <- PrObservation.commands(run_id, pr_url, status, record, repo_id) do
+    with {:ok, observation} <-
+           PrObservation.commands(run_id, pr_url, status, record, repo_id,
+             policy: observation_policy(run_id)
+           ) do
       commands = observation ++ lifecycle_commands(run_id, repo_id, record, pr_url, status)
 
       results = for command <- commands, do: {command, CommandGateway.dispatch_system(command)}
@@ -202,6 +206,27 @@ defmodule ForemanServer.PrWatcher.Observer do
       {:error, reason} ->
         Logger.warning("PrWatcher run_id=#{run_id} url=#{pr_url}: #{inspect(reason)}")
         {:error, [{run_id, "observation", reason}]}
+    end
+  end
+
+  # The project's `required_checks` policy as it stands now. A project that cannot be read is
+  # observed with no policy (the checks event then records `required: nil`) and the error is
+  # logged; the gate never reads this snapshot, it reads the policy itself (TRD-011).
+  defp observation_policy(run_id) do
+    with %{project_id: project_id} <- ProjectionStore.run(run_id),
+         {:ok, policy} <- PrEvidence.project_policy(project_id) do
+      policy
+    else
+      {:error, reason} ->
+        Logger.error(
+          "PrWatcher run_id=#{run_id}: required_checks policy unreadable: #{inspect(reason)}"
+        )
+
+        nil
+
+      _no_run ->
+        Logger.error("PrWatcher run_id=#{run_id}: required_checks policy unreadable: run unknown")
+        nil
     end
   end
 

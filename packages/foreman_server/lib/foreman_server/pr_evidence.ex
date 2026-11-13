@@ -1,3 +1,57 @@
+defmodule ForemanServer.PrEvidence.Reason do
+  @moduledoc """
+  One reason a PR is not eligible: `code` (one closed set: `no_checks_configured`, `missing`,
+  `failing`, `pending`, `stale`, `skipped`, `other_sha`, `checks_truncated`, `findings_absent`,
+  `findings_malformed`, `findings_legacy_format`, `findings_other_sha`, `risk_missing`,
+  `risk_other_sha`, `evidence_unreadable`), `subject` (the check it is about or `nil`) and
+  `detail` (a string or `nil`).
+  """
+
+  @derive Jason.Encoder
+  defstruct [:code, :subject, :detail]
+
+  @type t :: %__MODULE__{
+          code: atom(),
+          subject: String.t() | nil,
+          detail: String.t() | nil
+        }
+end
+
+defmodule ForemanServer.PrEvidence.Eligibility do
+  @moduledoc """
+  The result of `ForemanServer.PrEvidence.evaluate/2`. `inputs` has eight keys
+  (`checks_head_sha`, `checks_observed_at`, `evidence_digest`, `checks_ref`, `findings_head_sha`,
+  `findings_digest`, `risk_head_sha`, `risk_digest`); `evaluated_at` is the `now_ms` of the
+  decision and no reason depends on it.
+  """
+
+  alias ForemanServer.PrEvidence.Reason
+
+  @derive Jason.Encoder
+  defstruct [
+    :head_sha,
+    :status,
+    :policy_version,
+    :inputs,
+    :evaluated_at,
+    :waiver,
+    reasons: [],
+    waived: []
+  ]
+
+  @type status :: :off | :eligible | :ineligible | :waived | :unknown
+  @type t :: %__MODULE__{
+          head_sha: String.t() | nil,
+          status: status(),
+          reasons: [Reason.t()],
+          waived: [Reason.t()],
+          waiver: map() | nil,
+          policy_version: String.t() | nil,
+          inputs: %{atom() => term()},
+          evaluated_at: integer() | nil
+        }
+end
+
 defmodule ForemanServer.PrEvidence do
   @moduledoc """
   The `evidence` sub-record of a watched PR and the one fold that maintains it.
@@ -24,6 +78,9 @@ defmodule ForemanServer.PrEvidence do
   Never raises: this runs inside `ProjectionStore.init/1`'s replay. Payload keys are read as
   atoms (live) or strings (replayed).
   """
+
+  alias ForemanServer.PrEvidence.{Eligibility, Reason}
+  alias ForemanServer.{ProjectionStore, ProjectSettings}
 
   @head_events ~w(PrUpdated PrReady PrChecksChanged PrReviewChanged)
   @events @head_events ++ ["PrEvidenceWaived", "PrReadyFailed"]
@@ -165,6 +222,389 @@ defmodule ForemanServer.PrEvidence do
     do: reasons |> Enum.filter(&is_binary/1) |> Enum.uniq() |> Enum.sort()
 
   defp codes(_other), do: []
+
+  # -- evaluation ---------------------------------------------------------------
+
+  @input_keys ~w(checks_head_sha checks_observed_at evidence_digest checks_ref findings_head_sha
+                 findings_digest risk_head_sha risk_digest)a
+
+  @waivable ~w(no_checks_configured missing skipped findings_absent findings_legacy_format
+               findings_other_sha)a
+
+  @type ctx :: %{
+          head_sha: String.t() | nil,
+          policy: %{required: [map()], version: String.t() | nil} | nil,
+          now_ms: integer() | nil,
+          checks_ref: String.t() | nil
+        }
+
+  @doc """
+  The eligibility of the PR `record` for the decision `ctx`
+  (`%{head_sha, policy: %{required, version} | nil, now_ms, checks_ref}`). Pure: it reads
+  neither the clock, the store nor the application environment, so the gateway, the status
+  read and the tests call the same code.
+
+  `status` is `:off` when `ctx.policy` is `nil` (decided before anything is read), `:unknown`
+  when the record cannot be read (the one reason `evidence_unreadable`, never waivable),
+  `:eligible` when no reason remains, `:waived` when every reason is waivable and covered by
+  an applying waiver, else `:ineligible` with the uncovered reasons in `reasons` and the
+  covered ones in `waived`.
+
+  A waiver applies only when its `head_sha` equals `ctx.head_sha` and its `policy_version`
+  equals the version of `ctx.policy`; `waiver` in the result names it as
+  `%{head_sha, codes, policy_version, applies, ignored_because}` (`ignored_because` is
+  `:other_head` or `:policy_changed`), `nil` when there is none or the status is `:off` or
+  `:unknown`. A `nil` `checks_ref` is a display read: freshness is not judged and age is never
+  a reason.
+  """
+  @spec evaluate(map() | nil, ctx()) :: Eligibility.t()
+  def evaluate(record, ctx) do
+    ctx = normalise_ctx(ctx)
+
+    case evaluate_checks(record, ctx) do
+      {:off, _reasons} ->
+        eligibility(ctx, :off, [], [], nil, inputs_for(nil, ctx))
+
+      {:unknown, reasons} ->
+        eligibility(ctx, :unknown, reasons, [], nil, inputs_for(record, ctx))
+
+      {_status, reasons} ->
+        waiver = waiver_state(record, ctx)
+        {status, uncovered, covered} = apply_waiver(reasons, waiver)
+        eligibility(ctx, status, uncovered, covered, waiver, inputs_for(record, ctx))
+    end
+  end
+
+  @doc """
+  The check part of `evaluate/2` alone: no waiver is read. Returns the status
+  (`:off | :eligible | :ineligible | :unknown`) with its reasons.
+  """
+  @spec evaluate_checks(map() | nil, ctx()) ::
+          {:off | :eligible | :ineligible | :unknown, [Reason.t()]}
+  def evaluate_checks(record, ctx) do
+    ctx = normalise_ctx(ctx)
+
+    case ctx.policy do
+      nil ->
+        {:off, []}
+
+      policy ->
+        case readable(record, policy) do
+          {:ok, checks} ->
+            case check_reasons(checks, policy, ctx) do
+              [] -> {:eligible, []}
+              reasons -> {:ineligible, reasons}
+            end
+
+          {:error, detail} ->
+            {:unknown, [%Reason{code: :evidence_unreadable, subject: nil, detail: detail}]}
+        end
+    end
+  end
+
+  @doc """
+  The policy version for a `required` list: the first 16 hex characters of the SHA-256 of the
+  entries in a canonical (normalised, sorted) form; `nil` only when the gate is off.
+  """
+  @spec policy_version([map()] | nil) :: String.t() | nil
+  def policy_version(nil), do: nil
+
+  def policy_version(required) when is_list(required) do
+    canonical =
+      required
+      |> Enum.map(fn entry ->
+        {text_or_nil(get(entry, :name)), text_or_nil(get(entry, :kind)),
+         text_or_nil(get(entry, :workflow)), get(entry, :allow_skipped) == true}
+      end)
+      |> Enum.sort()
+
+    :crypto.hash(:sha256, :erlang.term_to_binary({:required_checks, canonical}, [:deterministic]))
+    |> Base.encode16(case: :lower)
+    |> binary_part(0, 16)
+  end
+
+  @doc """
+  The policy of `project_id` as it stands now, read from the projection like
+  `PrWatcher.AutoFix.settings/1`: `{:ok, %{required, version}}` (`required: []` is the gate
+  on with no checks), `{:ok, nil}` when the setting is `nil` (gate off), and
+  `{:error, {:policy_unavailable, reason}}` for a project the projection does not know or a
+  projection that does not answer. Callers must not read the error as gate off.
+  """
+  @spec project_policy(String.t() | nil) ::
+          {:ok, %{required: [map()], version: String.t()} | nil}
+          | {:error, {:policy_unavailable, term()}}
+  def project_policy(project_id) when is_binary(project_id) and project_id != "" do
+    case ProjectionStore.project_projection(project_id) do
+      nil ->
+        {:error, {:policy_unavailable, :project_not_found}}
+
+      %{} = project ->
+        case ProjectSettings.from_config(Map.get(project, :config)).required_checks do
+          nil ->
+            {:ok, nil}
+
+          required when is_list(required) ->
+            {:ok, %{required: required, version: policy_version(required)}}
+
+          other ->
+            {:error, {:policy_unavailable, {:invalid_required_checks, other}}}
+        end
+
+      other ->
+        {:error, {:policy_unavailable, {:invalid_projection, other}}}
+    end
+  catch
+    :exit, reason -> {:error, {:policy_unavailable, {:exit, reason}}}
+  end
+
+  def project_policy(project_id),
+    do: {:error, {:policy_unavailable, {:invalid_project_id, project_id}}}
+
+  defp normalise_ctx(%{} = ctx) do
+    %{
+      head_sha: get(ctx, :head_sha),
+      policy: get(ctx, :policy),
+      now_ms: get(ctx, :now_ms),
+      checks_ref: get(ctx, :checks_ref)
+    }
+  end
+
+  defp normalise_ctx(_other), do: %{head_sha: nil, policy: nil, now_ms: nil, checks_ref: nil}
+
+  defp eligibility(ctx, status, reasons, waived, waiver, inputs) do
+    %Eligibility{
+      head_sha: ctx.head_sha,
+      status: status,
+      reasons: reasons,
+      waived: waived,
+      waiver: waiver,
+      policy_version: if(is_map(ctx.policy), do: get(ctx.policy, :version)),
+      inputs: inputs,
+      evaluated_at: ctx.now_ms
+    }
+  end
+
+  # -- reading the record --------------------------------------------------------
+
+  defp readable(record, policy) do
+    with {:ok, evidence} <- evidence_map(record),
+         :ok <- readable_required(get(policy, :required)),
+         {:ok, checks} <- readable_checks(Map.get(evidence, :checks)),
+         :ok <- readable_optional(Map.get(evidence, :findings), "findings"),
+         :ok <- readable_optional(Map.get(evidence, :risk), "risk"),
+         :ok <- readable_optional(Map.get(evidence, :waiver), "waiver") do
+      {:ok, checks}
+    end
+  end
+
+  defp evidence_map(%{evidence: %{} = evidence}), do: {:ok, evidence}
+  defp evidence_map(%{evidence: nil}), do: {:ok, %{}}
+  defp evidence_map(%{evidence: _other}), do: {:error, "evidence is not a map"}
+  defp evidence_map(%{}), do: {:ok, %{}}
+  defp evidence_map(_other), do: {:error, "record is not a map"}
+
+  defp readable_required(required) when is_list(required) do
+    if Enum.all?(
+         required,
+         &(is_map(&1) and is_binary(get(&1, :name)) and is_binary(get(&1, :kind)))
+       ),
+       do: :ok,
+       else: {:error, "required entry has no name or kind"}
+  end
+
+  defp readable_required(_other), do: {:error, "required is not a list"}
+
+  defp readable_checks(nil), do: {:ok, nil}
+
+  defp readable_checks(%{} = checks) do
+    case Map.get(checks, :items) do
+      items when is_list(items) ->
+        if Enum.all?(items, &(is_map(&1) and is_binary(get(&1, :name)))),
+          do: {:ok, checks},
+          else: {:error, "a check has no name"}
+
+      _other ->
+        {:error, "checks.items is not a list"}
+    end
+  end
+
+  defp readable_checks(_other), do: {:error, "checks is not a map"}
+
+  defp readable_optional(nil, _name), do: :ok
+  defp readable_optional(%{}, _name), do: :ok
+  defp readable_optional(_other, name), do: {:error, "#{name} is not a map"}
+
+  # -- check reasons -------------------------------------------------------------
+
+  defp check_reasons(checks, policy, ctx) do
+    case get(policy, :required) do
+      [] -> [%Reason{code: :no_checks_configured, subject: nil, detail: nil}]
+      required -> required_reasons(checks, required, ctx)
+    end
+  end
+
+  defp required_reasons(checks, required, ctx) do
+    cond do
+      is_nil(checks) and not is_nil(ctx.checks_ref) ->
+        [stale_reason("no observation is recorded for the decision")]
+
+      is_nil(checks) ->
+        Enum.map(required, &missing_reason/1)
+
+      get(checks, :head_sha) != ctx.head_sha ->
+        [
+          %Reason{
+            code: :other_sha,
+            subject: nil,
+            detail:
+              "checks recorded for #{inspect(get(checks, :head_sha))}, decided #{inspect(ctx.head_sha)}"
+          }
+        ]
+
+      not is_nil(ctx.checks_ref) and get(checks, :observation_ref) != ctx.checks_ref ->
+        [stale_reason("the decision observation is not the recorded one")]
+
+      true ->
+        Enum.flat_map(required, &entry_reasons(&1, checks))
+    end
+  end
+
+  defp entry_reasons(entry, checks) do
+    name = get(entry, :name)
+    matches = Enum.filter(get(checks, :items), &matches?(&1, entry))
+
+    cond do
+      matches == [] and get(checks, :truncated) == true ->
+        [
+          %Reason{
+            code: :checks_truncated,
+            subject: name,
+            detail: "the rollup was cut and the check is not among the kept items"
+          }
+        ]
+
+      matches == [] ->
+        [missing_reason(entry)]
+
+      true ->
+        entry_state(name, matches, get(entry, :allow_skipped) == true)
+    end
+  end
+
+  defp entry_state(name, matches, allow_skipped) do
+    cond do
+      Enum.any?(matches, &(conclusion(&1) == "STALE")) ->
+        [%Reason{code: :stale, subject: name, detail: "conclusion STALE"}]
+
+      Enum.any?(matches, &(get(&1, :state) in ["failing", :failing])) ->
+        [%Reason{code: :failing, subject: name, detail: failing_detail(matches)}]
+
+      Enum.any?(matches, &(get(&1, :state) in ["pending", :pending])) ->
+        [%Reason{code: :pending, subject: name, detail: nil}]
+
+      not allow_skipped and Enum.any?(matches, &skipped?/1) ->
+        [%Reason{code: :skipped, subject: name, detail: skipped_detail(matches)}]
+
+      true ->
+        []
+    end
+  end
+
+  defp matches?(item, entry) do
+    get(item, :name) == get(entry, :name) and get(item, :kind) == get(entry, :kind) and
+      (not is_binary(get(entry, :workflow)) or get(item, :workflow) == get(entry, :workflow))
+  end
+
+  defp skipped?(item),
+    do: get(item, :kind) == "check_run" and conclusion(item) in ["SKIPPED", "NEUTRAL"]
+
+  defp conclusion(item) do
+    case get(item, :conclusion) do
+      value when is_binary(value) -> String.upcase(value)
+      _other -> nil
+    end
+  end
+
+  defp failing_detail(matches) do
+    matches
+    |> Enum.find(&(get(&1, :state) in ["failing", :failing]))
+    |> get(:conclusion)
+    |> text_or_nil()
+  end
+
+  defp skipped_detail(matches),
+    do: matches |> Enum.find(&skipped?/1) |> get(:conclusion) |> text_or_nil()
+
+  defp missing_reason(entry), do: %Reason{code: :missing, subject: get(entry, :name), detail: nil}
+
+  defp stale_reason(detail), do: %Reason{code: :stale, subject: nil, detail: detail}
+
+  defp text_or_nil(value) when is_binary(value), do: value
+  defp text_or_nil(_other), do: nil
+
+  # -- waiver --------------------------------------------------------------------
+
+  defp waiver_state(record, ctx) do
+    case record |> evidence_of() |> Map.get(:waiver) do
+      %{} = waiver ->
+        head = get(waiver, :head_sha)
+        version = get(waiver, :policy_version)
+        codes = waiver |> get(:codes) |> List.wrap() |> Enum.filter(&is_binary/1)
+
+        ignored =
+          cond do
+            head != ctx.head_sha -> :other_head
+            version != get(ctx.policy, :version) -> :policy_changed
+            true -> nil
+          end
+
+        %{
+          head_sha: head,
+          codes: codes,
+          policy_version: version,
+          applies: is_nil(ignored),
+          ignored_because: ignored
+        }
+
+      _none ->
+        nil
+    end
+  end
+
+  defp apply_waiver(reasons, %{applies: true, codes: codes}) do
+    {covered, uncovered} =
+      Enum.split_with(reasons, &(&1.code in @waivable and Atom.to_string(&1.code) in codes))
+
+    status =
+      if uncovered == [], do: if(covered == [], do: :eligible, else: :waived), else: :ineligible
+
+    {status, uncovered, covered}
+  end
+
+  defp apply_waiver(reasons, _waiver),
+    do: {if(reasons == [], do: :eligible, else: :ineligible), reasons, []}
+
+  # -- inputs --------------------------------------------------------------------
+
+  defp inputs_for(_record, %{policy: nil}), do: Map.new(@input_keys, &{&1, nil})
+
+  defp inputs_for(record, ctx) do
+    evidence = evidence_of(record)
+    checks = Map.get(evidence, :checks)
+    findings = Map.get(evidence, :findings)
+    risk = Map.get(evidence, :risk)
+
+    %{
+      checks_head_sha: get(checks, :head_sha),
+      checks_observed_at: get(checks, :observed_at),
+      evidence_digest: get(checks, :evidence_digest),
+      checks_ref: ctx.checks_ref,
+      findings_head_sha: get(findings, :head_sha),
+      findings_digest: get(findings, :digest),
+      risk_head_sha: get(risk, :head_sha),
+      risk_digest: get(risk, :digest)
+    }
+  end
 
   # -- command validation (shared with the handlers that record evidence) -------
 
