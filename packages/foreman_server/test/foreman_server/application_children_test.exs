@@ -110,9 +110,14 @@ defmodule ForemanServer.ApplicationChildrenTest do
       assert %{max_restarts: 50, max_seconds: 10, strategy: :one_for_one} =
                Map.new(ForemanServer.Application.supervisor_opts())
 
-      # Started with no options: nothing injects a reader, and the default restart is permanent.
-      assert %{start: {ProjectionStore, :start_link, [[]]}} =
-               Supervisor.child_spec(ProjectionStore, [])
+      # Started with no options (nothing injects a reader) and restarted for as long as the
+      # budget allows: the supervisor's own normalisation of the entry, as the real boot sees it.
+      assert {:ok, {_flags, specs}} =
+               Supervisor.init([ProjectionStore], strategy: :one_for_one)
+
+      assert [%{start: {ProjectionStore, :start_link, [[]]}} = spec] = specs
+      # No `:restart` override: the supervisor's default, `:permanent`, applies.
+      assert Map.get(spec, :restart, :permanent) == :permanent
     end
   end
 

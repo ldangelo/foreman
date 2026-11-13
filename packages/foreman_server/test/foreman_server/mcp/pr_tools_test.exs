@@ -8,12 +8,19 @@ defmodule ForemanServer.MCP.PrToolsTest do
   alias ForemanServer.MCP.{Dispatch, Policy, ToolError, Tools}
   alias ForemanServer.TestSupport.PrSurfaceSupport
   alias ForemanServer.TestSupport.PrWatchSupport
+  alias ForemanServer.TestSupport.MeckScope
 
   @endpoint ForemanServerWeb.Endpoint
   @token "pr-tools-token"
   @write_tools ["foreman_pr_fix", "foreman_pr_watch_stop"]
 
+  setup_all do
+    {:ok, _} = Application.ensure_all_started(:meck)
+    MeckScope.new_once!([ForemanServer.ProjectionStore])
+  end
+
   setup do
+    MeckScope.restore_on_exit!([ForemanServer.ProjectionStore])
     previous_mcp = Application.get_env(:foreman_server, :mcp, [])
     previous_token = Application.get_env(:foreman_server, :api_bearer_token)
     Application.put_env(:foreman_server, :api_bearer_token, @token)
@@ -88,10 +95,6 @@ defmodule ForemanServer.MCP.PrToolsTest do
 
   test "foreman_pr_status is a projection_unavailable tool error, never an empty list, when the store does not answer",
        ctx do
-    {:ok, _} = Application.ensure_all_started(:meck)
-    :meck.new(ForemanServer.ProjectionStore, [:passthrough, :no_link])
-    on_exit(fn -> :meck.unload(ForemanServer.ProjectionStore) end)
-
     :meck.expect(ForemanServer.ProjectionStore, :run, fn _run_id ->
       exit({:timeout, {GenServer, :call, [ForemanServer.ProjectionStore, :x, 5000]}})
     end)
@@ -100,6 +103,9 @@ defmodule ForemanServer.MCP.PrToolsTest do
              Tools.call_tool("foreman_pr_status", %{run_id: ctx.run_id})
 
     assert message =~ "unknown"
+    # The coarse cause only: no process names, hosts or stack frames.
+    assert message =~ "(timeout)"
+    refute message =~ "GenServer"
   end
 
   describe "writes disallowed (default policy)" do

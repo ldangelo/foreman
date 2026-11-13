@@ -285,12 +285,16 @@ defmodule ForemanServer.ProjectionStoreRestartTest do
   # TRD-031 (AC-005-3): a log that cannot be read at boot is not an empty log. Each store below
   # is a second, uniquely named instance started through `start_link/1` (the entry point the
   # application supervisor uses) with an injected reader; the global store is never touched.
+  # The boot read retries `boot_read_attempts` times; the tests make the pause between attempts 0.
   describe "the boot read of the event log (TRD-031)" do
     import ExUnit.CaptureLog
 
     alias ForemanServer.EventStore
 
     defp unique_name, do: :"projection_store_trd031_#{System.unique_integer([:positive])}"
+
+    defp boot_opts(name, reader, attempts),
+      do: [name: name, event_reader: reader, boot_read_attempts: attempts, boot_read_retry_ms: 0]
 
     # A reader answering from `script` by call number (1-based); the real log for `:real`.
     defp scripted_reader(script) do
@@ -308,41 +312,58 @@ defmodule ForemanServer.ProjectionStoreRestartTest do
       {reader, fn -> Agent.get(calls, & &1) end}
     end
 
-    defp restart_supervisor!(name, reader) do
+    defp restart_supervisor!(name, reader, attempts) do
       opts = Keyword.delete(ForemanServer.Application.supervisor_opts(), :name)
 
       {:ok, sup} =
-        Supervisor.start_link([{ProjectionStore, [name: name, event_reader: reader]}], opts)
+        Supervisor.start_link([{ProjectionStore, boot_opts(name, reader, attempts)}], opts)
 
       sup
     end
 
-    test "a failed read stops the store with the cause and registers no empty model" do
+    test "a read that fails on every attempt stops the store with the cause and no empty model" do
       Process.flag(:trap_exit, true)
       name = unique_name()
+      {reader, calls} = scripted_reader(fn _n -> {:error, :econnrefused} end)
 
-      capture_log(fn ->
-        assert {:error, {:event_log_read_failed, :econnrefused}} =
-                 ProjectionStore.start_link(
-                   name: name,
-                   event_reader: fn 0, _count -> {:error, :econnrefused} end
-                 )
-      end)
+      log =
+        capture_log(fn ->
+          assert {:error, {:event_log_read_failed, :econnrefused}} =
+                   ProjectionStore.start_link(boot_opts(name, reader, 3))
+        end)
 
+      assert calls.() == 3
       assert Process.whereis(name) == nil
+      # One error line for the boot, not one per attempt.
+      assert length(String.split(log, "the event log could not be read")) == 2
     end
 
-    test "a log that reads but is empty starts an empty model" do
+    test "a read that fails twice and then succeeds boots with the full model" do
+      project_id = register_project()
       name = unique_name()
 
-      start_supervised!({ProjectionStore, [name: name, event_reader: fn 0, _ -> {:ok, []} end]})
+      {reader, calls} =
+        scripted_reader(fn n -> if n <= 2, do: {:error, :timeout}, else: :real end)
+
+      start_supervised!({ProjectionStore, boot_opts(name, reader, 3)})
+
+      assert calls.() == 3
+      assert Map.has_key?(:sys.get_state(name).projects, project_id)
+    end
+
+    test "a log that reads but is empty starts an empty model, after one read" do
+      name = unique_name()
+      {reader, calls} = scripted_reader(fn _n -> {:ok, []} end)
+
+      start_supervised!({ProjectionStore, boot_opts(name, reader, 3)})
 
       state = :sys.get_state(name)
       assert state.projects == %{}
       assert state.runs == %{}
+      assert calls.() == 1
     end
 
-    test "a read that fails once and then succeeds restarts with the full model" do
+    test "a store that failed to restart is restarted by the supervisor and comes back with the full model" do
       Process.flag(:trap_exit, true)
       project_id = register_project()
       name = unique_name()
@@ -351,15 +372,16 @@ defmodule ForemanServer.ProjectionStoreRestartTest do
         scripted_reader(fn n -> if n == 2, do: {:error, :timeout}, else: :real end)
 
       capture_log(fn ->
-        sup = restart_supervisor!(name, reader)
+        sup = restart_supervisor!(name, reader, 1)
         old = Process.whereis(name)
         assert Map.has_key?(:sys.get_state(name).projects, project_id)
 
         Process.exit(old, :kill)
-        pid = wait_for_restart!(name, old)
+        # Boot read 1, the restart's read 2 fails (one attempt each), the retried start's read 3.
+        await_until(fn -> calls.() == 3 end)
+        await_until(fn -> match?(pid when is_pid(pid), Process.whereis(name)) end)
 
-        assert calls.() == 3
-        assert Map.has_key?(:sys.get_state(pid).projects, project_id)
+        assert Map.has_key?(:sys.get_state(name).projects, project_id)
         Supervisor.stop(sup)
       end)
     end
@@ -372,9 +394,10 @@ defmodule ForemanServer.ProjectionStoreRestartTest do
         scripted_reader(fn n -> if n == 1, do: {:ok, []}, else: {:error, :closed} end)
 
       max_restarts = Keyword.fetch!(ForemanServer.Application.supervisor_opts(), :max_restarts)
+      attempts = 2
 
       capture_log(fn ->
-        sup = restart_supervisor!(name, reader)
+        sup = restart_supervisor!(name, reader, attempts)
         ref = Process.monitor(sup)
         Process.exit(Process.whereis(name), :kill)
 
@@ -382,8 +405,9 @@ defmodule ForemanServer.ProjectionStoreRestartTest do
       end)
 
       assert Process.whereis(name) == nil
-      # One boot, then at most one failed start per allowed restart and the one that exceeds it.
-      assert calls.() in 3..(max_restarts + 2)
+      # One boot read, then every failed restart reads `attempts` times; the restart that
+      # exceeds the budget is the last. The store never serves while the log is unreadable.
+      assert calls.() in (1 + attempts * 2)..(1 + attempts * (max_restarts + 1))
     end
 
     test "a runtime rebuild whose read fails replies the error and keeps the serving state" do
@@ -393,27 +417,13 @@ defmodule ForemanServer.ProjectionStoreRestartTest do
       {reader, _calls} =
         scripted_reader(fn n -> if n == 1, do: :real, else: {:error, :timeout} end)
 
-      start_supervised!({ProjectionStore, [name: name, event_reader: reader]})
+      start_supervised!({ProjectionStore, boot_opts(name, reader, 1)})
       assert Map.has_key?(:sys.get_state(name).projects, project_id)
 
       assert {:error, :timeout} = GenServer.call(name, {:rebuild, [], fn -> 0 end})
 
       assert Process.alive?(Process.whereis(name))
       assert Map.has_key?(:sys.get_state(name).projects, project_id)
-    end
-
-    defp wait_for_restart!(name, old, tries \\ 200) do
-      case Process.whereis(name) do
-        pid when is_pid(pid) and pid != old ->
-          pid
-
-        _ when tries > 0 ->
-          Process.sleep(25)
-          wait_for_restart!(name, old, tries - 1)
-
-        _ ->
-          flunk("the store was not restarted")
-      end
     end
   end
 end
