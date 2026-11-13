@@ -434,6 +434,189 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
     end
   end
 
+  # TRD-024. Route: GET /dashboard/projects/:id (`ProjectWorkspaceLive`), a thread opened by patch
+  # and the "Pull requests" tab. Data: the run's PR watch record (`ProjectionStore.pr_watch/1`,
+  # folded from PrReady / PrChecksChanged / ReviewFindingsRecorded / PrRiskRecorded) is read by
+  # `PrWatch.DTO.fetch/1` for the thread pane and by `Tabs.PullRequests.rows/1` for the tab.
+  describe "approval evidence on the page" do
+    @hostile_detail "<script>alert('d')</script> \" onmouseover=\"alert(1)\" <img src=x onerror=alert(2)> ```\nfenced```"
+    @unit %{"name" => "unit", "kind" => "check_run"}
+
+    defp gate_project(id) do
+      :ok =
+        ProjectionStore.apply_events([
+          %{event_type: "ProjectUpdated", payload: %{project_id: id, required_checks: [@unit]}}
+        ])
+    end
+
+    # The PR passes its required check; what the agent wrote is hostile.
+    defp seed_evidence(id, findings_extra, risk_detail) do
+      gate_project(id)
+
+      :ok =
+        ProjectionStore.apply_events([
+          %{
+            event_type: "PrAssociated",
+            payload: %{run_id: "r-pr2", pr_url: @review_pr, pr_number: 9}
+          },
+          pr_event("PrChecksChanged", id, %{
+            checks_state: "passing",
+            failing: [],
+            checks: [%{"name" => "unit", "kind" => "check_run", "state" => "passing"}],
+            observed_at: 1_000_000,
+            evidence_digest: "ed"
+          }),
+          pr_event(
+            "ReviewFindingsRecorded",
+            id,
+            Map.merge(%{status: "recorded", findings: []}, findings_extra)
+          ),
+          pr_event("PrRiskRecorded", id, %{
+            level: "high",
+            rubric_version: "1",
+            digest: "rd",
+            findings_digest: "fd",
+            seq: 1,
+            rationale: [
+              %{
+                "rule" => "sensitive_path",
+                "level" => "high",
+                "basis" => "path",
+                "detail" => risk_detail
+              }
+            ]
+          })
+        ])
+    end
+
+    defp pane_doc(view), do: view |> render() |> LazyHTML.from_document()
+
+    test "a gated PR with ineligible evidence shows its status, reason codes and next actions", %{
+      id: id
+    } do
+      seed_evidence(
+        id,
+        %{status: "absent", defect: "no_block", defect_detail: "no findings block"},
+        "touches CI"
+      )
+
+      {view, _} = mount_view(id)
+
+      # the thread waits on the operator for the evidence, in the sidebar group
+      assert has_element?(view, "#group-waiting_on_you #thread-run\\:r-pr2")
+
+      open_thread(view, id, "run:r-pr2")
+      assert has_element?(view, "#thread-pane .ws-error", "Approval blocked")
+      assert has_element?(view, "#thread-pr-evidence-0", "Approval evidence: ineligible")
+
+      assert has_element?(
+               view,
+               "#thread-pr-evidence-0 .pr-evidence-reasons code",
+               "findings_absent"
+             )
+
+      assert has_element?(view, "#thread-pr-evidence-0", "risk high")
+      assert has_element?(view, "#thread-pr-evidence-0 .pr-evidence-rationale", "sensitive_path")
+      assert has_element?(view, "#thread-pr-evidence-0 .pr-evidence-next", "rerun_review")
+      assert has_element?(view, "#thread-pr-evidence-0 .pr-evidence-next", "waive")
+
+      # the status adds no way to approve or merge: no control inside the evidence block
+      refute has_element?(view, "#thread-pr-evidence-0 button")
+      refute has_element?(view, "#thread-pr-evidence-0 a")
+      refute has_element?(view, "#thread-pr-evidence-0 form")
+
+      # the Pull requests tab shows the same status for the same PR
+      view |> element("#tab-pull_requests") |> render_click()
+
+      assert has_element?(
+               view,
+               "#panel-pull_requests #pr-evidence-0",
+               "Approval evidence: ineligible"
+             )
+
+      assert has_element?(view, "#panel-pull_requests #pr-evidence-0 code", "findings_absent")
+    end
+
+    test "eligible evidence shows eligible and the thread is ready for review as before", %{
+      id: id
+    } do
+      seed_evidence(id, %{}, "touches docs")
+      {view, _} = mount_view(id)
+
+      assert has_element?(view, "#group-ready_for_review #thread-run\\:r-pr2")
+      open_thread(view, id, "run:r-pr2")
+      assert has_element?(view, "#thread-pr-evidence-0", "Approval evidence: eligible")
+      refute has_element?(view, "#thread-pane .ws-error", "Approval blocked")
+      refute has_element?(view, "#thread-pr-evidence-0 .pr-evidence-reasons")
+    end
+
+    test "a project with the gate off shows no evidence block and no new reason", %{id: id} do
+      {view, _} = mount_view(id)
+      open_thread(view, id, "run:r-pr2")
+
+      assert has_element?(view, "#group-ready_for_review #thread-run\\:r-pr2")
+      refute has_element?(view, "#thread-pr-evidence-0")
+      refute render(view) =~ "Approval evidence"
+      refute render(view) =~ "Approval blocked"
+
+      view |> element("#tab-pull_requests") |> render_click()
+      refute has_element?(view, "#panel-pull_requests .pr-evidence")
+    end
+
+    test "text an agent wrote renders inert: escaped, bounded, never markup or an attribute", %{
+      id: id
+    } do
+      long = String.duplicate("A", 5_000)
+      hostile = @hostile_detail <> " " <> long
+
+      seed_evidence(
+        id,
+        %{
+          status: "recorded",
+          findings: [
+            %{
+              "severity" => "major",
+              "disposition" => "open",
+              "description" => hostile,
+              "path" => "lib/\"><script>x</script>.ex"
+            }
+          ]
+        },
+        hostile
+      )
+
+      {view, _} = mount_view(id)
+      open_thread(view, id, "run:r-pr2")
+      view |> element("#tab-pull_requests") |> render_click()
+
+      doc = pane_doc(view)
+
+      for scope <- ["#thread-pane", "#panel-pull_requests"] do
+        # the text is on the page, as text
+        evidence_text = doc |> LazyHTML.query("#{scope} .pr-evidence") |> LazyHTML.text()
+        assert evidence_text =~ "<script>alert('d')</script>"
+
+        # no script element, no image, no event-handler attribute inside the scope
+        assert doc |> LazyHTML.query("#{scope} script") |> Enum.count() == 0
+        assert doc |> LazyHTML.query("#{scope} img") |> Enum.count() == 0
+
+        handlers =
+          for node <- LazyHTML.query(doc, "#{scope} *"),
+              {name, _} <- LazyHTML.attributes(node),
+              String.starts_with?(name, "on"),
+              do: name
+
+        assert handlers == []
+      end
+
+      html = render(view)
+      # escaped in the markup; bounded: the 5000-character line is cut before it reaches the page
+      assert html =~ "&lt;script&gt;alert(&#39;d&#39;)&lt;/script&gt;"
+      refute html =~ "<script>alert('d')"
+      refute html =~ String.duplicate("A", 200)
+    end
+  end
+
   describe "tabs" do
     test "library tab is served by the built-in provider (empty library: nothing to show)", %{
       id: id
