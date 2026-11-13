@@ -3,122 +3,6 @@ defmodule ForemanServer.Workflow.ReviewFindingsTest do
 
   alias ForemanServer.Workflow.ReviewFindings
 
-  describe "extract_from/1" do
-    test "returns the block content with both bullets and neither marker" do
-      contents = """
-      # Report
-
-      Some prose.
-
-      <!-- FOREMAN_REVIEW_FINDINGS_START -->
-      - `lib/foo.ex:12` Major — unchecked nil
-      - `lib/bar.ex:34` Minor — missing typespec
-      <!-- FOREMAN_REVIEW_FINDINGS_END -->
-      """
-
-      assert {:ok, block} = ReviewFindings.extract_from(contents)
-      assert block =~ "lib/foo.ex:12"
-      assert block =~ "lib/bar.ex:34"
-      refute block =~ "FOREMAN_REVIEW_FINDINGS_START"
-      refute block =~ "FOREMAN_REVIEW_FINDINGS_END"
-    end
-
-    test "returns :none when the start marker is absent" do
-      contents = """
-      # Report
-
-      - `lib/foo.ex:12` Major — unchecked nil
-      <!-- FOREMAN_REVIEW_FINDINGS_END -->
-      """
-
-      assert ReviewFindings.extract_from(contents) == :none
-    end
-
-    test "returns {:error, :unterminated_block} when the end marker is absent" do
-      contents = """
-      # Report
-
-      <!-- FOREMAN_REVIEW_FINDINGS_START -->
-      - `lib/foo.ex:12` Major — unchecked nil
-      """
-
-      assert ReviewFindings.extract_from(contents) == {:error, :unterminated_block}
-    end
-
-    test "returns :none when the block trims to an empty string" do
-      contents = """
-      <!-- FOREMAN_REVIEW_FINDINGS_START -->
-
-      <!-- FOREMAN_REVIEW_FINDINGS_END -->
-      """
-
-      assert ReviewFindings.extract_from(contents) == :none
-    end
-
-    test "truncates a block over 4000 bytes with a truncation notice" do
-      long_block = String.duplicate("x", 5000)
-
-      contents =
-        "<!-- FOREMAN_REVIEW_FINDINGS_START -->\n" <>
-          long_block <> "\n<!-- FOREMAN_REVIEW_FINDINGS_END -->"
-
-      assert {:ok, block} = ReviewFindings.extract_from(contents)
-
-      assert byte_size(block) <=
-               4000 + byte_size("\n… truncated; see the phase artifact for the full list.")
-
-      assert block =~ "… truncated; see the phase artifact for the full list."
-    end
-
-    test "truncates a multi-byte block on a codepoint boundary, never splitting a character" do
-      long_block = String.duplicate("—", 3000)
-
-      contents =
-        "<!-- FOREMAN_REVIEW_FINDINGS_START -->\n" <>
-          long_block <> "\n<!-- FOREMAN_REVIEW_FINDINGS_END -->"
-
-      assert {:ok, block} = ReviewFindings.extract_from(contents)
-      assert String.valid?(block)
-
-      assert byte_size(block) <=
-               4000 + byte_size("\n… truncated; see the phase artifact for the full list.")
-
-      assert block =~ "… truncated; see the phase artifact for the full list."
-    end
-  end
-
-  describe "extract/1" do
-    test "returns :none for nil" do
-      assert ReviewFindings.extract(nil) == :none
-    end
-
-    test "returns :none for a nonexistent path" do
-      path =
-        Path.join(System.tmp_dir!(), "does-not-exist-#{System.unique_integer([:positive])}.md")
-
-      assert ReviewFindings.extract(path) == :none
-    end
-
-    test "reads and extracts from an existing file" do
-      dir =
-        Path.join(System.tmp_dir!(), "review-findings-test-#{System.unique_integer([:positive])}")
-
-      File.mkdir_p!(dir)
-      on_exit(fn -> File.rm_rf(dir) end)
-
-      path = Path.join(dir, "REPORT.md")
-
-      File.write!(path, """
-      <!-- FOREMAN_REVIEW_FINDINGS_START -->
-      - `lib/foo.ex:1` Nitpick — style only
-      <!-- FOREMAN_REVIEW_FINDINGS_END -->
-      """)
-
-      assert {:ok, block} = ReviewFindings.extract(path)
-      assert block =~ "lib/foo.ex:1"
-    end
-  end
-
   @start "<!-- FOREMAN_REVIEW_FINDINGS_START -->"
   @end_ "<!-- FOREMAN_REVIEW_FINDINGS_END -->"
 
@@ -461,5 +345,85 @@ defmodule ForemanServer.Workflow.ReviewFindingsTest do
              ]) ==
                %{critical: 0, major: 0, minor: 0, nitpick: 0}
     end
+  end
+end
+
+defmodule ForemanServer.Workflow.ReviewPromptContractTest do
+  # The review prompts specify the block the parser (TRD-013) reads. These tests
+  # pin the contract text and prove the prompts' own example parses the way the
+  # prompt says it does.
+  use ExUnit.Case, async: true
+
+  alias ForemanServer.Workflow.ReviewFindings
+
+  @prompts_dir Path.expand("../../../priv/defaults/workflows/prompts", __DIR__)
+  @prompts ["review-coderabbit.md", "review-repo-rules.md"]
+
+  defp raw(name), do: File.read!(Path.join(@prompts_dir, name))
+  defp prompt(name), do: name |> raw() |> String.split() |> Enum.join(" ")
+
+  # The example is the fenced block holding the marker lines.
+  defp example(text) do
+    [_before, rest] = String.split(text, "```\n<!-- FOREMAN_REVIEW_FINDINGS_START -->", parts: 2)
+    [block, _after] = String.split(rest, "```\n", parts: 2)
+    "<!-- FOREMAN_REVIEW_FINDINGS_START -->" <> block
+  end
+
+  for name <- @prompts do
+    describe name do
+      test "states the schema, the closed sets and the reviewed rule" do
+        text = prompt(unquote(name))
+
+        assert text =~ "foreman.review_findings/1"
+
+        for word <- ~w(critical major minor nitpick fixed declined open) do
+          assert text =~ "`#{word}`"
+        end
+
+        assert text =~ ~s("reviewed": true)
+        assert text =~ "review that did not run writes no block at all"
+        assert text =~ "exactly once"
+        assert text =~ "declined critical or major finding is still shown"
+      end
+
+      test "tells the agent to fence a quoted marker and not to fence the block" do
+        text = prompt(unquote(name))
+
+        assert text =~ "put the quote inside a code fence"
+        assert text =~ "stands alone at the start of a line, outside any code fence"
+        assert text =~ "do not wrap the JSON in a fence"
+        refute text =~ ~r/never quote|do not quote|don't quote/i
+        refute text =~ ~r/wrap the (findings )?block in a (code )?fence/i
+      end
+
+      test "the example holds one placeholder finding, parses as recorded and stays open" do
+        assert {:recorded, %ReviewFindings.Record{findings: [finding]}} =
+                 ReviewFindings.parse(example(raw(unquote(name))))
+
+        assert finding.description =~ "PLACEHOLDER"
+        assert finding.disposition == :open
+      end
+
+      test "the prompt itself holds no counted block: its example is fenced" do
+        assert ReviewFindings.parse(raw(unquote(name))) == :absent
+      end
+    end
+  end
+
+  test "the CodeRabbit prompt writes no block when the engine could not run" do
+    text = prompt("review-coderabbit.md")
+
+    assert text =~ "write NO findings block"
+    refute text =~ "empty findings block"
+    refute text =~ "Emit the markers even when empty"
+  end
+
+  test "the repo-rules carry-forward copies finding objects, not bullets or markers" do
+    text = prompt("review-repo-rules.md")
+
+    assert text =~ "copy each finding object"
+    assert text =~ "Never copy the marker lines, and never copy a previous judgement block"
+    refute text =~ "copy every bullet"
+    refute text =~ "Markdown bullet"
   end
 end
