@@ -17,6 +17,7 @@ defmodule ForemanServerWeb.Workspace.Components do
   alias ForemanServer.Aggregates.OperatorQuestion
   alias ForemanServer.Library
   alias ForemanServer.Overview.{Group, ThreadCard}
+  alias ForemanServer.Overview.Tabs.PullRequests
   alias ForemanServerWeb.Workspace.{LibraryUpload, NavRuns, ThreadView}
   alias ForemanServerWeb.Workspace.ThreadView.Log
   alias Phoenix.LiveView.JS
@@ -707,6 +708,7 @@ defmodule ForemanServerWeb.Workspace.Components do
       |> assign(:chip_kind, chip_kind)
       |> assign(:buttons, Enum.reject(assigns.card.actions, &(&1 == "thread.steer")))
       |> assign(:pr_actions, Enum.sort_by(assigns.card.pr_actions, &(not &1.enabled)))
+      |> assign_pr_evidence()
       |> assign(:steerable?, "thread.steer" in assigns.card.actions)
 
     ~H"""
@@ -728,6 +730,9 @@ defmodule ForemanServerWeb.Workspace.Components do
         <p :if={@card.reason == :ci_failing} class="ws-error">CI failing: the PR's checks are red.</p>
         <p :if={@card.reason == :changes_requested} class="ws-error">Changes requested: a reviewer asked for changes on the PR.</p>
         <p :if={@card.reason == :review_threads} class="ws-error">Review threads unresolved: the PR has open review comments.</p>
+        <p :if={@card.reason == :evidence_blocked} class="ws-error">Approval blocked: the PR's evidence is ineligible or unknown (reason codes below).</p>
+        <.pr_evidence :for={{evidence, index} <- Enum.with_index(@pr_evidence)} id={"thread-pr-evidence-#{index}"} evidence={evidence} />
+        <p :if={@pr_evidence_unavailable} class="ws-error">PR evidence unknown: the projection cannot be read right now.</p>
         <p :if={@card.hint} class="thread-hint ws-muted">{@card.hint}</p>
       </header>
       <details
@@ -817,6 +822,30 @@ defmodule ForemanServerWeb.Workspace.Components do
     </section>
     """
   end
+
+  # The evidence of every PR of the thread's head run (`PrWatch.DTO.fetch/1` through
+  # `PullRequests.evidence_view/1`: the same read model as `GET /api/runs/:id/prs`). Jobsite
+  # threads and threads without a PR have none; a store that does not answer is shown as
+  # unknown, never as clean.
+  defp assign_pr_evidence(
+         %{card: %ThreadCard{door: :workflow, thread_id: "run:" <> run_id} = card} = assigns
+       )
+       when run_id != "" do
+    if card.pr_url || card.pr_state do
+      case PullRequests.run_evidence(run_id, assigns.project_id, card.status) do
+        {:ok, views} ->
+          assigns |> assign(:pr_evidence, views) |> assign(:pr_evidence_unavailable, false)
+
+        :unavailable ->
+          assigns |> assign(:pr_evidence, []) |> assign(:pr_evidence_unavailable, true)
+      end
+    else
+      assigns |> assign(:pr_evidence, []) |> assign(:pr_evidence_unavailable, false)
+    end
+  end
+
+  defp assign_pr_evidence(assigns),
+    do: assigns |> assign(:pr_evidence, []) |> assign(:pr_evidence_unavailable, false)
 
   # Why there is no composer: the thread is over, or it does not take steering in its state.
   defp steer_note(%Log{terminal?: true}), do: "This thread is finished."
@@ -1284,12 +1313,68 @@ defmodule ForemanServerWeb.Workspace.Components do
     <p :if={@data[:error]} class="ws-error">This tab failed to load.</p>
     <p :if={@data.available and @data.rows == []} class="ws-muted">Nothing to show.</p>
     <ul :if={@data.available and @tab == :pull_requests}>
-      <li :for={row <- @data.rows}>
+      <li :for={{row, index} <- Enum.with_index(@data.rows)} id={"pr-row-#{index}"}>
         <span>{row["title"] || row["run_id"]}</span>
         <span class="ws-muted"> · {row["pr_state"]} · gate {row["merge_gate"]}<span :if={row["repo_id"]}> · repo {row["repo_id"]}</span><span :if={row["review_verdict"]}> · review {row["review_verdict"]}</span></span>
         <a :if={safe_url(row["pr_url"])} href={safe_url(row["pr_url"])} rel="noopener noreferrer" target="_blank">open</a>
+        <.pr_evidence :if={row["evidence"]} id={"pr-evidence-#{index}"} evidence={row["evidence"]} />
       </li>
     </ul>
+    """
+  end
+
+  attr(:id, :string, required: true)
+  attr(:evidence, :map, required: true, doc: "`Overview.Tabs.PullRequests.evidence_view/1`")
+
+  @doc """
+  The evidence status of one PR (TRD-024): the gate's decision input as `PrWatch.DTO` derives
+  it, shown as the status, each reason code with its subject and detail, the risk level, the
+  report and waiver state, the unresolved findings and the NAMES of the next actions. Nothing
+  here is a control: it adds no button and no event, so there is no way from this block to
+  approve or merge (the gate stays operator-only, behind `dispatch_operator`). Renders nothing
+  when the gate is off. Every text in it that an agent or GitHub wrote (check names, finding
+  descriptions, risk and waiver text) is interpolated through HEEx escaping only; it is
+  already bounded by `PullRequests.evidence_view/1`.
+  """
+  def pr_evidence(%{evidence: %{"status" => "off"}} = assigns), do: ~H""
+
+  def pr_evidence(assigns) do
+    ~H"""
+    <div id={@id} class="pr-evidence ws-muted" data-evidence-status={@evidence["status"]}>
+      <p class="pr-evidence-status">
+        Approval evidence: <strong>{@evidence["status"]}</strong>
+        <span :if={@evidence["risk"]}> · risk {@evidence["risk"]["level"]}<span :if={not @evidence["risk"]["current"]}> (stale: another head)</span></span>
+        <span :if={@evidence["report"]}> · report {@evidence["report"]["status"]}<span :if={@evidence["report"]["stale"]}> (stale)</span></span>
+        <span :if={@evidence["waiver"]}> · waiver {if @evidence["waiver"]["applies"], do: "applies", else: "not applied"}<span :if={@evidence["waiver"]["ignored_because"]}> ({@evidence["waiver"]["ignored_because"]})</span></span>
+      </p>
+      <ul :if={@evidence["reasons"] != []} class="pr-evidence-reasons" aria-label="Why approval is blocked">
+        <li :for={reason <- @evidence["reasons"]}>
+          <code>{reason["code"]}</code><span :if={reason["subject"]}> {reason["subject"]}</span><span :if={reason["detail"]}>: {reason["detail"]}</span>
+        </li>
+      </ul>
+      <p :if={@evidence["waived"] != []} class="pr-evidence-waived">
+        Waived: <code :for={reason <- @evidence["waived"]}>{reason["code"]} </code>
+      </p>
+      <p :if={@evidence["waiver"] && @evidence["waiver"]["reason"]} class="pr-evidence-waiver">
+        Waiver by {@evidence["waiver"]["waived_by"]}: {@evidence["waiver"]["reason"]}
+      </p>
+      <p :if={@evidence["findings"]} class="pr-evidence-findings">
+        Findings: {@evidence["findings"]["unresolved"]["critical"]} critical, {@evidence["findings"]["unresolved"]["major"]} major unresolved of {@evidence["findings"]["total"]}
+        <span :if={@evidence["findings"]["defect_detail"]}> · {@evidence["findings"]["defect_detail"]}</span>
+      </p>
+      <ul :if={@evidence["findings"] && @evidence["findings"]["items"] != []} class="pr-evidence-finding-list">
+        <li :for={item <- @evidence["findings"]["items"]}>
+          <code>{item["severity"]}</code> {item["description"]}<span :if={item["path"]}> ({item["path"]})</span>
+        </li>
+      </ul>
+      <ul :if={@evidence["risk"] && @evidence["risk"]["rationale"] != []} class="pr-evidence-rationale">
+        <li :for={line <- @evidence["risk"]["rationale"]}>{line["rule"]} → {line["level"]}: {line["detail"]}</li>
+      </ul>
+      <p :if={@evidence["delivery_issue"]} class="ws-error">Report delivery failed: {@evidence["delivery_issue"]}</p>
+      <p :if={@evidence["next_actions"] != []} class="pr-evidence-next">
+        Next: {Enum.join(@evidence["next_actions"], ", ")}
+      </p>
+    </div>
     """
   end
 

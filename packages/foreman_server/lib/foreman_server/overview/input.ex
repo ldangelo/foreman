@@ -25,6 +25,10 @@ defmodule ForemanServer.Overview.Input do
     * `undelivered_answers` - answered questions whose answer can never reach the
       agent (`QuestionAnswerUndelivered`) while the thread is still paused
     * `failure_reason` - run failure detail, nil when none
+    * `evidence_blocked?` - true when a live PR of the head run holds a pending merge gate and
+      the evidence the approval gate would decide on is `ineligible` or `unknown`
+      (`PrEvidence.evaluate/2` over its watch record, under the project's policy); false when
+      the gate is off, eligible, waived or approved
     * `review_verdict` - `"met" | "partially_met" | "not_met" | "undetermined" | nil`
     * `paused_reason` - `"steer"` when a pause is only an operator steer, else nil
     * `idle_ms` - milliseconds since the thread last moved (an input, never read
@@ -40,6 +44,7 @@ defmodule ForemanServer.Overview.Input do
           merge_gate: :none | :pending | :approved,
           checks_state: :none | :pending | :failing | :passing,
           review_state: :none | :changes_requested | :threads_unresolved,
+          evidence_blocked?: boolean(),
           pending_approvals: non_neg_integer(),
           open_questions: non_neg_integer(),
           expired_approvals: non_neg_integer(),
@@ -59,6 +64,7 @@ defmodule ForemanServer.Overview.Input do
     :paused_reason,
     :pr_state,
     resolved?: false,
+    evidence_blocked?: false,
     merge_gate: :none,
     checks_state: :none,
     review_state: :none,
