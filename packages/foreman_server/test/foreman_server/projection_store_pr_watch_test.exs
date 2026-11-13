@@ -202,6 +202,60 @@ defmodule ForemanServer.ProjectionStorePrWatchTest do
              ProjectionStore.pr_watch("r1")
   end
 
+  test "PrRiskRecorded holds evidence.risk with its own head across a head move, and a replay agrees" do
+    risk =
+      ev("PrRiskRecorded", %{
+        pr_url: @a,
+        head_sha: "h1",
+        level: "HIGH",
+        rubric_version: "1",
+        rationale: [],
+        evidence: %{},
+        unresolved_findings: [],
+        instructions: [],
+        judgement: nil,
+        findings_digest: "fd",
+        digest: "0123456789abcdef",
+        seq: 1,
+        recorded_at: 5
+      })
+
+    all = events() ++ [risk]
+    :ok = ProjectionStore.apply_events(all)
+
+    assert [%{head_sha: "h1", evidence: %{risk: record}}] = ProjectionStore.pr_watch("r1")
+
+    assert record == %{
+             head_sha: "h1",
+             level: "HIGH",
+             rubric_version: "1",
+             digest: "0123456789abcdef",
+             findings_digest: "fd",
+             seq: 1,
+             recorded_at: 5
+           }
+
+    live = ProjectionStore.pr_watch("r1")
+
+    json_events =
+      all
+      |> Jason.encode!()
+      |> Jason.decode!()
+      |> Enum.map(&%{event_type: &1["event_type"], payload: &1["payload"]})
+
+    ProjectionStoreReset.reset!()
+    assert :ok = ProjectionStore.apply_events(json_events)
+    assert strip(ProjectionStore.pr_watch("r1")) == strip(live)
+
+    :ok =
+      ProjectionStore.apply_events([
+        ev("PrUpdated", %{pr_url: @a, head_sha: "h9", pr_status: "open"})
+      ])
+
+    assert [%{head_sha: "h9", evidence: %{risk: %{head_sha: "h1", digest: "0123456789abcdef"}}}] =
+             ProjectionStore.pr_watch("r1")
+  end
+
   describe "the judgement on ReviewFindingsRecorded (TRD-041)" do
     defp findings_event(extra) do
       ev(

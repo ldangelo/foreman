@@ -54,6 +54,55 @@ defmodule ForemanServer.PrWatcherTest do
              checks_events(ctx.run_id)
   end
 
+  # TRD-018: the findings are appended by the finalising executor (never by the watcher); the
+  # watcher observes on them, so the batch holds a risk computed from the findings it just read.
+  test "recording the review findings makes the watcher observe and record a risk from them",
+       ctx do
+    {_agent, fetch} = start_github(passing())
+    {:ok, _} = PrAssociate.store(ctx.run_id, ctx.pr_url)
+    start_supervised!({PrWatcher, fetch_fun: fetch})
+
+    run_id = ctx.run_id
+
+    assert {:ok, %{dispatched: first}} = PrWatcher.refresh_now(ctx.pr_url)
+    assert "run.pr.risk" in first
+
+    assert [%{head_sha: "sha-1", evidence: %{risk: %{findings_digest: nil}, findings: nil}}] =
+             ProjectionStore.pr_watch(run_id)
+
+    {:ok, _} =
+      ForemanServer.CommandGateway.dispatch_system(%{
+        type: "run.pr.findings",
+        command_id: ForemanServer.Identity.run_pr_findings_command_id(run_id, nil, "sha-1", 1),
+        aggregate_id: "run:#{run_id}",
+        payload: %{
+          run_id: run_id,
+          pr_url: ctx.pr_url,
+          head_sha: "sha-1",
+          status: "recorded",
+          findings: [],
+          recorded_at: 1
+        }
+      })
+
+    assert [%{evidence: %{findings: %{digest: findings_digest}}}] =
+             ProjectionStore.pr_watch(run_id)
+
+    assert_receive {:projection_event,
+                    %{
+                      event_type: "PrRiskRecorded",
+                      data: %{
+                        run_id: ^run_id,
+                        head_sha: "sha-1",
+                        findings_digest: ^findings_digest
+                      }
+                    }},
+                   5_000
+
+    assert [%{evidence: %{risk: %{findings_digest: ^findings_digest, seq: 2}}}] =
+             ProjectionStore.pr_watch(run_id)
+  end
+
   test "refresh_now with an identical status appends nothing; a flip appends each change", ctx do
     {agent, fetch} = start_github(failing())
     {:ok, _} = PrAssociate.store(ctx.run_id, ctx.pr_url)
@@ -65,9 +114,14 @@ defmodule ForemanServer.PrWatcherTest do
     assert length(checks_events(ctx.run_id)) == 1
 
     set_status(agent, passing())
-    assert {:ok, %{dispatched: ["run.pr.checks"]}} = PrWatcher.refresh_now(ctx.pr_url)
+
+    assert {:ok, %{dispatched: ["run.pr.checks", "run.pr.risk"]}} =
+             PrWatcher.refresh_now(ctx.pr_url)
+
     set_status(agent, failing())
-    assert {:ok, %{dispatched: ["run.pr.checks"]}} = PrWatcher.refresh_now(ctx.pr_url)
+
+    assert {:ok, %{dispatched: ["run.pr.checks", "run.pr.risk"]}} =
+             PrWatcher.refresh_now(ctx.pr_url)
 
     assert length(checks_events(ctx.run_id)) == 3
   end
@@ -255,7 +309,10 @@ defmodule ForemanServer.PrWatcherTest do
       assert {:ok, %{dispatched: []}} = PrWatcher.refresh_now(run.pr_url)
 
       set_required!(project_id, [@a, @b])
-      assert {:ok, %{dispatched: ["run.pr.checks"]}} = PrWatcher.refresh_now(run.pr_url)
+
+      assert {:ok, %{dispatched: ["run.pr.checks", "run.pr.risk"]}} =
+               PrWatcher.refresh_now(run.pr_url)
+
       assert {:ok, %{dispatched: []}} = PrWatcher.refresh_now(run.pr_url)
 
       assert [first_event, second_event] = checks_events(run.run_id)
@@ -285,7 +342,9 @@ defmodule ForemanServer.PrWatcherTest do
           }
         ])
 
-      assert {:ok, %{dispatched: ["run.pr.checks"]}} = PrWatcher.refresh_now(run.pr_url)
+      assert {:ok, %{dispatched: ["run.pr.checks", "run.pr.risk"]}} =
+               PrWatcher.refresh_now(run.pr_url)
+
       assert [_, %{data: %{required: nil, policy_version: nil}}] = checks_events(run.run_id)
     end
 

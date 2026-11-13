@@ -637,7 +637,7 @@ defmodule ForemanServer.RunPrMergeTest do
       stub_gh()
       assert {:ok, _} = approve(run_id)
 
-      assert {:ok, %{dispatched: ["run.pr.update"]}} =
+      assert {:ok, %{dispatched: ["run.pr.update", "run.pr.risk"]}} =
                Observer.observe(pr_url,
                  fetch_fun: fn ^pr_url -> {:ok, pr_status(@pushed_sha)} end,
                  auto_fix: false

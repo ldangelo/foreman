@@ -461,6 +461,62 @@ defmodule ForemanServer.EventCodecTest do
     end
   end
 
+  describe "PrRiskRecorded" do
+    @risk_data %{
+      run_id: "r1",
+      project_id: "p1",
+      task_id: "t1",
+      pr_url: "https://github.com/acme/repo/pull/7",
+      repo_id: "repo-b",
+      head_sha: "h1",
+      level: "HIGH",
+      rubric_version: "1",
+      rationale: [%{"rule" => "checks", "level" => "HIGH", "basis" => "machine", "detail" => "d"}],
+      evidence: %{"checks" => %{"status" => "off", "reasons" => []}, "files" => %{"listed" => 1}},
+      unresolved_findings: [
+        %{
+          "severity" => "major",
+          "path" => "a",
+          "line" => 1,
+          "description" => "bad",
+          "disposition" => "open",
+          "source" => "s"
+        }
+      ],
+      instructions: ["read the check list"],
+      judgement: %{"head_sha" => "h1", "status" => "recorded", "level" => "LOW", "defect" => nil},
+      findings_digest: "0123456789abcdef",
+      digest: "fedcba9876543210",
+      seq: 3,
+      recorded_at: 7
+    }
+
+    test "round-trips through the codec and through JSON with every declared field" do
+      assert %ForemanServer.Events.PrRiskRecorded{} =
+               decoded = EventCodec.decode!("PrRiskRecorded", @risk_data)
+
+      assert Map.from_struct(decoded) == @risk_data
+
+      assert Enum.sort(Map.keys(@risk_data)) ==
+               Enum.sort(decoded |> Map.from_struct() |> Map.keys())
+
+      replayed = @risk_data |> Jason.encode!() |> Jason.decode!()
+      assert Map.from_struct(EventCodec.decode!("PrRiskRecorded", replayed)) == @risk_data
+    end
+
+    test "an unknown key is refused and the enforced keys are required" do
+      assert_raise ArgumentError, fn ->
+        EventCodec.decode!("PrRiskRecorded", Map.put(@risk_data, :bogus, "x"))
+      end
+
+      for key <- [:head_sha, :level, :rubric_version, :digest, :seq, :recorded_at] do
+        assert_raise ArgumentError, fn ->
+          EventCodec.decode!("PrRiskRecorded", Map.delete(@risk_data, key))
+        end
+      end
+    end
+  end
+
   describe "PhaseContextRecorded" do
     @data %{
       run_id: "r1",

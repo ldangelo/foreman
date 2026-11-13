@@ -238,4 +238,165 @@ defmodule ForemanServer.PrRiskTest do
       refute coderabbit =~ ~r/copy[^.]*judgement/i
     end
   end
+
+  describe "record/1 (TRD-018)" do
+    alias ForemanServer.PrRisk.Rubric
+
+    defp findings_record(overrides \\ %{}) do
+      Map.merge(
+        %{
+          head_sha: "h1",
+          status: "recorded",
+          findings: [],
+          defect: nil,
+          defect_detail: nil,
+          judgement: %{
+            status: "recorded",
+            level: "LOW",
+            rationale: "free text",
+            defect: nil,
+            defect_detail: nil
+          },
+          digest: "fd-1"
+        },
+        overrides
+      )
+    end
+
+    defp input(overrides \\ %{}) do
+      Map.merge(
+        %{
+          identity: %{run_id: "r1", project_id: "p1", task_id: "t1", pr_url: "u", repo_id: nil},
+          head_sha: "h1",
+          files: [%{path: "lib/a.ex", additions: 2, deletions: 1}],
+          changed_files: 1,
+          additions: 2,
+          deletions: 1,
+          base_branch: "main",
+          recorded_base: "main",
+          checks: %{status: :eligible, reasons: []},
+          findings: findings_record(),
+          policy_version: "pv"
+        },
+        overrides
+      )
+    end
+
+    test "the level is the rubric's, the rest is derived, and every nested map is string-keyed JSON" do
+      rec = PrRisk.record(input())
+      assert rec.level == "LOW" and rec.rubric_version == Rubric.version()
+      assert rec.digest =~ ~r/\A[0-9a-f]{16}\z/
+      assert rec.findings_digest == "fd-1"
+      assert rec.instructions == []
+      assert Enum.all?(rec.rationale, &Enum.all?(Map.keys(&1), fn k -> is_binary(k) end))
+      assert rec.evidence |> Jason.encode!() |> Jason.decode!() == rec.evidence
+      assert rec.rationale |> Jason.encode!() |> Jason.decode!() == rec.rationale
+      assert PrRisk.record(input()) == rec
+    end
+
+    test "the digest moves with the head, the identity and every content field" do
+      base = PrRisk.record(input()).digest
+
+      for other <- [
+            input(%{head_sha: "h2"}),
+            input(%{
+              identity: %{
+                run_id: "r2",
+                project_id: "p1",
+                task_id: "t1",
+                pr_url: "u",
+                repo_id: nil
+              }
+            }),
+            input(%{
+              identity: %{
+                run_id: "r1",
+                project_id: "p1",
+                task_id: "t1",
+                pr_url: "u",
+                repo_id: "b"
+              }
+            }),
+            input(%{base_branch: "dev"}),
+            input(%{additions: 3}),
+            input(%{checks: %{status: :ineligible, reasons: [%{code: :failing}]}}),
+            input(%{findings: findings_record(%{digest: "fd-2"})}),
+            input(%{policy_version: "pv2"})
+          ] do
+        refute PrRisk.record(other).digest == base
+      end
+    end
+
+    test "a missing input is HIGH, never filled in" do
+      for override <- [
+            %{files: nil},
+            %{changed_files: nil},
+            %{additions: nil},
+            %{recorded_base: nil},
+            %{findings: nil},
+            %{checks: nil}
+          ] do
+        assert PrRisk.record(input(override)).level == "HIGH", inspect(override)
+      end
+
+      none = PrRisk.record(input(%{findings: nil}))
+      assert none.findings_digest == nil and none.judgement == nil
+      assert none.unresolved_findings == []
+      assert none.evidence["findings"] == nil
+    end
+
+    test "the judgement is summarised without its text and bound to the findings' head" do
+      rec = PrRisk.record(input())
+
+      assert rec.judgement == %{
+               "head_sha" => "h1",
+               "status" => "recorded",
+               "level" => "LOW",
+               "defect" => nil
+             }
+
+      refute Jason.encode!(rec) =~ "free text"
+
+      other = PrRisk.record(input(%{head_sha: "h2"}))
+      assert other.level == "HIGH"
+      assert other.unresolved_findings == []
+      assert other.judgement["head_sha"] == "h1"
+    end
+
+    test "unresolved findings follow the review's rule, are bounded, and cut their text" do
+      f = fn sev, disp, desc ->
+        %{
+          "severity" => sev,
+          "path" => "a",
+          "line" => 1,
+          "description" => desc,
+          "disposition" => disp,
+          "source" => "s"
+        }
+      end
+
+      items =
+        [
+          f.("critical", "open", String.duplicate("x", 500)),
+          f.("major", "declined", "d"),
+          f.("minor", "declined", "skip"),
+          f.("major", "fixed", "skip")
+        ] ++ for(n <- 1..30, do: f.("nitpick", "open", "n#{n}"))
+
+      rec = PrRisk.record(input(%{findings: findings_record(%{findings: items})}))
+      listed = rec.unresolved_findings
+      assert length(listed) == 20
+
+      assert [
+               %{"severity" => "critical", "description" => cut},
+               %{"severity" => "major", "disposition" => "declined"} | _
+             ] = listed
+
+      assert String.length(cut) == 300
+      refute Enum.any?(listed, &(&1["description"] == "skip"))
+
+      assert rec.evidence["findings"]["unresolved"] ==
+               %{"critical" => 1, "major" => 1, "minor" => 0, "nitpick" => 30}
+    end
+  end
 end

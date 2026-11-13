@@ -431,9 +431,30 @@ defmodule ForemanServer.PrEvidenceTest do
       )
     end
 
+    # The risk record (TRD-018) is part of every decision too: a clean `evidence.risk` of the
+    # decided head, so the check tests read only the check reasons.
+    defp risk_rec(head, overrides \\ %{}) do
+      Map.merge(
+        %{
+          head_sha: head,
+          level: "HIGH",
+          rubric_version: "1",
+          digest: "rd-#{head}",
+          findings_digest: "fd-1",
+          seq: 1,
+          recorded_at: 5
+        },
+        overrides
+      )
+    end
+
     defp record(evidence \\ %{}),
       do: %{
-        evidence: Map.merge(PrEvidence.empty(), Map.merge(%{findings: findings_rec()}, evidence))
+        evidence:
+          Map.merge(
+            PrEvidence.empty(),
+            Map.merge(%{findings: findings_rec(), risk: risk_rec(@h)}, evidence)
+          )
       }
 
     defp policy(required, version \\ "v1"), do: %{required: required, version: version}
@@ -751,7 +772,7 @@ defmodule ForemanServer.PrEvidenceTest do
 
       bare =
         PrEvidence.evaluate(
-          record(%{checks: checks_rec([ck("A"), ck("B")]), findings: nil}),
+          record(%{checks: checks_rec([ck("A"), ck("B")]), findings: nil, risk: nil}),
           ctx()
         )
 
@@ -789,7 +810,8 @@ defmodule ForemanServer.PrEvidenceTest do
       assert rcodes(PrEvidence.evaluate(%{}, ctx(checks_ref: nil))) == [
                missing: "A",
                missing: "B",
-               findings_absent: nil
+               findings_absent: nil,
+               risk_missing: nil
              ]
     end
 
@@ -883,7 +905,11 @@ defmodule ForemanServer.PrEvidenceTest do
     defp frec(findings, head \\ @fh),
       do: %{
         evidence:
-          Map.merge(PrEvidence.empty(), %{checks: passing_checks(head), findings: findings})
+          Map.merge(PrEvidence.empty(), %{
+            checks: passing_checks(head),
+            findings: findings,
+            risk: risk_rec(head)
+          })
       }
 
     defp fcodes(rec, ctx),
@@ -1012,6 +1038,152 @@ defmodule ForemanServer.PrEvidenceTest do
 
       off = PrEvidence.evaluate(rec, fctx(@fh, %{policy: nil}))
       assert off.status == :off and off.inputs.findings_digest == nil
+    end
+  end
+
+  describe "evaluate/2 risk reasons (TRD-018)" do
+    alias ForemanServer.PrEvidence.{Eligibility, Reason}
+
+    defp risk_only(rec, risk), do: put_in(rec.evidence.risk, risk)
+
+    test "a record for the decided head is no reason; none is risk_missing; another head is risk_other_sha" do
+      assert %Eligibility{status: :eligible, reasons: []} =
+               PrEvidence.evaluate(frec(recorded(@fh)), fctx())
+
+      assert [%Reason{code: :risk_missing, subject: nil}] =
+               frec(recorded(@fh))
+               |> risk_only(nil)
+               |> PrEvidence.evaluate(fctx())
+               |> Map.fetch!(:reasons)
+
+      assert [%Reason{code: :risk_other_sha, subject: nil, detail: detail}] =
+               frec(recorded(@fh))
+               |> risk_only(risk_rec("sha-f0"))
+               |> PrEvidence.evaluate(fctx())
+               |> Map.fetch!(:reasons)
+
+      assert detail =~ "sha-f0" and detail =~ @fh
+    end
+
+    test "a display read judges the risk the same way" do
+      rec = frec(recorded(@fh)) |> risk_only(risk_rec("sha-f0"))
+      assert fcodes(rec, fctx(@fh, %{checks_ref: nil})) == [:risk_other_sha]
+      assert fcodes(risk_only(rec, nil), fctx(@fh, %{checks_ref: nil})) == [:risk_missing]
+    end
+
+    test "neither code is waivable, even when a waiver for this head and policy lists it" do
+      refute "risk_missing" in PrEvidence.waivable_codes()
+      refute "risk_other_sha" in PrEvidence.waivable_codes()
+
+      waiver = %{
+        head_sha: @fh,
+        codes: ["risk_missing", "risk_other_sha"],
+        policy_version: "v1",
+        reason: "r",
+        waived_by: "w",
+        waived_at: 1
+      }
+
+      for risk <- [nil, risk_rec("sha-f0")] do
+        rec = frec(recorded(@fh)) |> risk_only(risk)
+        rec = put_in(rec.evidence.waiver, waiver)
+
+        assert %{status: :ineligible, reasons: [%Reason{}], waived: []} =
+                 PrEvidence.evaluate(rec, fctx())
+      end
+    end
+
+    test "a waiver covering the waivable findings gap leaves a missing risk uncovered" do
+      rec = frec(nil) |> risk_only(nil)
+
+      rec =
+        put_in(rec.evidence.waiver, %{
+          head_sha: @fh,
+          codes: ["findings_absent"],
+          policy_version: "v1",
+          reason: "r",
+          waived_by: "w",
+          waived_at: 1
+        })
+
+      assert %{
+               status: :ineligible,
+               reasons: [%Reason{code: :risk_missing}],
+               waived: [%Reason{code: :findings_absent}]
+             } = PrEvidence.evaluate(rec, fctx())
+    end
+
+    test "the inputs copy the record's own head and digest; a head move does not change them" do
+      rec = frec(recorded(@fh))
+
+      for decided <- [@fh, "sha-f2"] do
+        r = PrEvidence.evaluate(rec, fctx(decided))
+        assert r.inputs.risk_head_sha == @fh
+        assert r.inputs.risk_digest == "rd-#{@fh}"
+      end
+
+      none = rec |> risk_only(nil) |> PrEvidence.evaluate(fctx())
+      assert none.inputs.risk_head_sha == nil and none.inputs.risk_digest == nil
+
+      off = PrEvidence.evaluate(rec, fctx(@fh, %{policy: nil}))
+
+      assert off.status == :off and off.inputs.risk_head_sha == nil and
+               off.inputs.risk_digest == nil
+
+      lacking = PrEvidence.evaluate(risk_only(rec, %{level: "LOW"}), fctx())
+      assert lacking.inputs.risk_head_sha == nil and lacking.inputs.risk_digest == nil
+    end
+
+    test "a risk that is not a map makes the record unreadable" do
+      assert %{status: :unknown, reasons: [%Reason{code: :evidence_unreadable}]} =
+               frec(recorded(@fh)) |> risk_only("HIGH") |> PrEvidence.evaluate(fctx())
+    end
+  end
+
+  describe "the PrRiskRecorded fold (TRD-018)" do
+    defp risk_event(head) do
+      {"PrRiskRecorded",
+       %{
+         project_id: "p1",
+         task_id: "t1",
+         head_sha: head,
+         level: "HIGH",
+         rubric_version: "1",
+         digest: "dg-#{head}",
+         findings_digest: "fd-1",
+         seq: 1,
+         recorded_at: 5
+       }}
+    end
+
+    defp moved(head), do: {"PrUpdated", %{head_sha: head, pr_status: "open"}}
+
+    test "the aggregate and the projection hold one evidence.risk, kept with its own head across a head move" do
+      {aggregate, projection} = fold_both([moved("h1"), risk_event("h1"), moved("h2")])
+
+      assert aggregate.evidence.risk == projection.evidence.risk
+
+      assert %{
+               head_sha: "h1",
+               level: "HIGH",
+               rubric_version: "1",
+               digest: "dg-h1",
+               findings_digest: "fd-1",
+               seq: 1,
+               recorded_at: 5
+             } = aggregate.evidence.risk
+
+      assert aggregate.head_sha == "h2" and projection.head_sha == "h2"
+    end
+
+    test "a replay from the JSON event log (string keys) gives the same record" do
+      {live, _} = fold_both([moved("h1"), risk_event("h1")])
+      {type, payload} = risk_event("h1")
+      json = payload |> Jason.encode!() |> Jason.decode!()
+      {replayed, projection} = fold_both([moved("h1"), {type, json}])
+
+      assert live.evidence.risk == replayed.evidence.risk
+      assert projection.evidence.risk == live.evidence.risk
     end
   end
 

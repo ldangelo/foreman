@@ -96,7 +96,7 @@ defmodule ForemanServer.PrObservationTest do
       pr_url: pr_url
     } do
       assert {:ok, commands} = PrObservation.commands(run_id, pr_url, Support.status(), nil)
-      assert types(commands) == ["run.pr.update"]
+      assert types(commands) == ["run.pr.update", "run.pr.risk"]
     end
 
     test "a first sighting whose only comment is a bot's is just the run.pr.update", %{
@@ -115,7 +115,7 @@ defmodule ForemanServer.PrObservationTest do
       status = Support.status(comments: [walkthrough])
 
       assert {:ok, commands} = PrObservation.commands(run_id, pr_url, status, nil)
-      assert types(commands) == ["run.pr.update"]
+      assert types(commands) == ["run.pr.update", "run.pr.risk"]
     end
 
     test "failing checks add run.pr.checks; repeating the identical observation emits nothing",
@@ -123,7 +123,7 @@ defmodule ForemanServer.PrObservationTest do
       status = Support.status(checks: [Support.failing_check("unit")], checks_state: :failing)
 
       assert {:ok, commands} = PrObservation.commands(ctx.run_id, ctx.pr_url, status, nil)
-      assert types(commands) == ["run.pr.update", "run.pr.checks"]
+      assert types(commands) == ["run.pr.update", "run.pr.checks", "run.pr.risk"]
       record = apply!(commands, ctx.run_id, ctx.pr_url)
 
       assert record.checks_state == "failing"
@@ -154,7 +154,7 @@ defmodule ForemanServer.PrObservationTest do
 
       pushed = %{status | head_sha: "sha-2"}
       assert {:ok, commands} = PrObservation.commands(ctx.run_id, ctx.pr_url, pushed, record)
-      assert types(commands) == ["run.pr.update", "run.pr.checks"]
+      assert types(commands) == ["run.pr.update", "run.pr.checks", "run.pr.risk"]
     end
 
     test "fail -> pass -> fail on the SAME sha yields three distinct events (observation_seq)",
@@ -206,8 +206,8 @@ defmodule ForemanServer.PrObservationTest do
     test "the command id is deterministic: two observers reading the same previous collapse to one event",
          ctx do
       status = Support.status(checks: [Support.failing_check("unit")], checks_state: :failing)
-      {:ok, [_u1, c1]} = PrObservation.commands(ctx.run_id, ctx.pr_url, status, nil)
-      {:ok, [_u2, c2]} = PrObservation.commands(ctx.run_id, ctx.pr_url, status, nil)
+      {:ok, [_u1, c1, _r1]} = PrObservation.commands(ctx.run_id, ctx.pr_url, status, nil)
+      {:ok, [_u2, c2, _r2]} = PrObservation.commands(ctx.run_id, ctx.pr_url, status, nil)
 
       assert c1.command_id == c2.command_id
       Support.dispatch!(c1)
@@ -235,7 +235,15 @@ defmodule ForemanServer.PrObservationTest do
       base_branch: status.base_branch,
       checks_digest: PrObservation.checks_digest(status),
       checks_seq: 1,
-      evidence: %{checks: %{evidence_digest: PrObservation.evidence_digest(status)}}
+      evidence: %{
+        checks: %{evidence_digest: PrObservation.evidence_digest(status)},
+        risk: %{
+          head_sha: status.head_sha,
+          rubric_version: ForemanServer.PrRisk.Rubric.version(),
+          findings_digest: nil,
+          seq: 1
+        }
+      }
     }
   end
 
@@ -285,7 +293,9 @@ defmodule ForemanServer.PrObservationTest do
       previous = recorded(ctx.base)
       added = %{ctx.base | checks: [passing_check("docs") | ctx.base.checks]}
 
-      assert {:ok, [command]} = PrObservation.commands(ctx.run_id, ctx.pr_url, added, previous)
+      assert {:ok, [command, %{type: "run.pr.risk"}]} =
+               PrObservation.commands(ctx.run_id, ctx.pr_url, added, previous)
+
       assert command.type == "run.pr.checks"
       assert command.payload.digest == previous.checks_digest
       assert command.payload.evidence_digest == PrObservation.evidence_digest(added)
@@ -295,7 +305,7 @@ defmodule ForemanServer.PrObservationTest do
     end
 
     test "the command carries every check of the head and is stamped as the observer's", ctx do
-      assert {:ok, [_update, command]} =
+      assert {:ok, [_update, command, _risk]} =
                PrObservation.commands(ctx.run_id, ctx.pr_url, ctx.base, nil)
 
       payload = command.payload
@@ -338,7 +348,7 @@ defmodule ForemanServer.PrObservationTest do
       previous = recorded(ctx.status)
       force = %{nonce: "n-1", now_ms: 1_700_000_000_000}
 
-      assert {:ok, [update, checks]} =
+      assert {:ok, [update, checks, %{type: "run.pr.risk"}]} =
                PrObservation.commands(ctx.run_id, ctx.pr_url, ctx.status, previous, nil,
                  force: force
                )
@@ -355,7 +365,7 @@ defmodule ForemanServer.PrObservationTest do
       assert checks.payload.digest == previous.checks_digest
       assert checks.payload.observation_seq == 2
 
-      assert {:ok, [_update, other]} =
+      assert {:ok, [_update, other, _risk]} =
                PrObservation.commands(ctx.run_id, ctx.pr_url, ctx.status, previous, nil,
                  force: %{force | nonce: "n-2"}
                )
@@ -394,7 +404,10 @@ defmodule ForemanServer.PrObservationTest do
 
       {:ok, first} = PrObservation.commands(ctx.run_id, ctx.pr_url, failing, nil)
       record = apply!(first, ctx.run_id, ctx.pr_url)
-      {:ok, [evidence_only]} = PrObservation.commands(ctx.run_id, ctx.pr_url, later, record)
+
+      {:ok, [evidence_only, _risk]} =
+        PrObservation.commands(ctx.run_id, ctx.pr_url, later, record)
+
       Support.dispatch!(evidence_only)
 
       assert [%{change: "digest"}, %{change: "evidence"}] =
@@ -431,7 +444,7 @@ defmodule ForemanServer.PrObservationTest do
 
       pushed = %{first | head_sha: "sha-2"}
       assert {:ok, commands} = PrObservation.commands(ctx.run_id, ctx.pr_url, pushed, record)
-      assert types(commands) == ["run.pr.update", "run.pr.review"]
+      assert types(commands) == ["run.pr.update", "run.pr.review", "run.pr.risk"]
 
       record = apply!(commands, ctx.run_id, ctx.pr_url)
       assert record.head_sha == "sha-2"
@@ -471,7 +484,7 @@ defmodule ForemanServer.PrObservationTest do
 
       status = %{ctx.base | checks: checks, checks_state: :passing, checks_truncated: true}
 
-      assert {:ok, [_update, command]} =
+      assert {:ok, [_update, command, _risk]} =
                PrObservation.commands(ctx.run_id, ctx.pr_url, status, nil)
 
       assert command.payload.checks_truncated == true
@@ -486,14 +499,16 @@ defmodule ForemanServer.PrObservationTest do
       previous = recorded(old_head)
 
       assert {:ok, commands} = PrObservation.commands(ctx.run_id, ctx.pr_url, ctx.base, previous)
-      assert types(commands) == ["run.pr.update", "run.pr.checks"]
+      assert types(commands) == ["run.pr.update", "run.pr.checks", "run.pr.risk"]
     end
 
     test "the first observation after the deploy (no evidence, checks present) is exactly one event",
          ctx do
       previous = ctx.base |> recorded() |> Map.delete(:evidence)
 
-      assert {:ok, [command]} = PrObservation.commands(ctx.run_id, ctx.pr_url, ctx.base, previous)
+      assert {:ok, [command, %{type: "run.pr.risk"}]} =
+               PrObservation.commands(ctx.run_id, ctx.pr_url, ctx.base, previous)
+
       assert command.type == "run.pr.checks"
       assert command.payload.digest == previous.checks_digest
       assert command.payload.change == "evidence"
@@ -509,7 +524,7 @@ defmodule ForemanServer.PrObservationTest do
                  force: %{nonce: "n-9", now_ms: 5}
                )
 
-      assert types(commands) == ["run.pr.update", "run.pr.checks"]
+      assert types(commands) == ["run.pr.update", "run.pr.checks", "run.pr.risk"]
       refute "run.pr.review" in types(commands)
     end
 
@@ -540,7 +555,7 @@ defmodule ForemanServer.PrObservationTest do
 
     test "the checks command records required and policy_version; with no policy both are nil",
          ctx do
-      assert {:ok, [_update, command]} =
+      assert {:ok, [_update, command, _risk]} =
                PrObservation.commands(ctx.run_id, ctx.pr_url, ctx.base, nil, nil,
                  policy: policy([@a])
                )
@@ -551,7 +566,7 @@ defmodule ForemanServer.PrObservationTest do
       assert command.payload.evidence_digest ==
                PrObservation.evidence_digest(ctx.base, policy([@a]).version)
 
-      assert {:ok, [_update, bare]} =
+      assert {:ok, [_update, bare, _risk]} =
                PrObservation.commands(ctx.run_id, ctx.pr_url, ctx.base, nil)
 
       assert bare.payload.required == nil
@@ -573,7 +588,7 @@ defmodule ForemanServer.PrObservationTest do
                  policy: first
                )
 
-      assert {:ok, [command]} =
+      assert {:ok, [command, %{type: "run.pr.risk"}]} =
                PrObservation.commands(ctx.run_id, ctx.pr_url, ctx.base, record, nil,
                  policy: second
                )
@@ -599,10 +614,10 @@ defmodule ForemanServer.PrObservationTest do
 
       record = apply!(commands, ctx.run_id, ctx.pr_url)
 
-      assert {:ok, [%{payload: %{required: nil, policy_version: nil}}]} =
+      assert {:ok, [%{payload: %{required: nil, policy_version: nil}}, %{type: "run.pr.risk"}]} =
                PrObservation.commands(ctx.run_id, ctx.pr_url, ctx.base, record)
 
-      assert {:ok, [%{payload: %{required: [], policy_version: version}}]} =
+      assert {:ok, [%{payload: %{required: [], policy_version: version}}, %{type: "run.pr.risk"}]} =
                PrObservation.commands(ctx.run_id, ctx.pr_url, ctx.base, record, nil,
                  policy: policy([])
                )
@@ -625,7 +640,7 @@ defmodule ForemanServer.PrObservationTest do
     end
 
     test "a forced observation carries the policy", ctx do
-      assert {:ok, [_update, forced]} =
+      assert {:ok, [_update, forced, _risk]} =
                PrObservation.commands(ctx.run_id, ctx.pr_url, ctx.base, nil, nil,
                  force: %{nonce: "n-1", now_ms: 5},
                  policy: policy([@a])
@@ -634,6 +649,205 @@ defmodule ForemanServer.PrObservationTest do
       assert forced.payload.required == [@a]
       assert forced.payload.policy_version == policy([@a]).version
       assert forced.payload.source == "gate"
+    end
+  end
+
+  describe "run.pr.risk in the batch (TRD-018)" do
+    alias ForemanServer.PrRisk.Rubric
+
+    setup do
+      files = [%{path: "lib/a.ex", additions: 3, deletions: 1}]
+
+      {:ok,
+       status:
+         Support.status(
+           checks: [passing_check("lint")],
+           checks_state: :passing,
+           files: files,
+           changed_files: 1,
+           additions: 3,
+           deletions: 1
+         )}
+    end
+
+    defp risk_cmds(commands), do: Enum.filter(commands, &(&1.type == "run.pr.risk"))
+
+    # A stored record whose checks, risk and findings are current for `status`.
+    defp current(status, overrides \\ %{}) do
+      previous = recorded(status)
+
+      risk = %{
+        head_sha: status.head_sha,
+        rubric_version: Rubric.version(),
+        findings_digest: "f1",
+        seq: 4
+      }
+
+      evidence =
+        previous.evidence
+        |> Map.put(:findings, %{head_sha: status.head_sha, digest: "f1"})
+        |> Map.put(:risk, Map.merge(risk, overrides))
+
+      %{previous | evidence: evidence}
+    end
+
+    test "the command is the facts of the status and the policy; its id carries the head and the next seq",
+         ctx do
+      policy = policy([@a])
+
+      {:ok, commands} =
+        PrObservation.commands(
+          ctx.run_id,
+          ctx.pr_url,
+          ctx.status,
+          current(ctx.status, %{head_sha: "sha-0"}),
+          nil,
+          policy: policy
+        )
+
+      assert [risk] = risk_cmds(commands)
+      assert List.last(commands) == risk
+
+      assert risk.command_id ==
+               "pr_risk:#{ctx.run_id}:#{PrObservation.url_hash(ctx.pr_url)}:sha-1:5"
+
+      assert risk.aggregate_id == "run:#{ctx.run_id}"
+      p = risk.payload
+      assert p.head_sha == "sha-1" and p.pr_url == ctx.pr_url and p.run_id == ctx.run_id
+      assert p.files == ctx.status.files and p.changed_files == 1
+      assert p.additions == 3 and p.deletions == 1 and p.base_branch == "main"
+      assert p.required == [@a] and p.policy_version == policy.version
+      assert p.repo_id == nil and is_integer(p.observed_at)
+
+      for derived <- ~w(level rationale instructions evidence digest judgement)a,
+          do: refute(Map.has_key?(p, derived))
+    end
+
+    test "a batch with run.pr.update or run.pr.checks ends with run.pr.risk", ctx do
+      previous = current(ctx.status)
+
+      moved = %{ctx.status | head_sha: "sha-2"}
+      {:ok, commands} = PrObservation.commands(ctx.run_id, ctx.pr_url, moved, previous)
+      assert types(commands) == ["run.pr.update", "run.pr.checks", "run.pr.risk"]
+
+      added = %{ctx.status | checks: [passing_check("docs") | ctx.status.checks]}
+      {:ok, commands} = PrObservation.commands(ctx.run_id, ctx.pr_url, added, previous)
+      assert types(commands) == ["run.pr.checks", "run.pr.risk"]
+
+      rebased = %{ctx.status | base_branch: "develop"}
+      {:ok, commands} = PrObservation.commands(ctx.run_id, ctx.pr_url, rebased, previous)
+      assert types(commands) == ["run.pr.update", "run.pr.risk"]
+    end
+
+    test "a batch with none of them and a current record carries no risk, a review alone included",
+         ctx do
+      previous = current(ctx.status)
+      assert {:ok, []} = PrObservation.commands(ctx.run_id, ctx.pr_url, ctx.status, previous)
+
+      commented = [%{id: "IC_9", author: "r", body: "x", url: nil, created_at: nil}]
+      with_comment = %{ctx.status | comments: commented}
+
+      assert {:ok, [%{type: "run.pr.review"}]} =
+               PrObservation.commands(ctx.run_id, ctx.pr_url, with_comment, previous)
+    end
+
+    test "a stored risk computed from an older findings record ends the batch; a current one does not",
+         ctx do
+      stale = current(ctx.status)
+      stale = put_in(stale.evidence.findings.digest, "f2")
+
+      assert {:ok, [%{type: "run.pr.risk"} = risk]} =
+               PrObservation.commands(ctx.run_id, ctx.pr_url, ctx.status, stale)
+
+      assert String.ends_with?(risk.command_id, ":sha-1:5")
+
+      assert {:ok, []} =
+               PrObservation.commands(ctx.run_id, ctx.pr_url, ctx.status, current(ctx.status))
+
+      # findings that appear after a risk made without any
+      none = current(ctx.status, %{findings_digest: nil})
+
+      assert {:ok, [%{type: "run.pr.risk"}]} =
+               PrObservation.commands(ctx.run_id, ctx.pr_url, ctx.status, none)
+    end
+
+    test "a missing risk, one for another head or one from another rubric version ends the batch",
+         ctx do
+      base = current(ctx.status)
+
+      for previous <- [
+            put_in(base.evidence.risk, nil),
+            put_in(base.evidence, Map.delete(base.evidence, :risk)),
+            current(ctx.status, %{head_sha: "sha-0"}),
+            current(ctx.status, %{rubric_version: "0"})
+          ] do
+        assert {:ok, [%{type: "run.pr.risk"}]} =
+                 PrObservation.commands(ctx.run_id, ctx.pr_url, ctx.status, previous)
+      end
+    end
+
+    test "a secondary repository's PR compares no findings digest: it is classified without one",
+         ctx do
+      previous = current(ctx.status, %{findings_digest: nil})
+
+      assert {:ok, []} =
+               PrObservation.commands(ctx.run_id, ctx.pr_url, ctx.status, previous, "repo-b")
+
+      assert {:ok, [%{type: "run.pr.risk", payload: %{repo_id: "repo-b"}}]} =
+               PrObservation.commands(
+                 ctx.run_id,
+                 ctx.pr_url,
+                 ctx.status,
+                 put_in(previous.evidence.risk.rubric_version, "0"),
+                 "repo-b"
+               )
+    end
+
+    test "the forced batch always ends with it; its checks_ref is the nonce and its time the forced one",
+         ctx do
+      assert {:ok, commands} =
+               PrObservation.commands(
+                 ctx.run_id,
+                 ctx.pr_url,
+                 ctx.status,
+                 current(ctx.status),
+                 nil,
+                 force: %{nonce: "n-7", now_ms: 77}
+               )
+
+      assert types(commands) == ["run.pr.update", "run.pr.checks", "run.pr.risk"]
+      assert [%{payload: %{checks_ref: "n-7", observed_at: 77}}] = risk_cmds(commands)
+    end
+
+    test "an observer's batch has no checks_ref; without a checks command the stored one is used",
+         ctx do
+      previous = current(ctx.status)
+      added = %{ctx.status | checks: [passing_check("docs") | ctx.status.checks]}
+      {:ok, commands} = PrObservation.commands(ctx.run_id, ctx.pr_url, added, previous)
+      assert [%{payload: %{checks_ref: nil}}] = risk_cmds(commands)
+
+      stored = put_in(previous.evidence.checks[:observation_ref], "n-3")
+      stale_risk = put_in(stored.evidence.risk.findings_digest, "old")
+      {:ok, commands} = PrObservation.commands(ctx.run_id, ctx.pr_url, ctx.status, stale_risk)
+      assert [%{payload: %{checks_ref: "n-3"}}] = risk_cmds(commands)
+    end
+
+    test "a batch applied through the gateway records the risk once; the repeat is quiet", ctx do
+      record = step(ctx, ctx.status, nil)
+
+      assert %{head_sha: "sha-1", seq: 1, rubric_version: "1", digest: digest} =
+               record.evidence.risk
+
+      assert is_binary(digest)
+      assert {:ok, []} = PrObservation.commands(ctx.run_id, ctx.pr_url, ctx.status, record)
+
+      assert [%{event_type: "PrRiskRecorded"} = event] =
+               ctx.run_id
+               |> Support.run_events()
+               |> Enum.filter(&(&1.event_type == "PrRiskRecorded"))
+
+      assert event.data.level == "HIGH"
+      assert event.data.evidence["files"]["listed"] == 1
     end
   end
 
