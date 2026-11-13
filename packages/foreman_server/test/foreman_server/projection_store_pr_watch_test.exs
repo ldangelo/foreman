@@ -209,10 +209,10 @@ defmodule ForemanServer.ProjectionStorePrWatchTest do
         head_sha: "h1",
         level: "HIGH",
         rubric_version: "1",
-        rationale: [],
+        rationale: [%{"rule" => "size", "level" => "LOW", "basis" => "machine", "detail" => "d"}],
         evidence: %{},
         unresolved_findings: [],
-        instructions: [],
+        instructions: ["Read the diff."],
         judgement: nil,
         findings_digest: "fd",
         digest: "0123456789abcdef",
@@ -232,6 +232,10 @@ defmodule ForemanServer.ProjectionStorePrWatchTest do
              digest: "0123456789abcdef",
              findings_digest: "fd",
              seq: 1,
+             rationale: [
+               %{"rule" => "size", "level" => "LOW", "basis" => "machine", "detail" => "d"}
+             ],
+             instructions: ["Read the diff."],
              recorded_at: 5
            }
 

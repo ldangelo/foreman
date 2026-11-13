@@ -47,6 +47,16 @@ defmodule ForemanServer.MCP.PrToolsTest do
     |> json_response(200)
   end
 
+  defp strip_clock(%{"prs" => prs} = body),
+    do: %{
+      body
+      | "prs" =>
+          Enum.map(
+            prs,
+            &update_in(&1, ["eligibility"], fn e -> Map.delete(e, "evaluated_at") end)
+          )
+    }
+
   # Replace the gateway's operator path with a recorder; everything else passes through.
   defp record_gateway(reply) do
     test = self()
@@ -62,7 +72,10 @@ defmodule ForemanServer.MCP.PrToolsTest do
 
   test "foreman_pr_status returns exactly what HTTP returns, as a read tool", ctx do
     assert {:ok, body} = Tools.call_tool("foreman_pr_status", %{run_id: ctx.run_id})
-    assert body |> Jason.encode!() |> Jason.decode!() == http_prs(ctx.run_id)
+    # `evaluated_at` is the clock of each read: the two reads differ in it and in nothing else.
+    assert strip_clock(body |> Jason.encode!() |> Jason.decode!()) ==
+             strip_clock(http_prs(ctx.run_id))
+
     assert length(body.prs) == 2
 
     assert {:error, %ToolError{code: "NOT_FOUND"}} =

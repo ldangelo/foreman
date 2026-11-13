@@ -8,6 +8,7 @@ defmodule ForemanServerWeb.RunControllerPrsTest do
   alias ForemanServer.TestSupport.PrWatchSupport
 
   @endpoint ForemanServerWeb.Endpoint
+  @evidence_keys ~w(eligibility checks findings risk waiver report delivery_issue next_actions)
   @token "run-prs-token"
 
   setup do
@@ -37,7 +38,7 @@ defmodule ForemanServerWeb.RunControllerPrsTest do
     assert %{"run_id" => ^run_id, "prs" => [failing, merged]} =
              get_json("/api/runs/#{run_id}/prs", 200)
 
-    assert failing == %{
+    assert Map.drop(failing, @evidence_keys) == %{
              "pr_url" => failing_url,
              "repo_id" => nil,
              "status" => "open",
@@ -64,6 +65,25 @@ defmodule ForemanServerWeb.RunControllerPrsTest do
              "agent_review" => nil,
              "merge_gate" => "pending"
            }
+
+    # The seeded project is not in the projection: the policy cannot be read, so the status is
+    # `unknown` with its one reason, never `off` and never eligible (AC-005-3).
+    assert %{
+             "eligibility" => %{
+               "status" => "unknown",
+               "head_sha" => "sha-fail",
+               "reasons" => [%{"code" => "evidence_unreadable"}],
+               "waived" => [],
+               "policy_version" => nil
+             },
+             "checks" => nil,
+             "findings" => nil,
+             "risk" => nil,
+             "waiver" => nil,
+             "report" => nil,
+             "delivery_issue" => nil,
+             "next_actions" => []
+           } = failing
 
     assert %{
              "pr_url" => ^merged_url,
