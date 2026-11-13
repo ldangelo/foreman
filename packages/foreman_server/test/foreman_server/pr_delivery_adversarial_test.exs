@@ -41,7 +41,7 @@ defmodule ForemanServer.PrDeliveryAdversarialTest do
     refute World.gate_approved?(run)
     # AC-004-1: nothing was approved, so the merge is refused before any GitHub merge call
     assert {:error, :pr_not_acceptable} = World.merge(run)
-    refute Enum.any?(World.calls(world), &match?({"gh", ["pr", "merge" | _]}, &1))
+    assert World.merge_calls(world) == []
     detail
   end
 
@@ -120,25 +120,46 @@ defmodule ForemanServer.PrDeliveryAdversarialTest do
       assert approved.evidence.inputs.checks_head_sha == "head-two"
     end
 
-    test "at the aggregate, checks of the old head decide nothing for the named head: `other_sha`",
+    test "at the aggregate, checks, findings and risk of the old head decide nothing for the named head",
          %{world: world} do
       # What the gateway's forced observation prevents, pinned at the aggregate: an approval of
       # head-two stamped by a caller that skipped the observation, over a record of head-one.
+      # It kills a mutant that stops comparing the recorded head with the approved one.
       required = [@unit]
       run = gated_run!(world, required)
       World.add_check!(world, World.check_run("unit"))
       World.observe!(world, run)
-      :ok = World.record_findings!(world, run, "head-two")
-      checks_ref = checks_ref_of(world, run)
+
+      # a ref no recorded observation carries: the head is compared before the ref
+      stamp = GateEvidence.gated(required, "stamped-without-an-observation")
 
       assert {:error, {:evidence_ineligible, "head-two", codes}, detail} =
-               approve_stamped(run, "head-two", GateEvidence.gated(required, checks_ref))
+               approve_stamped(run, "head-two", stamp)
 
-      # the checks are of head-one; the risk record is too; the findings were recorded for head-two
-      assert codes == ["other_sha", "risk_other_sha"]
+      assert codes == ["other_sha", "findings_other_sha", "risk_other_sha"]
       assert detail.inputs.checks_head_sha == "head-one"
       assert World.events(run, "MergeGateApproved") == []
       assert World.gate_pending?(run)
+
+      # CONTROL: the gateway observes head-two (and is refused only for the findings of
+      # head-one): the check and risk reasons disappear; with findings recorded the aggregate
+      # accepts the same stamp
+      World.push!(world, "head-two")
+      World.add_check!(world, World.check_run("unit"))
+      refused = assert_refused(world, run, ["findings_other_sha"], head_sha: "head-two")
+      stamp = GateEvidence.gated(required, refused.checks_ref)
+
+      assert {:error, {:evidence_ineligible, "head-two", ["findings_other_sha"]}, detail} =
+               approve_stamped(run, "head-two", stamp)
+
+      assert detail.inputs.checks_head_sha == "head-two"
+      assert detail.inputs.risk_head_sha == "head-two"
+
+      :ok = World.record_findings!(world, run, "head-two")
+      assert {:ok, _} = approve_stamped(run, "head-two", stamp)
+
+      assert [%{head_sha: "head-two"}] =
+               Enum.map(World.events(run, "MergeGateApproved"), &atomize/1)
     end
   end
 
@@ -185,10 +206,14 @@ defmodule ForemanServer.PrDeliveryAdversarialTest do
     end
   end
 
-  describe "AC-001-4: agent-written output is never evidence" do
+  # Production never reads the artifact a review wrote: the claim reaches the PR only as the
+  # findings record (`run.pr.findings`), which no check rule consults. This scenario cannot tell
+  # a guard from the absence of a mechanism; it is kept as a REGRESSION: the day something does
+  # read an agent-written file as a result, it fails.
+  describe "AC-001-4 (regression): agent-written output is never evidence" do
     @describetag :tmp_dir
 
-    test "an artifact claiming every test passed, with a clean findings block, is not a check result",
+    test "an artifact claiming every test passed, with a clean findings block, stays no check result",
          %{world: world, tmp_dir: tmp_dir} do
       artifact = Path.join(tmp_dir, "review.md")
       claim = "All tests passed. unit: SUCCESS. lint: SUCCESS. Nothing to fix.\n"
@@ -207,6 +232,204 @@ defmodule ForemanServer.PrDeliveryAdversarialTest do
 
       World.add_check!(world, World.check_run("unit"))
       assert_approved(world, run)
+    end
+  end
+
+  # -- AC-001-2: a rollup GitHub cut -------------------------------------------------------------
+
+  describe "AC-001-2: a rollup GitHub cut is not a check that never ran" do
+    test "the required check fell off the kept items: `checks_truncated`, never `missing`", %{
+      world: world
+    } do
+      run = gated_run!(world, [@unit])
+      World.add_check!(world, World.check_run("unit"))
+      World.truncate_rollup!(world, PrStatus.max_list())
+
+      detail = assert_refused(world, run, ["checks_truncated"])
+      assert [%{code: :checks_truncated, subject: "unit"}] = detail.reasons
+      assert [%{} = forced] = gate_observations(run)
+      assert get(forced, :checks_truncated) == true
+      assert length(get(forced, :checks)) == PrStatus.max_list()
+      refute Enum.any?(get(forced, :checks), &(get(&1, :name) == "unit"))
+    end
+
+    test "CONTROL: a cut rollup that still lists the required check decides on it", %{
+      world: world
+    } do
+      run = gated_run!(world, [@unit])
+      World.truncate_rollup!(world, PrStatus.max_list())
+      World.add_check!(world, World.check_run("unit"))
+
+      approved = assert_approved(world, run)
+      assert approved.evidence.status == "eligible"
+      assert [%{} = forced] = gate_observations(run)
+      assert get(forced, :checks_truncated) == true
+      assert Enum.any?(get(forced, :checks), &(get(&1, :name) == "unit"))
+    end
+  end
+
+  # -- AC-004-1: the merge follows the approval --------------------------------------------------
+
+  describe "AC-004-1: a merge needs an approval pinned to the head" do
+    test "refused while the gate is pending; after the approval GitHub is asked to merge the pinned head",
+         %{world: world} do
+      run = gated_run!(world, [@unit])
+      World.add_check!(world, World.check_run("unit"))
+
+      assert {:error, :pr_not_acceptable} = World.merge(run)
+      assert World.merge_calls(world) == []
+      assert World.pr_state(world) == "OPEN"
+
+      assert_approved(world, run)
+      assert {:ok, _} = World.merge(run)
+
+      url = World.pr_url(world)
+
+      assert [["pr", "merge", ^url, "--squash", "--match-head-commit", "head-one"]] =
+               World.merge_calls(world)
+
+      assert World.pr_state(world) == "MERGED"
+      # what a push between the approval and the merge does is TRD-037's (the `gh pr merge` the
+      # world scripts refuses a pin that is not the live head)
+    end
+  end
+
+  # -- AC-001-4: the entry is matched exactly ----------------------------------------------------
+
+  describe "AC-001-4: a required name is matched exactly" do
+    for {label, name} <- [
+          {"another case", "Unit"},
+          {"a longer name that starts with it", "unit-tests"},
+          {"a path that ends with it", "lint/unit"}
+        ] do
+      test "a check run called #{inspect(name)} (#{label}) is not `unit`", %{world: world} do
+        run = gated_run!(world, [@unit])
+        World.set_rollup!(world, [World.check_run(unquote(name))])
+
+        assert_refused(world, run, ["missing"])
+
+        World.add_check!(world, World.check_run("unit"))
+        assert_approved(world, run)
+      end
+    end
+
+    test "the workflow of an entry is matched exactly: `CI` is not `ci`", %{world: world} do
+      entry = %{"name" => "unit", "kind" => "check_run", "workflow" => "CI"}
+      run = gated_run!(world, [entry])
+      World.set_rollup!(world, [World.check_run("unit", workflow: "ci")])
+
+      assert_refused(world, run, ["missing"])
+
+      World.add_check!(world, World.check_run("unit", workflow: "CI"))
+      assert_approved(world, run)
+    end
+  end
+
+  describe "AC-001-2: two results under one name" do
+    for {label, conclusions} <- [
+          {"the failure first", ["FAILURE", "SUCCESS"]},
+          {"the success first", ["SUCCESS", "FAILURE"]}
+        ] do
+      test "a failure and a success of `unit` (#{label}) is `failing`, whichever GitHub lists last",
+           %{world: world} do
+        run = gated_run!(world, [@unit])
+
+        World.set_rollup!(
+          world,
+          for(c <- unquote(conclusions), do: World.check_run("unit", conclusion: c))
+        )
+
+        detail = assert_refused(world, run, ["failing"])
+        assert [%{code: :failing, subject: "unit", detail: "FAILURE"}] = detail.reasons
+
+        World.set_rollup!(world, [World.check_run("unit"), World.check_run("unit")])
+        assert_approved(world, run)
+      end
+    end
+  end
+
+  describe "AC-001-2: a conclusion that is not a pass" do
+    for {conclusion, code} <- [
+          {"STALE", "stale"},
+          {"CANCELLED", "failing"},
+          {"TIMED_OUT", "failing"},
+          {"ACTION_REQUIRED", "failing"}
+        ] do
+      test "a check run concluded #{conclusion} is `#{code}`", %{world: world} do
+        run = gated_run!(world, [@unit])
+        World.add_check!(world, World.check_run("unit", conclusion: unquote(conclusion)))
+
+        detail = assert_refused(world, run, [unquote(code)])
+        assert [%{subject: "unit"}] = detail.reasons
+
+        World.complete_check!(world, "unit", "SUCCESS")
+        assert_approved(world, run)
+      end
+    end
+
+    test "a commit status in ERROR is `failing`", %{world: world} do
+      entry = %{"name" => "ci/build", "kind" => "status_context"}
+      run = gated_run!(world, [entry])
+      World.add_check!(world, World.status_context("ci/build", "ERROR"))
+
+      detail = assert_refused(world, run, ["failing"])
+      assert [%{code: :failing, subject: "ci/build", detail: "ERROR"}] = detail.reasons
+
+      World.set_rollup!(world, [World.status_context("ci/build", "SUCCESS")])
+      assert_approved(world, run)
+    end
+  end
+
+  # -- a recorded real payload -------------------------------------------------------------------
+
+  # `docs/spikes/S4/pr565-view.json` is `gh pr view --json ...` of a real PR (spike S4), recorded
+  # with these fields: statusCheckRollup (three CheckRuns with `workflowName`, and a StatusContext
+  # `CodeRabbit` with `targetUrl: ""`), reviewDecision (""), reviews, comments, mergeStateStatus,
+  # mergeable, headRefOid (40 hex). NOT in the capture, so the world supplies them: headRefName,
+  # baseRefName, files, changedFiles, additions, deletions; the PR was merged when recorded, the
+  # test makes it open. The rollup, head, reviews and comments reach the gateway as recorded.
+  describe "a recorded real `gh pr view` payload" do
+    @recorded Path.expand("../../../../docs/spikes/S4/pr565-view.json", __DIR__)
+
+    test "the parser, the gateway and the evaluator read it as recorded", %{world: world} do
+      real = @recorded |> File.read!() |> Jason.decode!()
+      head = real["headRefOid"]
+      assert head =~ ~r/\A[0-9a-f]{40}\z/
+
+      World.push!(world, head)
+
+      World.set_raw!(
+        world,
+        real
+        |> Map.take(
+          ~w(statusCheckRollup reviewDecision reviews comments mergeStateStatus mergeable)
+        )
+        |> Map.put("state", "OPEN")
+      )
+
+      assert {:ok, %PrStatus{head_sha: ^head, review_decision: nil, checks: checks}} =
+               PrStatus.fetch(World.pr_url(world), command_runner: World.runner(world))
+
+      assert [
+               %{name: "foreman_server", kind: :check_run, workflow: "ci", state: :passing},
+               %{name: "jido_harness", kind: :check_run, workflow: "ci"},
+               %{name: "foreman_cli", kind: :check_run, workflow: "ci"},
+               %{name: "CodeRabbit", kind: :status_context, state: :passing}
+             ] = checks
+
+      # a status context that the recorded PR has is not a check run of that name
+      spoofed = %{"name" => "CodeRabbit", "kind" => "check_run"}
+      refused_run = gated_run!(world, [spoofed])
+      assert_refused(world, refused_run, ["missing"])
+
+      entries = [
+        %{"name" => "foreman_server", "kind" => "check_run", "workflow" => "ci"},
+        %{"name" => "CodeRabbit", "kind" => "status_context"}
+      ]
+
+      run = gated_run!(world, entries)
+      approved = assert_approved(world, run)
+      assert approved.evidence.inputs.checks_head_sha == head
     end
   end
 
@@ -309,16 +532,150 @@ defmodule ForemanServer.PrDeliveryAdversarialTest do
     end
 
     test "a registered handler answers its calls; the core answer is unchanged", %{world: world} do
-      World.script!(world, :list, fn
-        _world, ["pr", "list" | _] -> {:reply, {"[]", 0}}
+      World.script!(world, :issues, fn
+        _world, ["issue", "list" | _] -> {:reply, {"[]", 0}}
         _world, _args -> :pass
       end)
 
       run = World.runner(world)
 
-      assert {"[]", 0} = run.("gh", ["pr", "list", "--head", "x"], [])
+      assert {"[]", 0} = run.("gh", ["issue", "list"], [])
       assert {_json, 0} = run.("gh", ["pr", "view", World.pr_url(world), "--json", "state"], [])
       assert World.take_unscripted!(world) == []
+    end
+
+    test "gh pr view returns only the requested fields; an unknown field fails the call", %{
+      world: world
+    } do
+      run = World.runner(world)
+      url = World.pr_url(world)
+
+      assert {output, 0} = run.("gh", ["pr", "view", url, "--json", "state,headRefOid"], [])
+      assert Jason.decode!(output) == %{"state" => "OPEN", "headRefOid" => "head-one"}
+
+      assert {output, 1} = run.("gh", ["pr", "view", url, "--json", "state,bogusField"], [])
+      assert output =~ "Unknown JSON field"
+
+      # the parser needs the branch names: a request without them is a payload it refuses
+      assert {output, 0} = run.("gh", ["pr", "view", url, "--json", "state,mergeable"], [])
+
+      assert {:error, {:gh_unexpected_payload, _}} =
+               PrStatus.fetch(url, command_runner: fn _cmd, _args, _opts -> {output, 0} end)
+
+      assert World.take_unscripted!(world) == []
+    end
+
+    test "another PR of the world has its own record, its own list entry and its own merge", %{
+      world: world
+    } do
+      run = World.runner(world)
+      other_url = World.add_pr!(world, branch: "feature/x", head: "sha-x")
+      other = World.pr(world, other_url)
+      fork_url = World.add_pr!(world, branch: "feature/fork", cross_repository: true)
+
+      assert other_url != World.pr_url(world)
+      assert World.head(other) == "sha-x"
+      World.push!(other, "sha-y")
+      assert {World.head(other), World.head(world)} == {"sha-y", "head-one"}
+
+      list = fn flags ->
+        {output, 0} = run.("gh", ["pr", "list"] ++ flags, [])
+        Jason.decode!(output)
+      end
+
+      assert [%{"url" => ^other_url, "headRefOid" => "sha-y", "isCrossRepository" => false}] =
+               list.(["--head", "feature/x", "--json", "url,headRefOid,isCrossRepository"])
+
+      assert [%{"isCrossRepository" => true, "url" => ^fork_url}] =
+               list.(["--head", "feature/fork", "--json", "url,isCrossRepository"])
+
+      assert list.(["--head", "feature/x", "--state", "closed", "--json", "url"]) == []
+      assert {_, 1} = run.("gh", ["pr", "list", "--json", "bogus"], [])
+
+      # a merge pinned to a head that is not GitHub's is refused; the live head merges
+      assert {output, 1} =
+               run.(
+                 "gh",
+                 ["pr", "merge", other_url, "--squash", "--match-head-commit", "sha-x"],
+                 []
+               )
+
+      assert output =~ "Head branch was modified"
+      assert World.pr_state(other) == "OPEN"
+
+      assert {"", 0} =
+               run.(
+                 "gh",
+                 ["pr", "merge", other_url, "--squash", "--match-head-commit", "sha-y"],
+                 []
+               )
+
+      assert World.pr_state(other) == "MERGED"
+      assert World.pr_state(world) == "OPEN"
+
+      assert [%{"url" => ^other_url}] =
+               list.(["--head", "feature/x", "--state", "merged", "--json", "url"])
+
+      assert {_, 1} =
+               run.(
+                 "gh",
+                 ["pr", "merge", other_url, "--squash", "--match-head-commit", "sha-y"],
+                 []
+               )
+
+      # a merge that does not pin the head is not something production may send
+      assert {_, 1} = run.("gh", ["pr", "merge", World.pr_url(world), "--squash"], [])
+      assert ["gh pr merge " <> _] = World.take_unscripted!(world)
+    end
+
+    test "a run of the other PR is ready at that PR's head", %{world: world} do
+      other_url = World.add_pr!(world, branch: "feature/x", head: "sha-x")
+      project = World.project!(world, [@unit])
+      run = World.ready_run!(world, project, pr: other_url)
+
+      assert run.pr_url == other_url
+      assert [%{head_sha: "sha-x"}] = Enum.map(World.events(run, "PrReady"), &atomize/1)
+    end
+
+    test "a run without a PR, an operator command of any type, an approver that is not allowed",
+         %{
+           world: world
+         } do
+      project = World.project!(world, [@unit])
+      prless = World.start_run!(world, project)
+      assert prless.pr_url == nil
+      assert [_] = World.events(prless, "RunStarted")
+
+      # any operator command goes through dispatch_operator
+      assert {:ok, _} =
+               World.operator("project:#{project}", "project.update", %{
+                 project_id: project,
+                 max_concurrent_runs: 3
+               })
+
+      run = World.ready_run!(world, project)
+      World.add_check!(world, World.check_run("unit"))
+
+      assert {:error, _unauthorized} =
+               World.approve(world, run, identity: "github:not-an-approver")
+
+      assert World.events(run, "MergeGateApproved") == []
+      assert World.gate_pending?(run)
+    end
+
+    test "finish_runs! completes the runs that are not terminal and leaves the others alone", %{
+      world: world
+    } do
+      project = World.project!(world, nil)
+      done = World.start_run!(world, project)
+      open = World.start_run!(world, project)
+      ForemanServer.TestSupport.PrWatchSupport.complete_run!(done.run_id, project)
+
+      World.finish_runs!(world)
+      World.finish_runs!(world)
+
+      assert [_] = World.events(done, "RunCompleted")
+      assert [_] = World.events(open, "RunCompleted")
     end
 
     test "the PR record reads back through PrStatus as the mutators say", %{world: world} do
@@ -390,9 +747,8 @@ defmodule ForemanServer.PrDeliveryAdversarialTest do
   defp to_atom(key) when is_atom(key), do: key
   defp to_atom(key) when is_binary(key), do: String.to_existing_atom(key)
 
-  # the nonce a caller that never observed the PR would have to invent: no recorded observation
-  # carries it
-  defp checks_ref_of(_world, _run), do: "stamped-without-an-observation"
+  defp gate_observations(run),
+    do: for(e <- World.events(run, "PrChecksChanged"), get(e, :source) == "gate", do: e)
 
   # `merge_approve` to the aggregate with a stamp a test built by hand: how a caller that skipped
   # the gateway's observation would reach the aggregate (`GateEvidence`).
