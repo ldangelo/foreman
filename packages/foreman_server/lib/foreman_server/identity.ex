@@ -199,6 +199,34 @@ defmodule ForemanServer.Identity do
   end
 
   @doc """
+  System command ID for recording the review findings of one PR for one head (TRD-015).
+  `nil` `repo_id` is the run's primary repository. `head_sha` and `at` (millisecond
+  timestamp) make each record a distinct command, so recording A, then B, then A again for one
+  head is three commands; the handler itself appends nothing when the head's current record
+  has the same digest.
+  """
+  @spec run_pr_findings_command_id(String.t(), String.t() | nil, String.t(), integer()) ::
+          String.t()
+  def run_pr_findings_command_id(run_id, nil, head_sha, at)
+      when is_binary(run_id) and run_id != "" and is_binary(head_sha) and head_sha != "" and
+             is_integer(at) do
+    "workflow:" <> run_id <> ":pr_findings:" <> head_sha <> ":" <> Integer.to_string(at)
+  end
+
+  def run_pr_findings_command_id(run_id, repo_id, head_sha, at)
+      when is_binary(run_id) and run_id != "" and is_binary(repo_id) and repo_id != "" and
+             is_binary(head_sha) and head_sha != "" and is_integer(at) do
+    "workflow:" <>
+      run_id <>
+      ":" <>
+      repo_id <>
+      ":pr_findings:" <>
+      head_sha <>
+      ":" <>
+      Integer.to_string(at)
+  end
+
+  @doc """
   System command ID for failing a run.
   """
   @spec run_fail_command_id(String.t()) :: String.t()

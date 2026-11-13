@@ -14,6 +14,7 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
       :requested | jobsite_id, last_fix_head_sha, last_outcome: %{kind =>
       outcome}, last_finished_at, exhausted: %{kind => head_sha}}}`.
     * `evidence` (inside each `pr_watch` record) - see `ForemanServer.PrEvidence`;
+      `run.pr.findings` (TRD-015, system-only) sets `findings` for the reviewed head.
       `run.pr.ready_failed` (TRD-033) sets `delivery_issue`, the next `PrReady` clears it.
 
   Commands handled (all allowed on terminal runs - a PR outlives its run):
@@ -46,7 +47,8 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
                    "run.pr.watch_stop",
                    "run.pr.watch_start",
                    "run.pr.create",
-                   "run.pr.ready_failed"
+                   "run.pr.ready_failed",
+                   "run.pr.findings"
                  ] ++ Map.keys(@kinds)
 
   @events %{
@@ -62,6 +64,7 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
     "run.pr.watch_start" => "PrWatchStarted",
     "run.pr.create" => "PrCreated",
     "run.pr.ready_failed" => "PrReadyFailed",
+    "run.pr.findings" => "ReviewFindingsRecorded",
     # Operator-only and handled by `Run` beside `merge_approve` (it needs the merge gate), so it
     # is in neither `command_types/0` nor `operator_types/0`: this entry makes `Run` fold the event.
     "run.pr.waive_evidence" => "PrEvidenceWaived"
@@ -79,6 +82,7 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
   @hard_cap 5
   @default_auto_cap 2
   @max_note 2000
+  @max_artifact_path 1024
 
   @doc "Every command type this module handles."
   @spec command_types() :: [String.t()]
@@ -140,7 +144,13 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
         {:ok, url}
 
       nil
-      when type in ["run.pr.checks", "run.pr.review", "run.pr.create", "run.pr.ready_failed"] ->
+      when type in [
+             "run.pr.checks",
+             "run.pr.review",
+             "run.pr.create",
+             "run.pr.ready_failed",
+             "run.pr.findings"
+           ] ->
         {:error, {:missing_or_invalid, :pr_url}}
 
       nil ->
@@ -416,6 +426,86 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
         reason: reason,
         failed_at: failed_at
       })
+    end
+  end
+
+  # TRD-015: the review findings of the run, recorded against the reviewed head (system-only,
+  # from the finalising executor). Every field is validated and normalised here and returned in
+  # `extra`; `digest` is derived from the normalised content and never read from the payload.
+  # The same content for the same head is a no-op repeat.
+  defp do_handle("run.pr.findings", state, run_id, pr_url, payload) do
+    with {:ok, ids} <- identity(state, payload),
+         :ok <- no_supplied_digest(payload),
+         {:ok, head_sha} <-
+           Aggregate.required_binary(Aggregate.get(payload, :head_sha), :head_sha),
+         {:ok, content} <-
+           validated_findings(
+             PrEvidence.validate_findings(
+               Aggregate.get(payload, :status),
+               Aggregate.get(payload, :findings),
+               Aggregate.get(payload, :defect),
+               Aggregate.get(payload, :defect_detail)
+             )
+           ),
+         {:ok, artifact_path} <- bounded_path(Aggregate.get(payload, :artifact_path)),
+         {:ok, artifact_sha256} <- sha256_hex(Aggregate.get(payload, :artifact_sha256)),
+         {:ok, recorded_at} <- non_neg_integer(Aggregate.get(payload, :recorded_at), :recorded_at) do
+      digest = PrEvidence.findings_digest(content)
+
+      if recorded_findings?(state, pr_url, head_sha, digest) do
+        {:ok, nil}
+      else
+        event(
+          "run.pr.findings",
+          run_id,
+          pr_url,
+          payload,
+          ids,
+          Map.merge(content, %{
+            head_sha: head_sha,
+            artifact_path: artifact_path,
+            artifact_sha256: artifact_sha256,
+            digest: digest,
+            recorded_at: recorded_at
+          })
+        )
+      end
+    end
+  end
+
+  defp no_supplied_digest(payload) do
+    if is_nil(Aggregate.get(payload, :digest)),
+      do: :ok,
+      else: {:error, {:derived_field, :digest}}
+  end
+
+  defp validated_findings({:ok, content}), do: {:ok, content}
+  defp validated_findings({:error, key}), do: {:error, {:missing_or_invalid, key}}
+
+  defp bounded_path(nil), do: {:ok, nil}
+
+  defp bounded_path(path) when is_binary(path) do
+    if path != "" and String.valid?(path) and String.length(path) <= @max_artifact_path,
+      do: {:ok, path},
+      else: {:error, {:missing_or_invalid, :artifact_path}}
+  end
+
+  defp bounded_path(_other), do: {:error, {:missing_or_invalid, :artifact_path}}
+
+  defp sha256_hex(nil), do: {:ok, nil}
+
+  defp sha256_hex(value) when is_binary(value) do
+    if Regex.match?(~r/\A[0-9a-fA-F]{64}\z/, value),
+      do: {:ok, String.downcase(value)},
+      else: {:error, {:missing_or_invalid, :artifact_sha256}}
+  end
+
+  defp sha256_hex(_other), do: {:error, {:missing_or_invalid, :artifact_sha256}}
+
+  defp recorded_findings?(state, pr_url, head_sha, digest) do
+    case state.pr_watch do
+      %{^pr_url => %{evidence: %{findings: %{head_sha: ^head_sha, digest: ^digest}}}} -> true
+      _other -> false
     end
   end
 
