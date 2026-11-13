@@ -10,6 +10,7 @@ defmodule ForemanServer.CommandGatewayApprovalEvidenceTest do
   alias ForemanServer.Idempotency.KeyStore
   alias ForemanServer.{ProjectionStore, RunPrMerge}
   alias ForemanServer.TestSupport.{KeyStoreReset, MeckScope}
+  alias ForemanServer.TestSupport.GateEvidence
   alias ForemanServer.Workflow.MergeGate
 
   @approver "github:ldangelo"
@@ -111,7 +112,11 @@ defmodule ForemanServer.CommandGatewayApprovalEvidenceTest do
         }
       })
 
-    %{run_id: run_id, pr_url: pr_url}
+    run = %{run_id: run_id, pr_url: pr_url, project_id: project_id, task_id: "task-gate"}
+    # the review findings of the head the PR opened at: a clean block, so an approval is not
+    # refused `findings_absent` (TRD-036)
+    :ok = GateEvidence.record_findings!(run, "head-one")
+    run
   end
 
   defp gated_run!(required \\ [@unit]) do
@@ -151,7 +156,7 @@ defmodule ForemanServer.CommandGatewayApprovalEvidenceTest do
         %{
           "__typename" => "CheckRun",
           "completedAt" => "2026-11-12T13:58:49Z",
-          "conclusion" => "FAILURE",
+          "conclusion" => "SUCCESS",
           "name" => "unit",
           "startedAt" => "2026-11-12T13:58:43Z",
           "status" => "COMPLETED",
@@ -197,8 +202,10 @@ defmodule ForemanServer.CommandGatewayApprovalEvidenceTest do
   defp types(commands), do: Enum.map(commands, & &1.type)
   defp get(map, key), do: Aggregate.get(map, key)
 
-  # Dispatched after the run's `run.pr.ready` (the fixture's own command).
-  defp after_ready(run_id), do: Enum.reject(dispatched(run_id), &(&1.type == "run.pr.ready"))
+  # Dispatched after the run's `run.pr.ready` and the fixture's findings record (the fixture's own
+  # commands).
+  defp after_ready(run_id),
+    do: Enum.reject(dispatched(run_id), &(&1.type in ["run.pr.ready", "run.pr.findings"]))
 
   defp events(run_id, type) do
     {:ok, events} = EventStore.read_stream_forward("run:#{run_id}", 0, 1_000)
@@ -296,8 +303,10 @@ defmodule ForemanServer.CommandGatewayApprovalEvidenceTest do
 
     test "a head that moved since the last observation: evidence is recorded for the new head first",
          %{gh: gh} do
-      {_project_id, %{run_id: run_id}} = gated_run!()
+      {_project_id, run} = gated_run!()
+      %{run_id: run_id} = run
       set_head!(gh, "head-two")
+      :ok = GateEvidence.record_findings!(run, "head-two")
 
       assert {:ok, _} = approve(run_id, %{head_sha: "head-two"})
 

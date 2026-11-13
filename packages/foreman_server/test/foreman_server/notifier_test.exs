@@ -698,16 +698,12 @@ defmodule ForemanServer.NotifierTest do
     # default 300 s window, is still delivered.
     test "forced gate observations of two approvals enqueue nothing; a watch observation still does",
          %{run_id: run_id, pr_url: pr_url, required: required} do
-      # attempt one is refused after its evidence was recorded, so a second attempt is possible
-      :meck.expect(CommandRouter, :dispatch, fn command, timeout ->
-        if command.type == "merge_approve",
-          do: {:error, :injected},
-          else: :meck.passthrough([command, timeout])
-      end)
+      # the PR's check fails, so the aggregate refuses each approval (TRD-036) after the gateway
+      # recorded its forced observation; the gate stays pending, so a second attempt is possible
+      assert {:error, {:evidence_ineligible, "sha-1", ["failing", "findings_absent"]}, _detail} =
+               approve_head(run_id)
 
-      assert {:error, :injected} = approve_head(run_id)
-      :meck.delete(CommandRouter, :dispatch, 2)
-      assert {:ok, _} = approve_head(run_id)
+      assert {:error, {:evidence_ineligible, "sha-1", _codes}, _detail} = approve_head(run_id)
 
       assert [first, second] = checks_events(run_id)
       assert first.source == "gate" and second.source == "gate"

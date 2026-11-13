@@ -292,7 +292,9 @@ defmodule ForemanServer.RunPrMergeTest do
       assert [event] = events(run_id, "MergeGateApproved")
 
       assert Map.keys(event) |> Enum.sort() ==
-               ~w(approved_at approver approver_identity head_sha run_id)
+               ~w(approved_at approver approver_identity evidence head_sha run_id)
+
+      assert %{"status" => "off", "inputs" => %{"checks_head_sha" => nil}} = event["evidence"]
     end
 
     test "the head GitHub shows is the authority, not the one the PR watch last recorded", %{
