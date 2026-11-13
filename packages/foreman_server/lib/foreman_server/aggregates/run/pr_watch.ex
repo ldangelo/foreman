@@ -448,6 +448,9 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
                Aggregate.get(payload, :defect_detail)
              )
            ),
+         {:ok, judgement} <-
+           validated_findings(PrEvidence.validate_judgement(Aggregate.get(payload, :judgement))),
+         content = Map.put(content, :judgement, judgement),
          {:ok, artifact_path} <- bounded_path(Aggregate.get(payload, :artifact_path)),
          {:ok, artifact_sha256} <- sha256_hex(Aggregate.get(payload, :artifact_sha256)),
          {:ok, recorded_at} <- non_neg_integer(Aggregate.get(payload, :recorded_at), :recorded_at) do

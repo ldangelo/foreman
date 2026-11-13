@@ -92,14 +92,14 @@ Sections, in order:
 4. **Declined** — per finding: file, the finding, the reason.
 5. **Verification** — commands run and their exit codes.
 
-Then, as the last thing in the file, the findings block: a machine-read JSON
+Then the findings block: a machine-read JSON
 document between two marker lines. It is your own claim about the review and
 Foreman reads it as such; a declined critical or major finding is still shown
 to the operator as unresolved.
 
 The rules of the block:
 
-- Write it exactly once, as the last thing in the file. Each marker line stands
+- Write it exactly once. Each marker line stands
   alone at the start of a line, outside any code fence, with the raw JSON
   directly between them.
 - The fence below is this prompt's formatting only. Write the two marker lines
@@ -131,6 +131,32 @@ Example (replace the placeholder entry with your real findings):
 <!-- FOREMAN_REVIEW_FINDINGS_START -->
 {"schema": "foreman.review_findings/1", "reviewed": true, "findings": [{"severity": "major", "path": "path/to/file.ex", "line": 12, "description": "PLACEHOLDER: replace with one sentence.", "disposition": "open", "source": "repo-rules"}]}
 <!-- FOREMAN_REVIEW_FINDINGS_END -->
+```
+
+Then, after the findings block and as the last thing in the file, the risk
+judgement block: your overall risk level for this run's work, as a second
+machine-read JSON document between two marker lines. Write it exactly once.
+It states the risk of the whole change, not of one finding. Foreman reads it
+as your own claim, never as a verified fact, and it can only raise the level
+Foreman computes from the diff, never lower it. `level` is one of `LOW`,
+`MEDIUM` or `HIGH`; `rationale` is one or two sentences of at most 1000
+characters. Write no judgement block if you cannot judge; do not invent a level.
+
+- Each marker line stands alone at the start of a line, outside any code
+  fence, with the raw JSON directly between them. The fence below is this
+  prompt's formatting only: do not wrap the block in one.
+- If your report must quote a judgement marker line, put the quote inside a
+  code fence, where the parser ignores it. A marker line alone at the start of
+  a line outside a fence counts as a second block and makes the whole judgement
+  unreadable.
+- Never copy the previous phase's judgement block: write your own.
+
+Example (replace the placeholder level and rationale with your own):
+
+```
+<!-- FOREMAN_RISK_JUDGEMENT_START -->
+{"schema": "foreman.risk_judgement/1", "level": "MEDIUM", "rationale": "PLACEHOLDER: replace with your reason."}
+<!-- FOREMAN_RISK_JUDGEMENT_END -->
 ```
 
 Unresolved findings do not fail this phase. Hiding them does.

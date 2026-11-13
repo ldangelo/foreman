@@ -222,6 +222,7 @@ defmodule ForemanServer.PrEvidence do
       findings: list_or_empty(get(payload, :findings)),
       defect: get(payload, :defect),
       defect_detail: get(payload, :defect_detail),
+      judgement: normalise_judgement(get(payload, :judgement)),
       artifact_path: get(payload, :artifact_path),
       artifact_sha256: get(payload, :artifact_sha256),
       digest: get(payload, :digest),
@@ -797,7 +798,9 @@ defmodule ForemanServer.PrEvidence do
 
   @doc """
   The digest of a findings record: the first 16 hex characters of the SHA-256 of the normalised
-  `status`, `defect`, `findings` and `judgement` (`nil` until TRD-041). Derived by the handler,
+  `status`, `defect`, `findings` and `judgement` (TRD-041; an absent judgement is `nil` in the
+  digest, so a record with no judgement keeps the digest it had before the field existed).
+  Derived by the handler,
   never read from a payload.
   """
   @spec findings_digest(map()) :: String.t()
@@ -807,12 +810,97 @@ defmodule ForemanServer.PrEvidence do
       get(normalised, :status),
       get(normalised, :defect),
       get(normalised, :findings),
-      get(normalised, :judgement)
+      digest_judgement(get(normalised, :judgement))
     }
 
     :crypto.hash(:sha256, :erlang.term_to_binary(term, [:deterministic]))
     |> Base.encode16(case: :lower)
     |> binary_part(0, 16)
+  end
+
+  defp digest_judgement(nil), do: nil
+
+  defp digest_judgement(judgement) do
+    case normalise_judgement(judgement) do
+      %{status: "absent"} -> nil
+      normalised -> normalised
+    end
+  end
+
+  @judgement_levels ~w(LOW MEDIUM HIGH)
+  @max_rationale 1000
+  @judgement_keys ~w(status level rationale defect defect_detail)a
+
+  @doc """
+  Validate and normalise the review agent's risk judgement (TRD-041) carried by a findings
+  record. `nil` is the absent judgement. Otherwise one map (atom or string keys, no other key)
+  with `status` one of `findings_statuses/0`: `recorded` needs a `level` (`LOW`, `MEDIUM` or
+  `HIGH`) and a non-empty `rationale` of at most 1000 characters; `malformed` needs a `defect`
+  (one of `findings_defects/0`) and may carry a `defect_detail` of at most 500 characters;
+  `absent` carries nothing else. The result is always the atom-keyed map `status`, `level`,
+  `rationale`, `defect`, `defect_detail`, so the live and the replayed fold read identical
+  values. Values over their bound are refused, never cut.
+  """
+  @spec validate_judgement(term()) :: {:ok, map()} | {:error, :judgement}
+  def validate_judgement(nil), do: {:ok, absent_judgement()}
+
+  def validate_judgement(%{} = raw) do
+    known = @judgement_keys ++ Enum.map(@judgement_keys, &Atom.to_string/1)
+
+    with true <- Enum.all?(Map.keys(raw), &(&1 in known)),
+         {:ok, status} <- string_enum(get(raw, :status), @findings_statuses, :judgement),
+         {:ok, normalised} <- judgement_for(status, raw) do
+      {:ok, normalised}
+    else
+      _ -> {:error, :judgement}
+    end
+  end
+
+  def validate_judgement(_other), do: {:error, :judgement}
+
+  @doc """
+  The judgement of a findings record as the fold stores it: `validate_judgement/1`'s result, or
+  the absent judgement when there is none or it does not validate (an event written before
+  TRD-041 has no judgement and reads as absent).
+  """
+  @spec normalise_judgement(term()) :: map()
+  def normalise_judgement(raw) do
+    case validate_judgement(raw) do
+      {:ok, normalised} -> normalised
+      {:error, _} -> absent_judgement()
+    end
+  end
+
+  defp absent_judgement,
+    do: %{status: "absent", level: nil, rationale: nil, defect: nil, defect_detail: nil}
+
+  defp judgement_for("absent", raw) do
+    if Enum.all?([:level, :rationale, :defect, :defect_detail], &is_nil(get(raw, &1))),
+      do: {:ok, absent_judgement()},
+      else: {:error, :judgement}
+  end
+
+  defp judgement_for("recorded", raw) do
+    level = get(raw, :level)
+    rationale = get(raw, :rationale)
+
+    if level in @judgement_levels and is_binary(rationale) and String.valid?(rationale) and
+         String.trim(rationale) != "" and String.length(rationale) <= @max_rationale and
+         not Regex.match?(~r/[\x00-\x08\x0B-\x1F\x7F]/u, rationale) and
+         is_nil(get(raw, :defect)) and is_nil(get(raw, :defect_detail)),
+       do: {:ok, %{absent_judgement() | status: "recorded", level: level, rationale: rationale}},
+       else: {:error, :judgement}
+  end
+
+  defp judgement_for("malformed", raw) do
+    with true <- is_nil(get(raw, :level)) and is_nil(get(raw, :rationale)),
+         {:ok, defect} <- string_enum(get(raw, :defect), @findings_defects, :judgement),
+         {:ok, detail} <-
+           optional_bounded(get(raw, :defect_detail), @max_defect_detail, :judgement) do
+      {:ok, %{absent_judgement() | status: "malformed", defect: defect, defect_detail: detail}}
+    else
+      _ -> {:error, :judgement}
+    end
   end
 
   defp findings_list("recorded", items) when is_list(items) and length(items) <= @max_findings do
