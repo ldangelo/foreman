@@ -699,8 +699,12 @@ defmodule ForemanServer.NotifierTest do
     test "forced gate observations of two approvals enqueue nothing; a watch observation still does",
          %{run_id: run_id, pr_url: pr_url, required: required} do
       # the PR's check fails, so the aggregate refuses each approval (TRD-036) after the gateway
-      # recorded its forced observation; the gate stays pending, so a second attempt is possible
-      assert {:error, {:evidence_ineligible, "sha-1", ["failing", "findings_absent"]}, _detail} =
+      # recorded its forced observation; the gate stays pending, so a second attempt is possible.
+      # A failing required check makes the rubric read the PR as HIGH, so `risk_high` is listed
+      # beside the check's own reason (AC-003-2).
+      assert {:error,
+              {:evidence_ineligible, "sha-1", ["failing", "findings_absent", "risk_high"]},
+              _detail} =
                approve_head(run_id)
 
       assert {:error, {:evidence_ineligible, "sha-1", _codes}, _detail} = approve_head(run_id)

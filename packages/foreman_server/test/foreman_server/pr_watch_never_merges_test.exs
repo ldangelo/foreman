@@ -149,6 +149,7 @@ defmodule ForemanServer.PrWatchNeverMergesTest do
         run_id: run_id,
         approver: "leo",
         approver_identity: @approver,
+        acknowledge_gate_off: true,
         head_sha: head_sha
       }
     })

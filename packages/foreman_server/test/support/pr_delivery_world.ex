@@ -992,17 +992,26 @@ defmodule ForemanServer.TestSupport.PrDeliveryWorld do
   @doc """
   `merge_approve` through the operator path (`CommandGateway.dispatch_operator/1`: what the HTTP
   controller and the CLI call). Options: `:head_sha` (default: the run's PR head now),
-  `:approver` ("leo") and `:identity` (the approver's identity, "github:ldangelo"). Returns the
-  gateway's answer unchanged.
+  `:approver` ("leo"), `:identity` (the approver's identity, "github:ldangelo") and
+  `:acknowledge_gate_off` (sends `acknowledge_gate_off: true`, what `--acknowledge-gate-off`
+  does; the key is left out otherwise, never sent as `false`). Returns the gateway's answer
+  unchanged.
   """
   @spec approve(world(), run(), keyword()) :: term()
   def approve(world, %{run_id: run_id, pr_url: pr_url}, opts \\ []) do
-    operator("run:#{run_id}", "merge_approve", %{
+    payload = %{
       run_id: run_id,
       approver: Keyword.get(opts, :approver, "leo"),
       approver_identity: Keyword.get(opts, :identity, @approver),
       head_sha: Keyword.get_lazy(opts, :head_sha, fn -> head(pr(world, pr_url)) end)
-    })
+    }
+
+    payload =
+      if Keyword.get(opts, :acknowledge_gate_off, false) == true,
+        do: Map.put(payload, :acknowledge_gate_off, true),
+        else: payload
+
+    operator("run:#{run_id}", "merge_approve", payload)
   end
 
   @doc """

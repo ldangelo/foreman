@@ -99,7 +99,9 @@ defmodule ForemanServer.RunPrMergeTest do
     end)
   end
 
-  # What an operator sends: the head they reviewed rides along as `head_sha`.
+  # What an operator sends: the head they reviewed rides along as `head_sha`. This file's project
+  # has no `required_checks` (the gate is off), so the operator acknowledges that on every
+  # approval (`--acknowledge-gate-off`, AC-001-3).
   defp approve(run_id, overrides \\ %{}) do
     CommandGateway.dispatch_operator(%{
       command_id: "approve-#{System.unique_integer([:positive])}",
@@ -111,7 +113,8 @@ defmodule ForemanServer.RunPrMergeTest do
             run_id: run_id,
             approver: "leo",
             approver_identity: @approver,
-            head_sha: @approved_sha
+            head_sha: @approved_sha,
+            acknowledge_gate_off: true
           },
           overrides
         )
@@ -292,7 +295,9 @@ defmodule ForemanServer.RunPrMergeTest do
       assert [event] = events(run_id, "MergeGateApproved")
 
       assert Map.keys(event) |> Enum.sort() ==
-               ~w(approved_at approver approver_identity evidence head_sha run_id)
+               ~w(approved_at approver approver_identity evidence gate_off_acknowledged head_sha run_id)
+
+      assert event["gate_off_acknowledged"] == true
 
       assert %{"status" => "off", "inputs" => %{"checks_head_sha" => nil}} = event["evidence"]
     end

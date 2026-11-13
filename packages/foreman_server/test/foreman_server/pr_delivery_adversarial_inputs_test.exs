@@ -54,7 +54,7 @@ defmodule ForemanServer.PrDeliveryAdversarialInputsTest do
     ready_run!(world, World.project!(world, required), opts)
   end
 
-  defp ready_run!(world, project_id, opts \\ []) do
+  defp ready_run!(world, project_id, opts) do
     run = World.ready_run!(world, project_id, opts)
     World.record_base!(run)
     run
@@ -793,6 +793,46 @@ defmodule ForemanServer.PrDeliveryAdversarialInputsTest do
       World.set_required!(world, run.project_id, [@unit])
 
       assert_refused(world, run, ["failing"])
+    end
+  end
+
+  # -- AC-001-3: a gate-off approval must be acknowledged ----------------------------------------
+
+  describe "AC-001-3: an approval on a project whose gate is off is refused unless acknowledged" do
+    test "refused without the acknowledgement, nothing recorded; with it approved and recorded as such",
+         %{world: world} do
+      run = gated_run!(world, nil)
+
+      assert {:error, :gate_off_not_acknowledged} = World.approve(world, run)
+      assert World.events(run, "MergeGateApproved") == []
+      assert World.gate_pending?(run)
+
+      assert {:ok, _} = World.approve(world, run, acknowledge_gate_off: true)
+      assert World.gate_approved?(run)
+      assert [%{} = approved] = World.events(run, "MergeGateApproved")
+      assert approved.evidence.status == "off"
+      assert approved.gate_off_acknowledged == true
+    end
+
+    test "a gated project is approved as before and its event carries no acknowledgement",
+         %{world: world} do
+      for acknowledge <- [false, true] do
+        run = gated_run!(world)
+        World.set_rollup!(world, [World.check_run("unit")])
+
+        approved = assert_approved(world, run, acknowledge_gate_off: acknowledge)
+        assert approved.evidence.status == "eligible"
+        refute Map.has_key?(approved, :gate_off_acknowledged)
+      end
+    end
+
+    test "a project whose required_checks is the empty list is gated, not gate off",
+         %{world: world} do
+      run = gated_run!(world, [])
+
+      assert {:error, {:evidence_ineligible, _head, codes}, _detail} = World.approve(world, run)
+      assert "no_checks_configured" in codes
+      assert World.events(run, "MergeGateApproved") == []
     end
   end
 

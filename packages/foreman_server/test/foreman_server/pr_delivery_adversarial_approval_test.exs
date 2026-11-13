@@ -49,7 +49,7 @@ defmodule ForemanServer.PrDeliveryAdversarialApprovalTest do
     ready_run!(world, World.project!(world, [@unit]), opts)
   end
 
-  defp ready_run!(world, project_id, opts \\ []) do
+  defp ready_run!(world, project_id, opts) do
     run = World.ready_run!(world, project_id, opts)
     World.record_base!(run)
     run
