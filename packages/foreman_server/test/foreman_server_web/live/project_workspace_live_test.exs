@@ -450,7 +450,7 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
     end
 
     # The PR passes its required check; what the agent wrote is hostile.
-    defp seed_evidence(id, findings_extra, risk_detail) do
+    defp seed_evidence(id, findings_extra, risk_detail, level \\ "HIGH") do
       gate_project(id)
 
       :ok =
@@ -472,7 +472,7 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
             Map.merge(%{status: "recorded", findings: []}, findings_extra)
           ),
           pr_event("PrRiskRecorded", id, %{
-            level: "high",
+            level: level,
             rubric_version: "1",
             digest: "rd",
             findings_digest: "fd",
@@ -480,7 +480,7 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
             rationale: [
               %{
                 "rule" => "sensitive_path",
-                "level" => "high",
+                "level" => level,
                 "basis" => "path",
                 "detail" => risk_detail
               }
@@ -515,7 +515,7 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
                "findings_absent"
              )
 
-      assert has_element?(view, "#thread-pr-evidence-0", "risk high")
+      assert has_element?(view, "#thread-pr-evidence-0", "risk HIGH")
       assert has_element?(view, "#thread-pr-evidence-0 .pr-evidence-rationale", "sensitive_path")
       assert has_element?(view, "#thread-pr-evidence-0 .pr-evidence-next", "rerun_review")
       assert has_element?(view, "#thread-pr-evidence-0 .pr-evidence-next", "waive")
@@ -563,7 +563,7 @@ defmodule ForemanServerWeb.ProjectWorkspaceLiveTest do
     test "eligible evidence shows eligible and the thread is ready for review as before", %{
       id: id
     } do
-      seed_evidence(id, %{}, "touches docs")
+      seed_evidence(id, %{}, "touches docs", "LOW")
       {view, _} = mount_view(id)
 
       assert has_element?(view, "#group-ready_for_review #thread-run\\:r-pr2")
