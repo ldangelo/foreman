@@ -102,12 +102,12 @@ defmodule ForemanServer.Aggregates.RunEvidenceGateTest do
     })
   end
 
-  defp risk(state, head \\ @head) do
+  defp risk(state, head \\ @head, opts \\ []) do
     fold(state, "PrRiskRecorded", %{
       head_sha: head,
-      level: "LOW",
+      level: Keyword.get(opts, :level, "LOW"),
       rubric_version: "1",
-      digest: "risk-digest-1",
+      digest: Keyword.get(opts, :digest, "risk-digest-1"),
       findings_digest: "findings-digest-1",
       seq: 1,
       recorded_at: 1_800_000_000_000
@@ -115,14 +115,21 @@ defmodule ForemanServer.Aggregates.RunEvidenceGateTest do
   end
 
   defp waiver(state, codes, opts \\ []) do
-    fold(state, "PrEvidenceWaived", %{
+    payload = %{
       head_sha: Keyword.get(opts, :head, @head),
       reasons: codes,
       policy_version: Keyword.get(opts, :version, PrEvidence.policy_version([@unit])),
       reason: "known flake",
       approver_identity: @identity,
       waived_at: 1_800_000_000_000
-    })
+    }
+
+    payload =
+      if Keyword.has_key?(opts, :risk_digest),
+        do: Map.put(payload, :risk_digest, Keyword.fetch!(opts, :risk_digest)),
+        else: payload
+
+    fold(state, "PrEvidenceWaived", payload)
   end
 
   # A PR whose every record is clean for `@head`: eligible under a policy of `[@unit]`.
@@ -514,6 +521,136 @@ defmodule ForemanServer.Aggregates.RunEvidenceGateTest do
       {:ok, %{payload: b}} = approve(state, %{gated() | now_ms: 5})
       assert a.evidence == b.evidence
       assert a.evidence.now_ms == 5
+    end
+  end
+
+  # -- AC-001-3: the acknowledgement is recorded on the gate-off decision only -----------------
+
+  describe "gate_off_acknowledged on MergeGateApproved" do
+    test "a gate-off approval whose payload carries acknowledge_gate_off: true records it" do
+      assert {:ok, %{payload: payload}} =
+               approve(clean(), GateEvidence.off(), %{acknowledge_gate_off: true})
+
+      assert payload.gate_off_acknowledged == true
+      assert payload.evidence.status == "off"
+    end
+
+    test "a gate-off approval without a true atom-keyed flag records no such key" do
+      for extra <- [
+            %{},
+            %{acknowledge_gate_off: false},
+            %{acknowledge_gate_off: "true"},
+            %{acknowledge_gate_off: 1},
+            %{"acknowledge_gate_off" => true}
+          ] do
+        assert {:ok, %{payload: payload}} = approve(clean(), GateEvidence.off(), extra)
+        refute Map.has_key?(payload, :gate_off_acknowledged)
+        refute Map.has_key?(payload, "gate_off_acknowledged")
+      end
+    end
+
+    test "a GATED approval whose payload carries the flag records no such key" do
+      assert {:ok, %{payload: payload}} =
+               approve(clean(), gated(), %{acknowledge_gate_off: true})
+
+      assert payload.evidence.status == "eligible"
+      refute Map.has_key?(payload, :gate_off_acknowledged)
+    end
+  end
+
+  # -- AC-003-2: a risk_high waiver is bound to the risk record it was given for ---------------
+
+  describe "a risk_high waiver" do
+    defp high_state(digest, opts \\ []) do
+      state = started() |> ready() |> checks([item("unit", "passing")])
+      state = if Keyword.get(opts, :findings, true), do: findings(state), else: state
+      risk(state, @head, level: "HIGH", digest: digest)
+    end
+
+    defp waive(state, reasons, extra \\ %{}) do
+      payload =
+        Map.merge(
+          %{
+            run_id: @run_id,
+            approver: "leo",
+            approver_identity: @identity,
+            head_sha: @head,
+            policy_version: PrEvidence.policy_version([@unit]),
+            reasons: reasons,
+            reason: "judged by hand"
+          },
+          extra
+        )
+
+      Run.handle_command(state, %{type: "run.pr.waive_evidence", payload: payload})
+    end
+
+    defp waived!(state, reasons) do
+      assert {:ok, spec} = waive(state, reasons)
+      {spec, Run.apply_event(state, %{event_type: spec.event_type, payload: spec.payload})}
+    end
+
+    test "the waive handler stamps the digest of the risk record it was given for" do
+      assert {%{payload: payload}, _state} = waived!(high_state("d1"), ["risk_high"])
+      assert payload.risk_digest == "d1"
+    end
+
+    test "a waiver naming no risk_high carries no risk_digest key" do
+      assert {%{payload: payload}, _state} =
+               waived!(high_state("d1", findings: false), ["findings_absent"])
+
+      refute Map.has_key?(payload, :risk_digest)
+    end
+
+    test "a risk_high waiver given with no risk record of that head carries a nil digest" do
+      state = clean() |> risk("head-0", level: "HIGH", digest: "other-head")
+      assert {%{payload: payload}, _state} = waived!(state, ["risk_high"])
+      assert Map.fetch!(payload, :risk_digest) == nil
+    end
+
+    test "nothing changed between the waiver and the approval: approved as waived" do
+      {_spec, state} = waived!(high_state("d1"), ["risk_high"])
+      assert {["risk_high"], _detail} = refusal(high_state("d1"), gated())
+
+      assert {:ok, %{payload: %{evidence: %{status: "waived", waived: ["risk_high"]}}}} =
+               approve(state, gated())
+    end
+
+    test "the risk read differently since (same head, new digest): refused, naming risk_high" do
+      {_spec, state} = waived!(high_state("d1"), ["risk_high"])
+      state = risk(state, @head, level: "HIGH", digest: "d2")
+
+      assert {["risk_high"], detail} = refusal(state, gated())
+      assert detail.waived == []
+      assert detail.waiver.applies == true
+      assert [%{detail: text}] = detail.reasons
+      assert text =~ "another risk record"
+      assert_nothing_decided(state)
+
+      # waiving again after the refreshed record, the same PR is approvable
+      assert {%{payload: %{risk_digest: "d2"}}, again} = waived!(state, ["risk_high"])
+
+      assert {:ok, %{payload: %{evidence: %{status: "waived", waived: ["risk_high"]}}}} =
+               approve(again, gated())
+    end
+
+    test "the waiver stays in force for its other codes when the risk record changed" do
+      {%{payload: %{reasons: ["findings_absent", "risk_high"]}}, state} =
+        waived!(high_state("d1", findings: false), ["findings_absent", "risk_high"])
+
+      assert {:ok, %{payload: %{evidence: %{status: "waived", waived: both}}}} =
+               approve(state, gated())
+
+      assert Enum.sort(both) == ["findings_absent", "risk_high"]
+
+      state = risk(state, @head, level: "HIGH", digest: "d2")
+      assert {["risk_high"], detail} = refusal(state, gated())
+      assert detail.waived == ["findings_absent"]
+    end
+
+    test "a waiver recorded without a digest never covers risk_high" do
+      state = high_state("d1") |> waiver(["risk_high"])
+      assert {["risk_high"], _detail} = refusal(state, gated())
     end
   end
 

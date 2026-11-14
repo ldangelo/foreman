@@ -162,6 +162,28 @@ func TestRunApproveMergeAndMergeCarryRepoID(t *testing.T) {
 	}
 }
 
+// A gate-off approval is an explicit act: --acknowledge-gate-off sends
+// acknowledge_gate_off: true, and without the flag the key is absent (never false),
+// so the server's refusal of an unacknowledged gate-off approval stays reachable.
+func TestRunApproveMergeAcknowledgeGateOffIsSentOnlyWhenGiven(t *testing.T) {
+	base := []string{"-id", "run-7", "-approver", "leo", "-identity", "github:ldangelo", "-head-sha", "abc123"}
+
+	with := captureCommand(t, func(c *client.Client) error {
+		return runApproveMerge(c, append(append([]string{}, base...), "-acknowledge-gate-off"))
+	})
+	if with == nil || with.Type != "merge_approve" || with.Payload["acknowledge_gate_off"] != true {
+		t.Fatalf("with flag: envelope = %+v, want merge_approve carrying acknowledge_gate_off: true", with)
+	}
+
+	without := captureCommand(t, func(c *client.Client) error { return runApproveMerge(c, base) })
+	if without == nil || without.Type != "merge_approve" {
+		t.Fatalf("without flag: envelope = %+v, want merge_approve", without)
+	}
+	if v, present := without.Payload["acknowledge_gate_off"]; present {
+		t.Fatalf("without flag: acknowledge_gate_off = %v is present, want the key absent", v)
+	}
+}
+
 func TestRunRetryPrPostsRunPrRetry(t *testing.T) {
 	env := captureCommand(t, func(c *client.Client) error {
 		return runRetryPr(c, []string{"run-7", "-repo-id", "b"})

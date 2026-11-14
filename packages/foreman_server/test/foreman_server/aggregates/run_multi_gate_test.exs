@@ -500,7 +500,7 @@ defmodule ForemanServer.Aggregates.RunMultiGateTest do
           defect: nil,
           digest: "fd"
         })
-        |> put_in([:evidence, :risk], %{head_sha: head_sha, digest: "rd", level: "HIGH"})
+        |> put_in([:evidence, :risk], %{head_sha: head_sha, digest: "rd", level: "LOW"})
 
       PrEvidence.evaluate(record, %{
         head_sha: head_sha,

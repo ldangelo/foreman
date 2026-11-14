@@ -53,6 +53,16 @@ defmodule ForemanServerWeb.CommandControllerMergeTest do
         }
       })
 
+    # the base branch the executor records when it starts: without it the risk rubric reads HIGH
+    # and a HIGH level refuses a gated approval (`risk_high`)
+    {:ok, _} =
+      CommandGateway.dispatch_system(%{
+        type: "run.record_base_branch",
+        command_id: "base-#{run_id}",
+        aggregate_id: "run:#{run_id}",
+        payload: %{run_id: run_id, base_branch: "main"}
+      })
+
     test_pid = self()
     {:ok, rollup} = Agent.start_link(fn -> [] end)
 
@@ -66,7 +76,11 @@ defmodule ForemanServerWeb.CommandControllerMergeTest do
             "mergeable" => "MERGEABLE",
             "headRefOid" => @sha,
             "headRefName" => "foreman/task-http/run",
-            "baseRefName" => "main"
+            "baseRefName" => "main",
+            "files" => [%{"path" => "lib/a.ex", "additions" => 3, "deletions" => 1}],
+            "changedFiles" => 1,
+            "additions" => 3,
+            "deletions" => 1
           }
 
           view =
@@ -132,8 +146,9 @@ defmodule ForemanServerWeb.CommandControllerMergeTest do
   end
 
   test "approve then merge over HTTP merges exactly the approved PR and head", %{run_id: run_id} do
-    assert %{"status" => "accepted"} =
-             json_response(command("merge_approve", approve_body(run_id, "github:ldangelo")), 201)
+    body = run_id |> approve_body("github:ldangelo") |> Map.put("acknowledge_gate_off", true)
+
+    assert %{"status" => "accepted"} = json_response(command("merge_approve", body), 201)
 
     # The caller tries to steer the merge; the server must ignore all of it.
     conn =
@@ -304,7 +319,11 @@ defmodule ForemanServerWeb.CommandControllerMergeTest do
         assert is_integer(detail["now_ms"])
         assert detail["waived"] == []
         assert detail["waiver"] == nil
-        assert Enum.map(detail["reasons"], & &1["code"]) == unquote(codes)
+        # a check that is not passing makes the rubric read the PR as HIGH, so `risk_high` is
+        # listed beside the check's own reason
+        assert Enum.reject(Enum.map(detail["reasons"], & &1["code"]), &(&1 == "risk_high")) ==
+                 unquote(codes)
+
         assert [%{"subject" => "unit"} | _] = detail["reasons"]
         assert Enum.sort(Map.keys(detail["inputs"])) == Enum.sort(@inputs)
         assert detail["inputs"]["checks_ref"] == detail["checks_ref"]
@@ -333,18 +352,65 @@ defmodule ForemanServerWeb.CommandControllerMergeTest do
       assert gate_events(run_id, "MergeGateApproved") == []
     end
 
-    test "a project without required_checks approves as before, recording a gate-off decision",
+    test "a project without required_checks approves only when acknowledged, recording a gate-off decision",
          %{run_id: run_id} do
-      assert %{"status" => "accepted"} =
-               json_response(
-                 command("merge_approve", approve_body(run_id, "github:ldangelo")),
-                 201
-               )
+      body = run_id |> approve_body("github:ldangelo") |> Map.put("acknowledge_gate_off", true)
+
+      assert %{"status" => "accepted"} = json_response(command("merge_approve", body), 201)
 
       assert [approved] = gate_events(run_id, "MergeGateApproved")
       recorded = ForemanServer.Aggregate.get(approved, :evidence)
       assert ForemanServer.Aggregate.get(recorded, :status) == "off"
+      assert ForemanServer.Aggregate.get(approved, :gate_off_acknowledged) == true
       assert gate_events(run_id, "PrChecksChanged") == []
+    end
+
+    test "a project without required_checks and no acknowledgement is a 422 naming the flag; nothing is recorded",
+         %{run_id: run_id} do
+      for body <- [
+            approve_body(run_id, "github:ldangelo"),
+            Map.put(approve_body(run_id, "github:ldangelo"), "acknowledge_gate_off", false)
+          ] do
+        assert %{"error" => error, "message" => message} =
+                 json_response(command("merge_approve", body), 422)
+
+        assert error == ":gate_off_not_acknowledged"
+        assert message =~ "--acknowledge-gate-off"
+      end
+
+      assert gate_events(run_id, "MergeGateApproved") == []
+
+      # the gate is still shut
+      assert %{"error" => refused} =
+               json_response(command("run.pr.merge", %{"run_id" => run_id}), 422)
+
+      assert refused =~ "pr_not_acceptable"
+    end
+
+    test "a flag that is not a boolean is a 422 naming it, and gh is not asked", %{run_id: run_id} do
+      for bad <- ["true", "1", 1] do
+        body = run_id |> approve_body("github:ldangelo") |> Map.put("acknowledge_gate_off", bad)
+
+        assert %{"error" => error} = json_response(command("merge_approve", body), 422)
+        assert error =~ "acknowledge_gate_off"
+        refute error =~ "gate_off_not_acknowledged"
+      end
+
+      assert_received_no_gh_calls()
+      assert gate_events(run_id, "MergeGateApproved") == []
+    end
+
+    test "a waiver on a project whose gate is off keeps its own refusal, not the acknowledgement's",
+         %{run_id: run_id} do
+      body =
+        run_id
+        |> approve_body("github:ldangelo")
+        |> Map.merge(%{"reasons" => ["checks_stale"], "reason" => "x"})
+
+      conn = command("run.pr.waive_evidence", body)
+      assert %{"error" => error} = json_response(conn, 422)
+      assert error == ":gate_off"
+      refute Map.has_key?(json_response(conn, 422), "message")
     end
 
     test "a project the projection does not know is a 422 policy_unavailable and nothing is recorded",

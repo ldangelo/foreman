@@ -25,6 +25,12 @@ defmodule ForemanServerWeb.CommandController do
   @schedule_types CommandGateway.schedule_operator_types()
   @pr_operator_types CommandGateway.pr_operator_types()
 
+  # The refusal of a `merge_approve` on a project with no `required_checks` (gate off) that the
+  # operator did not acknowledge (AC-001-3). The body names the CLI flag that acknowledges it.
+  @gate_off_not_acknowledged_message "this project has no required_checks, so its merge gate is off and no PR evidence was checked; " <>
+                                       "to approve anyway, acknowledge it: foreman run approve-merge --acknowledge-gate-off " <>
+                                       "(payload key acknowledge_gate_off: true)"
+
   def create(conn, params) do
     envelope = build_envelope(params)
 
@@ -55,6 +61,11 @@ defmodule ForemanServerWeb.CommandController do
             conn
             |> put_status(:conflict)
             |> json(%{code: "project_has_active_runs", run_ids: run_ids})
+
+          {:error, :gate_off_not_acknowledged = reason} ->
+            conn
+            |> put_status(:unprocessable_entity)
+            |> json(%{error: inspect(reason), message: @gate_off_not_acknowledged_message})
 
           {:error, reason, detail} ->
             conn

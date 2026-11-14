@@ -42,20 +42,32 @@ defmodule ForemanServer.PrDeliveryAdversarialApprovalTest do
 
   # -- helpers ----------------------------------------------------------------------------------
 
-  # A gated project whose PR is ready at the world's head with a clean findings record.
+  # A gated project whose PR is ready at the world's head with a clean findings record (a LOW
+  # judgement) and the run's base branch recorded: without either, the rubric level is HIGH and
+  # `risk_high` refuses the approval.
   defp gated_run!(world, opts \\ []) do
-    World.ready_run!(world, World.project!(world, [@unit]), opts)
+    ready_run!(world, World.project!(world, [@unit]), opts)
+  end
+
+  defp ready_run!(world, project_id, opts) do
+    run = World.ready_run!(world, project_id, opts)
+    World.record_base!(run)
+    run
   end
 
   defp passing!(world), do: World.add_check!(world, World.check_run("unit"))
 
-  # The approval is refused with exactly `codes` for `head`; the gate is still pending, nothing was
-  # approved and the operator's merge is refused without any call to GitHub's merge. Every merge
-  # refusal of this file goes through the operator path, whose gateway reads the gate first; the
-  # aggregate's own guard (`ensure_pr_gate_ok`) is exercised only by the direct dispatch in
+  # The approval is refused with exactly `codes` for `head`, plus `risk_high`: the rubric reads
+  # HIGH for a PR whose required checks are not passing or whose findings are unusable, and a HIGH
+  # level is a reason (AC-003-2), so it rides on every refusal about a check or the findings (a
+  # `codes` that names a risk code itself is pinned as given). The gate is still pending, nothing
+  # was approved and the operator's merge is refused without any call to GitHub's merge. Every
+  # merge refusal of this file goes through the operator path, whose gateway reads the gate first;
+  # the aggregate's own guard (`ensure_pr_gate_ok`) is exercised only by the direct dispatch in
   # "without an approval nothing reaches GitHub's merge".
   defp assert_refused(world, run, codes, opts \\ []) do
     head = Keyword.get_lazy(opts, :head_sha, fn -> World.head(world) end)
+    codes = with_risk_high(codes)
 
     assert {:error, {:evidence_ineligible, ^head, ^codes}, detail} =
              World.approve(world, run, opts)
@@ -64,6 +76,12 @@ defmodule ForemanServer.PrDeliveryAdversarialApprovalTest do
     refute World.gate_approved?(run)
     assert {:error, :pr_not_acceptable} = World.merge(run)
     detail
+  end
+
+  defp with_risk_high(codes) do
+    if Enum.any?(codes, &String.starts_with?(&1, "risk_")),
+      do: codes,
+      else: codes ++ ["risk_high"]
   end
 
   defp assert_approved(world, run, opts \\ []) do
@@ -82,7 +100,9 @@ defmodule ForemanServer.PrDeliveryAdversarialApprovalTest do
     assert World.merge_calls(world) == []
   end
 
-  defp waive(world, run, head, codes \\ ["missing"], opts \\ []) do
+  # The default waives a missing check and the HIGH level the rubric gives a PR whose checks do
+  # not pass (a waived check is HIGH too): both are reasons of the approval.
+  defp waive(world, run, head, codes \\ ["missing", "risk_high"], opts \\ []) do
     World.operator("run:#{run.run_id}", "run.pr.waive_evidence", %{
       run_id: run.run_id,
       approver: "leo",
@@ -155,7 +175,7 @@ defmodule ForemanServer.PrDeliveryAdversarialApprovalTest do
     url = World.add_pr!(world, head: "head-steady")
     other = World.pr(world, url)
     World.add_check!(other, World.check_run("unit"))
-    run = World.ready_run!(world, World.project!(world, [@unit]), pr: url)
+    run = ready_run!(world, World.project!(world, [@unit]), pr: url)
 
     assert_approved(world, run)
     assert {:ok, _} = World.merge(run)
@@ -221,7 +241,7 @@ defmodule ForemanServer.PrDeliveryAdversarialApprovalTest do
       :ok = World.record_findings!(world, run, "head-two")
       World.set_rollup!(world, [World.check_run("unit", status: "IN_PROGRESS")])
       detail = assert_refused(world, run, ["pending"])
-      assert [%{code: :pending, subject: "unit"}] = detail.reasons
+      assert [%{code: :pending, subject: "unit"}, %{code: :risk_high}] = detail.reasons
       assert World.merge_calls(world) == []
 
       # CONTROL: the new head's check passes; the approval is for head-two and so is the merge
@@ -440,30 +460,32 @@ defmodule ForemanServer.PrDeliveryAdversarialApprovalTest do
       run = gated_run!(world)
 
       detail = assert_refused(world, run, ["missing"])
-      assert [%{code: :missing, subject: "unit"}] = detail.reasons
+      assert [%{code: :missing, subject: "unit"}, %{code: :risk_high}] = detail.reasons
 
       assert {:ok, _} = waive(world, run, "head-one")
       assert [%{} = waived] = World.events(run, "PrEvidenceWaived")
       assert get(waived, :head_sha) == "head-one"
-      assert get(waived, :reasons) == ["missing"]
+      assert get(waived, :reasons) == ["missing", "risk_high"]
 
       approved = assert_approved(world, run)
       assert get(get(approved, :evidence), :status) == "waived"
-      assert get(get(approved, :evidence), :waived) == ["missing"]
+      assert get(get(approved, :evidence), :waived) == ["missing", "risk_high"]
     end
 
     test "a waiver of head-one is voided by the head move and covers nothing of head-two",
          %{world: world} do
       run = gated_run!(world)
       assert {:ok, _} = waive(world, run, "head-one")
-      assert %{head_sha: "head-one", codes: ["missing"]} = watch_record(run).evidence.waiver
+
+      assert %{head_sha: "head-one", codes: ["missing", "risk_high"]} =
+               watch_record(run).evidence.waiver
 
       World.push!(world, "head-two")
       :ok = World.record_findings!(world, run, "head-two")
 
       # the gateway's forced observation of head-two moves the record's head: the waiver is gone
       detail = assert_refused(world, run, ["missing"], head_sha: "head-two")
-      assert [%{code: :missing, subject: "unit"}] = detail.reasons
+      assert [%{code: :missing, subject: "unit"}, %{code: :risk_high}] = detail.reasons
       assert detail.waiver == nil
       assert watch_record(run).evidence.waiver == nil
 
@@ -511,7 +533,7 @@ defmodule ForemanServer.PrDeliveryAdversarialApprovalTest do
       # a waiver of `missing` does not cover the failing check that is there
       assert {:ok, _} = waive(world, run, "head-one", ["missing"])
       detail = assert_refused(world, run, ["failing"])
-      assert [%{code: :failing, subject: "unit"}] = detail.reasons
+      assert [%{code: :failing, subject: "unit"}, %{code: :risk_high}] = detail.reasons
       assert detail.waived == []
 
       # CONTROL: the check passes: nothing was missing, the waiver is simply unused
@@ -532,7 +554,7 @@ defmodule ForemanServer.PrDeliveryAdversarialApprovalTest do
       World.set_required!(world, run.project_id, [@unit, lint])
 
       detail = assert_refused(world, run, ["missing", "missing"])
-      assert Enum.sort(Enum.map(detail.reasons, & &1.subject)) == ["lint", "unit"]
+      assert Enum.sort(Enum.map(detail.reasons, & &1.subject)) == [nil, "lint", "unit"]
       assert detail.policy_version != v1
       assert detail.waived == []
       assert %{applies: false, ignored_because: :policy_changed} = detail.waiver
@@ -567,6 +589,102 @@ defmodule ForemanServer.PrDeliveryAdversarialApprovalTest do
       assert {:ok, _} = waive(world, run, "head-one")
       assert [%{} = waived] = World.events(run, "PrEvidenceWaived")
       assert get(waived, :approver_identity) == "github:ldangelo"
+    end
+  end
+
+  # -- AC-003-2: a recorded HIGH risk level refuses the approval, and an operator may waive it ---
+
+  describe "AC-003-2: a recorded HIGH level refuses the approval; the operator waives it with a reason" do
+    # A secret-named file is HIGH by the rubric whatever else is true: the checks pass, the
+    # findings are clean (a LOW judgement) and the base branch is recorded, so the level is the
+    # one reason.
+    defp high_run!(world) do
+      World.set_files!(world, [{".env.production", 1, 0}])
+      run = gated_run!(world)
+      passing!(world)
+      run
+    end
+
+    test "HIGH on a gated project is refused `risk_high`, and the display reads it the same way",
+         %{world: world} do
+      run = high_run!(world)
+
+      detail = assert_refused(world, run, ["risk_high"])
+      assert [%{code: :risk_high, subject: nil}] = detail.reasons
+      assert detail.waived == []
+
+      assert %{level: "HIGH", head_sha: "head-one"} = watch_record(run).evidence.risk
+      assert World.events(run, "MergeGateApproved") == []
+      assert {:error, :pr_not_acceptable} = World.merge(run)
+      assert World.merge_calls(world) == []
+
+      dto = World.dto!(run)
+      assert dto.eligibility.status == "ineligible"
+      assert Enum.map(dto.eligibility.reasons, & &1.code) == ["risk_high"]
+
+      assert [%{codes: ["risk_high"]}] = Enum.filter(dto.next_actions, &(&1.action == "waive"))
+
+      # CONTROL: the one input flipped, the path is not sensitive: LOW, approved
+      World.set_files!(world, [{"lib/a.ex", 1, 0}])
+      clean = gated_run!(world)
+      assert assert_approved(world, clean).evidence.status == "eligible"
+    end
+
+    test "a waiver naming `risk_high`, with its reason, makes it approvable and is recorded", %{
+      world: world
+    } do
+      run = high_run!(world)
+      assert_refused(world, run, ["risk_high"])
+
+      assert {:ok, _} = waive(world, run, "head-one", ["risk_high"])
+      assert [%{} = waived] = World.events(run, "PrEvidenceWaived")
+      assert get(waived, :reasons) == ["risk_high"]
+      assert get(waived, :reason) == "the check does not run for this PR"
+
+      approved = assert_approved(world, run)
+      assert get(get(approved, :evidence), :status) == "waived"
+      assert get(get(approved, :evidence), :waived) == ["risk_high"]
+    end
+
+    test "a head change voids the waiver: the new head is refused `risk_high` again", %{
+      world: world
+    } do
+      run = high_run!(world)
+      assert {:ok, _} = waive(world, run, "head-one", ["risk_high"])
+      assert %{head_sha: "head-one", codes: ["risk_high"]} = watch_record(run).evidence.waiver
+
+      World.push!(world, "head-two")
+      :ok = World.record_findings!(world, run, "head-two")
+      passing!(world)
+
+      detail = assert_refused(world, run, ["risk_high"], head_sha: "head-two")
+      assert detail.waiver == nil
+      assert watch_record(run).evidence.waiver == nil
+
+      # CONTROL: a waiver that names head-two covers it
+      assert {:ok, _} = waive(world, run, "head-two", ["risk_high"])
+      approved = assert_approved(world, run, head_sha: "head-two")
+      assert get(get(approved, :evidence), :status) == "waived"
+    end
+
+    test "a waiver of `risk_high` does not cover a failing check; `risk_missing` and `risk_other_sha` stay never waivable",
+         %{world: world} do
+      run = high_run!(world)
+      World.set_rollup!(world, [World.check_run("unit", conclusion: "FAILURE")])
+
+      assert {:ok, _} = waive(world, run, "head-one", ["risk_high"])
+
+      # the failing check also changes what the risk record reads (the checks are one of its
+      # inputs), so the waiver, given for the earlier risk record, no longer covers `risk_high`
+      assert {:error, {:evidence_ineligible, "head-one", ["failing", "risk_high"]}, detail} =
+               World.approve(world, run)
+
+      assert [%{code: :failing}, %{code: :risk_high}] = detail.reasons
+      assert [] = detail.waived
+
+      for code <- ["risk_missing", "risk_other_sha"] do
+        assert {:error, {:reason_not_waivable, ^code}} = waive(world, run, "head-one", [code])
+      end
     end
   end
 
@@ -605,7 +723,9 @@ defmodule ForemanServer.PrDeliveryAdversarialApprovalTest do
       World.rerun_check!(world, "unit")
       World.complete_check!(world, "unit", "FAILURE", completed_at: "2026-11-12T16:00:00Z")
       detail = assert_refused(world, run, ["failing"])
-      assert [%{code: :failing, subject: "unit", detail: "FAILURE"}] = detail.reasons
+
+      assert [%{code: :failing, subject: "unit", detail: "FAILURE"}, %{code: :risk_high}] =
+               detail.reasons
 
       World.rerun_check!(world, "unit", started_at: "2026-11-12T16:30:00Z")
       World.complete_check!(world, "unit", "SUCCESS", completed_at: "2026-11-12T16:40:00Z")
@@ -638,7 +758,7 @@ defmodule ForemanServer.PrDeliveryAdversarialApprovalTest do
 
       # approving the failing PR repeatedly: every forced observation is a gate event
       for _attempt <- 1..2 do
-        assert {:error, {:evidence_ineligible, "head-one", ["failing"]}, _} =
+        assert {:error, {:evidence_ineligible, "head-one", ["failing", "risk_high"]}, _} =
                  World.approve(world, run)
       end
 

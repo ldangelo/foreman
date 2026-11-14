@@ -132,14 +132,21 @@ defmodule ForemanServer.PrWatch.DTOTest do
   defp with_waiver(record, codes, opts \\ []) do
     {:ok, %{version: version}} = policy()
 
-    fold(record, "PrEvidenceWaived", %{
+    payload = %{
       head_sha: Keyword.get(opts, :head, record.head_sha),
       reasons: codes,
       policy_version: Keyword.get(opts, :version, version),
       reason: "the unit job is skipped on docs changes",
       approver_identity: "github:ldangelo",
       waived_at: @now - 4_000
-    })
+    }
+
+    payload =
+      if Keyword.has_key?(opts, :risk_digest),
+        do: Map.put(payload, :risk_digest, Keyword.fetch!(opts, :risk_digest)),
+        else: payload
+
+    fold(record, "PrEvidenceWaived", payload)
   end
 
   # A record that is eligible under `policy()`.
@@ -171,15 +178,17 @@ defmodule ForemanServer.PrWatch.DTOTest do
         )
         |> with_risk(level: "HIGH")
         |> with_report()
-        |> with_waiver(["findings_absent"])
+        |> with_waiver(["findings_absent", "risk_high"], risk_digest: "risk-digest")
         |> fold("PrReadyFailed", %{stage: "signal", reason: "gh said no", failed_at: 55})
 
       dto = dto(record)
 
+      # the HIGH level is a reason (`risk_high`), covered here by the waiver
       assert %{
-               status: "eligible",
+               status: "waived",
                head_sha: "h1",
-               waived: [],
+               reasons: [],
+               waived: [%{code: "risk_high"}],
                policy_version: version,
                evaluated_at: @now
              } = dto.eligibility
@@ -252,7 +261,7 @@ defmodule ForemanServer.PrWatch.DTOTest do
 
       assert %{
                head_sha: "h1",
-               codes: ["findings_absent"],
+               codes: ["findings_absent", "risk_high"],
                policy_version: ^version,
                reason: "the unit job is skipped on docs changes",
                waived_by: "github:ldangelo",
@@ -542,6 +551,67 @@ defmodule ForemanServer.PrWatch.DTOTest do
       assert actions(dto(malformed, gate: "pending")) == ["rerun_review"]
     end
 
+    test "a recorded HIGH level is the reason risk_high, waivable while the gate is pending" do
+      high = clean() |> with_risk(level: "HIGH") |> with_report()
+      pending = dto(high, gate: "pending")
+
+      assert %{status: "ineligible", reasons: [%{code: "risk_high"}]} = pending.eligibility
+
+      assert [%{action: "waive", command: "run.pr.waive_evidence", codes: ["risk_high"]}] =
+               pending.next_actions
+
+      # a gate that is not pending offers nothing to waive
+      assert actions(dto(high, gate: "approved")) == []
+
+      # MEDIUM and LOW are no reason, and a HIGH record of another head is risk_other_sha
+      for level <- ["MEDIUM", "LOW"] do
+        medium = clean() |> with_risk(level: level) |> with_report()
+        assert %{status: "eligible", reasons: []} = dto(medium).eligibility
+      end
+
+      other = clean() |> with_risk(level: "HIGH", head: "h0") |> with_report()
+      assert %{reasons: [%{code: "risk_other_sha"}]} = dto(other).eligibility
+
+      # a waiver of this head and policy covers it
+      waived = high |> with_waiver(["risk_high"], risk_digest: "risk-digest")
+
+      assert %{status: "waived", reasons: [], waived: [%{code: "risk_high"}]} =
+               dto(waived).eligibility
+    end
+
+    test "the waive action offers what the current waiver still covers beside the uncovered codes" do
+      # findings are absent and the level is HIGH: one waiver, given for the current risk record,
+      # covers both, so nothing is left to waive
+      both =
+        base()
+        |> with_checks()
+        |> with_risk(level: "HIGH")
+        |> with_report()
+        |> with_waiver(["findings_absent", "risk_high"], risk_digest: "risk-digest")
+
+      assert %{status: "waived", reasons: []} = dto(both).eligibility
+      assert actions(dto(both)) == []
+
+      # the risk record is replaced by one with another digest (still HIGH): the waiver stays in
+      # force for findings_absent, risk_high is uncovered, and the offered waive keeps BOTH codes
+      # (a waiver replaces the one before it, so offering risk_high alone would drop the findings)
+      stale = with_risk(both, level: "HIGH", digest: "risk-digest-2")
+
+      assert %{status: "ineligible", reasons: [%{code: "risk_high"}], waived: [waived]} =
+               dto(stale).eligibility
+
+      assert waived.code == "findings_absent"
+
+      assert [%{codes: ["findings_absent", "risk_high"]}] =
+               Enum.filter(dto(stale).next_actions, &(&1.action == "waive"))
+
+      # a waiver that no longer applies (another head) covers nothing: only the uncovered codes
+      moved = with_waiver(both, ["findings_absent", "risk_high"], head: "h0", risk_digest: "x")
+
+      assert [%{codes: ["findings_absent", "risk_high"]}] =
+               Enum.filter(dto(moved).next_actions, &(&1.action == "waive"))
+    end
+
     test "publish only for a gated PR whose current risk record has no published report" do
       assert actions(dto(unpublished())) == ["publish"]
       assert [%{command: "run.pr.publish_report", codes: []}] = dto(unpublished()).next_actions
@@ -824,7 +894,7 @@ defmodule ForemanServer.PrWatch.DTOTest do
       %{run_id: run_id} = ready_run!(project_id, findings: false)
 
       assert {:error, {:evidence_ineligible, "head-one", refused}, _detail} = approve(run_id)
-      assert refused == ["findings_absent"]
+      assert refused == ["findings_absent", "risk_high"]
 
       assert {:ok, %{prs: [pr]}} = DTO.fetch(run_id)
       assert Enum.map(pr.eligibility.reasons, & &1.code) == refused
@@ -845,7 +915,7 @@ defmodule ForemanServer.PrWatch.DTOTest do
 
       open = register_project!(%{})
       %{run_id: open_run} = ready_run!(open)
-      assert {:ok, _} = approve(open_run)
+      assert {:ok, _} = approve(open_run, %{acknowledge_gate_off: true})
       assert {:ok, %{prs: [%{eligibility: %{status: "off", reasons: []}}]}} = DTO.fetch(open_run)
     end
 
@@ -951,6 +1021,16 @@ defmodule ForemanServer.PrWatch.DTOTest do
         }
       })
 
+    # the base branch the executor records when it starts: without it the risk rubric reads
+    # HIGH ("no base branch is recorded") and a HIGH level refuses the approval (`risk_high`)
+    {:ok, _} =
+      CommandGateway.dispatch_system(%{
+        type: "run.record_base_branch",
+        command_id: "base-#{run_id}",
+        aggregate_id: "run:#{run_id}",
+        payload: %{run_id: run_id, base_branch: "main"}
+      })
+
     run = %{run_id: run_id, pr_url: pr_url, project_id: project_id, task_id: "task-dto"}
     if Keyword.get(opts, :findings, true), do: GateEvidence.record_findings!(run, "head-one")
     run
@@ -981,17 +1061,21 @@ defmodule ForemanServer.PrWatch.DTOTest do
     })
   end
 
-  defp approve(run_id) do
+  defp approve(run_id, extra \\ %{}) do
     CommandGateway.dispatch_operator(%{
       command_id: "approve-#{token()}",
       type: "merge_approve",
       aggregate_id: "run:#{run_id}",
-      payload: %{
-        run_id: run_id,
-        approver: "leo",
-        approver_identity: "github:ldangelo",
-        head_sha: "head-one"
-      }
+      payload:
+        Map.merge(
+          %{
+            run_id: run_id,
+            approver: "leo",
+            approver_identity: "github:ldangelo",
+            head_sha: "head-one"
+          },
+          extra
+        )
     })
   end
 

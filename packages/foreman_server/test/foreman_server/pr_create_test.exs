@@ -649,6 +649,7 @@ defmodule ForemanServer.PrCreateTest do
                    run_id: t.run_id,
                    approver: "leo",
                    approver_identity: "github:ldangelo",
+                   acknowledge_gate_off: true,
                    head_sha: approved_head
                  }
                })

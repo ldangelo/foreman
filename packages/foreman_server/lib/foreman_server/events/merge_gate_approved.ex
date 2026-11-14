@@ -17,6 +17,11 @@ defmodule ForemanServer.Events.MergeGateApproved do
   (the eight keys `checks_head_sha`, `checks_observed_at`, `evidence_digest`, `checks_ref`,
   `findings_head_sha`, `findings_digest`, `risk_head_sha`, `risk_digest`; each `nil` when the PR
   held no such record). It is `nil` on an approval recorded before the gate read evidence.
+
+  `gate_off_acknowledged` is `true` when the operator approved a project whose merge gate was off
+  (no `required_checks`) and said so explicitly (`acknowledge_gate_off`, AC-001-3). It is written
+  only when true and is `nil` otherwise, so every approval recorded before it existed, and every
+  approval of a gated project, decodes and replays without it.
   """
   @enforce_keys [:run_id, :approver, :approver_identity]
   @type t :: %__MODULE__{
@@ -26,7 +31,8 @@ defmodule ForemanServer.Events.MergeGateApproved do
           head_sha: String.t() | nil,
           approved_at: non_neg_integer() | nil,
           repo_id: String.t() | nil,
-          evidence: map() | nil
+          evidence: map() | nil,
+          gate_off_acknowledged: boolean() | nil
         }
   @derive Jason.Encoder
   # `repo_id` is present only for a non-primary repository's PR (E12).
@@ -37,6 +43,7 @@ defmodule ForemanServer.Events.MergeGateApproved do
     head_sha: nil,
     approved_at: nil,
     repo_id: nil,
-    evidence: nil
+    evidence: nil,
+    gate_off_acknowledged: nil
   ]
 end

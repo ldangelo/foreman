@@ -268,11 +268,22 @@ defmodule ForemanServer.PrEvidenceTest do
         policy_version: "p1",
         reason: "known flake",
         waived_by: "leo",
-        waived_at: 99
+        waived_at: 99,
+        risk_digest: nil
       }
 
       assert aggregate.evidence.waiver == expected
       assert projection.evidence.waiver == expected
+    end
+
+    test "a risk_high waiver's risk_digest is folded by both folds, atom or string keyed" do
+      for payload <- [%{risk_digest: "rd-1"}, %{"risk_digest" => "rd-1"}] do
+        {aggregate, projection} =
+          fold_both([waived("h1", ["risk_high"], payload)])
+
+        assert aggregate.evidence.waiver.risk_digest == "rd-1"
+        assert projection.evidence.waiver == aggregate.evidence.waiver
+      end
     end
 
     test "a second waiver replaces the first" do
@@ -437,7 +448,7 @@ defmodule ForemanServer.PrEvidenceTest do
       Map.merge(
         %{
           head_sha: head,
-          level: "HIGH",
+          level: "LOW",
           rubric_version: "1",
           digest: "rd-#{head}",
           findings_digest: "fd-1",
@@ -1091,6 +1102,186 @@ defmodule ForemanServer.PrEvidenceTest do
         assert %{status: :ineligible, reasons: [%Reason{}], waived: []} =
                  PrEvidence.evaluate(rec, fctx())
       end
+    end
+
+    test "a HIGH record of the decided head is exactly risk_high; MEDIUM and LOW are no reason" do
+      high = frec(recorded(@fh)) |> risk_only(risk_rec(@fh, %{level: "HIGH"}))
+
+      assert %Eligibility{status: :ineligible, reasons: [%Reason{} = reason], waived: []} =
+               PrEvidence.evaluate(high, fctx())
+
+      assert %Reason{code: :risk_high, subject: nil, detail: detail} = reason
+      assert detail =~ "HIGH"
+
+      # a display read judges it the same way
+      assert fcodes(high, fctx(@fh, %{checks_ref: nil})) == [:risk_high]
+
+      for level <- ["MEDIUM", "LOW"] do
+        rec = frec(recorded(@fh)) |> risk_only(risk_rec(@fh, %{level: level}))
+
+        assert %Eligibility{status: :eligible, reasons: []} = PrEvidence.evaluate(rec, fctx())
+      end
+    end
+
+    test "a HIGH record of another head is risk_other_sha only, never risk_high" do
+      rec = frec(recorded(@fh)) |> risk_only(risk_rec("sha-f0", %{level: "HIGH"}))
+
+      assert [:risk_other_sha] == fcodes(rec, fctx())
+    end
+
+    test "a gate-off project reads :off before any risk level is read" do
+      rec = frec(recorded(@fh)) |> risk_only(risk_rec(@fh, %{level: "HIGH"}))
+
+      assert %Eligibility{status: :off, reasons: []} =
+               PrEvidence.evaluate(rec, fctx(@fh, %{policy: nil}))
+    end
+
+    test "risk_high is waivable by a waiver of this head and policy; risk_missing stays uncovered" do
+      assert "risk_high" in PrEvidence.waivable_codes()
+
+      waiver = %{
+        head_sha: @fh,
+        codes: ["risk_high"],
+        policy_version: "v1",
+        reason: "reviewed by hand",
+        waived_by: "w",
+        waived_at: 1,
+        risk_digest: "rd-#{@fh}"
+      }
+
+      high = frec(recorded(@fh)) |> risk_only(risk_rec(@fh, %{level: "HIGH"}))
+      waived = put_in(high.evidence.waiver, waiver)
+
+      assert %Eligibility{status: :waived, reasons: [], waived: [%Reason{code: :risk_high}]} =
+               PrEvidence.evaluate(waived, fctx())
+
+      # a waiver for another head covers nothing
+      moved = put_in(waived.evidence.waiver.head_sha, "sha-f0")
+
+      assert %Eligibility{status: :ineligible, reasons: [%Reason{code: :risk_high}], waived: []} =
+               PrEvidence.evaluate(moved, fctx())
+
+      # a waiver naming risk_high does not cover a missing record
+      missing = risk_only(waived, nil)
+
+      assert %Eligibility{status: :ineligible, reasons: [%Reason{code: :risk_missing}]} =
+               PrEvidence.evaluate(missing, fctx())
+    end
+
+    test "a risk_high waiver covers the risk record it was given for and no other" do
+      waiver = %{
+        head_sha: @fh,
+        codes: ["risk_high"],
+        policy_version: "v1",
+        reason: "the judgement is missing",
+        waived_by: "w",
+        waived_at: 1,
+        risk_digest: "rd-#{@fh}"
+      }
+
+      high = frec(recorded(@fh)) |> risk_only(risk_rec(@fh, %{level: "HIGH"}))
+      rec = put_in(high.evidence.waiver, waiver)
+
+      assert %Eligibility{status: :waived, waived: [%Reason{code: :risk_high}]} =
+               PrEvidence.evaluate(rec, fctx())
+
+      # the risk read differently later (the base moved: a new digest, still HIGH)
+      moved = risk_only(rec, risk_rec(@fh, %{level: "HIGH", digest: "rd-after-base-move"}))
+
+      assert %Eligibility{
+               status: :ineligible,
+               reasons: [%Reason{code: :risk_high, detail: detail}],
+               waived: [],
+               waiver: %{applies: true}
+             } = PrEvidence.evaluate(moved, fctx())
+
+      assert detail =~ "another risk record"
+
+      # a waiver without the digest, or with a nil one, covers no risk_high at all
+      for stripped <- [Map.delete(waiver, :risk_digest), %{waiver | risk_digest: nil}] do
+        none = put_in(high.evidence.waiver, stripped)
+
+        assert %Eligibility{
+                 status: :ineligible,
+                 reasons: [%Reason{code: :risk_high, detail: unbound_detail}]
+               } = PrEvidence.evaluate(none, fctx())
+
+        assert unbound_detail =~ "given with no risk record for this head"
+        refute unbound_detail =~ "another risk record"
+      end
+    end
+
+    test "a stale risk_high waiver leaves the waiver in force for its other codes" do
+      waiver = %{
+        head_sha: @fh,
+        codes: ["findings_absent", "risk_high"],
+        policy_version: "v1",
+        reason: "r",
+        waived_by: "w",
+        waived_at: 1,
+        risk_digest: "rd-old"
+      }
+
+      rec = frec(nil) |> risk_only(risk_rec(@fh, %{level: "HIGH"}))
+      rec = put_in(rec.evidence.waiver, waiver)
+
+      assert %Eligibility{
+               status: :ineligible,
+               reasons: [%Reason{code: :risk_high}],
+               waived: [%Reason{code: :findings_absent}]
+             } = PrEvidence.evaluate(rec, fctx())
+
+      current = put_in(rec.evidence.waiver.risk_digest, "rd-#{@fh}")
+
+      assert %Eligibility{
+               status: :waived,
+               reasons: [],
+               waived: [%Reason{code: :findings_absent}, %Reason{code: :risk_high}]
+             } = PrEvidence.evaluate(current, fctx())
+    end
+
+    test "risk_digest/2 is the digest of the risk record of that head, else nil" do
+      rec = frec(recorded(@fh))
+      assert PrEvidence.risk_digest(rec, @fh) == "rd-#{@fh}"
+      assert PrEvidence.risk_digest(rec, "sha-f0") == nil
+      assert PrEvidence.risk_digest(risk_only(rec, nil), @fh) == nil
+      assert PrEvidence.risk_digest(nil, @fh) == nil
+    end
+
+    test "a level that is not LOW, MEDIUM or HIGH is evidence_unreadable, never a pass and never waivable" do
+      waiver = %{
+        head_sha: @fh,
+        codes: ["evidence_unreadable", "risk_high"],
+        policy_version: "v1",
+        reason: "r",
+        waived_by: "w",
+        waived_at: 1,
+        risk_digest: "rd-#{@fh}"
+      }
+
+      for level <- [nil, "high", "Low", "", "CRITICAL", :HIGH, :LOW, 3, %{}] do
+        rec = frec(recorded(@fh)) |> risk_only(risk_rec(@fh, %{level: level}))
+
+        assert %Eligibility{status: :ineligible, reasons: [%Reason{} = reason], waived: []} =
+                 PrEvidence.evaluate(rec, fctx())
+
+        assert %Reason{code: :evidence_unreadable, subject: nil, detail: detail} = reason
+        assert detail =~ "LOW, MEDIUM or HIGH"
+        refute detail =~ inspect(level), "the unknown value is not copied into the reason"
+
+        # a display read judges it the same way
+        assert fcodes(rec, fctx(@fh, %{checks_ref: nil})) == [:evidence_unreadable]
+
+        # and no waiver covers it
+        waived = put_in(rec.evidence.waiver, waiver)
+
+        assert %Eligibility{status: :ineligible, reasons: [%Reason{code: :evidence_unreadable}]} =
+                 PrEvidence.evaluate(waived, fctx())
+      end
+
+      # a record with no level key at all reads the same way
+      lacking = frec(recorded(@fh)) |> risk_only(Map.delete(risk_rec(@fh), :level))
+      assert fcodes(lacking, fctx()) == [:evidence_unreadable]
     end
 
     test "a waiver covering the waivable findings gap leaves a missing risk uncovered" do

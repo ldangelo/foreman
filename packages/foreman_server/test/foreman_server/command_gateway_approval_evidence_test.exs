@@ -112,6 +112,20 @@ defmodule ForemanServer.CommandGatewayApprovalEvidenceTest do
         }
       })
 
+    # the base branch the executor records when it starts: without it the risk rubric reads
+    # HIGH ("no base branch is recorded") and a HIGH level refuses the approval (`risk_high`).
+    # A run the projection does not know is left without it: the record would create a projection
+    # entry for the run, and that fixture exists to be unknown.
+    unless opts[:no_run] do
+      {:ok, _} =
+        CommandGateway.dispatch_system(%{
+          type: "run.record_base_branch",
+          command_id: "base-#{run_id}",
+          aggregate_id: "run:#{run_id}",
+          payload: %{run_id: run_id, base_branch: "main"}
+        })
+    end
+
     run = %{run_id: run_id, pr_url: pr_url, project_id: project_id, task_id: "task-gate"}
     # the review findings of the head the PR opened at: a clean block, so an approval is not
     # refused `findings_absent` (TRD-036)
@@ -131,7 +145,7 @@ defmodule ForemanServer.CommandGatewayApprovalEvidenceTest do
           Agent.get_and_update(gh, fn state ->
             reply =
               case state[:view_failure] do
-                nil -> {view_json(state.head), 0}
+                nil -> {view_json(state.head, Map.get(state, :view_patch, %{})), 0}
                 failure -> failure
               end
 
@@ -145,8 +159,8 @@ defmodule ForemanServer.CommandGatewayApprovalEvidenceTest do
     end)
   end
 
-  defp view_json(head) do
-    Jason.encode!(%{
+  defp view_json(head, patch) do
+    %{
       "state" => "OPEN",
       "mergeable" => "MERGEABLE",
       "headRefOid" => head,
@@ -167,12 +181,22 @@ defmodule ForemanServer.CommandGatewayApprovalEvidenceTest do
       "changedFiles" => 1,
       "additions" => 3,
       "deletions" => 1
-    })
+    }
+    |> Map.merge(patch)
+    |> Jason.encode!()
   end
 
   defp gh_views(gh), do: Agent.get(gh, & &1.views)
   defp gh_other(gh), do: Agent.get(gh, & &1.other)
   defp set_head!(gh, head), do: Agent.update(gh, &%{&1 | head: head})
+
+  # Change what GitHub's view of the PR answers from now on: `patch_view!(gh, "baseRefName",
+  # "develop")`, merged over the default view (a `nil` value reads as the field gone).
+  defp patch_view!(gh, key, value) do
+    Agent.update(gh, fn state ->
+      Map.update(state, :view_patch, %{key => value}, &Map.put(&1, key, value))
+    end)
+  end
 
   defp approve(run_id, extra \\ %{}) do
     CommandGateway.dispatch_operator(%{
@@ -202,10 +226,11 @@ defmodule ForemanServer.CommandGatewayApprovalEvidenceTest do
   defp types(commands), do: Enum.map(commands, & &1.type)
   defp get(map, key), do: Aggregate.get(map, key)
 
-  # Dispatched after the run's `run.pr.ready` and the fixture's findings record (the fixture's own
-  # commands).
+  # Dispatched after the run's `run.pr.ready` and the fixture's own commands (the findings record
+  # and the recorded base branch).
+  @fixture_types ["run.pr.ready", "run.record_base_branch", "run.pr.findings"]
   defp after_ready(run_id),
-    do: Enum.reject(dispatched(run_id), &(&1.type in ["run.pr.ready", "run.pr.findings"]))
+    do: Enum.reject(dispatched(run_id), &(&1.type in @fixture_types))
 
   defp events(run_id, type) do
     {:ok, events} = EventStore.read_stream_forward("run:#{run_id}", 0, 1_000)
@@ -357,7 +382,7 @@ defmodule ForemanServer.CommandGatewayApprovalEvidenceTest do
       :meck.delete(CommandRouter, :dispatch, 2)
 
       set_required!(project_id, nil)
-      assert {:ok, _} = approve(run_id)
+      assert {:ok, _} = approve(run_id, %{acknowledge_gate_off: true})
 
       approvals = for c <- after_ready(run_id), c.type == "merge_approve", do: c
       assert [first, second, third] = approvals
@@ -398,7 +423,7 @@ defmodule ForemanServer.CommandGatewayApprovalEvidenceTest do
       project_id = register_project!(%{})
       %{run_id: run_id} = ready_run!(project_id)
 
-      assert {:ok, _} = approve(run_id)
+      assert {:ok, _} = approve(run_id, %{acknowledge_gate_off: true})
 
       assert length(gh_views(gh)) == 1
       assert [%{type: "merge_approve"} = command] = after_ready(run_id)
@@ -422,9 +447,9 @@ defmodule ForemanServer.CommandGatewayApprovalEvidenceTest do
       assert after_ready(run_id) == []
       assert events(run_id, "MergeGateApproved") == []
 
-      # a project with the gate off is not gated by the guard
+      # a project with the gate off is not gated by the guard (it still needs its acknowledgement)
       %{run_id: open_run} = ready_run!(register_project!(%{}))
-      assert {:ok, _} = approve(open_run)
+      assert {:ok, _} = approve(open_run, %{acknowledge_gate_off: true})
     end
 
     for type <- ["run.pr.update", "run.pr.checks", "run.pr.risk"] do
@@ -511,6 +536,84 @@ defmodule ForemanServer.CommandGatewayApprovalEvidenceTest do
     end
   end
 
+  # -- AC-003-2: a risk_high waiver and the approval's own re-observation ---------------------------
+
+  describe "a risk_high waiver, end to end through the gateway" do
+    # What the rubric reads as HIGH here: GitHub does not say how many files changed.
+    defp without_file_stats!(gh) do
+      for key <- ["files", "changedFiles", "additions", "deletions"],
+          do: patch_view!(gh, key, nil)
+    end
+
+    defp waive(run_id, reasons) do
+      CommandGateway.dispatch_operator(%{
+        command_id: "waive-#{token()}",
+        type: "run.pr.waive_evidence",
+        aggregate_id: "run:#{run_id}",
+        payload: %{
+          run_id: run_id,
+          approver: "leo",
+          approver_identity: @approver,
+          head_sha: "head-one",
+          reasons: reasons,
+          reason: "judged by hand"
+        }
+      })
+    end
+
+    defp risk_digests(run_id), do: for(e <- events(run_id, "PrRiskRecorded"), do: get(e, :digest))
+
+    test "nothing changed: the waiver given after the refusal still covers the risk the approval re-records",
+         %{gh: gh} do
+      {_project_id, %{run_id: run_id}} = gated_run!()
+      without_file_stats!(gh)
+
+      assert {:error, {:evidence_ineligible, "head-one", ["risk_high"]}, _detail} =
+               approve(run_id)
+
+      [refused_with] = Enum.uniq(risk_digests(run_id))
+      assert {:ok, _} = waive(run_id, ["risk_high"])
+      assert [waiver] = events(run_id, "PrEvidenceWaived")
+      assert get(waiver, :risk_digest) == refused_with
+
+      # the approval forces a re-observation and records the risk again: the same digest
+      assert {:ok, _} = approve(run_id)
+      assert Enum.uniq(risk_digests(run_id)) == [refused_with]
+
+      assert [approved] = events(run_id, "MergeGateApproved")
+      assert get(get(approved, :evidence), :status) == "waived"
+      assert get(get(approved, :evidence), :waived) == ["risk_high"]
+    end
+
+    test "the PR's base moved on GitHub after the waiver: refused naming risk_high, waivable again",
+         %{gh: gh} do
+      {_project_id, %{run_id: run_id}} = gated_run!()
+      without_file_stats!(gh)
+
+      assert {:error, {:evidence_ineligible, "head-one", ["risk_high"]}, _detail} =
+               approve(run_id)
+
+      assert {:ok, _} = waive(run_id, ["risk_high"])
+
+      # the head is unchanged; only the base the PR targets differs now
+      patch_view!(gh, "baseRefName", "develop")
+
+      assert {:error, {:evidence_ineligible, "head-one", ["risk_high"]}, detail} =
+               approve(run_id)
+
+      assert detail.waived == []
+      assert detail.waiver.applies == true
+      assert events(run_id, "MergeGateApproved") == []
+      assert length(Enum.uniq(risk_digests(run_id))) == 2
+
+      # waived again after the refreshed record: approved
+      assert {:ok, _} = waive(run_id, ["risk_high"])
+      assert {:ok, _} = approve(run_id)
+      assert [approved] = events(run_id, "MergeGateApproved")
+      assert get(get(approved, :evidence), :waived) == ["risk_high"]
+    end
+  end
+
   describe "the stamped evidence" do
     test "replaces any evidence the caller sent, atom or string keyed", %{gh: _gh} do
       {_project_id, %{run_id: run_id}} = gated_run!()
@@ -538,7 +641,11 @@ defmodule ForemanServer.CommandGatewayApprovalEvidenceTest do
     test "a forged evidence is dropped on a gate-off project too" do
       %{run_id: run_id} = ready_run!(register_project!(%{}))
 
-      assert {:ok, _} = approve(run_id, %{evidence: %{policy: %{required: [], version: "x"}}})
+      assert {:ok, _} =
+               approve(run_id, %{
+                 acknowledge_gate_off: true,
+                 evidence: %{policy: %{required: [], version: "x"}}
+               })
 
       assert [%{type: "merge_approve", payload: payload}] = after_ready(run_id)
       assert payload.evidence.policy == nil
@@ -560,6 +667,155 @@ defmodule ForemanServer.CommandGatewayApprovalEvidenceTest do
         refute Map.has_key?(payload, :evidence)
         refute Map.has_key?(payload, "evidence")
       end
+    end
+  end
+
+  # -- AC-001-3: approving on a project whose gate is off needs an explicit acknowledgement ------
+
+  describe "a gate-off approval must be acknowledged (acknowledge_gate_off)" do
+    defp gate_off_run!, do: ready_run!(register_project!(%{}))
+
+    defp recorded?(event, key), do: Map.has_key?(event, key) or Map.has_key?(event, "#{key}")
+
+    defp approvals_sent(run_id),
+      do: for(c <- after_ready(run_id), c.type == "merge_approve", do: c)
+
+    test "without the flag it is refused, typed, and nothing is dispatched or recorded", %{gh: gh} do
+      %{run_id: run_id} = gate_off_run!()
+
+      assert {:error, :gate_off_not_acknowledged} = approve(run_id)
+
+      assert approvals_sent(run_id) == []
+      assert after_ready(run_id) == []
+      assert events(run_id, "MergeGateApproved") == []
+      # the named head is checked first (one read); no evidence batch was built
+      assert length(gh_views(gh)) == 1
+
+      # the gate is still pending: the same operator can acknowledge and approve
+      assert {:ok, _} = approve(run_id, %{acknowledge_gate_off: true})
+      assert [_approved] = events(run_id, "MergeGateApproved")
+    end
+
+    test "an explicit false is not an acknowledgement" do
+      %{run_id: run_id} = gate_off_run!()
+
+      assert {:error, :gate_off_not_acknowledged} =
+               approve(run_id, %{acknowledge_gate_off: false})
+
+      assert events(run_id, "MergeGateApproved") == []
+    end
+
+    test "with the flag it is approved, stamped gate off as before, and the event records it",
+         %{gh: gh} do
+      %{run_id: run_id} = gate_off_run!()
+
+      assert {:ok, _} = approve(run_id, %{acknowledge_gate_off: true})
+
+      assert length(gh_views(gh)) == 1
+      assert events(run_id, "PrChecksChanged") == []
+      assert [%{payload: payload}] = approvals_sent(run_id)
+      assert payload.acknowledge_gate_off == true
+      assert %{policy: nil, checks_ref: nil, now_ms: now_ms} = payload.evidence
+      assert is_integer(now_ms)
+
+      assert [event] = events(run_id, "MergeGateApproved")
+      assert get(event, :gate_off_acknowledged) == true
+      assert get(event, :head_sha) == "head-one"
+      assert get(get(event, :evidence), :status) == "off"
+      assert get(get(event, :evidence), :required) == nil
+      assert get(get(event, :evidence), :checks_ref) == nil
+    end
+
+    test "the key arrives as a string key (the HTTP entry point) and is normalised once" do
+      %{run_id: run_id} = gate_off_run!()
+
+      assert {:error, :gate_off_not_acknowledged} =
+               approve(run_id, %{"acknowledge_gate_off" => false})
+
+      assert {:ok, _} = approve(run_id, %{"acknowledge_gate_off" => true})
+
+      assert [%{payload: payload}] = approvals_sent(run_id)
+      assert payload.acknowledge_gate_off == true
+      refute Map.has_key?(payload, "acknowledge_gate_off")
+      assert [event] = events(run_id, "MergeGateApproved")
+      assert get(event, :gate_off_acknowledged) == true
+    end
+
+    test "anything but a boolean is a malformed request, refused before GitHub is read", %{gh: gh} do
+      {_project_id, %{run_id: gated_id}} = gated_run!()
+      %{run_id: off_id} = gate_off_run!()
+
+      for run_id <- [off_id, gated_id],
+          bad <- ["true", "yes", "1", 1, 0, nil, [true], %{"a" => true}] do
+        assert {:error, {:missing_or_invalid, :acknowledge_gate_off}} =
+                 approve(run_id, %{acknowledge_gate_off: bad})
+      end
+
+      assert gh_views(gh) == []
+      assert after_ready(off_id) == []
+      assert after_ready(gated_id) == []
+      assert events(off_id, "MergeGateApproved") == []
+      assert events(gated_id, "MergeGateApproved") == []
+    end
+
+    test "a key the aggregate does not know is dropped, never recorded; the flag still counts" do
+      %{run_id: run_id} = gate_off_run!()
+
+      assert {:ok, _} =
+               approve(run_id, %{"acknowledge_gate_off" => true, "bogus_key" => "x", extra: 1})
+
+      assert [event] = events(run_id, "MergeGateApproved")
+      refute recorded?(event, :bogus_key)
+      refute recorded?(event, :extra)
+      assert get(event, :gate_off_acknowledged) == true
+    end
+
+    test "a gated project is unchanged by the flag: dropped, never recorded, never required" do
+      for flag <- [:absent, true, false] do
+        {_project_id, %{run_id: run_id}} = gated_run!([@unit])
+        extra = if flag == :absent, do: %{}, else: %{acknowledge_gate_off: flag}
+
+        assert {:ok, _} = approve(run_id, extra)
+
+        assert [%{payload: payload}] = approvals_sent(run_id)
+        refute Map.has_key?(payload, :acknowledge_gate_off)
+        assert payload.evidence.policy != nil
+        assert [event] = events(run_id, "MergeGateApproved")
+        refute recorded?(event, :gate_off_acknowledged)
+        assert get(get(event, :evidence), :status) == "eligible"
+      end
+    end
+
+    test "required_checks: [] is a gated project: its own refusal, never the acknowledgement's" do
+      for extra <- [%{}, %{acknowledge_gate_off: true}] do
+        {project_id, %{run_id: run_id}} = gated_run!([])
+        assert {:ok, %{required: []}} = PrEvidence.project_policy(project_id)
+
+        assert {:error, {:evidence_ineligible, "head-one", codes}, _detail} =
+                 approve(run_id, extra)
+
+        # `no_checks_configured` is the gate's own refusal of a gate ON with nothing required (the
+        # rubric also reads such a PR as HIGH, so `risk_high` may be listed beside it)
+        assert "no_checks_configured" in codes
+
+        assert events(run_id, "MergeGateApproved") == []
+      end
+    end
+
+    test "a gate that is not pending is left to the aggregate's refusal, flag or no flag" do
+      %{run_id: run_id} = gate_off_run!()
+      assert {:ok, _} = approve(run_id, %{acknowledge_gate_off: true})
+
+      for extra <- [%{}, %{acknowledge_gate_off: true}] do
+        before = length(approvals_sent(run_id))
+        assert {:error, :merge_gate_already_approved} = approve(run_id, extra)
+
+        assert [%{payload: payload}] = Enum.drop(approvals_sent(run_id), before)
+        refute Map.has_key?(payload, :acknowledge_gate_off)
+        refute Map.has_key?(payload, :evidence)
+      end
+
+      assert [_only_one] = events(run_id, "MergeGateApproved")
     end
   end
 

@@ -528,7 +528,7 @@ gh_stage_ready_and_merge() {
   # The approval names the exact head the operator reviewed; the server checks it against GitHub.
   gh_head=$(gh pr view "$GH_PR" -R "$GH_REPO" --json headRefOid -q .headRefOid 2>/dev/null)
   [ -n "$gh_head" ] || { fail "could not read the head sha of PR $GH_PR from GitHub"; return 1; }
-  fm run approve-merge --id "$GH_RUN" --approver "e2e-operator" --identity "github:${GH_REPO%%/*}" --head-sha "$gh_head" >"$WORK/approve.out" 2>&1 \
+  fm run approve-merge --id "$GH_RUN" --approver "e2e-operator" --identity "github:${GH_REPO%%/*}" --head-sha "$gh_head" --acknowledge-gate-off >"$WORK/approve.out" 2>&1 \
     && pass "operator approve-merge accepted (head $gh_head): $(tr '\n' ' ' < "$WORK/approve.out" | cut -c1-160)" || { fail "approve-merge: $(cut -c1-300 "$WORK/approve.out")"; return 1; }
   fm run merge --id "$GH_RUN" >"$WORK/merge.out" 2>&1 \
     && pass "operator run merge accepted: $(tr '\n' ' ' < "$WORK/merge.out" | cut -c1-160)" || { fail "run merge: $(cut -c1-300 "$WORK/merge.out")"; return 1; }

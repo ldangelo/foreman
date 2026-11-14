@@ -963,14 +963,18 @@ defmodule ForemanServer.Aggregates.Run do
          event_type: "MergeGateApproved",
          payload:
            put_repo_id(
-             %{
-               run_id: run_id,
-               approver: approval.approver,
-               approver_identity: approval.approver_identity,
-               head_sha: approval.head_sha,
-               approved_at: System.system_time(:millisecond),
-               evidence: decision
-             },
+             put_gate_off_acknowledged(
+               %{
+                 run_id: run_id,
+                 approver: approval.approver,
+                 approver_identity: approval.approver_identity,
+                 head_sha: approval.head_sha,
+                 approved_at: System.system_time(:millisecond),
+                 evidence: decision
+               },
+               payload,
+               decision
+             ),
              repo_key
            )
        }}
@@ -1001,17 +1005,23 @@ defmodule ForemanServer.Aggregates.Run do
          event_type: "PrEvidenceWaived",
          payload:
            put_repo_id(
-             %{
-               run_id: run_id,
-               pr_url: pr_url,
-               head_sha: approval.head_sha,
-               approver: approval.approver,
-               approver_identity: approval.approver_identity,
-               reasons: codes,
-               reason: reason,
-               policy_version: policy_version,
-               waived_at: System.system_time(:millisecond)
-             },
+             put_waived_risk_digest(
+               %{
+                 run_id: run_id,
+                 pr_url: pr_url,
+                 head_sha: approval.head_sha,
+                 approver: approval.approver,
+                 approver_identity: approval.approver_identity,
+                 reasons: codes,
+                 reason: reason,
+                 policy_version: policy_version,
+                 waived_at: System.system_time(:millisecond)
+               },
+               state,
+               pr_url,
+               approval.head_sha,
+               codes
+             ),
              repo_key
            )
        }}
@@ -1330,6 +1340,30 @@ defmodule ForemanServer.Aggregates.Run do
       :approved -> {:error, :merge_gate_already_approved}
       nil when is_nil(repo_key) -> {:error, {:merge_gate_not_found, :run}}
       nil -> {:error, {:merge_gate_not_found, :run, repo_key}}
+    end
+  end
+
+  # AC-001-3: `CommandGateway` keeps `acknowledge_gate_off: true` on an approval of a gate-off
+  # project the operator acknowledged (and drops it everywhere else). The aggregate decides
+  # nothing new: it records the flag, and only when it is `true` (read from the atom key only)
+  # AND the decision it just made is the gate off, so no gated approval can carry the key.
+  defp put_gate_off_acknowledged(event_payload, command_payload, %{status: "off"}) do
+    if Map.get(command_payload, :acknowledge_gate_off) == true,
+      do: Map.put(event_payload, :gate_off_acknowledged, true),
+      else: event_payload
+  end
+
+  defp put_gate_off_acknowledged(event_payload, _command_payload, _decision), do: event_payload
+
+  # A `risk_high` waiver is bound to the risk record it was given for: its digest is stamped on
+  # the event (`nil` when the PR holds no risk record of the waived head). Every other waiver
+  # carries no `risk_digest` key.
+  defp put_waived_risk_digest(event_payload, state, pr_url, head_sha, codes) do
+    if "risk_high" in codes do
+      digest = ForemanServer.PrEvidence.risk_digest(Map.get(state.pr_watch, pr_url), head_sha)
+      Map.put(event_payload, :risk_digest, digest)
+    else
+      event_payload
     end
   end
 
