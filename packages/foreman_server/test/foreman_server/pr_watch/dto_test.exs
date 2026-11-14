@@ -579,6 +579,39 @@ defmodule ForemanServer.PrWatch.DTOTest do
                dto(waived).eligibility
     end
 
+    test "the waive action offers what the current waiver still covers beside the uncovered codes" do
+      # findings are absent and the level is HIGH: one waiver, given for the current risk record,
+      # covers both, so nothing is left to waive
+      both =
+        base()
+        |> with_checks()
+        |> with_risk(level: "HIGH")
+        |> with_report()
+        |> with_waiver(["findings_absent", "risk_high"], risk_digest: "risk-digest")
+
+      assert %{status: "waived", reasons: []} = dto(both).eligibility
+      assert actions(dto(both)) == []
+
+      # the risk record is replaced by one with another digest (still HIGH): the waiver stays in
+      # force for findings_absent, risk_high is uncovered, and the offered waive keeps BOTH codes
+      # (a waiver replaces the one before it, so offering risk_high alone would drop the findings)
+      stale = with_risk(both, level: "HIGH", digest: "risk-digest-2")
+
+      assert %{status: "ineligible", reasons: [%{code: "risk_high"}], waived: [waived]} =
+               dto(stale).eligibility
+
+      assert waived.code == "findings_absent"
+
+      assert [%{codes: ["findings_absent", "risk_high"]}] =
+               Enum.filter(dto(stale).next_actions, &(&1.action == "waive"))
+
+      # a waiver that no longer applies (another head) covers nothing: only the uncovered codes
+      moved = with_waiver(both, ["findings_absent", "risk_high"], head: "h0", risk_digest: "x")
+
+      assert [%{codes: ["findings_absent", "risk_high"]}] =
+               Enum.filter(dto(moved).next_actions, &(&1.action == "waive"))
+    end
+
     test "publish only for a gated PR whose current risk record has no published report" do
       assert actions(dto(unpublished())) == ["publish"]
       assert [%{command: "run.pr.publish_report", codes: []}] = dto(unpublished()).next_actions

@@ -338,7 +338,9 @@ defmodule ForemanServer.PrEvidence do
       `findings_*` reason.
     * `waive` (`run.pr.waive_evidence`): the gate is pending and a waivable reason (`waivable_codes/0`)
       is not covered by an applying waiver; a waiver that no longer applies covers nothing, so it
-      is offered again.
+      is offered again. A waiver replaces the one before it, so the codes offered are the
+      uncovered waivable ones plus the codes the current waiver still covers: posting them keeps
+      what was waived and adds what is new.
     * `publish` (`run.pr.publish_report`): a gated PR the command accepts (watched and open or conflicted, `PrWatch.watched_open?/1`) whose risk record for
       its head has no published report for that head and digest.
     * `reset` (`run.reset`): the run is `failed`, `stuck`, `blocked` or `paused` and a `findings_*`
@@ -356,7 +358,7 @@ defmodule ForemanServer.PrEvidence do
     [
       action("fix_ci", "run.pr.fix_ci", Enum.filter(codes, &(&1 == :failing))),
       action("rerun_review", nil, findings),
-      action("waive", "run.pr.waive_evidence", waive_codes(codes, ctx)),
+      action("waive", "run.pr.waive_evidence", waive_codes(codes, eligibility.waived, ctx)),
       publish_action(record, eligibility),
       action(
         "reset",
@@ -390,9 +392,11 @@ defmodule ForemanServer.PrEvidence do
         :findings_other_sha
       ]
 
-  defp waive_codes(codes, ctx) do
-    if get(ctx, :merge_gate) in [:pending, "pending"],
-      do: Enum.filter(codes, &(&1 in @waivable)),
+  defp waive_codes(codes, covered, ctx) do
+    uncovered = Enum.filter(codes, &(&1 in @waivable))
+
+    if get(ctx, :merge_gate) in [:pending, "pending"] and uncovered != [],
+      do: Enum.uniq(uncovered ++ Enum.map(covered, & &1.code)),
       else: []
   end
 
@@ -462,7 +466,7 @@ defmodule ForemanServer.PrEvidence do
       {_status, reasons} ->
         reasons = reasons ++ findings_reasons(record, ctx) ++ risk_reasons(record, ctx)
         waiver = waiver_state(record, ctx)
-        {status, uncovered, covered} = apply_waiver(reasons, waiver, risk_waiver_current?(record))
+        {status, uncovered, covered} = apply_waiver(reasons, waiver, risk_waiver_binding(record))
         eligibility(ctx, status, uncovered, covered, waiver, inputs_for(record, ctx))
     end
   end
@@ -873,17 +877,18 @@ defmodule ForemanServer.PrEvidence do
   end
 
   # A `risk_high` reason is covered only when the waiver names it AND the waiver was given for
-  # the risk record that is current now (`risk_waiver_current?/1`): the risk can turn HIGH for
-  # another reason without a push (the PR's base moved on GitHub, a new findings record), and a
-  # waiver of one risk is no waiver of another. The waiver stays in force for every other code.
-  defp apply_waiver(reasons, %{applies: true, codes: codes}, risk_waiver_current?) do
+  # the risk record that is current now (`risk_waiver_binding/1` is `:current`): the risk can turn
+  # HIGH for another reason without a push (the PR's base moved on GitHub, a new findings
+  # record), and a waiver of one risk is no waiver of another. The waiver stays in force for every
+  # other code.
+  defp apply_waiver(reasons, %{applies: true, codes: codes}, risk_binding) do
     {covered, uncovered} =
       Enum.split_with(reasons, fn reason ->
         reason.code in @waivable and Atom.to_string(reason.code) in codes and
-          (reason.code != :risk_high or risk_waiver_current?)
+          (reason.code != :risk_high or risk_binding == :current)
       end)
 
-    uncovered = Enum.map(uncovered, &stale_risk_waiver_detail(&1, codes))
+    uncovered = Enum.map(uncovered, &stale_risk_waiver_detail(&1, codes, risk_binding))
 
     status =
       if uncovered == [], do: if(covered == [], do: :eligible, else: :waived), else: :ineligible
@@ -891,27 +896,39 @@ defmodule ForemanServer.PrEvidence do
     {status, uncovered, covered}
   end
 
-  defp apply_waiver(reasons, _waiver, _risk_waiver_current?),
+  defp apply_waiver(reasons, _waiver, _risk_binding),
     do: {if(reasons == [], do: :eligible, else: :ineligible), reasons, []}
 
-  # The waiver names `risk_high` but covers another risk record: say so on the reason.
-  defp stale_risk_waiver_detail(%Reason{code: :risk_high} = reason, codes) do
+  # The waiver names `risk_high` but does not cover the current risk record: say which way.
+  defp stale_risk_waiver_detail(%Reason{code: :risk_high} = reason, codes, risk_binding) do
     if "risk_high" in codes,
       do: %{
         reason
-        | detail: "the recorded risk level is HIGH; the waiver was given for another risk record"
+        | detail: "the recorded risk level is HIGH; " <> stale_binding_text(risk_binding)
       },
       else: reason
   end
 
-  defp stale_risk_waiver_detail(reason, _codes), do: reason
+  defp stale_risk_waiver_detail(reason, _codes, _risk_binding), do: reason
 
-  # The waiver's risk digest is the current risk record's: both non-nil and equal.
-  defp risk_waiver_current?(record) do
+  defp stale_binding_text(:unbound),
+    do: "the waiver was given with no risk record for this head"
+
+  defp stale_binding_text(_other), do: "the waiver was given for another risk record"
+
+  # How the waiver's risk digest stands to the current risk record: `:current` (both non-nil and
+  # equal), `:unbound` (the waiver holds no digest: it was given with no risk record of its head,
+  # or without one) or `:other` (it was given for another risk record).
+  defp risk_waiver_binding(record) do
     evidence = evidence_of(record)
     waived = evidence |> Map.get(:waiver) |> get(:risk_digest)
     current = evidence |> Map.get(:risk) |> get(:digest)
-    is_binary(waived) and waived == current
+
+    cond do
+      not is_binary(waived) -> :unbound
+      waived == current -> :current
+      true -> :other
+    end
   end
 
   # -- inputs --------------------------------------------------------------------

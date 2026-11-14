@@ -1201,8 +1201,13 @@ defmodule ForemanServer.PrEvidenceTest do
       for stripped <- [Map.delete(waiver, :risk_digest), %{waiver | risk_digest: nil}] do
         none = put_in(high.evidence.waiver, stripped)
 
-        assert %Eligibility{status: :ineligible, reasons: [%Reason{code: :risk_high}]} =
-                 PrEvidence.evaluate(none, fctx())
+        assert %Eligibility{
+                 status: :ineligible,
+                 reasons: [%Reason{code: :risk_high, detail: unbound_detail}]
+               } = PrEvidence.evaluate(none, fctx())
+
+        assert unbound_detail =~ "given with no risk record for this head"
+        refute unbound_detail =~ "another risk record"
       end
     end
 
