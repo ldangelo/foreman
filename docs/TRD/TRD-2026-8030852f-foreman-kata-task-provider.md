@@ -1,7 +1,7 @@
 ---
 document_id: TRD-2026-8030852f
 label: trd-foreman-kata-task-provider
-version: 2.0.12
+version: 2.0.13
 status: Draft
 date: 2026-11-18
 prd_reference: PRD-2026-8030852f
