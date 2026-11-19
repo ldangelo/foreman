@@ -600,13 +600,13 @@ Task IDs are `TRD-KATA-T###`, with an optional `-TEST` suffix marking a test tas
 
 #### Story 5.1 — End-to-end and routing verification
 
-- [ ] **TRD-KATA-T044-TEST**: End-to-end integration test (4h)
+- [x] **TRD-KATA-T044-TEST**: End-to-end integration test (4h)
   - PRD task ID: KATA-T044
   - Description: End-to-end integration test — in a sandboxed temp directory with its own `KATA_HOME` (set in the test process env only, never Foreman config) run `kata init --project <name>`, then `kata create "test issue" --body "…" --idempotency-key <key> --json` (id at `.issue.short_id`); wire the full `RunExecutor` lifecycle against the real `KataAdapter` (not the mock); assert the issue transitions `open` → claimed → closed; assert the failure path reopens, comments and unassigns, leaving the issue open and unowned, listed by `kata ready --unowned` and claimable again; use `SystemKataRunner` with timeout
   - Target Files: `packages/foreman_server/test/foreman_server/task_providers/kata_e2e_test.exs`
   - Test AC:
-    - [ ] Against a real `kata` in a scratch workspace the issue goes open → owned → closed on success, and on failure is reopened with a comment and released (open, unowned, listed by `kata ready --unowned`, claimable again)
-    - [ ] The test is excluded (not failed) when `kata` is not on `PATH`
+    - [x] Against a real `kata` in a scratch workspace the issue goes open → owned → closed on success, and on failure is reopened with a comment and released (open, unowned, listed by `kata ready --unowned`, claimable again)
+    - [x] The test is excluded (not failed) when `kata` is not on `PATH`
   - Dependencies: TRD-KATA-T033, TRD-KATA-T034, TRD-KATA-T035
 - [x] **TRD-KATA-T045-TEST**: Verify `KataAdapter` registered correctly in `TaskProvider.Registry` (2h) [satisfies REQ-003]
   - PRD task ID: KATA-T045
