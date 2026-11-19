@@ -85,6 +85,7 @@ export default class ForemanRun extends View {
     this.approvals = [];
     this.questions = [];
     this.waitWarn = null; // approvals/questions could not be read
+    this.phasesWarn = null; // the phases endpoint failed (an older server has none)
     this.changes = null; // see loadChanges()
     this.changesAt = 0;
     this.diffs = new Map(); // path -> {lines} | {error} | "loading"
@@ -144,7 +145,15 @@ export default class ForemanRun extends View {
     if (!this.thread) {
       try { this.thread = (await api(`/api/threads/run:${id}`)).thread ?? null; } catch { /* retried next poll */ }
     }
-    this.phases = (await api(`/api/runs/${id}/phases`)).phases ?? [];
+    // A failure here must not take the feed, changes and approvals down with it: the strip then
+    // shows the workflow's phases without status, and says why.
+    try {
+      this.phases = (await api(`/api/runs/${id}/phases`)).phases ?? [];
+      this.phasesWarn = null;
+    } catch (e) {
+      this.phases = [];
+      this.phasesWarn = String(e?.message ?? e).split("\n")[0];
+    }
     await this.loadTranscript();
     await this.loadWaiting();
     const active = isActive(this.run) || this.run.status === "paused";
@@ -380,6 +389,7 @@ export default class ForemanRun extends View {
       ...this.approvals.map((a) => banner(`Waiting for your approval: ${a.tool_name}${a.input_summary ? ` — ${oneLine(a.input_summary, 140)}` : ""}`, th.idle)),
       ...this.questions.map((q) => banner(`Asks: ${oneLine(q.text ?? "(no text)", 200)}`, th.idle)),
       this.waitWarn && banner(`Could not read approvals/questions: ${this.waitWarn}`, th.blocked),
+      this.phasesWarn && banner(`Phase status unavailable: ${this.phasesWarn}`, th.dim),
     ].filter(Boolean);
 
     const files = this.changes?.state === "ok"

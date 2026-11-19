@@ -8,7 +8,7 @@ service in `packages/foreman_server`. This repository contains:
 | `packages/foreman_server/` | The Elixir/Phoenix runtime. Hosts the `ForemanServer.AgentRuntime` subsystem (TRD-2026-6af02293, TRD-2026-4212be7e) and the workflow catalog (TRD-2026-96872fc5). |
 | `packages/foreman_cli/` | The Go CLI. Wraps the Phoenix HTTP boundary for operator use; the only operator-facing path into the runtime. |
 | `packages/jido_harness/` | Vendored Sunstone-Partners fork of `agentjido/jido_harness`. The current agent-execution backend (see `JIDO_FORKS.md` for pinned SHAs). |
-| `ops/herdr-sidebar/` | Optional Herdr desktop-app sidebar panel listing runs by project and status, with keyboard shortcuts; read-only, talks to Foreman through the `foreman` CLI. See its [`README.md`](./ops/herdr-sidebar/README.md). |
+| `ops/herdr-sidebar/` | Optional Herdr desktop-app sidebar panel listing runs by project and status, and a live run-detail tab (phases, activity, changes); read-only, talks to Foreman through the `foreman` CLI and its read-only HTTP API. See its [`README.md`](./ops/herdr-sidebar/README.md). |
 | `docs/PRD/` | Product requirements documents, one per design slice. |
 | `docs/TRD/` | Technical requirements documents, one per design slice. |
 | `docs/architecture/`, `docs/standards/`, `docs/guides/` | Architectural context, the project constitution, and step-by-step operator/developer guides. |
