@@ -2554,9 +2554,12 @@ and an out-of-range version is a warning, not an unavailable provider.
   :task_provider`.
 
 Telemetry: `[:foreman_server, :task_provider, :kata, :subprocess, :spawned]`
-(one event per `kata` subprocess, carrying its OS pid only) and
+(one event per `kata` subprocess, carrying its OS pid only),
 `[:foreman_server, :task_provider, :registry, :invalid_capabilities]` (a provider
-whose capability map the registry refused).
+whose capability map the registry refused) and
+`[:foreman_server, :task_provider, :claim, :lost]` (a claim the provider refused
+twice, which fails the run before any agent is dispatched; this applies to every
+provider, Beads included).
 
 ## 11. Jobsite: scripted agent runs
 

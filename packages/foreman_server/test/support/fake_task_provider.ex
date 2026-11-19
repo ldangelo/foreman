@@ -59,6 +59,13 @@ defmodule ForemanServer.TestSupport.FakeTaskProvider do
   @spec get_mode(String.t(), term()) :: :ok
   def get_mode(db, mode), do: update(db, fn s -> Map.put(s, :get_mode, mode) end)
 
+  @doc """
+  How many times `list_ready/2` was called. It is not part of `calls/1`: nothing else asserts on
+  it, and a scripted `:list_ready` (see `script/3`) answers instead of the default `{:ok, []}`.
+  """
+  @spec refreshes(String.t()) :: non_neg_integer()
+  def refreshes(db), do: state(db).refreshes
+
   @spec error(String.t(), boolean()) :: ProviderError.t()
   def error(message, retryable?),
     do: %ProviderError{
@@ -91,7 +98,15 @@ defmodule ForemanServer.TestSupport.FakeTaskProvider do
   def create(_project_id, _attrs), do: {:error, error("create unsupported", false)}
 
   @impl true
-  def list_ready(_config, _opts), do: {:ok, []}
+  def list_ready(config, _opts) do
+    db = db(config)
+    update(db, fn s -> Map.update!(s, :refreshes, &(&1 + 1)) end)
+
+    case take_script(db, :list_ready) do
+      {:scripted, result} -> result
+      :none -> {:ok, []}
+    end
+  end
 
   @impl true
   def get(id, config) do
@@ -230,5 +245,5 @@ defmodule ForemanServer.TestSupport.FakeTaskProvider do
     end)
   end
 
-  defp empty, do: %{issues: %{}, calls: [], crash: %{}, script: %{}, get_mode: :ok}
+  defp empty, do: %{issues: %{}, calls: [], crash: %{}, script: %{}, get_mode: :ok, refreshes: 0}
 end

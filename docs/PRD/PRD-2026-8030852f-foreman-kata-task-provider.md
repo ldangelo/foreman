@@ -2,7 +2,7 @@
 documentId: PRD-2026-8030852f
 label: prd-foreman-kata-task-provider
 title: "Foreman × Kata (kenn.io/kata) — Task-Provider Integration"
-version: 1.1.12
+version: 1.1.13
 status: Draft
 date: 2026-11-18
 scaleDepth: STANDARD
@@ -994,5 +994,6 @@ list now holds 56 tasks (`KATA-T001`–`KATA-T056`).
 | 1.1.10 | 2026-11-19 | Foreman ensemble-implement-trd | AC-017-4's closed context key set gains `missing_fields`. `ProviderError.new/3` seeds `missing_fields: []` into every context (the shared struct, Beads included) and AC-006-1 requires schema-validation errors to name the absent fields, so a literal six-key set could never hold; the key is now part of the closed set, always a list of field names, empty except on schema-validation errors, never values. Naming the fields only in the error message was considered and rejected because it would not remove the seeded key. Still 57 ACs. |
 | 1.1.11 | 2026-11-19 | Foreman ensemble-implement-trd | AC-012-1 no longer requires a commit SHA on every close. Probed on `kata` v0.23.0: `kata close --done` needs typed evidence (`commit:`, `pr:`, `test:`, `reviewed-paths:`, `external:` or `attachment:`) and exits 3 without it; an empty `--commit` is also refused (`evidence[0] commit requires non-empty sha`). A phase that produces no commit therefore cannot supply a SHA, so the close carries the commit SHA when the run produced one and otherwise the run's artifact path as reviewed-paths evidence, but only when that file exists; a run with neither gets a typed validation error rather than an invented value or a claim about a file that was never written. Still 57 ACs. |
 | 1.1.12 | 2026-11-19 | Foreman ensemble-implement-trd | §11 OPEN-Q1 and OPEN-Q2 each gain a resolution note: the upstream-pinned check (KATA-T038, KATA-T039) could not be done because no pinned upstream revision exists and the upstream source is not reachable (`kenn.io/kata` returns 404); the published CLI reference (katatracker.com) and the installed `kata` v0.23.0 binary were used instead, and filing an upstream issue was not authorised. No AC added, removed or changed (still 57). |
+| 1.1.13 | 2026-11-19 | Foreman ensemble-implement-trd | Forward pointer only; no AC text changed (still 57). AC-004-1 says "`System.cmd` invocation of `kata`"; the built runner spawns `kata` through `Port.open` on `/bin/sh`, so there is no such `System.cmd`. The architecture test enforces the stronger rule (no spawn of `kata` in any form, `System.cmd`, `System.shell`, `Port.open`, `:os.cmd`, `:erlang.open_port`, outside the single runner site), and the TRD's AC-004-1 restates it that way (TRD 2.0.12). |
 
 ---

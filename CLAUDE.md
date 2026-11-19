@@ -838,7 +838,9 @@ Source of truth: `docs/TRD/TRD-2026-a804d1c7-phase-0-durable-execution.md`.
   `KATA_VERSION_REQUIREMENT_INVALID` never make the project unhealthy;
   `CWD_MISSING` and `PROVIDER_MISSING` do. The adapter itself has no version gate.
   Telemetry: `[:foreman_server, :task_provider, :kata, :subprocess, :spawned]`,
-  `[:foreman_server, :task_provider, :registry, :invalid_capabilities]`.
+  `[:foreman_server, :task_provider, :registry, :invalid_capabilities]` and
+  `[:foreman_server, :task_provider, :claim, :lost]` (a claim the provider refused
+  twice, which fails the run before any agent is dispatched; every provider).
 
 ## 14. Beads sync invariants (Go/Elixir CQRS slice)
 

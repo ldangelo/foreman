@@ -10,9 +10,11 @@
   project selects it with `task_provider: "kata"` and a `config.cwd` pointing at
   its Kata workspace; the Go CLI sends the registered path as `config.cwd` for
   `foreman project update --task-provider kata`.
-- Declared operations (`capabilities/0 .supports`): `create`, `claim`, `close`,
-  `reopen`, `annotate`, `set_priority`, `set_assignee`, `list_dependencies`,
-  `add_dependency`, `remove_dependency`. `claim`, `complete` (`kata close --done`
+- Declared operations (`capabilities/0 .supports`, in the registry's transition
+  vocabulary): `create`, `claim`, `close`, `reopen`, `annotate`, `set_priority`,
+  `set_assignee`, `list_dependencies`, `add_dependency`, `remove_dependency`
+  (`set_assignee`, `list_dependencies` and `remove_dependency` have no callback,
+  as in Beads). `claim`, `complete` (`kata close --done`
   with typed evidence) and `fail` (status, `kata reopen`, an idempotent
   `kata comment`, then `kata unassign --expect-owner <actor>`) run through the
   provider-generic `RunExecutor` lifecycle with no Kata-specific branch.
@@ -36,10 +38,10 @@
 
 ### Changed
 
-- The generic claim path re-claims once when a still-ready task answers
-  `NOT_CLAIMABLE` or `CLAIMED_BY_OTHER`; a second refusal emits
-  `[:foreman_server, :task_provider, :claim, :lost]` and fails the run before any
-  agent is dispatched. This also applies to Beads.
+- The generic claim path already re-claimed once on `NOT_CLAIMABLE` and emitted
+  `[:foreman_server, :task_provider, :claim, :lost]` on a second refusal; it now
+  treats `CLAIMED_BY_OTHER` the same way, which also applies to Beads' refusal.
+  A lost claim fails the run before any agent is dispatched.
 - `TaskProvider.complete/5` accepts an optional `commit_sha`, computed at close from
   the run's own commits (`base_ref..HEAD`, newest first); no sha is sent when the run
   made no commit.
