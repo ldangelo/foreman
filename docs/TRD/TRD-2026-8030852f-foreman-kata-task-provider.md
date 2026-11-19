@@ -1,7 +1,7 @@
 ---
 document_id: TRD-2026-8030852f
 label: trd-foreman-kata-task-provider
-version: 2.0.9
+version: 2.0.10
 status: Draft
 date: 2026-11-18
 prd_reference: PRD-2026-8030852f
@@ -18,7 +18,7 @@ kind: trd
 
 ## 1. Executive Summary
 
-This TRD turns PRD `PRD-2026-8030852f-foreman-kata-task-provider` (v1.1.11, readiness 4.5 PASS, 17 REQs, 57 ACs; source file `docs/PRD/PRD-2026-8030852f-foreman-kata-task-provider.md`) into a concrete implementation plan for the `KataAdapter` — the second `TaskProvider` adapter that lets Kata (kenn.io/kata) act as the authoritative task tracker alongside the existing Beads adapter. The PRD micro UUID `8030852f` is preserved unchanged so PRD/TRD artifacts correlate 1:1. The label prefix changes from `prd-` to `trd-` (`trd-foreman-kata-task-provider`); the label is display-only and all cross-references use the micro UUID.
+This TRD turns PRD `PRD-2026-8030852f-foreman-kata-task-provider` (v1.1.12, readiness 4.5 PASS, 17 REQs, 57 ACs; source file `docs/PRD/PRD-2026-8030852f-foreman-kata-task-provider.md`) into a concrete implementation plan for the `KataAdapter` — the second `TaskProvider` adapter that lets Kata (kenn.io/kata) act as the authoritative task tracker alongside the existing Beads adapter. The PRD micro UUID `8030852f` is preserved unchanged so PRD/TRD artifacts correlate 1:1. The label prefix changes from `prd-` to `trd-` (`trd-foreman-kata-task-provider`); the label is display-only and all cross-references use the micro UUID.
 
 The implementation lives under `packages/foreman_server/` (the Foreman repo's Phoenix package) plus one change in `packages/foreman_cli/` (the Go CLI) — paths in this TRD are repo-relative. The slice is supervised by the existing `ForemanServer.Application` supervisor tree; new supervisor children are added, not a parallel OTP application.
 
@@ -26,9 +26,9 @@ The Kata adapter is materially shorter than the Beads adapter in three ways: (i)
 
 The TRD delivers in five vertical slices, one `### PR N:` section each in the Master Task List:
 
-1. **PR 1** — Foundation: `KataRunner` behaviour (`cmd/3` interface), `SystemKataRunner` (sole `System.cmd("kata", ...)` site), `KataRunnerMock` at `test/support/`, `KataAdapter` implementing all 13 TaskProvider callbacks (`name/0`, `create/2`, `capabilities/0`, `available?/0`, `list_ready/2`, `get/2`, `claim/3`, `complete/3`, `fail/3`, `reopen/3`, `set_priority/3`, `add_dependency/3`, `annotate/3`), surgical `mix.exs` + `config/test.exs` + `config/config.exs` updates (provider registration and `"kata.capabilities.v1"` in `accepted_contract_versions`). KataAdapter dispatches every callback through `@runner.cmd/3` (compile-time-bound via `Application.compile_env/3`). No schema cache — Kata validates by simple field-mapping. No orphan scanner — Kata is authoritative for claim state.
+1. **PR 1** — Foundation: `KataRunner` behaviour (`cmd/3` interface), `SystemKataRunner` (the sole site that spawns `kata`, through a `Port` on `/bin/sh`), `KataRunnerMock` at `test/support/`, `KataAdapter` implementing all 13 TaskProvider callbacks (`name/0`, `create/2`, `capabilities/0`, `available?/0`, `list_ready/2`, `get/2`, `claim/3`, `complete/3`, `fail/3`, `reopen/3`, `set_priority/3`, `add_dependency/3`, `annotate/3`), surgical `mix.exs` + `config/test.exs` + `config/config.exs` updates (provider registration and `"kata.capabilities.v1"` in `accepted_contract_versions`). KataAdapter dispatches every callback through `run_kata/2`, which resolves the runner at call time in one private `runner/0` (`Application.get_env/3`, not a compile-time binding). No schema cache — Kata validates by simple field-mapping. No orphan scanner — Kata is authoritative for claim state.
 
-2. **PR 2** — Quality: Architecture test (`kata_architecture_test.exs`) enforcing sole-allowed `System.cmd("kata", ...)` site and no out-of-`task_providers/` adapter alias; `ProviderError` factory reusing `BeadsAdapter.CodeMap` (single allowed construction site via `KataAdapter.build_provider_error/3`); concurrency limiter (`max_in_flight: 4`) now supervised by `ForemanServer.Application`; generic registry tightening + any Beads cleanup required by REQ-010; per-project `cwd` binding without `database_path` (Go CLI emits `config.cwd`, server routing and preflight key on `capabilities[:storage_scheme]`, `KataAdapter` runs every call in that directory).
+2. **PR 2** — Quality: Architecture test (`kata_architecture_test.exs`) enforcing the sole `Port.open` kata execution site and no out-of-`task_providers/` adapter alias; `ProviderError` factory reusing `BeadsAdapter.CodeMap` (single allowed construction site via `KataAdapter.build_provider_error/3`); concurrency limiter (`max_in_flight: 4`) now supervised by `ForemanServer.Application`; generic registry tightening + any Beads cleanup required by REQ-010; per-project `cwd` binding without `database_path` (Go CLI emits `config.cwd`, server routing and preflight key on `capabilities[:storage_scheme]`, `KataAdapter` runs every call in that directory).
 
 3. **PR 3** — Lifecycle: Pre-execution atomic claim via `kata claim <ref> --if-unowned`; post-execution close via `kata close <ref> --done --message --commit [--evidence]`; failure path via `kata reopen`, `kata comment` and `kata unassign --expect-owner` (Kata has no failure close reason, and `reopen` leaves the claim owner set, so the unassign is what returns the task to the ready list); idempotency guards for already-closed and already-claimed states.
 
@@ -67,7 +67,7 @@ Single `ForemanServer.TaskProviders.Kata` module that shells out to `kata` direc
 
 #### Option C — PRD-as-specified (CHOSEN)
 
-Single `ForemanServer.TaskProvider` behaviour (already production-grade from Beads); one production adapter (`KataAdapter`) that dispatches every callback through a compile-time-bound `@runner` module attribute. `SystemKataRunner` is the sole `System.cmd("kata", ...)` site. `ProviderError` reuses `BeadsAdapter.CodeMap` verbatim. No schema cache. No orphan scanner.
+Single `ForemanServer.TaskProvider` behaviour (already production-grade from Beads); one production adapter (`KataAdapter`) that dispatches every callback through a runner module resolved at call time by one private `runner/0` (`Application.get_env/3`). `SystemKataRunner` is the sole site that spawns `kata`, through a `Port`. `ProviderError` reuses `BeadsAdapter.CodeMap` verbatim. No schema cache. No orphan scanner.
 
 - **Pros:** 1:1 aligned with PRD. Follows the existing `BeadsAdapter` template exactly. Kata adapter is ~30% shorter than BeadsAdapter.
 - **Cons:** Shares `BR_ERROR_ENVELOPE` naming — `command.binary` carries `"kata"` so the operator sees the source.
@@ -90,13 +90,13 @@ Let `validateTaskProviderConfig` in `packages/foreman_cli/cmd/foreman/project.go
 | Path | Module | Responsibility |
 |---|---|---|
 | `task_providers/kata_runner.ex` | `ForemanServer.TaskProviders.KataRunner` | Behaviour contract defining `cmd/3` — shared by `SystemKataRunner` and `KataRunnerMock`. Mirrors `BrRunner`. |
-| `task_providers/system_kata_runner.ex` | `ForemanServer.TaskProviders.SystemKataRunner` | Production implementation. **Sole** direct `System.cmd("kata", ...)` call-site in entire `lib/foreman_server/` tree. POSIX shell-quote; SIGTERM → 5s grace → SIGKILL; temp-file cleanup. |
-| `task_providers/kata_adapter.ex` | `ForemanServer.TaskProviders.KataAdapter` | Production adapter. `@runner Application.compile_env(:foreman_server, :kata_runner, ForemanServer.TaskProviders.SystemKataRunner)`. All 13 TaskProvider callbacks (`name/0`, `create/2`, `capabilities/0`, `available?/0`, `list_ready/2`, `get/2`, `claim/3`, `complete/3`, `fail/3`, `reopen/3`, `set_priority/3`, `add_dependency/3`, `annotate/3`) via `@runner.cmd/3`. Routes through `KataAdapter.BuildProviderError` which delegates to `BeadsAdapter.CodeMap`. Field-mapping validation (no JSON Schema). |
+| `task_providers/system_kata_runner.ex` | `ForemanServer.TaskProviders.SystemKataRunner` | Production implementation. **Sole** `kata` execution site (a `Port.open` on `/bin/sh`, mirroring `SystemBrRunner`) in entire `lib/foreman_server/` tree; `System.cmd` appears there only for the helper binaries `kill`/`pgrep`. POSIX shell-quote; SIGTERM → 5s grace → SIGKILL; temp-file cleanup. |
+| `task_providers/kata_adapter.ex` | `ForemanServer.TaskProviders.KataAdapter` | Production adapter. The runner is resolved at call time in one private `runner/0` — `Application.get_env(:foreman_server, :kata_runner, ForemanServer.TaskProviders.SystemKataRunner)` — called only from `run_kata/2`. All 13 TaskProvider callbacks (`name/0`, `create/2`, `capabilities/0`, `available?/0`, `list_ready/2`, `get/2`, `claim/3`, `complete/3`, `fail/3`, `reopen/3`, `set_priority/3`, `add_dependency/3`, `annotate/3`) through `run_kata/2`. Routes through `KataAdapter.BuildProviderError` which delegates to `BeadsAdapter.CodeMap`. Field-mapping validation (no JSON Schema). |
 | `task_providers/kata_adapter/build_provider_error.ex` | `ForemanServer.TaskProviders.KataAdapter.BuildProviderError` | **Single** `%ProviderError{}` construction site in `KataAdapter`. Delegates to `BeadsAdapter.CodeMap`. `command.binary: "kata"`. `redacted_fields: ["assignee", "description"]`. |
 
 **Test-support:** `test/support/kata_runner_mock.ex` — `Mox.defmock(KataRunnerMock, for: KataRunner)`.
 
-**Test files:** `kata_runner_test.exs`, `system_kata_runner_test.exs`, `kata_adapter_test.exs`, `kata_architecture_test.exs` (sole `System.cmd` scan + orphan-scanner-absence scan + adapter-alias scan), `kata_side_channel_test.exs` (sentinel capture), `kata_registry_tightening_test.exs`, `kata_concurrency_test.exs`, `kata_lifecycle_test.exs`, `kata_e2e_test.exs`, `registry_routing_test.exs`; Kata cases are added to the existing `cli/doctor_task_provider_test.exs`, `task_provider/project_provider_projector_test.exs`, `task_provider/registry_route_test.exs`, `application_children_test.exs` and the Go `project_test.go`.
+**Test files:** `kata_runner_test.exs`, `system_kata_runner_test.exs`, `kata_adapter_test.exs`, `kata_architecture_test.exs` (single `Port.open` kata-site scan + orphan-scanner-absence scan + adapter-alias scan), `kata_side_channel_test.exs` (sentinel capture), `kata_registry_tightening_test.exs`, `kata_concurrency_test.exs`, `kata_lifecycle_test.exs`, `kata_e2e_test.exs`, `registry_routing_test.exs`; Kata cases are added to the existing `cli/doctor_task_provider_test.exs`, `task_provider/project_provider_projector_test.exs`, `task_provider/registry_route_test.exs`, `application_children_test.exs` and the Go `project_test.go`.
 
 **Inherited (reused as-is):** `ForemanServer.TaskProvider`, `ForemanServer.TaskProvider.Issue`, `ForemanServer.TaskProviders.ProviderError`, `ForemanServer.TaskProviders.BeadsAdapter.CodeMap`. **Inherited and extended generically (no Kata-specific branch):** `ForemanServer.TaskProvider.Registry` (KATA-T030, T053), `ProjectProviderProjector` and `run_executor.ex` routing (KATA-T053), `BeadsAdapter.capabilities/0` (KATA-T031), `ForemanServer.Cli.DoctorTaskProvider` (KATA-T056), the Go `project.go` provider payload (KATA-T052). **Inherited and newly wired:** `ForemanServer.TaskProviders.ConcurrencyLimiter` — the module is unchanged but nothing starts it today; KATA-T055 supervises it.
 
@@ -106,7 +106,7 @@ Let `validateTaskProviderConfig` in `packages/foreman_cli/cmd/foreman/project.go
 
 ```
 caller → TaskProvider.Registry.route/2 → KataAdapter.list_ready/2
-  → @runner.cmd(["ready", "--unowned", "--json"], project_config[:cwd], opts)
+  → runner().cmd(["ready", "--unowned", "--json"], project_config[:cwd], opts)
   → field-mapping validation → {:ok, [%TaskProvider.Issue{}]}
 ```
 
@@ -197,7 +197,7 @@ Task IDs are `TRD-KATA-T###`, with an optional `-TEST` suffix marking a test tas
 
 - [x] **TRD-KATA-T008**: Create `lib/foreman_server/task_providers/kata_adapter.ex` (6h) [satisfies REQ-001, REQ-005]
   - PRD task ID: KATA-T008
-  - Description: Create `lib/foreman_server/task_providers/kata_adapter.ex` — implement all 13 TaskProvider callbacks (`name/0`, `create/2`, `capabilities/0`, `available?/0`, `list_ready/2`, `get/2`, `claim/3`, `complete/3`, `fail/3`, `reopen/3`, `set_priority/3`, `add_dependency/3`, `annotate/3`); each routes through `@runner.cmd/3`; declare `@runner Application.compile_env(:foreman_server, :kata_runner, ForemanServer.TaskProviders.SystemKataRunner)`; `id_format` = `"^[a-z0-9]+$"` per PRD §11 OPEN-Q1 resolution
+  - Description: Create `lib/foreman_server/task_providers/kata_adapter.ex` — implement all 13 TaskProvider callbacks (`name/0`, `create/2`, `capabilities/0`, `available?/0`, `list_ready/2`, `get/2`, `claim/3`, `complete/3`, `fail/3`, `reopen/3`, `set_priority/3`, `add_dependency/3`, `annotate/3`); each routes through `run_kata/2`, which calls the runner's `cmd/3`; resolve the runner at call time in one private `runner/0` as `Application.get_env(:foreman_server, :kata_runner, ForemanServer.TaskProviders.SystemKataRunner)` (not a compile-time `@runner`/`Application.compile_env/3` binding, so the real-binary e2e can rebind it); `id_format` = `"^[a-z0-9]+$"` per PRD §11 OPEN-Q1 resolution
   - Target Files: `packages/foreman_server/lib/foreman_server/task_providers/kata_adapter.ex`
   - Validates PRD ACs: AC-001-1, AC-001-3
   - Implementation AC:
@@ -304,7 +304,7 @@ Task IDs are `TRD-KATA-T###`, with an optional `-TEST` suffix marking a test tas
   - Dependencies: TRD-KATA-T018
 - [x] **TRD-KATA-T020-TEST**: Write `test/foreman_server/task_providers/kata_architecture_test.exs` (3h) [satisfies REQ-004, REQ-014]
   - PRD task ID: KATA-T020
-  - Description: Write `test/foreman_server/task_providers/kata_architecture_test.exs` — scan for sole `System.cmd("kata", ...)` in `system_kata_runner.ex` only; scan for direct `KataAdapter` alias outside `task_providers/`; scan `lib/foreman_server/task_providers/` and `workflow/run_executor.ex` for claim-state enumeration (REQ-014-3): forbidden are `kata list --owner`, `kata ready --owner`, any `--all`, and `kata status`/`kata audit` calls, except the single-reference `kata status <ref> --json` lookup of the effective actor inside `fail/3`; the one permitted enumeration is `kata ready --unowned --json` inside `list_ready/2` (the doctor's `kata list --limit 1 --json` sample read lives outside the scanned tree in `cli/doctor_task_provider.ex`). The verb allow-list is per provider (verified on v0.23.0: `ready`, `show`, `claim`, `close`, `reopen`, `comment`, `unassign`, `create`, `edit`, plus `status` only as that single-reference lookup) and must be extended in the same PR when a callback needs a new verb
+  - Description: Write `test/foreman_server/task_providers/kata_architecture_test.exs` — scan for exactly one `Port.open` kata execution site (`system_kata_runner.ex`) and no other spawn of `kata` in `lib/`, and for the adapter calling the runner at one site only; scan for direct `KataAdapter` alias outside `task_providers/`; scan `lib/foreman_server/task_providers/` and `workflow/run_executor.ex` for claim-state enumeration (REQ-014-3): forbidden are `kata list --owner`, `kata ready --owner`, any `--all`, and `kata status`/`kata audit` calls, except the single-reference `kata status <ref> --json` lookup of the effective actor inside `fail/3`; the one permitted enumeration is `kata ready --unowned --json` inside `list_ready/2` (the doctor's `kata list --limit 1 --json` sample read lives outside the scanned tree in `cli/doctor_task_provider.ex`). The verb allow-list is per provider (verified on v0.23.0: `ready`, `show`, `claim`, `close`, `reopen`, `comment`, `unassign`, `create`, `edit`, plus `status` only as that single-reference lookup) and must be extended in the same PR when a callback needs a new verb
   - Target Files: `packages/foreman_server/test/foreman_server/task_providers/kata_architecture_test.exs`
   - Validates PRD ACs: AC-001-3, AC-004-1, AC-004-2, AC-004-3, AC-014-3
   - Test AC:
@@ -341,7 +341,7 @@ Task IDs are `TRD-KATA-T###`, with an optional `-TEST` suffix marking a test tas
 
 - [x] **TRD-KATA-T023**: Integrate `ForemanServer.TaskProviders.ConcurrencyLimiter` into `KataAdapter` (2h) [satisfies REQ-009]
   - PRD task ID: KATA-T023
-  - Description: Integrate `ForemanServer.TaskProviders.ConcurrencyLimiter` into `KataAdapter` — wrap every `@runner.cmd/3` call in `ConcurrencyLimiter.acquire(project_id, timeout_ms)` / `release(project_id)` (release in `after`); the limits are the limiter's configured defaults (`max_in_flight: 4`, `timeout_ms: 30_000`), no new config key; on `{:error, :timeout}` return `{:error, %ProviderError{code: "BR_TIMEOUT_QUEUE", retryable?: true}}`
+  - Description: Integrate `ForemanServer.TaskProviders.ConcurrencyLimiter` into `KataAdapter` — wrap every runner call (`cmd/3` via `run_kata/2`) in `ConcurrencyLimiter.acquire(project_id, timeout_ms)` / `release(project_id)` (release in `after`); the limits are the limiter's configured defaults (`max_in_flight: 4`, `timeout_ms: 30_000`), no new config key; on `{:error, :timeout}` return `{:error, %ProviderError{code: "BR_TIMEOUT_QUEUE", retryable?: true}}`
   - Target Files: `packages/foreman_server/lib/foreman_server/task_providers/kata_adapter.ex`
   - Validates PRD ACs: AC-009-1
   - Implementation AC:
@@ -442,6 +442,7 @@ Task IDs are `TRD-KATA-T###`, with an optional `-TEST` suffix marking a test tas
 - [x] **TRD-KATA-T052**: Enforce the Kata project config contract in the Go CLI (2h)
   - PRD task ID: KATA-T052
   - Description: Enforce the Kata project config contract in the Go CLI — `taskProviderPayload`/`validateTaskProviderConfig` in `project.go` (today `database_path` is the only config key ever emitted and is required for beads): for `--task-provider=kata` emit `task_provider.config.cwd` from the absolute `--path` (no new flag) and never `database_path`; reject `--task-provider-database-path` for kata with a usage error; `foreman project get` renders `cwd:` instead of `database_path:` for a Kata project (it reads `database_path` today); beads behavior unchanged; no new verb or flag is added, so `usage_drift_test.go` must stay green unchanged
+    - Follow-up (commit 326dd44903): `foreman project update --task-provider kata` fetches the project's registered path and sends it as `config.cwd`, because the server preserves a stored config only for a same-provider update and refuses a provider switch lacking the target scheme's key (`{:missing_or_invalid, :cwd | :database_path}`); the CLI always sends config, so a same-provider CLI update rewrites config
   - Target Files: `packages/foreman_cli/cmd/foreman/project.go`, `packages/foreman_cli/cmd/foreman/project_test.go`
   - Validates PRD ACs: AC-003-1, AC-003-2
   - Implementation AC:
@@ -458,7 +459,7 @@ Task IDs are `TRD-KATA-T###`, with an optional `-TEST` suffix marking a test tas
   - Dependencies: TRD-KATA-T010, TRD-KATA-T031
 - [x] **TRD-KATA-T054**: Propagate the project working directory in `KataAdapter` (2h)
   - PRD task ID: KATA-T054
-  - Description: Propagate the project working directory in `KataAdapter` — every callback reads `project_config[:cwd]` (normalized once at the boundary, atom keys, no atom/string fallback chains) and passes it as the `cwd` argument of `@runner.cmd/3` so each `kata` invocation runs in that directory; a missing or non-absolute `cwd` returns a typed `INVALID_PARAMS`-style `ProviderError` via the factory; two projects with different `cwd` never share adapter state
+  - Description: Propagate the project working directory in `KataAdapter` — every callback reads `project_config[:cwd]` (normalized once at the boundary, atom keys, no atom/string fallback chains) and passes it as the `cwd` argument of the runner's `cmd/3` so each `kata` invocation runs in that directory; a missing or non-absolute `cwd` returns a typed `INVALID_PARAMS`-style `ProviderError` via the factory; two projects with different `cwd` never share adapter state
   - Target Files: `packages/foreman_server/lib/foreman_server/task_providers/kata_adapter.ex`, `packages/foreman_server/test/foreman_server/task_providers/kata_adapter_test.exs`
   - Validates PRD ACs: AC-003-1, AC-003-3
   - Implementation AC:
@@ -627,7 +628,7 @@ Task IDs are `TRD-KATA-T###`, with an optional `-TEST` suffix marking a test tas
 
 - [x] **TRD-KATA-T047**: Update `docs/user-guide.md` and `README.md` (2h)
   - PRD task ID: KATA-T047
-  - Description: Update `docs/user-guide.md` and `README.md` — Kata adapter setup: `brew install kata` (macOS) or install script (Linux); `kata init` to bind the workspace; `foreman project create --path <dir> --task-provider kata` (no database path); `foreman doctor` to verify; operator triage commands (`kata list --status all` plus `kata status <ref>` to inspect ownership — `--status` accepts only `open`, `closed` or `all` — `kata audit closes`, `kata reopen`, `kata claim`); note Foreman does NOT scan Kata for orphans; make the stale database-path binding statements provider-conditional (`README.md` lines 46 and 114–115; `docs/user-guide.md` lines 561, 573, 2176, 2634)
+  - Description: Update `docs/user-guide.md` and `README.md` — Kata adapter setup: `brew install kata` (macOS) or install script (Linux); `kata init` to bind the workspace; `foreman project create --path <dir> --task-provider kata` (no database path); `foreman doctor` to verify; operator triage of a claimed-but-stuck issue (`kata list --status all` plus `kata status <ref>` to inspect ownership — `--status` accepts only `open`, `closed` or `all` — then clear the claim with `kata unassign <ref>`; `kata reopen <ref>` alone does not clear the owner, `kata claim <ref>` takes it over, and `kata audit closes` replays recent closes); note Foreman does NOT scan Kata for orphans; make the stale database-path binding statements provider-conditional (`README.md` lines 46 and 114–115; `docs/user-guide.md` lines 561, 573, 2176, 2634)
   - Target Files: `docs/user-guide.md`, `README.md`
   - Implementation AC:
     - [ ] Every `kata` command in the new text appears in the help of the pinned `kata` version
@@ -641,22 +642,23 @@ Task IDs are `TRD-KATA-T###`, with an optional `-TEST` suffix marking a test tas
     - [ ] The two files describe the Kata binding (`--path` becomes `config.cwd`, no database path) and state the database path as required only for beads
     - [ ] `go test ./cmd/foreman/...`, including `usage_drift_test.go`, passes
   - Dependencies: TRD-KATA-T047
-- [ ] **TRD-KATA-T049**: Write `packages/foreman_server/CHANGELOG.md` entry (0.5h)
+- [x] **TRD-KATA-T049**: Write `packages/foreman_server/CHANGELOG.md` entry (0.5h)
   - PRD task ID: KATA-T049
   - Description: Write `packages/foreman_server/CHANGELOG.md` entry — adapter, provider id, contract version, supported operations, one-line per major change
   - Target Files: `packages/foreman_server/CHANGELOG.md`
   - Implementation AC:
-    - [ ] The entry names the adapter, provider id `kata`, contract version `kata.capabilities.v1`, and the supported operations
+    - [x] The entry names the adapter, provider id `kata`, contract version `kata.capabilities.v1`, and the supported operations
   - Dependencies: TRD-KATA-T036-TEST
 
 #### Story 5.3 — Review and architecture gate
 
 - [x] **TRD-KATA-T050**: Code review pass (1h)
   - PRD task ID: KATA-T050
-  - Description: Code review pass — consistency with BeadsAdapter patterns; `@runner` compile-time binding; no `System.cmd` outside `SystemKataRunner`; no direct `KataAdapter` imports outside `task_providers/`; all `ProviderError` constructions route through factory
+  - Description: Code review pass — consistency with BeadsAdapter patterns; the runner resolved at call time through one private `runner/0`; `kata` spawned at one site (the Port-based `SystemKataRunner`); no direct `KataAdapter` references outside `task_providers/`; all `ProviderError` constructions route through `KataAdapter.BuildProviderError`.
+    - Review findings: F1 — the doctor (`cli/doctor_task_provider.ex`) bound its Kata runner at compile time — FIXED (it now resolves the runner at call time, like the adapter). F2 — `KataAdapter.name/0` returns the string "kata" (as the TaskProvider spec says, `String.t()`) while `BeadsAdapter.name/0` returns the atom `:beads`, so the registry's GLOBAL routing keys are `:beads` and `"kata"`; per-project routing, which RunExecutor uses, is unaffected — filed, not fixed. F3 — Kata files import the shared error vocabulary `BeadsAdapter.CodeMap`/`ProviderErrorInput`, which lives under the Beads namespace (deliberate, AC-007-1) — filed, not fixed.
   - Target Files: `packages/foreman_server/lib/foreman_server/task_providers/` (review scope)
   - Implementation AC:
-    - [x] The review confirms: `@runner` bound via `Application.compile_env/3`; one `System.cmd("kata"` site; no `KataAdapter` alias outside `task_providers/`; every `%ProviderError{}` built by the factory; findings are fixed or filed
+    - [x] The review confirms: the runner module is read from `Application.get_env(:foreman_server, :kata_runner, SystemKataRunner)` inside one private `runner/0`, called only from `run_kata/2`; exactly one `Port.open` execution site (`SystemKataRunner`) and no other spawn of `kata` anywhere in `lib/`; no `KataAdapter` alias, import or call outside `task_providers/`; every Kata `%ProviderError{}` is built by `KataAdapter.BuildProviderError.build_provider_error/3`; findings are fixed or filed.
   - Dependencies: TRD-KATA-T020-TEST
 - [x] **TRD-KATA-T051-TEST**: Final architecture test run (0.5h)
   - PRD task ID: KATA-T051
@@ -792,6 +794,7 @@ These are verification tasks, not design decisions — PRD §11 has already reso
 
 | Version | Date | Changes |
 |---|---|---|
+| 2.0.10 | 2026-11-19 | PRD 1.1.12 (OPEN-Q1/OPEN-Q2 resolution notes only; no AC changed, still 57). Stale prose now describes what was built: `SystemKataRunner` spawns `kata` through a `Port` (no literal `System.cmd("kata", ...)`; `System.cmd` is used only for `kill`/`pgrep`), and `KataAdapter` resolves the runner at call time in one private `runner/0` via `Application.get_env/3`, not a compile-time `@runner`/`Application.compile_env/3` binding (§1, §2, files table, KATA-T020, T020-TEST, T023, T054). KATA-T047 now names the operator triage the user guide actually gives (`kata unassign <ref>`; `reopen` alone does not clear the owner). KATA-T050 wording and Implementation AC updated and its review findings recorded (the doctor's compile-time runner binding fixed; the `name/0` string-versus-atom registry-key difference and the `BeadsAdapter.CodeMap` import filed). KATA-T052 notes that `foreman project update --task-provider kata` sends the registered path as `config.cwd`. KATA-T049 (CHANGELOG entry) ticked. No task added or removed (still 56). |
 | 2.0.9 | 2026-11-19 | KATA-T038 and T039 amended and ticked. The TRD's "pinned upstream revision" cannot be met (Kata publishes none and `kenn.io/kata` returns 404), so both now confirm against the published CLI reference (katatracker.com) and the installed v0.23.0 binary; both confirmed the declared values and changed no code. No task added or removed (still 56). |
 | 2.0.8 | 2026-11-19 | PRD 1.1.11: AC-012-1 and KATA-T014 and T034 follow the probe that `kata close --done` needs typed evidence and refuses an empty `--commit`. The completion token carries the commit SHA when the run produced one and always the artifact path; `complete/3` sends `--commit` only for a non-empty SHA, falls back to `reviewed-paths:<artifact_path>` only when that file exists, and otherwise returns a typed validation error without calling Kata. No task added or removed (still 56). |
 | 2.0.7 | 2026-11-19 | PRD 1.1.10 adds `missing_fields` to AC-017-4's closed context key set: `ProviderError.new/3` seeds it into every context and AC-006-1 requires schema errors to name the absent fields. KATA-T040 and the AC-017-4 checklist text follow; KATA-T041 asserts the full seven-key set. No task added or removed (still 56). |

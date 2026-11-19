@@ -2,7 +2,7 @@
 documentId: PRD-2026-8030852f
 label: prd-foreman-kata-task-provider
 title: "Foreman × Kata (kenn.io/kata) — Task-Provider Integration"
-version: 1.1.11
+version: 1.1.12
 status: Draft
 date: 2026-11-18
 scaleDepth: STANDARD
@@ -860,6 +860,11 @@ None.
   KATA-T038 still runs the upstream check and files an upstream issue if Kata ships
   an explicit regex that contradicts this, in which case the declaration follows
   upstream.
+  *Resolution note (KATA-T038):* the upstream check could not be done as written —
+  no pinned upstream revision exists and the upstream source is not reachable
+  (`kenn.io/kata` returns 404). The published CLI reference (katatracker.com) and
+  the installed `kata` v0.23.0 binary were used instead, and neither contradicts
+  `^[a-z0-9]+$`; filing an upstream issue was not authorised.
 - **RESOLVED (TRD OPEN-Q2 — `accepted_kata_versions` format, was blocking KATA-T039).**
   `accepted_kata_versions` is a **list of version requirement strings** evaluated
   with Elixir's `Version.match?/2` — the range syntax is exactly the one already
@@ -879,6 +884,12 @@ None.
   out of scope. Development builds report a non-semver identifier
   (`Version.parse/1` → `:error`): that is an *unparseable* version, handled as a
   warning with the raw value quoted, never a hard failure and never a silent pass.
+  *Resolution note (KATA-T039):* re-confirming the floor and the version format
+  against a pinned upstream revision could not be done — no pinned upstream
+  revision exists and the upstream source is not reachable (`kenn.io/kata` returns
+  404). The published CLI reference (katatracker.com) and the installed `kata`
+  v0.23.0 binary were used instead and confirm the declared values; filing an
+  upstream issue was not authorised.
 - **RESOLVED (queue timeout configuration).** No new config key. The Kata adapter
   reuses the existing `ConcurrencyLimiter` defaults — `max_in_flight: 4`,
   `timeout_ms: 30_000`. The limiter exposes `acquire/1,2` (the second argument is a
@@ -982,5 +993,6 @@ list now holds 56 tasks (`KATA-T001`–`KATA-T056`).
 | 1.1.9 | 2026-11-19 | Foreman ensemble-implement-trd | Closed a conflict between two ACs found during implementation (still 57 ACs). AC-013-2 required a boolean assignee-presence flag in the claimed-by-other context while AC-017-4 closes the context key set to `id`, `command`, `exit_code`, `stderr_byte_count`, `sanitized?` and `redacted_fields`; a per-test exception would have let any key ride under that code, so AC-013-2 now says the context carries no owner identity and only the allowlisted keys. AC-007-1 said errors take the CodeMap's existing redacted-field list, which for `CLAIMED_BY_OTHER` is `["current_assignee"]` and contradicts AC-015-1's literal `["assignee", "description"]`; it now says the retryable flag comes from CodeMap (overridden by AC-013-2) and `redacted_fields` is always the Kata list. |
 | 1.1.10 | 2026-11-19 | Foreman ensemble-implement-trd | AC-017-4's closed context key set gains `missing_fields`. `ProviderError.new/3` seeds `missing_fields: []` into every context (the shared struct, Beads included) and AC-006-1 requires schema-validation errors to name the absent fields, so a literal six-key set could never hold; the key is now part of the closed set, always a list of field names, empty except on schema-validation errors, never values. Naming the fields only in the error message was considered and rejected because it would not remove the seeded key. Still 57 ACs. |
 | 1.1.11 | 2026-11-19 | Foreman ensemble-implement-trd | AC-012-1 no longer requires a commit SHA on every close. Probed on `kata` v0.23.0: `kata close --done` needs typed evidence (`commit:`, `pr:`, `test:`, `reviewed-paths:`, `external:` or `attachment:`) and exits 3 without it; an empty `--commit` is also refused (`evidence[0] commit requires non-empty sha`). A phase that produces no commit therefore cannot supply a SHA, so the close carries the commit SHA when the run produced one and otherwise the run's artifact path as reviewed-paths evidence, but only when that file exists; a run with neither gets a typed validation error rather than an invented value or a claim about a file that was never written. Still 57 ACs. |
+| 1.1.12 | 2026-11-19 | Foreman ensemble-implement-trd | §11 OPEN-Q1 and OPEN-Q2 each gain a resolution note: the upstream-pinned check (KATA-T038, KATA-T039) could not be done because no pinned upstream revision exists and the upstream source is not reachable (`kenn.io/kata` returns 404); the published CLI reference (katatracker.com) and the installed `kata` v0.23.0 binary were used instead, and filing an upstream issue was not authorised. No AC added, removed or changed (still 57). |
 
 ---
