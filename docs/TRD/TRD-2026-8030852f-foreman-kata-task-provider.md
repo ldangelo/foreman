@@ -1,7 +1,7 @@
 ---
 document_id: TRD-2026-8030852f
 label: trd-foreman-kata-task-provider
-version: 2.0.10
+version: 2.0.11
 status: Draft
 date: 2026-11-18
 prd_reference: PRD-2026-8030852f
@@ -616,12 +616,12 @@ Task IDs are `TRD-KATA-T###`, with an optional `-TEST` suffix marking a test tas
   - Test AC:
     - [x] AC-003-4 — A project may switch between `beads` and `kata` (and back) without losing Foreman run history; the provider choice is data, not a fork in the dispatch path.
   - Dependencies: TRD-KATA-T021, TRD-KATA-T032-TEST, TRD-KATA-T053
-- [ ] **TRD-KATA-T046-TEST**: Run full Foreman test suite (`mix test`) (2h)
+- [x] **TRD-KATA-T046-TEST**: Run full Foreman test suite (`mix test`) (2h)
   - PRD task ID: KATA-T046
   - Description: Run full Foreman test suite (`mix test`) — all existing tests pass; new Kata adapter tests pass; no regressions in Beads adapter
   - Target Files: `packages/foreman_server/` (full suite via `mix test`)
   - Test AC:
-    - [ ] `mix test --warnings-as-errors` exits 0 for `packages/foreman_server`, including the Beads adapter suites
+    - [x] `mix test --warnings-as-errors` exits 0 for `packages/foreman_server`, including the Beads adapter suites
   - Dependencies: TRD-KATA-T044-TEST, TRD-KATA-T045-TEST
 
 #### Story 5.2 — Documentation
@@ -705,9 +705,10 @@ Task IDs are `TRD-KATA-T###`, with an optional `-TEST` suffix marking a test tas
 | Parse result | 56 `TRD-KATA-T001`–`TRD-KATA-T056` tasks in 5 PR sections (22, 14, 7, 5, 8), no parser warnings, no synthetic AC tasks, PR format detected, PRD path resolved to `docs/PRD/PRD-2026-8030852f-foreman-kata-task-provider.md`. Every task has hours (109.75h total), target files, and a `Validates PRD ACs` line where a PRD AC maps to it. |
 | Validator | `trd-cli.js validate --prd <PRD>`: `ok: true`, 0 errors, no unresolved dependencies, no cycles, 0 uncovered REQs, 0 invalid AC references. 14 `MISSING_TEST_PAIR` warnings remain and are accepted: 14 implementation tasks (one carrier per REQ group) keep `[satisfies REQ-…]` so the requirement-evidence chain (`verify-requirements-evidence`) has an implementation pointer for every REQ, while the 14 test tasks carry `-TEST` ids whose stem is their own PRD id, so no carrier has a `<carrier-id>-TEST` sibling and the chain falls back to the first test task covering the REQ. Pairing by carrier id would renumber PRD §12. `trd-cli.js analyze` also reports two PRD-level warnings: acceptance criteria are single outcome statements rather than literal Given/When/Then, and the PRD has no heading named Constraints / Assumptions / Dependencies. |
 | Traceability | 17 REQs and 57/57 ACs appear in §4 and on task `Validates PRD ACs` lines; §4 and PRD §12 rows are identical (script-checked); every `KATA-T0NN` reference in §4 and PRD §12 resolves to a defined task. |
-| Status cells | All 56 task checkboxes are unchecked (`- [ ]`); no task is marked checked, `done`, `todo` or `deferred`. |
+| Status cells | All 56 task checkboxes are checked (`- [x]`) and every acceptance-criterion line inside them is checked; the checks were made by running the tests, not by reading the code. |
 | Dispatch path | `packages/foreman_server/priv/defaults/workflows/implement-trd.yaml` runs `/skill:ensemble-implement-trd <path> --foreman`, which preflights with `trd-cli.js parse`. `foreman sling trd` is not implemented (`docs/cli-reference.md`: "NOT IMPLEMENTED"). |
-| Not verified here | No implementation code exists; no `mix test` or `go test` was run for this plan. `ensemble-implement-trd` itself was not executed. Kata CLI behavior cited in tasks was observed on `kata` v0.23.0 in isolated scratch workspaces (error envelope, `changed` flag, owner persistence after reopen, `unassign --expect-owner` release and `owner_mismatch` refusal, the `kata status --json` field paths, and comment replay under `--idempotency-key` including `idempotency_mismatch`). The daemon-authenticated-actor case — where `kata whoami` can differ from the effective actor, the reason KATA-T015 reads the actor from `kata status <ref> --json` — was not probed (the scratch workspace ran with `auth: none`) and rests on `kata claim --help`. The retry behavior of `CLAIMED_BY_OTHER` is read from `beads_adapter_code_map.ex` and `run_executor.ex`, not exercised. |
+| Verified by running | On the branch rebased onto `origin/main` (77c65323): the CI form of the suite, `mix test --partitions 4 --warnings-as-errors` on four separate databases, exits 0 on every partition (9148 passed, 0 failed); whole-package `mix format --check-formatted`, `mix compile --warnings-as-errors`, `mix credo --min-priority higher` and `mix doctor --raise` pass; `go build` and `go test ./...` in `packages/foreman_cli` pass; `kata_e2e_test.exs` ran against the installed `kata` v0.23.0 in an isolated `KATA_HOME` (success, failure-release and runner-binding tests; skipped, not failed, when `kata` is off `PATH`). Every Test AC was mutation-checked: the production line was reverted, the named test failed, the line was restored byte for byte. Kata CLI behavior cited in tasks was observed on `kata` v0.23.0 in isolated scratch workspaces. The `CLAIMED_BY_OTHER` re-claim and the failure-path release are exercised in `kata_lifecycle_test.exs` and `kata_e2e_test.exs`. |
+| Not verified here | The daemon-authenticated-actor case, where `kata whoami` can differ from the effective actor (the reason KATA-T015 reads the actor from `kata status <ref> --json`): the scratch workspace ran with `auth: none`, so it rests on `kata claim --help`. The upstream-pinned check of KATA-T038/T039: no pinned upstream revision exists and `kenn.io/kata` returns 404, so the published CLI reference and the installed v0.23.0 binary were used (PRD §11 OPEN-Q1/Q2). `ensemble-implement-trd` was followed by hand (checkbox mode, one branch), not run through a Foreman workflow. The `.ensemble/local-ci.yaml` gate was not run. Dialyzer was not run for `foreman_server` (CI runs it only for `jido_harness`). REQ-016's second surface (the Go `foreman doctor` reporting provider verdicts) is not implemented, for Beads either; only `ForemanServer.CLI.run(["doctor", "task_provider"])` renders the Kata verdict. |
 
 ---
 
@@ -794,6 +795,7 @@ These are verification tasks, not design decisions — PRD §11 has already reso
 
 | Version | Date | Changes |
 |---|---|---|
+| 2.0.11 | 2026-11-19 | Implementation complete; no AC changed (still 57), no task added or removed. T046-TEST ticked after the CI-form partitioned run. Every acceptance-criterion line inside a ticked task was audited against code and a passing test and ticked (T017-TEST's callback line reworded: error paths exist for every callback that can fail; T047's command line records the check against the installed v0.23.0 help). §5 "Status cells" and "Not verified here" now say what was run and what was not. The branch was rebased onto `origin/main` (50 commits ahead of the original base), dropping an unrelated local-only commit that had replaced the bundled `fix.yaml` with command phases. |
 | 2.0.10 | 2026-11-19 | PRD 1.1.12 (OPEN-Q1/OPEN-Q2 resolution notes only; no AC changed, still 57). Stale prose now describes what was built: `SystemKataRunner` spawns `kata` through a `Port` (no literal `System.cmd("kata", ...)`; `System.cmd` is used only for `kill`/`pgrep`), and `KataAdapter` resolves the runner at call time in one private `runner/0` via `Application.get_env/3`, not a compile-time `@runner`/`Application.compile_env/3` binding (§1, §2, files table, KATA-T020, T020-TEST, T023, T054). KATA-T047 now names the operator triage the user guide actually gives (`kata unassign <ref>`; `reopen` alone does not clear the owner). KATA-T050 wording and Implementation AC updated and its review findings recorded (the doctor's compile-time runner binding fixed; the `name/0` string-versus-atom registry-key difference and the `BeadsAdapter.CodeMap` import filed). KATA-T052 notes that `foreman project update --task-provider kata` sends the registered path as `config.cwd`. KATA-T049 (CHANGELOG entry) ticked. No task added or removed (still 56). |
 | 2.0.9 | 2026-11-19 | KATA-T038 and T039 amended and ticked. The TRD's "pinned upstream revision" cannot be met (Kata publishes none and `kenn.io/kata` returns 404), so both now confirm against the published CLI reference (katatracker.com) and the installed v0.23.0 binary; both confirmed the declared values and changed no code. No task added or removed (still 56). |
 | 2.0.8 | 2026-11-19 | PRD 1.1.11: AC-012-1 and KATA-T014 and T034 follow the probe that `kata close --done` needs typed evidence and refuses an empty `--commit`. The completion token carries the commit SHA when the run produced one and always the artifact path; `complete/3` sends `--commit` only for a non-empty SHA, falls back to `reviewed-paths:<artifact_path>` only when that file exists, and otherwise returns a typed validation error without calling Kata. No task added or removed (still 56). |
