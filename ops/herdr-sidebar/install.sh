@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Installs (or removes) the Foreman runs panel for the Herdr desktop app.
+# Installs (or removes) the Foreman runs panel and run-detail tab for the Herdr desktop app.
 # See README.md in this directory for what it does and how to use it.
 set -euo pipefail
 
@@ -7,8 +7,8 @@ usage() {
   cat <<'EOF'
 Usage: install.sh [--uninstall] [--no-keys] [--switch] [--no-check]
 
-  (no flags)   install the mod, add the "foreman" layout, bind the shortcuts
-  --uninstall  remove the mod, the "foreman" layout, its shortcuts and saved panel state
+  (no flags)   install the two mods, add the "foreman" layout, bind the shortcuts
+  --uninstall  remove the mods, the "foreman" layout, its shortcuts and saved panel state
   --no-keys    leave keys.json alone (the panel works; the shortcuts are not bound)
   --switch     switch Herdr to the "foreman" layout afterwards (default Herdr home only)
   --no-check   skip `herdr-app check` on the installed mod
@@ -35,7 +35,8 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/../.." && pwd)"
 home_dir="${HERDR_APP_HOME:-$HOME/.config/herdr-app}"
 env_file="${FOREMAN_ENV_FILE:-$repo_root/.env}"
-mod_dir="$home_dir/mods/foreman-runs"
+mods=(foreman-runs foreman-run) # the panel, and the run-detail tab it opens
+mods_dir="$home_dir/mods"
 layout_file="$home_dir/layouts/foreman.json"
 keys_file="$home_dir/keys.json"
 snippet="$here/keys.layout-foreman.json"
@@ -60,7 +61,7 @@ on_default_home() { [ -z "${HERDR_APP_HOME:-}" ] && command -v herdr-app >/dev/n
 if [ "$uninstall" = 1 ]; then
   # shellcheck disable=SC1010 # `do` here is a herdr-app subcommand, not the shell keyword
   if on_default_home; then herdr-app do layout.switch '{"name":"main"}' >/dev/null 2>&1 || true; fi
-  rm -rf "$mod_dir" "$home_dir/data/foreman-runs"
+  for m in "${mods[@]}"; do rm -rf "${mods_dir:?}/$m" "$home_dir/data/$m"; done
   if [ -f "$layout_file" ]; then
     # Remove only the panel's block. The file goes too when that leaves it identical to Herdr's
     # main layout; if you changed it (width, other tweaks) it is kept, minus the panel.
@@ -81,21 +82,25 @@ if [ "$uninstall" = 1 ]; then
       else . end' "$keys_file")"
     write_if_changed "$keys_file" "$new_keys"
   fi
-  echo "Removed the Foreman runs panel from $home_dir"
+  echo "Removed the Foreman runs panel and run-detail tab from $home_dir"
   exit 0
 fi
 
 # ----------------------------------------------------------------------------------- install
 [ -f "$home_dir/layouts/main.json" ] || { echo "install.sh: $home_dir/layouts/main.json not found (start Herdr once)" >&2; exit 1; }
 
-# 1. The mod. Only the ENV_FILE line is rewritten, to this checkout's .env.
-mkdir -p "$mod_dir"
+# 1. The mods. Only common.js is rewritten (its ENV_FILE line points at this checkout's .env). A mod
+#    can import only from its own folder, so each one gets its own copy of common.js.
 env_js="$(jq -Rn --arg p "$env_file" '$p')" # a JSON string is a valid JS string literal
-mod_js="$(awk -v line="const ENV_FILE = $env_js;" '/^const ENV_FILE = / { print line; next } { print }' "$here/mod/main.js")"
-printf '%s\n' "$mod_js" | grep -qF "const ENV_FILE = $env_js;" ||
-  { echo "install.sh: could not point ENV_FILE at $env_file; has the \"const ENV_FILE = \" line in mod/main.js changed?" >&2; exit 1; }
-write_if_changed "$mod_dir/main.js" "$mod_js"
-cp "$here/mod/mod.json" "$mod_dir/mod.json"
+common_js="$(awk -v line="const ENV_FILE = $env_js;" '/^const ENV_FILE = / { print line; next } { print }' "$here/common.js")"
+printf '%s\n' "$common_js" | grep -qF "const ENV_FILE = $env_js;" ||
+  { echo "install.sh: could not point ENV_FILE at $env_file; has the \"const ENV_FILE = \" line in common.js changed?" >&2; exit 1; }
+for m in "${mods[@]}"; do
+  mkdir -p "$mods_dir/$m"
+  write_if_changed "$mods_dir/$m/main.js" "$(cat "$here/mods/$m/main.js")"
+  write_if_changed "$mods_dir/$m/common.js" "$common_js"
+  write_if_changed "$mods_dir/$m/mod.json" "$(cat "$here/mods/$m/mod.json")"
+done
 
 # 2. The layout: a copy of Herdr's "main" with the panel between Spaces and Agents.
 [ -f "$layout_file" ] || cp "$home_dir/layouts/main.json" "$layout_file"
@@ -125,15 +130,17 @@ if [ "$keys" = 1 ]; then
   [ -z "$conflicts" ] || { echo "Left these existing bindings as they were:"; echo "$conflicts"; }
 fi
 
-# 4. Load-check the mod (renders it once; the app also hot-reloads it).
+# 4. Load-check the mods (renders each once; the app also hot-reloads them).
 if [ "$check" = 1 ] && command -v herdr-app >/dev/null; then
-  if check_out="$(herdr-app check "$mod_dir" 2>&1)"; then
-    echo "herdr-app check: $check_out"
-  else
-    echo "$check_out" >&2
-    echo "install.sh: herdr-app check failed for $mod_dir" >&2
-    exit 1
-  fi
+  for m in "${mods[@]}"; do
+    if check_out="$(herdr-app check "$mods_dir/$m" 2>&1)"; then
+      echo "herdr-app check ($m): $check_out"
+    else
+      echo "$check_out" >&2
+      echo "install.sh: herdr-app check failed for $mods_dir/$m" >&2
+      exit 1
+    fi
+  done
 fi
 
 echo "Installed into $home_dir"

@@ -2,60 +2,12 @@
 // Click a run to open a tab running `foreman run get <run_id>`; click a project or status header to collapse it.
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, ScrollHandle } from "gpui-base";
-import { exec, theme, checking, run, home, focused, nextCommand, notify, window, keys, layout, shared, setShared } from "herdr";
+import { theme, checking, run, focused, nextCommand, notify, keys, layout, shared, setShared, exec, window } from "herdr";
+import { info, isActive, ago, clock, foreman, workflowName, prUrl, openUrlArgv } from "./common.js";
 
 const POLL_MS = 10000;
 const LIMIT = 40;
 const PROJECT_RETRY_MS = 60000;
-
-// Projection statuses: awaiting_worker, in_progress, paused, completed, failed, cancelled.
-const STATUS = {
-  in_progress: { color: "working", label: "running", rank: 0 },
-  awaiting_worker: { color: "idle", label: "starting", rank: 1 },
-  paused: { color: "idle", label: "paused", rank: 2 },
-  failed: { color: "blocked", label: "failed", rank: 3 },
-  completed: { color: "done", label: "completed", rank: 4 },
-  cancelled: { color: "dim", label: "cancelled", rank: 5 },
-};
-const info = (s) => STATUS[s] ?? { color: "dim", label: s ?? "unknown", rank: 6 };
-const isActive = (r) => r.status === "in_progress" || r.status === "awaiting_worker";
-
-function ago(ms) {
-  if (!ms) return "";
-  const s = Math.max(0, Math.floor((Date.now() - ms) / 1000));
-  if (s < 60) return `${s}s`;
-  if (s < 3600) return `${Math.floor(s / 60)}m`;
-  if (s < 86400) return `${Math.floor(s / 3600)}h`;
-  return `${Math.floor(s / 86400)}d`;
-}
-
-// The server's /api needs FOREMAN_API_TOKEN once one is configured, and the app's environment
-// does not carry it. Read it from the Foreman checkout's .env (only when the environment lacks
-// it), inside the shell so the secret never lands in a process argument list. ops/herdr-sidebar/
-// install.sh rewrites the next line to the path of the checkout it was run from.
-const ENV_FILE = `${home()}/Development/Fortium/foreman/.env`;
-const WITH_TOKEN =
-  'if [ -z "$FOREMAN_API_TOKEN" ]; then FOREMAN_API_TOKEN=$(sed -n "s/^FOREMAN_API_TOKEN=//p" "$1" 2>/dev/null); export FOREMAN_API_TOKEN; fi; shift; exec foreman "$@"';
-const foremanArgv = (args) => ["sh", "-c", WITH_TOKEN, "sh", ENV_FILE, ...args];
-
-// Runs `foreman <args>` and returns its parsed JSON, or throws the CLI's own error line.
-async function foreman(args) {
-  const [cmd, ...rest] = foremanArgv(args);
-  const r = await exec(cmd, rest, { timeout: 15000 });
-  if (r.code !== 0) throw new Error(r.stderr.trim().replace(/^foreman:\s*/, "") || `foreman exited ${r.code}`);
-  return JSON.parse(r.stdout);
-}
-
-// The projection's top-level workflow_name can be null; the snapshot taken at run start has it.
-const workflowName = (r) => r.workflow_name ?? r.workflow_snapshot?.workflow_name ?? "run";
-// The run's pull request URL when it has a usable (http/https) one, else null.
-const prUrl = (r) => (typeof r.pr_url === "string" && /^https?:\/\//.test(r.pr_url) ? r.pr_url : null);
-
-// The command that opens a URL in the default browser on this platform.
-const openUrlArgv = (url) => {
-  const platform = window()?.platform;
-  return platform === "macos" ? ["open", [url]] : platform === "windows" ? ["cmd", ["/c", "start", "", url]] : ["xdg-open", [url]];
-};
 
 // The sidebar is narrowed to a rail by its width, not a flag (dragging its edge narrows it too),
 // the same test the shipped agents mod uses. The hint footer would stack one hint per line there.
@@ -93,12 +45,6 @@ const chordFor = (action) => {
   const order = ["ctrl", "alt", "option", "shift", "cmd"]; // macOS convention: ⌃⌥⇧⌘
   const mods = parts.slice(0, -1).sort((x, y) => order.indexOf(x.toLowerCase()) - order.indexOf(y.toLowerCase()));
   return [...mods, parts[parts.length - 1]].map((p) => mod[p.toLowerCase()] ?? p.toUpperCase()).join("");
-};
-
-// Wall-clock HH:MM:SS of the last successful refresh.
-const clock = (ms) => {
-  const d = new Date(ms);
-  return [d.getHours(), d.getMinutes(), d.getSeconds()].map((n) => String(n).padStart(2, "0")).join(":");
 };
 
 export default class ForemanRuns extends View {
@@ -228,9 +174,11 @@ export default class ForemanRuns extends View {
     cx.notify();
   }
 
+  // Opens the run-detail tab (the foreman-run mod): phases, live activity, changes, PR and anything
+  // waiting on the operator. It looks the run up itself, so it only needs the id.
   open(r) {
     const short = String(r.task_id ?? r.run_id).slice(0, 24);
-    run("tab.new", { name: `${workflowName(r)} ${short}`, argv: foremanArgv(["run", "get", r.run_id]) });
+    run("tab.new", { name: `${workflowName(r)} ${short}`, mod: "foreman-run", props: { run_id: r.run_id } });
   }
 
   // Runs the panel lists: all of them, or only the failed ones while the header filter is on.
