@@ -34,19 +34,21 @@ defmodule ForemanServer.TaskProviders.KataE2ETest do
   alias ForemanServer.TestSupport.{DispatcherRestart, RunSlotsReset}
   alias ForemanServer.Workflow.RunExecutor
 
-  # The base of this module's `KATA_HOME`. `@kata_home_bytes` adds the `/` and the 8 hex digits of
-  # the per-run directory.
+  # The base of this module's `KATA_HOME`. `kata_home_bytes` adds the `/` and the 8 hex digits of
+  # the per-run directory. The two sizes are variables, not attributes: when `kata` is off `PATH`
+  # the cond below never reads the second branch, and an attribute that is set but not read is a
+  # compile warning (an error under `--warnings-as-errors`).
   @kata_home_base Path.join([System.user_home!(), ".foreman", "kata-e2e"])
-  @kata_home_bytes byte_size(@kata_home_base) + 9
-  @max_kata_home_bytes 55
+  kata_home_bytes = byte_size(@kata_home_base) + 9
+  max_kata_home_bytes = 55
 
   cond do
     is_nil(System.find_executable("kata")) ->
       @moduletag skip: "kata is not on PATH: the Kata end-to-end test needs the real binary"
 
-    @kata_home_bytes > @max_kata_home_bytes ->
+    kata_home_bytes > max_kata_home_bytes ->
       @moduletag skip:
-                   "$HOME is too long for kata's daemon socket (#{@kata_home_bytes} > #{@max_kata_home_bytes} bytes of KATA_HOME)"
+                   "$HOME is too long for kata's daemon socket (#{kata_home_bytes} > #{max_kata_home_bytes} bytes of KATA_HOME)"
 
     true ->
       :ok
