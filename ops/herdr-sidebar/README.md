@@ -1,10 +1,13 @@
 # ops/herdr-sidebar/
 
-An optional sidebar panel for the [Herdr](https://herdr.dev) desktop app that
-lists Foreman runs, grouped by project and status, next to your terminals and
-agents. It is a Herdr "mod" (a small JavaScript program) plus a layout and a set
-of keyboard shortcuts. It only reads from Foreman, through the `foreman` CLI; it
-changes nothing in the server.
+Two optional pieces for the [Herdr](https://herdr.dev) desktop app: a sidebar
+panel that lists Foreman runs, grouped by project and status, next to your
+terminals and agents, and a **run-detail tab** the panel opens for a run, with
+its phases, a live activity feed (the agent's output, your steers, status and
+review verdicts), its code changes and anything waiting on you. Both are Herdr
+"mods" (small JavaScript programs) plus a layout and a set of keyboard
+shortcuts. They only read from Foreman, through the `foreman` CLI and the
+server's read-only HTTP API; they change nothing in the server.
 
 ```
 FOREMAN   4 failed  0 active  13:22:22  ↻
@@ -26,6 +29,8 @@ FOREMAN   4 failed  0 active  13:22:22  ↻
 |---|---|
 | The Herdr desktop app (`herdr-app` on your `PATH`) | Hosts the panel. Start it once so `~/.config/herdr-app` exists. |
 | `foreman` on the `PATH` the Herdr app sees | The panel runs `foreman run list` and `foreman project list`. A GUI app inherits your login shell's `PATH`, so `~/bin` or `/usr/local/bin` is fine. |
+| `curl`, `git` (and `gh` for finished runs) | The run-detail tab reads the activity feed over HTTP, runs `git` in the run's worktree for its changes, and falls back to `gh pr view` for a run whose worktree is gone. |
+| A server with `GET /api/runs/:id/phases` | `foreman run phases`, added with the run-detail tab. An older server answers 404 and the tab shows that error. |
 | `jq` | Used by `install.sh` to edit the layout and `keys.json`. |
 | A running Foreman server | Default `http://127.0.0.1:4766` (`devbox run server`). With the server down the panel shows the CLI's error (for example "connection refused") and keeps the time of the last good refresh. |
 
@@ -39,8 +44,10 @@ ops/herdr-sidebar/install.sh --switch
 
 That does four things, all under `~/.config/herdr-app` (or `$HERDR_APP_HOME`):
 
-1. Copies `mod/` to `mods/foreman-runs/`. Only one line is rewritten: `ENV_FILE`
-   is pointed at this checkout's `.env` (see [Authentication](#authentication)).
+1. Copies `mods/foreman-runs/` and `mods/foreman-run/` into Herdr's `mods/`,
+   each with its own copy of `common.js` (a mod can only import from its own
+   folder). Only one line of `common.js` is rewritten: `ENV_FILE` is pointed at
+   this checkout's `.env` (see [Authentication](#authentication)).
 2. Creates `layouts/foreman.json`, a copy of Herdr's `main` layout with the panel
    added between Spaces and Agents. Your other layouts are not touched.
 3. Binds the shortcuts below in the `layout:foreman` section of `keys.json`.
@@ -52,7 +59,7 @@ That does four things, all under `~/.config/herdr-app` (or `$HERDR_APP_HOME`):
 Options: `--no-keys` (skip `keys.json`), `--no-check`, `--switch`, `--uninstall`.
 Environment: `HERDR_APP_HOME` (Herdr's home) and `FOREMAN_ENV_FILE` (the `.env`
 to read the token from). The installer is idempotent; re-run it after pulling
-changes to `mod/` to update. Herdr hot-reloads the mod, so no restart is needed.
+changes here to update. Herdr hot-reloads the mods, so no restart is needed.
 
 > **`keys.json` becomes yours.** Herdr only updates `keys.json` for you while it
 > is untouched. Once the installer has added the shortcuts, new default shortcuts
@@ -80,7 +87,7 @@ time of the last successful refresh (red while the latest refresh is failing).
 
 | Action | Mouse | Shortcut |
 |---|---|---|
-| Open a run (a tab running `foreman run get <id>`) | click the row | `⏎` while navigating |
+| Open a run in its detail tab | click the row | `⏎` while navigating |
 | Collapse / expand a project or status group | click its header | |
 | Collapse / expand every project | | `⇧⌘E` |
 | Collapse / expand every status group | | `⇧⌘S` |
@@ -104,16 +111,51 @@ one tile per project, outlined red while it has failed runs. Clicking it widens
 the sidebar again. `cmd-b` is Herdr's own show/hide for the whole sidebar and is
 unchanged.
 
+## The run-detail tab
+
+```
+● running  fix  Make approval-gated skills detect a Foreman dispatch…        PR ↗  raw  16:44:32  ↻
+run-d0f4…  ·  ensemble  ·  foreman/…/run-d0f4…  ·  base dev
+elapsed 2h 17m  ·  last event 16s ago  ·  74.8k in · 1.4k out · 399.4k cached
+✓ fix › ▶ coderabbit-review › ○ repo-rules-review
+Activity (31)   Changes (3)                                              following
+```
+
+- **Phases.** The phases the server has started, each with its own status
+  (`foreman run phases <id>`: `✓` done, `▶` running, `Ⅱ` paused, `✕` failed, `–`
+  cancelled or skipped, `×N` after a retry), then the workflow's remaining phases as `○` pending. A phase a
+  cancelled or failed run stopped in shows the run's outcome.
+- **Activity.** The run's transcript (`GET /api/threads/run:<id>/transcript`),
+  polled every 3 s while the run is active and every 30 s once it is not:
+  agent output (stderr dimmed), your steers, run status changes and the review
+  verdict. Long turns fold to 8 lines (`… N more lines`). Scrolling up stops
+  the auto-follow; `follow` turns it on again. The server's log window is
+  bounded, so a very long run shows `N earlier turns are not shown`.
+- **Changes.** For a run with a worktree: the commits since it branched, every
+  changed file with `+added −removed` (uncommitted work and new files
+  included), and a click on a file shows its patch. Once the worktree is gone,
+  the pull request's file list stands in; with neither, the tab says why.
+- **Waiting on you.** A pending tool approval or an open question for the run
+  is a banner above the tabs, and a failure reason or stall is a red one.
+  If approvals or questions cannot be read, the tab says so rather than
+  showing nothing.
+- `PR ↗` opens the pull request, `raw` opens `foreman run get`, the id line
+  copies the run id.
+
+Open it from the panel, or directly:
+`herdr-app do tab.new '{"name":"run","mod":"foreman-run","props":{"run_id":"run-…","tab":"changes"}}'`
+(`tab` is optional: `activity` or `changes`).
+
 ## Troubleshooting
 
 | Symptom | Likely cause |
 |---|---|
-| `HTTP 401: unauthorized` in the panel | The server has a token and none was found. Check `FOREMAN_API_TOKEN=` in the `.env` named by `ENV_FILE` in `mods/foreman-runs/main.js`. |
+| `HTTP 401: unauthorized` in the panel | The server has a token and none was found. Check `FOREMAN_API_TOKEN=` in the `.env` named by `ENV_FILE` in `mods/foreman-runs/common.js`. |
 | `connection refused` | The server is not running on `FOREMAN_API_URL` (default `127.0.0.1:4766`). |
 | `foreman: command not found` | `foreman` is not on the `PATH` the Herdr app inherits. |
 | No panel | The `foreman` layout is not showing: `herdr-app do layout.switch '{"name":"foreman"}'`. |
 | Shortcuts do nothing | They apply only while the `foreman` layout is showing. If they still do nothing with a terminal focused, move the entries of `layout:foreman` into the `global` section of `keys.json`. |
-| Panel errors after a Herdr update | `herdr-app status` lists mod errors; `herdr-app check ~/.config/herdr-app/mods/foreman-runs` prints the exact one. |
+| Panel errors after a Herdr update | `herdr-app status` lists mod errors; `herdr-app check ~/.config/herdr-app/mods/foreman-runs` (or `…/foreman-run`) prints the exact one. |
 
 ## Uninstall
 
@@ -121,7 +163,7 @@ unchanged.
 ops/herdr-sidebar/install.sh --uninstall
 ```
 
-Removes `mods/foreman-runs/`, its saved state and the shortcut bindings the
+Removes `mods/foreman-runs/` and `mods/foreman-run/`, their saved state and the shortcut bindings the
 installer added (bindings you changed or added yourself are kept), and switches
 Herdr back to `main`. `layouts/foreman.json` is deleted only if it is still
 identical to Herdr's `main` layout apart from the panel; if you changed it (for
@@ -131,7 +173,8 @@ example the sidebar width) it is kept and only the panel's block is removed.
 
 | Path | Role |
 |---|---|
-| `mod/main.js`, `mod/mod.json` | The panel. No dependencies beyond Herdr's `gpui-kit` / `herdr` modules. |
+| `mods/foreman-runs/`, `mods/foreman-run/` | The panel and the run-detail tab (`main.js`, `mod.json`). No dependencies beyond Herdr's `gpui-kit` / `herdr` modules. |
+| `common.js` | Helpers both mods share: status styling, the CLI and HTTP callers, the token lookup. Copied into each mod by `install.sh`. |
 | `keys.layout-foreman.json` | The `layout:foreman` shortcut section merged into `keys.json`. |
 | `install.sh` | Installer / uninstaller. |
 
@@ -144,7 +187,11 @@ current runs). Project names come from `foreman project list --format=json`
 (a bare array; `name` is often null, so the project id is the fallback).
 Statuses it colours: `in_progress`, `awaiting_worker`, `paused`, `failed`,
 `completed`, `cancelled`; anything else gets a neutral style. If the server's
-run projection changes, update `mod/main.js` and re-run the installer.
+run projection changes, update `mods/foreman-runs/main.js` and re-run the installer.
+The run-detail tab also reads `GET /api/runs/:id`, `/phases`, `/approvals`,
+`/api/projects/:id/questions`, `/api/threads/run:<id>` (`repo_path`, `title`,
+`branch`) and its `/transcript` (`turns`: `seq`, `at`, `kind`, `source`, `text`;
+`omitted_entries` invalidates cursors).
 
 Verification so far: the panel was exercised against a live server and against
 stub servers, and the commands behind each shortcut were driven with

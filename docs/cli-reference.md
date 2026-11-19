@@ -62,6 +62,7 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 > foreman run merge         --id --repo-id
 > foreman run submit        --backend --base-branch --project-id --prompt --work-id --workflow
 > foreman run prs           <run-id>
+> foreman run phases        <run-id>
 > foreman run fix-ci        <run-id> --pr --note
 > foreman run address-comments <run-id> --pr --note
 > foreman run resolve-conflicts <run-id> --pr --note
@@ -1279,6 +1280,10 @@ The Elixir server can follow a run's PR on GitHub in two opt-in ways; both appen
 ### `foreman run prs <run-id>`
 
 Lists the pull requests a run is watching (`GET /api/runs/<id>/prs`): PR URL, status, checks state and failing checks (`failing_truncated` when cut), review decision, comment count, whether watching is on, fix attempt counters per kind (`ci`, `comments`, `conflicts`) with any fix in flight, and the merge gate. Since Phase 1 PR 8 each PR also carries `eligibility` (`status` `off|eligible|ineligible|waived|unknown`, `head_sha`, `reasons` and `waived` as `[{code, subject, detail}]`, `policy_version`, `evaluated_at`), `checks` (`head_sha`, `current`, `stale`, `old`, `observed_at`, `truncated`, `evidence_digest`, `items` with `name`, `kind`, `workflow`, `state`, `conclusion`, `started_at`, `completed_at`), `findings` (`head_sha`, `current`, `stale`, `status`, `defect`, `defect_detail`, `digest`, `recorded_at`, `unresolved`, `total`, `listed_truncated`, `items` with `severity`, `disposition`, `description`, `path`, `line`, `source`, and `judgement` with `status`, `level`, `defect`), `risk` (`head_sha`, `current`, `stale`, `level`, `rubric_version`, `digest`, `seq`, `recorded_at`, `rationale` as `[{rule, level, basis, detail}]`, `instructions`), `waiver` (`head_sha`, `current`, `codes`, `policy_version`, `reason`, `waived_by`, `waived_at`, `applies`, `ignored_because` `other_head|policy_changed`), `report` (`head_sha`, `digest`, `status`, `reason`, `comment_url`, `superseded`, `recorded_at`, `current`, `stale`), `delivery_issue` (`stage`, `reason`, `failed_at`) and `next_actions` (`[{action, command, codes}]`, advice only). Each block is for its own head: `current` says it is for the PR's head, `stale` that it is not. Free text from an agent or GitHub is cleaned of control and bidirectional characters and cut. The same record is returned by the MCP read tool `foreman_pr_status`. An unknown run is `404`. When the server's read model does not answer the status is unknown, never an empty list: HTTP `503 {"error": "projection_unavailable", "status": "unknown", "run_id", "cause": "timeout"|"noproc"|"crashed"}` (the MCP tool answers a `projection_unavailable` tool error). See `docs/user-guide.md` ("Reading", "`unknown`, and the server not starting").
+
+### `foreman run phases <run-id>`
+
+Lists a run's phases in workflow order with their own status (`GET /api/runs/<id>/phases`): `{run_id, phases: [{phase_id, index, name, attempt, status, failure_reason, started_at_ms, last_event_at_ms, latest_stall}]}`. `status` is the phase projection's (`in_progress`, `completed`, `failed`, ...); `failure_reason` is set for a failed phase and `latest_stall` for a stalled one. A queued run that has started no phase answers an empty list; an unknown run is `404 run_not_found`. Only these fields are served: the phase's input artifacts, execution profile and artifact template are not. The Herdr run-detail tab (`ops/herdr-sidebar/`) reads this for its phase strip.
 
 ### `foreman run fix-ci|address-comments|resolve-conflicts <run-id> [--pr <url>] [--note <text>]`
 

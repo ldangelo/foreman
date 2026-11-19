@@ -98,6 +98,7 @@ Commands:
   run waive-evidence  Waive named PR evidence reasons for a run (--id --approver --identity --head-sha --waive --reason [--repo-id])
   run merge           Merge an approved run's PR (--id [--repo-id])
   run prs <id>        List the run's pull requests
+  run phases <id>     List the run's phases with their status
   run fix-ci <id>     Request a CI-fix thread for a watched PR (--pr --note)
   run address-comments <id> Request a thread to address PR review comments (--pr --note)
   run resolve-conflicts <id> Request a thread to resolve PR merge conflicts (--pr --note)

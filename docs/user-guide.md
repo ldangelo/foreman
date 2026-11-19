@@ -462,6 +462,10 @@ Auto-fix is opt-in per project (`--pr-auto-fix`), with at most one fix in flight
 per PR and a hard cap of 5 attempts per kind
 ([PR watching and auto-fix](#pr-watching-and-auto-fix)).
 
+To see where a run is in its workflow, `foreman run phases <run-id>` lists each phase with its
+status. The Herdr sidebar in `ops/herdr-sidebar/` shows this, the live transcript and the run's
+changes in a tab per run.
+
 ### Notifications
 
 `ForemanServer.Notifier` maps run, review, approval and PR events to outbound

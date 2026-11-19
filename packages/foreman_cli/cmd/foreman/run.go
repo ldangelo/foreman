@@ -21,7 +21,7 @@ func generateID(prefix string) string {
 var validBackends = map[string]bool{"pi": true, "claude": true, "codex": true, "opencode": true}
 
 func runRun(c *client.Client, args []string) error {
-	usage := "Usage:\n  foreman run list [--status <status>] [--project-id <id>] [--limit <n>]\n  foreman run get <id>\n  foreman run cancel --id <run-id> [--reason <reason>]\n  foreman run pause --id <run-id> [--reason <reason>]\n  foreman run resume --id <run-id>\n  foreman run remove --id <run-id>\n  foreman run reset --id <run-id>\n  foreman run approve-merge --id <run-id> --approver <name> --identity <github:login> --head-sha <sha> [--repo-id <repo-id>] [--acknowledge-gate-off]\n  foreman run waive-evidence --id <run-id> --approver <name> --identity <github:login> --head-sha <sha> --waive <codes> --reason <text> [--repo-id <repo-id>]\n  foreman run merge --id <run-id> [--repo-id <repo-id>]\n  foreman run prs <id>\n  foreman run fix-ci <id> [--pr <url>] [--note <text>]\n  foreman run address-comments <id> [--pr <url>] [--note <text>]\n  foreman run resolve-conflicts <id> [--pr <url>] [--note <text>]\n  foreman run create-pr <id>\n  foreman run retry-pr <id> --repo-id <repo-id>\n  foreman run watch-stop <id> [--pr <url>]\n  foreman run watch-start <id> [--pr <url>]\n  foreman run publish-report <id> [--pr <url>] [--repo-id <repo-id>]\n  foreman run submit --workflow <name> --prompt <text> --project-id <id> [--work-id <id>] [--backend <backend>]"
+	usage := "Usage:\n  foreman run list [--status <status>] [--project-id <id>] [--limit <n>]\n  foreman run get <id>\n  foreman run cancel --id <run-id> [--reason <reason>]\n  foreman run pause --id <run-id> [--reason <reason>]\n  foreman run resume --id <run-id>\n  foreman run remove --id <run-id>\n  foreman run reset --id <run-id>\n  foreman run approve-merge --id <run-id> --approver <name> --identity <github:login> --head-sha <sha> [--repo-id <repo-id>] [--acknowledge-gate-off]\n  foreman run waive-evidence --id <run-id> --approver <name> --identity <github:login> --head-sha <sha> --waive <codes> --reason <text> [--repo-id <repo-id>]\n  foreman run merge --id <run-id> [--repo-id <repo-id>]\n  foreman run prs <id>\n  foreman run phases <id>\n  foreman run fix-ci <id> [--pr <url>] [--note <text>]\n  foreman run address-comments <id> [--pr <url>] [--note <text>]\n  foreman run resolve-conflicts <id> [--pr <url>] [--note <text>]\n  foreman run create-pr <id>\n  foreman run retry-pr <id> --repo-id <repo-id>\n  foreman run watch-stop <id> [--pr <url>]\n  foreman run watch-start <id> [--pr <url>]\n  foreman run publish-report <id> [--pr <url>] [--repo-id <repo-id>]\n  foreman run submit --workflow <name> --prompt <text> --project-id <id> [--work-id <id>] [--backend <backend>]"
 
 	if len(args) == 0 {
 		return usageTextError(
@@ -53,6 +53,8 @@ func runRun(c *client.Client, args []string) error {
 		return runMerge(c, args[1:])
 	case "prs":
 		return runPrs(c, args[1:])
+	case "phases":
+		return runPhases(c, args[1:])
 	case "fix-ci":
 		return runPrFix(c, "fix-ci", "run.pr.fix_ci", args[1:])
 	case "address-comments":
@@ -458,6 +460,25 @@ func runPrs(c *client.Client, args []string) error {
 
 	var out map[string]any
 	if err := c.GetJSON(client.JoinPath("/api/runs", fs.Arg(0), "prs"), &out); err != nil {
+		return err
+	}
+
+	return printJSON(out)
+}
+
+// runPhases lists a run's phases with their own status: `foreman run phases <id>`.
+func runPhases(c *client.Client, args []string) error {
+	fs := newFlagSet("run phases")
+	if err := fs.parse(args); err != nil {
+		return err
+	}
+
+	if fs.NArg() != 1 {
+		return usageError(fs, "foreman run phases: expected one argument: <run-id>")
+	}
+
+	var out map[string]any
+	if err := c.GetJSON(client.JoinPath("/api/runs", fs.Arg(0), "phases"), &out); err != nil {
 		return err
 	}
 
