@@ -2,7 +2,7 @@
 documentId: PRD-2026-8030852f
 label: prd-foreman-kata-task-provider
 title: "Foreman × Kata (kenn.io/kata) — Task-Provider Integration"
-version: 1.1.5
+version: 1.1.6
 status: Draft
 date: 2026-11-18
 scaleDepth: STANDARD
@@ -358,7 +358,7 @@ with a real Kata CLI invocation: `create/2`, `list_ready/2`, `get/2`, `claim/3`,
 - AC-005-1: `list_ready/2` returns the ready (unclaimed, dependency-satisfied) Kata tasks as `TaskProvider.Issue` structs; `get/2` returns one task by Kata reference; both accept a project config and honor it as the working directory.
 - AC-005-2: `claim/3` issues exactly one atomic Kata claim operation for the given reference and returns the claimed task.
 - AC-005-3: `complete/3` closes the task in Kata with the run's completion message, the produced commit SHA, and evidence when available.
-- AC-005-4: `fail/3` reopens the task in Kata, records the failure reason as a comment, and then releases Foreman's own claim so the task is claimable again; it never fabricates a close-with-reason to simulate failure.
+- AC-005-4: `fail/3` reopens the task in Kata, records the failure reason as a comment, and then releases Foreman's own claim so the task is claimable again; when a different actor owns the task it writes nothing and returns a typed error; it never fabricates a close-with-reason to simulate failure.
 - AC-005-5: `reopen/3`, `set_priority/3`, `add_dependency/3`, and `annotate/3` each perform the corresponding Kata operation and return success only when Kata reports success.
 - AC-005-6: `create/2` creates a Kata task from the supplied attributes and returns the created task.
 
@@ -543,7 +543,7 @@ reason as a comment, and releases its own claim so the task is open, unowned and
 **Acceptance Criteria:**
 
 - AC-012-1: On successful execution, the task is closed in Kata carrying the run's completion message and commit SHA.
-- AC-012-2: On failed execution, the task is reopened in Kata, the failure reason is recorded as a comment on that task, and Foreman's own claim is released so the task is open, unowned and claimable again; the task is not closed.
+- AC-012-2: On failed execution, the task is reopened in Kata, the failure reason is recorded as a comment on that task, and Foreman's own claim is released so the task is open, unowned and claimable again; the task is not closed, and a task owned by a different actor is left untouched.
 - AC-012-3: The completion message identifies the Foreman run that produced it (run identifier and artifact path) when the caller supplies no message of its own, and is at least 40 characters — Kata's minimum for `kata close --done` — so the generated default is never rejected for length.
 - AC-012-4: When Kata refuses the close, the refusal is surfaced as a typed provider error and the run does not report the task as successfully closed.
 
@@ -594,7 +594,7 @@ server-side, so a Foreman-side sweep could free another operator's live claim.
 
 **Acceptance Criteria:**
 
-- AC-014-1: On `TaskExecutionFailed`, `KataAdapter.fail/3` invokes `kata reopen <ref>`, then `kata comment <ref> --body "<reason>"`, then `kata unassign <ref> --expect-owner <actor>`, where `<actor>` is the effective actor reported by `kata status <ref> --json`; returns `{:ok, :reopened}`. A claim held by anyone else is never released: Kata's `owner_mismatch` refusal surfaces as a typed provider error, while an issue that is already unowned counts as released. This is the Foreman-side failure-path release only (Kata owns crash reconciliation; a run that dies mid-flight is reclaimed by the operator).
+- AC-014-1: On `TaskExecutionFailed`, `KataAdapter.fail/3` first reads the task's effective actor and current owner with `kata status <ref> --json`; if a different actor owns the task it writes nothing to it and returns a typed `CLAIMED_BY_OTHER` provider error. Otherwise it invokes `kata reopen <ref>`, then `kata comment <ref> --body "<reason>"` under an idempotency key derived from the run id (a retried notification never duplicates the comment), then, unless the task is already unowned, `kata unassign <ref> --expect-owner <actor>`; returns `{:ok, :reopened}`. A release refused because ownership changed in the meantime surfaces the same typed error. This is the Foreman-side failure-path release only (Kata owns crash reconciliation; a run that dies mid-flight is reclaimed by the operator).
 - AC-014-2: No code path under `lib/foreman_server/task_providers/` scans Kata for claimed, in-progress or orphaned work (any `kata list`/`kata status`/`kata audit`-based sweep); the single-reference `kata status <ref> --json` lookup of the effective actor inside `fail/3` is not a sweep; `list_ready/2` carries an explicit comment: "Kata is authoritative for claim state — Foreman does NOT scan for orphans."
 - AC-014-3: The architecture test fails the build if it finds such a claim-state sweep under `lib/foreman_server/task_providers/`; the Kata provider emits no `[:reconcile, :*]` telemetry events.
 
@@ -807,23 +807,38 @@ None.
   issue and `kata claim --if-unowned` is refused with `already_claimed` (exit 5) — a
   failed run would strand its own task. `kata unassign <ref> --expect-owner <actor>`
   clears the owner (event `issue.unassigned`); the issue then appears in
-  `kata ready --unowned` and can be claimed again. When the expected owner does not
-  match, Kata changes nothing and refuses with `owner_mismatch` (kind `conflict`,
-  exit 5); on an already-unowned issue the same refusal arrives with
-  `data.current_owner` null. The resulting contract: (1) the order is reopen, then
-  comment, then unassign, so the failure reason is on record before the task becomes
-  ready; (2) `<actor>` is the `actor` field of `kata status <ref> --json`, the effective
-  actor: Kata's `claim` help says the daemon's authenticated actor takes precedence over
-  the client-selected one and that `kata whoami` shows only the client-selected actor, so
-  under a shared daemon `whoami` can disagree with the claim's owner. The scratch probe
-  ran with `auth: none`, where all three agree, so that divergence is documented upstream
-  behavior, not probed here. The lookup is one call on the single reference being failed,
-  not a sweep, and AC-014-2 says so; the `owner` field is never used as the expected
-  owner, because that would release another operator's live claim;
-  (3) `owner_mismatch` against another owner surfaces as a typed provider error and
-  Foreman never releases a claim it does not hold; (4) `owner_mismatch` with no current owner means the
-  claim is already gone (expired or released by an operator) and counts as released;
-  (5) a retried `fail/3` is safe — `kata reopen` is a no-op on an open issue.
+  `kata ready --unowned` and can be claimed again. With a non-matching expected owner
+  Kata changes nothing and refuses with `owner_mismatch` (kind `conflict`, exit 5).
+  `kata status <ref> --json` reports the effective `actor` and the current `owner` at
+  the top level (the `owner` key is absent when the issue is unowned; `hold` is then
+  `unassigned`), and
+  `kata comment --idempotency-key` replays an identical comment as `changed: false`
+  with no new comment, but refuses the same key with a different body
+  (`idempotency_mismatch`, exit 5). The resulting contract:
+  (1) `fail/3` reads `kata status <ref> --json` first.
+  (2) If a different actor owns the task it writes nothing — no reopen, comment or
+  unassign — and returns a typed `CLAIMED_BY_OTHER` error that carries no owner name.
+  That code is retryable in the existing `CodeMap`, so the run executor repeats the
+  notification on its own schedule; every repeat re-reads the status and again writes
+  nothing, so the owner's issue never collects a failure comment from Foreman.
+  (3) Otherwise the order is reopen, then comment, then unassign, so the failure reason
+  is on record before the task becomes ready.
+  (4) The comment carries an idempotency key derived from the run id, so a retried
+  notification — for example after a transient unassign failure while Foreman still
+  holds the claim — never duplicates it.
+  (5) The unassign passes the effective `actor` as `--expect-owner`, and is skipped
+  when the task is already unowned, which counts as released; a release refused because
+  ownership changed in the meantime (`owner_mismatch`) surfaces as the same typed error.
+  (6) `<actor>` is the `actor` field of the status envelope, the effective actor: Kata's
+  `claim` help says the daemon's authenticated actor takes precedence over the
+  client-selected one and that `kata whoami` shows only the client-selected actor, so
+  `whoami` is not used. The scratch probe ran with `auth: none`, where actor and owner
+  agree, so that divergence is documented upstream behavior, not probed here. The
+  lookup is one call on the single reference being failed, not a sweep, and AC-014-2
+  says so.
+  (7) `kata reopen` is a no-op (`changed: false`, exit 0) on an issue that is already
+  open, so on the normal failure path the unassign is the only state change; that result
+  is not an error.
   A run that dies mid-flight never reaches `fail/3`; its claim is reclaimed by the
   operator with `kata unassign <ref>`, consistent with REQ-014 (no Foreman-side
   sweep). Applied to AC-005-4, AC-012-2 and AC-014-1.
@@ -957,5 +972,6 @@ list now holds 56 tasks (`KATA-T001`–`KATA-T056`).
 | 1.1.3 | 2026-11-19 | Foreman ensemble-create-prd | TRD-alignment pass against the live sources. (1) §12 now maps the five tasks the TRD added — KATA-T052 (Go CLI emits `config.cwd`, rejects a Kata database path), T053 (server routing and preflight keyed on `capabilities[:storage_scheme]` instead of a hardcoded `database_path`), T054 (`KataAdapter` passes `project_config[:cwd]` to every call), T055 (`ConcurrencyLimiter` supervised under `ForemanServer.Application`, the §11 limiter-supervision divergence), T056 (provider-generic `foreman doctor`) — to the existing ACs they implement; no AC was added or removed (still 57). (2) Four ACs re-mapped to the task that implements their text: AC-001-2 → T010/T021, AC-001-3 → T008/T020, AC-002-3 (`available?/0`) → T009, AC-005-5 → T016. (3) AC-014-2/AC-014-3, CONCERN 8 and REQ-014 no longer name `kata list --status claimed` / `in_progress`: Kata's `kata list --status` accepts only `open`, `closed` or `all` (verified against `kata` v0.23.0), so the forbidden behavior is stated as any claim-state sweep and the operator triage commands are `kata list --status all` plus `kata status <ref>`. (4) The 57 per-requirement AC tables were converted to the `- AC-NNN-M: …` list form that the active `ensemble-create-prd` skill (Step 3) specifies and that the Ensemble PRD parser reads (it resolved 1 of 57 ACs from the table form, so REQ→AC traceability was invisible to the tooling); AC wording is unchanged and was not re-phrased into Given/When/Then. (5) The per-REQ `**Dependencies:**` lines carried 30 edges with four cycles (REQ-002↔REQ-010, REQ-007↔REQ-017, REQ-015↔REQ-017 and the longer REQ-006→REQ-007→REQ-017→REQ-015→REQ-006) while §1 and §8 state 24 acyclic edges; they now list exactly the §8 ordering edges (script-checked: 24 edges, no cycles, no difference from §8), and the former back-references are kept as `**Constraints (not ordering edges):**` lines. |
 | 1.1.4 | 2026-11-19 | Foreman ensemble-refine-trd | TRD refinement pass (TRD 2.0.1). (1) AC-006-3 re-mapped from KATA-T039 (the OPEN-Q2 version-format confirmation, which does not implement it) to the field-mapping tasks KATA-T011/T012; REQ-006 no longer lists T039. No AC added or removed (still 57); PRD §12 ids are unchanged (the TRD's 14 test tasks carry `-TEST` ids whose stem is the PRD id, e.g. `TRD-KATA-T017-TEST` is KATA-T017). (2) Probe of `kata` v0.23.0 in an isolated scratch workspace: `kata reopen` leaves `owner` set, so a failed run's task is neither listed by `kata ready --unowned` nor re-claimable. Not decided here: recorded as an open `[NEEDS CLARIFICATION]` in §11, so `readiness_gate` moves PASS → PENDING and `readinessScore` 4.5 → 4.0 until AC-005-4/AC-012-2/AC-014-1 settle whether `fail/3` also runs `kata unassign`. (3) Confirmed against the binary: `kata list --status all` is valid (exit 0); `kata close --done` on an open issue with a short message exits 3 (`need >=40 chars`). |
 | 1.1.5 | 2026-11-19 | Foreman ensemble-refine-trd | Failure-path claim release decided (user decision). `fail/3` now runs `kata reopen`, `kata comment`, then `kata unassign <ref> --expect-owner <actor>` (actor from `kata status <ref> --json` `.actor`, the daemon-aware effective actor), so a failed task returns to `kata ready --unowned` and can be re-claimed. AC-005-4, AC-012-2 and AC-014-1 reworded and AC-014-2 clarified that the single-reference actor lookup is not a sweep; no AC added or removed (still 57) and no §12 mapping changed. The §11 marker is closed with the probe evidence, `readiness_gate` returns PENDING → PASS and `readinessScore` 4.0 → 4.5. Operator reclaim of a crashed run's claim now names `kata unassign` (Won't, CONCERN 8, REQ-014): `kata reopen` leaves `owner` set and is a no-op on an open issue. |
+| 1.1.6 | 2026-11-19 | Foreman ensemble-refine-trd | `fail/3` failure path tightened (user decision). It now reads `kata status <ref> --json` first and, when a different actor owns the task, writes nothing and returns a typed `CLAIMED_BY_OTHER` error — that code is retryable in the existing `CodeMap`, so the run executor retries the notification, and the earlier unconditional reopen + comment would have re-appended the failure comment to another operator's issue on every attempt. The comment now carries an idempotency key derived from the run id (probed on `kata` v0.23.0: an identical replay is `changed: false` and adds no comment; the same key with a different body is refused with `idempotency_mismatch`). The unassign is skipped when the task is already unowned and no longer depends on reading `error.data`. AC-005-4, AC-012-2 and AC-014-1 reworded; no AC added or removed (still 57), no §12 mapping changed, readiness gate stays PASS at 4.5. |
 
 ---
