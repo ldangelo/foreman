@@ -176,7 +176,10 @@ export default class ForemanRun extends View {
       }
       const fresh = (page.turns ?? []).filter((t) => t.seq > this.cursor);
       if (fresh.length > 0) {
-        this.turns.push(...fresh);
+        // The agent's stream is chunked and many chunks are only newlines; a row that says "agent"
+        // and nothing else tells the reader nothing, and they would crowd real turns out of the
+        // buffer. They are not kept, but the cursor still moves past them (it is the raw page's).
+        this.turns.push(...fresh.filter((t) => String(t.text ?? "").trim() !== ""));
         this.cursor = fresh[fresh.length - 1].seq;
         if (this.turns.length > MAX_TURNS) {
           this.dropped += this.turns.length - MAX_TURNS;
@@ -394,12 +397,8 @@ export default class ForemanRun extends View {
 
     const files = this.changes?.state === "ok"
       ? [...this.changes.files, ...this.changes.untracked.map((path) => ({ path, untracked: true }))] : [];
-    // The agent's stream is chunked and many chunks are only newlines; a row that says "agent" and
-    // nothing else tells the reader nothing. They stay in this.turns (the cursor counts them), they
-    // are just not drawn.
-    const visible = this.turns.filter((t) => String(t.text ?? "").trim() !== "");
     const tabs = h_flex().px(8).py(3).gap(4).items_center().border_t(1).border_b(1).border_color(th.border)
-      .child(pill("tab-activity", `Activity${visible.length ? ` (${visible.length})` : ""}`, this.tab === "activity", (_e, cx) => this.setTab("activity", cx)))
+      .child(pill("tab-activity", `Activity${this.turns.length ? ` (${this.turns.length + this.dropped})` : ""}`, this.tab === "activity", (_e, cx) => this.setTab("activity", cx)))
       .child(pill("tab-changes", `Changes${this.changes?.state === "ok" ? ` (${files.length})` : ""}`, this.tab === "changes", (_e, cx) => this.setTab("changes", cx)))
       .child(div().flex_1())
       .when(this.tab === "activity", (el) => el.child(pill("follow", this.follow ? "following" : "follow", this.follow, (_e, cx) => this.setFollow(!this.follow, cx))));
@@ -409,9 +408,9 @@ export default class ForemanRun extends View {
     if (!this.loaded) rows = [note("Loading…", th.dim)];
     else if (!r) rows = [note(this.error ?? "Run not found", th.blocked)];
     else if (this.tab === "activity") {
-      rows = visible.length === 0
+      rows = this.turns.length === 0
         ? [note(isActive(r) ? "No output yet. The agent has not written anything." : "This run produced no output.", th.dim)]
-        : visible.map((t) => this.renderTurn(t, th));
+        : this.turns.map((t) => this.renderTurn(t, th));
       if (this.dropped > 0) rows.unshift(note(`${this.dropped} earlier turns are not shown.`, th.dim));
     } else {
       const c = this.changes;
