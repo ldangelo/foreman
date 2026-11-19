@@ -439,10 +439,14 @@ export default class ForemanRun extends View {
       .when(phaseRow, (el) => el.child(phaseRow))
       .children(alerts)
       .child(tabs)
-      .child(v_flex().id("foreman-run-scroll").flex_1().min_h(0).overflow_y_scrollbar().track_scroll(this.scroll)
-        // Reading back through the output stops the auto-follow; "follow" turns it on again.
+      // The wheel handler sits on a wrapper, never on the scroll area: gpui-kit documents
+      // on_scroll_wheel as the gesture for something other than scrolling, and putting it on the
+      // scroll container itself can take the wheel away from it. Reading back through the output
+      // (an upward wheel) stops the auto-follow; "follow" turns it on again.
+      .child(v_flex().id("foreman-run-wheel").flex_1().min_h(0)
         .on_scroll_wheel((e, cx) => { if (this.follow && this.tab === "activity" && e.delta?.y > 0) { this.follow = false; cx.notify(); } })
-        .children(rows))
+        .child(v_flex().id("foreman-run-scroll").size_full().overflow_y_scrollbar().track_scroll(this.scroll)
+          .children(rows)))
       .when(this.error && r, (el) => el.child(div().px(12).py(4).text_size(11).text_color(th.blocked).border_t(1).border_color(th.border).child(`foreman: ${this.error}`)));
   }
 }
