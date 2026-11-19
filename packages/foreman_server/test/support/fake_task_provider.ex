@@ -80,6 +80,7 @@ defmodule ForemanServer.TestSupport.FakeTaskProvider do
       provider_id: :fake_task_provider,
       contract_version: "br.capabilities.v1",
       id_format: "fake:%s",
+      storage_scheme: :sqlite,
       supports: [:claim, :close, :reopen, :list_ready]
     }
 
