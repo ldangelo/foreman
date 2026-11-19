@@ -144,53 +144,53 @@ Task IDs are `TRD-KATA-T###`, with an optional `-TEST` suffix marking a test tas
   - Description: Create `lib/foreman_server/task_providers/kata_runner.ex` — behaviour defining `cmd/3` callback with spec `(argv :: [String.t()], cwd :: Path.t(), opts :: keyword()) :: {:ok, String.t()} | {:error, ProviderError.t()}`
   - Target Files: `packages/foreman_server/lib/foreman_server/task_providers/kata_runner.ex`
   - Implementation AC:
-    - [ ] `KataRunner` declares exactly one callback, `cmd/3`, with the spec `(argv :: [String.t()], cwd :: Path.t(), opts :: keyword()) :: {:ok, String.t()} | {:error, ProviderError.t()}`
+    - [x] `KataRunner` declares exactly one callback, `cmd/3`, with the spec `(argv :: [String.t()], cwd :: Path.t(), opts :: keyword()) :: {:ok, String.t()} | {:error, ProviderError.t()}`
 - [x] **TRD-KATA-T002**: Create `lib/foreman_server/task_providers/system_kata_runner.ex` (4h) [satisfies REQ-008]
   - PRD task ID: KATA-T002
   - Description: Create `lib/foreman_server/task_providers/system_kata_runner.ex` — the single place that executes the `kata` binary, spawned through a `Port` on `/bin/sh -c "exec 'kata' <quoted argv>"` (mirroring `SystemBrRunner`; there is no literal `System.cmd("kata", ...)`); POSIX shell-quote each argv element; capture OS PID via `Port.info/2` and emit it as the `[:foreman_server, :task_provider, :kata, :subprocess, :spawned]` telemetry event (metadata `os_pid`); stderr goes to a temp file that is never read — only its byte count survives (AC-007-3, AC-017-4); SIGTERM → 5s grace → SIGKILL on timeout; temp-file cleanup in `try/after` block; default per-call timeout 30 s (PRD §10), overridable per call through `opts`; a timeout kills the child and returns the retryable timeout error (`BR_TIMEOUT_SUBPROCESS`, KATA-T026); a nonzero exit (signal death included) returns `BR_ERROR_ENVELOPE` with `exit_code` and `stderr_byte_count` in the context — the runner does not interpret exit codes, KATA-T026 does, per verb; a missing cwd returns `WORKSPACE_NOT_FOUND`
   - Target Files: `packages/foreman_server/lib/foreman_server/task_providers/system_kata_runner.ex`, `packages/foreman_server/lib/foreman_server/task_provider/telemetry.ex`
   - Validates PRD ACs: AC-008-1, AC-008-2, AC-008-3, AC-008-4
   - Implementation AC:
-    - [ ] AC-008-1 — Arguments reach the CLI as discrete argv elements with no shell interpolation, so a task title containing shell metacharacters cannot alter the command.
-    - [ ] AC-008-2 — A CLI call that exceeds the configured timeout is terminated (grace period first, then forced kill), and the caller receives a typed retryable timeout error.
-    - [ ] AC-008-3 — Temporary files created to capture CLI output are removed on both the success and the failure path.
-    - [ ] AC-008-4 — The adapter surfaces the OS process id of the child it spawned for diagnosis, without exposing the child's output text beyond the redaction policy.
+    - [x] AC-008-1 — Arguments reach the CLI as discrete argv elements with no shell interpolation, so a task title containing shell metacharacters cannot alter the command.
+    - [x] AC-008-2 — A CLI call that exceeds the configured timeout is terminated (grace period first, then forced kill), and the caller receives a typed retryable timeout error.
+    - [x] AC-008-3 — Temporary files created to capture CLI output are removed on both the success and the failure path.
+    - [x] AC-008-4 — The adapter surfaces the OS process id of the child it spawned for diagnosis, without exposing the child's output text beyond the redaction policy.
   - Dependencies: TRD-KATA-T001
 - [x] **TRD-KATA-T003**: Create `test/support/kata_runner_mock.ex` (1h)
   - PRD task ID: KATA-T003
   - Description: Create `test/support/kata_runner_mock.ex` — `Mox.defmock(ForemanServer.TaskProviders.KataRunnerMock, for: ForemanServer.TaskProviders.KataRunner)`; compiles only in `:test` env via `elixirc_paths(:test)`
   - Target Files: `packages/foreman_server/test/support/kata_runner_mock.ex`
   - Implementation AC:
-    - [ ] `ForemanServer.TaskProviders.KataRunnerMock` is defined by `Mox.defmock` against `KataRunner` and exists only where `test/support` is compiled (the `:test` env)
+    - [x] `ForemanServer.TaskProviders.KataRunnerMock` is defined by `Mox.defmock` against `KataRunner` and exists only where `test/support` is compiled (the `:test` env)
   - Dependencies: TRD-KATA-T001
 - [x] **TRD-KATA-T004**: Update `mix.exs` (0.25h)
   - PRD task ID: KATA-T004
   - Description: Update `mix.exs` — add `defp elixirc_paths(:test), do: ["lib", "test/support"]` if absent
   - Target Files: `packages/foreman_server/mix.exs`
   - Implementation AC:
-    - [ ] `mix compile` under `MIX_ENV=test` compiles `test/support`; under `dev` and `prod` it does not
+    - [x] `mix compile` under `MIX_ENV=test` compiles `test/support`; under `dev` and `prod` it does not
 - [x] **TRD-KATA-T005**: Update `config/test.exs` (0.25h)
   - PRD task ID: KATA-T005
   - Description: Update `config/test.exs` — add `config :foreman_server, :kata_runner, ForemanServer.TaskProviders.KataRunnerMock`
   - Target Files: `packages/foreman_server/config/test.exs`
   - Implementation AC:
-    - [ ] Under `MIX_ENV=test`, `Application.fetch_env!(:foreman_server, :kata_runner)` is `ForemanServer.TaskProviders.KataRunnerMock`
+    - [x] Under `MIX_ENV=test`, `Application.fetch_env!(:foreman_server, :kata_runner)` is `ForemanServer.TaskProviders.KataRunnerMock`
   - Dependencies: TRD-KATA-T003
 - [x] **TRD-KATA-T006-TEST**: Write `test/foreman_server/task_providers/kata_runner_test.exs` (1h) [satisfies REQ-001]
   - PRD task ID: KATA-T006
   - Description: Write `test/foreman_server/task_providers/kata_runner_test.exs` — verify behaviour exports and callback arities
   - Target Files: `packages/foreman_server/test/foreman_server/task_providers/kata_runner_test.exs`
   - Test AC:
-    - [ ] The test fails if `KataRunner.behaviour_info(:callbacks)` is anything other than `[cmd: 3]`
+    - [x] The test fails if `KataRunner.behaviour_info(:callbacks)` is anything other than `[cmd: 3]`
   - Dependencies: TRD-KATA-T001
 - [x] **TRD-KATA-T007-TEST**: Write `test/foreman_server/task_providers/system_kata_runner_test.exs` (2h) [satisfies REQ-008]
   - PRD task ID: KATA-T007
   - Description: Write `test/foreman_server/task_providers/system_kata_runner_test.exs` — test shell_quote edge cases; test SIGTERM/SIGKILL escalation; test temp-file cleanup telemetry
   - Target Files: `packages/foreman_server/test/foreman_server/task_providers/system_kata_runner_test.exs`
   - Test AC:
-    - [ ] Shell-quote cases (space, single and double quote, `$`, backtick, newline, empty string) reach the child as one unchanged argv element
-    - [ ] A child that ignores SIGTERM is killed with SIGKILL after the 5 s grace period and the caller receives the timeout error
-    - [ ] The temp file is removed after both a successful and a failing call
+    - [x] Shell-quote cases (space, single and double quote, `$`, backtick, newline, empty string) reach the child as one unchanged argv element
+    - [x] A child that ignores SIGTERM is killed with SIGKILL after the 5 s grace period and the caller receives the timeout error
+    - [x] The temp file is removed after both a successful and a failing call
   - Dependencies: TRD-KATA-T002
 
 #### Story 1.2 — KataAdapter callbacks
@@ -201,8 +201,8 @@ Task IDs are `TRD-KATA-T###`, with an optional `-TEST` suffix marking a test tas
   - Target Files: `packages/foreman_server/lib/foreman_server/task_providers/kata_adapter.ex`
   - Validates PRD ACs: AC-001-1, AC-001-3
   - Implementation AC:
-    - [ ] AC-001-1 — A module `ForemanServer.TaskProviders.KataAdapter` exists, exports all 13 `TaskProvider` callbacks, and passes the registry's `behaviour_info(:callbacks)` validation without any registry exemption.
-    - [ ] AC-001-3 — Every Kata read in the adapter goes through the runner; no code path in the adapter opens a Kata database file, speaks a daemon protocol, or shells out to any binary other than `kata`.
+    - [x] AC-001-1 — A module `ForemanServer.TaskProviders.KataAdapter` exists, exports all 13 `TaskProvider` callbacks, and passes the registry's `behaviour_info(:callbacks)` validation without any registry exemption.
+    - [x] AC-001-3 — Every Kata read in the adapter goes through the runner; no code path in the adapter opens a Kata database file, speaks a daemon protocol, or shells out to any binary other than `kata`.
   - Dependencies: TRD-KATA-T002
 - [x] **TRD-KATA-T009**: Implement `available?/0` (1h)
   - PRD task ID: KATA-T009
@@ -210,7 +210,7 @@ Task IDs are `TRD-KATA-T###`, with an optional `-TEST` suffix marking a test tas
   - Target Files: `packages/foreman_server/lib/foreman_server/task_providers/kata_adapter.ex`
   - Validates PRD ACs: AC-002-3
   - Implementation AC:
-    - [ ] AC-002-3 — `available?/0` returns `false` — without raising — when `kata` is not findable on `PATH` **or** when `kata --version` exits non-zero (a broken or unusable binary); it returns `true` only when the binary is found and the version probe succeeds. A version that reports successfully but sits outside the accepted range does NOT make `available?/0` false: range drift is a `foreman doctor` warning (REQ-016) and calls still proceed.
+    - [x] AC-002-3 — `available?/0` returns `false` — without raising — when `kata` is not findable on `PATH` **or** when `kata --version` exits non-zero (a broken or unusable binary); it returns `true` only when the binary is found and the version probe succeeds. A version that reports successfully but sits outside the accepted range does NOT make `available?/0` false: range drift is a `foreman doctor` warning (REQ-016) and calls still proceed.
   - Dependencies: TRD-KATA-T008
 - [x] **TRD-KATA-T010**: Implement `capabilities/0` (1h) [satisfies REQ-002]
   - PRD task ID: KATA-T010
@@ -218,8 +218,8 @@ Task IDs are `TRD-KATA-T###`, with an optional `-TEST` suffix marking a test tas
   - Target Files: `packages/foreman_server/lib/foreman_server/task_providers/kata_adapter.ex`
   - Validates PRD ACs: AC-001-2, AC-002-1
   - Implementation AC:
-    - [ ] AC-001-2 — `name/0` returns a human-readable provider name; `capabilities/0[:provider_id]` returns `:kata`; `contract_version` is `"kata.capabilities.v1"`; that version string is present in the `:foreman_server, :task_provider` config's `accepted_contract_versions` list so startup registration succeeds.
-    - [ ] AC-002-1 — `capabilities/0` returns a map with `provider_id: :kata`, `contract_version: "kata.capabilities.v1"`, a non-empty `supports` list covering all supported operations, and `storage_scheme: :cli_process`.
+    - [x] AC-001-2 — `name/0` returns a human-readable provider name; `capabilities/0[:provider_id]` returns `:kata`; `contract_version` is `"kata.capabilities.v1"`; that version string is present in the `:foreman_server, :task_provider` config's `accepted_contract_versions` list so startup registration succeeds.
+    - [x] AC-002-1 — `capabilities/0` returns a map with `provider_id: :kata`, `contract_version: "kata.capabilities.v1"`, a non-empty `supports` list covering all supported operations, and `storage_scheme: :cli_process`.
   - Dependencies: TRD-KATA-T008
 - [x] **TRD-KATA-T011**: Implement `list_ready/2` (2h) [satisfies REQ-006]
   - PRD task ID: KATA-T011
@@ -227,10 +227,10 @@ Task IDs are `TRD-KATA-T###`, with an optional `-TEST` suffix marking a test tas
   - Target Files: `packages/foreman_server/lib/foreman_server/task_providers/kata_adapter.ex`
   - Validates PRD ACs: AC-005-1, AC-006-1, AC-006-2, AC-006-3
   - Implementation AC:
-    - [ ] AC-005-1 — `list_ready/2` returns the ready (unclaimed, dependency-satisfied) Kata tasks as `TaskProvider.Issue` structs; `get/2` returns one task by Kata reference; both accept a project config and honor it as the working directory.
-    - [ ] AC-006-1 — `get/2` rejects a Kata payload missing `short_id`, `title`, or `status` with a typed schema-validation error naming the missing fields; it does not substitute placeholder values. `priority` is optional: Kata leaves it unset until an operator sets it, and an absent `priority` maps to no priority rather than an error.
-    - [ ] AC-006-2 — The same field-mapping validation applies to every list-producing path, so a partially-malformed list yields validated records or a typed error — never a partially-populated record.
-    - [ ] AC-006-3 — Kata-specific fields that have no first-class Foreman equivalent (for example `uid`, `author`, `revision`, `qualified_id`, `web_url` and the timestamps) are preserved under the issue's `metadata`, and the Foreman fields are filled from Kata's real keys: `id` from `short_id`, `description` from `body`, `assignee` from `owner` (present only while the issue is claimed), `labels` and `dependencies` from `show`'s `labels` and `links`; a Foreman field Kata does not emit (`notes`, `design`) stays empty rather than being invented.
+    - [x] AC-005-1 — `list_ready/2` returns the ready (unclaimed, dependency-satisfied) Kata tasks as `TaskProvider.Issue` structs; `get/2` returns one task by Kata reference; both accept a project config and honor it as the working directory.
+    - [x] AC-006-1 — `get/2` rejects a Kata payload missing `short_id`, `title`, or `status` with a typed schema-validation error naming the missing fields; it does not substitute placeholder values. `priority` is optional: Kata leaves it unset until an operator sets it, and an absent `priority` maps to no priority rather than an error.
+    - [x] AC-006-2 — The same field-mapping validation applies to every list-producing path, so a partially-malformed list yields validated records or a typed error — never a partially-populated record.
+    - [x] AC-006-3 — Kata-specific fields that have no first-class Foreman equivalent (for example `uid`, `author`, `revision`, `qualified_id`, `web_url` and the timestamps) are preserved under the issue's `metadata`, and the Foreman fields are filled from Kata's real keys: `id` from `short_id`, `description` from `body`, `assignee` from `owner` (present only while the issue is claimed), `labels` and `dependencies` from `show`'s `labels` and `links`; a Foreman field Kata does not emit (`notes`, `design`) stays empty rather than being invented.
   - Dependencies: TRD-KATA-T008
 - [x] **TRD-KATA-T012**: Implement `get/2` (1h)
   - PRD task ID: KATA-T012
@@ -238,9 +238,9 @@ Task IDs are `TRD-KATA-T###`, with an optional `-TEST` suffix marking a test tas
   - Target Files: `packages/foreman_server/lib/foreman_server/task_providers/kata_adapter.ex`
   - Validates PRD ACs: AC-006-1, AC-006-2, AC-006-3
   - Implementation AC:
-    - [ ] AC-006-1 — `get/2` rejects a Kata payload missing `short_id`, `title`, or `status` with a typed schema-validation error naming the missing fields; it does not substitute placeholder values. `priority` is optional: Kata leaves it unset until an operator sets it, and an absent `priority` maps to no priority rather than an error.
-    - [ ] AC-006-2 — The same field-mapping validation applies to every list-producing path, so a partially-malformed list yields validated records or a typed error — never a partially-populated record.
-    - [ ] AC-006-3 — Kata-specific fields that have no first-class Foreman equivalent (for example `uid`, `author`, `revision`, `qualified_id`, `web_url` and the timestamps) are preserved under the issue's `metadata`, and the Foreman fields are filled from Kata's real keys: `id` from `short_id`, `description` from `body`, `assignee` from `owner` (present only while the issue is claimed), `labels` and `dependencies` from `show`'s `labels` and `links`; a Foreman field Kata does not emit (`notes`, `design`) stays empty rather than being invented.
+    - [x] AC-006-1 — `get/2` rejects a Kata payload missing `short_id`, `title`, or `status` with a typed schema-validation error naming the missing fields; it does not substitute placeholder values. `priority` is optional: Kata leaves it unset until an operator sets it, and an absent `priority` maps to no priority rather than an error.
+    - [x] AC-006-2 — The same field-mapping validation applies to every list-producing path, so a partially-malformed list yields validated records or a typed error — never a partially-populated record.
+    - [x] AC-006-3 — Kata-specific fields that have no first-class Foreman equivalent (for example `uid`, `author`, `revision`, `qualified_id`, `web_url` and the timestamps) are preserved under the issue's `metadata`, and the Foreman fields are filled from Kata's real keys: `id` from `short_id`, `description` from `body`, `assignee` from `owner` (present only while the issue is claimed), `labels` and `dependencies` from `show`'s `labels` and `links`; a Foreman field Kata does not emit (`notes`, `design`) stays empty rather than being invented.
   - Dependencies: TRD-KATA-T008
 - [x] **TRD-KATA-T013**: Implement `claim/3` (1h) [satisfies REQ-011]
   - PRD task ID: KATA-T013
@@ -248,7 +248,7 @@ Task IDs are `TRD-KATA-T###`, with an optional `-TEST` suffix marking a test tas
   - Target Files: `packages/foreman_server/lib/foreman_server/task_providers/kata_adapter.ex`
   - Validates PRD ACs: AC-005-2
   - Implementation AC:
-    - [ ] AC-005-2 — `claim/3` issues exactly one atomic Kata claim operation for the given reference and returns the claimed task.
+    - [x] AC-005-2 — `claim/3` issues exactly one atomic Kata claim operation for the given reference and returns the claimed task.
   - Dependencies: TRD-KATA-T008
 - [x] **TRD-KATA-T014**: Implement `complete/3` (2h) [satisfies REQ-012]
   - PRD task ID: KATA-T014
@@ -264,7 +264,7 @@ Task IDs are `TRD-KATA-T###`, with an optional `-TEST` suffix marking a test tas
   - Target Files: `packages/foreman_server/lib/foreman_server/task_providers/kata_adapter.ex`
   - Validates PRD ACs: AC-005-4
   - Implementation AC:
-    - [ ] AC-005-4 — `fail/3` reopens the task in Kata, records the failure reason as a comment, and then releases Foreman's own claim so the task is claimable again; when a different actor owns the task it writes nothing and returns a typed error; it never fabricates a close-with-reason to simulate failure.
+    - [x] AC-005-4 — `fail/3` reopens the task in Kata, records the failure reason as a comment, and then releases Foreman's own claim so the task is claimable again; when a different actor owns the task it writes nothing and returns a typed error; it never fabricates a close-with-reason to simulate failure.
   - Dependencies: TRD-KATA-T008
 - [x] **TRD-KATA-T016**: Implement `create/2`, `reopen/3`, `set_priority/3`, `add_dependency/3` and `annotate/3` (4h)
   - PRD task ID: KATA-T016
@@ -272,16 +272,16 @@ Task IDs are `TRD-KATA-T###`, with an optional `-TEST` suffix marking a test tas
   - Target Files: `packages/foreman_server/lib/foreman_server/task_providers/kata_adapter.ex`
   - Validates PRD ACs: AC-005-5, AC-005-6
   - Implementation AC:
-    - [ ] AC-005-5 — `reopen/3`, `set_priority/3`, `add_dependency/3`, and `annotate/3` each perform the corresponding Kata operation and return success only when Kata reports success.
-    - [ ] AC-005-6 — `create/2` creates a Kata task from the supplied attributes and returns the created task.
+    - [x] AC-005-5 — `reopen/3`, `set_priority/3`, `add_dependency/3`, and `annotate/3` each perform the corresponding Kata operation and return success only when Kata reports success.
+    - [x] AC-005-6 — `create/2` creates a Kata task from the supplied attributes and returns the created task.
   - Dependencies: TRD-KATA-T008
 - [x] **TRD-KATA-T017-TEST**: Write `test/foreman_server/task_providers/kata_adapter_test.exs` (6h) [satisfies REQ-001, REQ-005, REQ-006]
   - PRD task ID: KATA-T017
   - Description: Write `test/foreman_server/task_providers/kata_adapter_test.exs` — all 13 callbacks against `KataRunnerMock` via Mox; every happy path and error path; assert `available?/0` false when `kata` not installed
   - Target Files: `packages/foreman_server/test/foreman_server/task_providers/kata_adapter_test.exs`
   - Test AC:
-    - [ ] Each of the 13 callbacks has a happy-path and an error-path test against `KataRunnerMock`
-    - [ ] `available?/0` returns `false` when `System.find_executable("kata")` is `nil` and when `kata --version` exits non-zero
+    - [x] Each of the 13 callbacks has a happy-path test against `KataRunnerMock`, and every callback that can fail has an error-path test (`name/0` and `capabilities/0` are constants with no failure path)
+    - [x] `available?/0` returns `false` when `System.find_executable("kata")` is `nil` and when `kata --version` exits non-zero
   - Dependencies: TRD-KATA-T008, TRD-KATA-T009, TRD-KATA-T010, TRD-KATA-T003, TRD-KATA-T005
 
 #### Story 1.3 — Error factory, architecture test and registration
@@ -292,7 +292,7 @@ Task IDs are `TRD-KATA-T###`, with an optional `-TEST` suffix marking a test tas
   - Target Files: `packages/foreman_server/lib/foreman_server/task_providers/kata_adapter/build_provider_error.ex`
   - Validates PRD ACs: AC-007-3
   - Implementation AC:
-    - [ ] AC-007-3 — Every `ProviderError` produced by the adapter carries `command.binary: "kata"` in its context, together with the run's identifier, exit code, and stderr byte count — never the stderr text.
+    - [x] AC-007-3 — Every `ProviderError` produced by the adapter carries `command.binary: "kata"` in its context, together with the run's identifier, exit code, and stderr byte count — never the stderr text.
   - Dependencies: TRD-KATA-T008
 - [x] **TRD-KATA-T019**: Verify `ProviderError` construction routes through `KataAdapter.BuildProviderError` (1h)
   - PRD task ID: KATA-T019
@@ -300,7 +300,7 @@ Task IDs are `TRD-KATA-T###`, with an optional `-TEST` suffix marking a test tas
   - Target Files: `packages/foreman_server/lib/foreman_server/task_providers/kata_adapter.ex`
   - Validates PRD ACs: AC-007-3
   - Implementation AC:
-    - [ ] AC-007-3 — Every `ProviderError` produced by the adapter carries `command.binary: "kata"` in its context, together with the run's identifier, exit code, and stderr byte count — never the stderr text.
+    - [x] AC-007-3 — Every `ProviderError` produced by the adapter carries `command.binary: "kata"` in its context, together with the run's identifier, exit code, and stderr byte count — never the stderr text.
   - Dependencies: TRD-KATA-T018
 - [x] **TRD-KATA-T020-TEST**: Write `test/foreman_server/task_providers/kata_architecture_test.exs` (3h) [satisfies REQ-004, REQ-014]
   - PRD task ID: KATA-T020
@@ -308,11 +308,11 @@ Task IDs are `TRD-KATA-T###`, with an optional `-TEST` suffix marking a test tas
   - Target Files: `packages/foreman_server/test/foreman_server/task_providers/kata_architecture_test.exs`
   - Validates PRD ACs: AC-001-3, AC-004-1, AC-004-2, AC-004-3, AC-014-3
   - Test AC:
-    - [ ] AC-001-3 — Every Kata read in the adapter goes through the runner; no code path in the adapter opens a Kata database file, speaks a daemon protocol, or shells out to any binary other than `kata`.
-    - [ ] AC-004-1 — The test fails if any `System.cmd` invocation of `kata` exists outside the single runner module; exactly one allowed invocation site is declared, mirroring the Beads runner rule.
-    - [ ] AC-004-2 — The test fails if any module outside `task_providers/` aliases or calls `KataAdapter` directly; consumers go through the registry only.
-    - [ ] AC-004-3 — The test fails if any code path invokes Kata as an orphan scanner (e.g. listing by claimed/in-progress status for reconciliation purposes), enforcing REQ-014 mechanically.
-    - [ ] AC-014-3 — The architecture test fails the build if it finds such a claim-state sweep under `lib/foreman_server/task_providers/`; the Kata provider emits no `[:reconcile, :*]` telemetry events.
+    - [x] AC-001-3 — Every Kata read in the adapter goes through the runner; no code path in the adapter opens a Kata database file, speaks a daemon protocol, or shells out to any binary other than `kata`.
+    - [x] AC-004-1 — The test fails if any `System.cmd` invocation of `kata` exists outside the single runner module; exactly one allowed invocation site is declared, mirroring the Beads runner rule.
+    - [x] AC-004-2 — The test fails if any module outside `task_providers/` aliases or calls `KataAdapter` directly; consumers go through the registry only.
+    - [x] AC-004-3 — The test fails if any code path invokes Kata as an orphan scanner (e.g. listing by claimed/in-progress status for reconciliation purposes), enforcing REQ-014 mechanically.
+    - [x] AC-014-3 — The architecture test fails the build if it finds such a claim-state sweep under `lib/foreman_server/task_providers/`; the Kata provider emits no `[:reconcile, :*]` telemetry events.
   - Dependencies: TRD-KATA-T002, TRD-KATA-T008
 - [x] **TRD-KATA-T021**: Update `config/config.exs` (0.25h)
   - PRD task ID: KATA-T021
@@ -320,17 +320,17 @@ Task IDs are `TRD-KATA-T###`, with an optional `-TEST` suffix marking a test tas
   - Target Files: `packages/foreman_server/config/config.exs`
   - Validates PRD ACs: AC-001-2, AC-003-1, AC-003-2, AC-003-3
   - Implementation AC:
-    - [ ] AC-001-2 — `name/0` returns a human-readable provider name; `capabilities/0[:provider_id]` returns `:kata`; `contract_version` is `"kata.capabilities.v1"`; that version string is present in the `:foreman_server, :task_provider` config's `accepted_contract_versions` list so startup registration succeeds.
-    - [ ] AC-003-1 — A project whose `task_provider` is `kata` with a valid absolute `cwd` routes to `KataAdapter`; every CLI invocation it produces runs with that `cwd` as the working directory.
-    - [ ] AC-003-2 — A Kata project's config is validated without any `database_path` requirement: no code path demands or invents one, and registry routing does not fail a Kata project for its absence.
-    - [ ] AC-003-3 — Two projects bound to different `cwd` values never share adapter state: listing/getting for project A never observes tasks from project B's Kata project.
+    - [x] AC-001-2 — `name/0` returns a human-readable provider name; `capabilities/0[:provider_id]` returns `:kata`; `contract_version` is `"kata.capabilities.v1"`; that version string is present in the `:foreman_server, :task_provider` config's `accepted_contract_versions` list so startup registration succeeds.
+    - [x] AC-003-1 — A project whose `task_provider` is `kata` with a valid absolute `cwd` routes to `KataAdapter`; every CLI invocation it produces runs with that `cwd` as the working directory.
+    - [x] AC-003-2 — A Kata project's config is validated without any `database_path` requirement: no code path demands or invents one, and registry routing does not fail a Kata project for its absence.
+    - [x] AC-003-3 — Two projects bound to different `cwd` values never share adapter state: listing/getting for project A never observes tasks from project B's Kata project.
   - Dependencies: TRD-KATA-T008
 - [x] **TRD-KATA-T022**: Update `config/config.exs` (1h)
   - PRD task ID: KATA-T022
   - Description: Update `config/config.exs` — add `accepted_kata_versions` to the `task_provider` config block: a list of Elixir `Version.match?/2` requirement strings (e.g. `">= 0.19.0"`), consumed only by `foreman doctor` (KATA-T042); distinct from `accepted_contract_versions`; the leading `v` of `kata --version` is stripped before matching and a non-semver dev build is a warning (PRD §11 OPEN-Q2 resolution)
   - Target Files: `packages/foreman_server/config/config.exs`
   - Implementation AC:
-    - [ ] `accepted_kata_versions` is a list of strings that each pass `Version.parse_requirement/1`, and `accepted_contract_versions` is not changed by this task
+    - [x] `accepted_kata_versions` is a list of strings that each pass `Version.parse_requirement/1`, and `accepted_contract_versions` is not changed by this task
   - Dependencies: TRD-KATA-T021
 
 ### PR 2: Quality — Error Handling, Concurrency, Registry Tightening, Per-Project Binding
@@ -380,9 +380,9 @@ Task IDs are `TRD-KATA-T###`, with an optional `-TEST` suffix marking a test tas
   - Target Files: `packages/foreman_server/lib/foreman_server/task_providers/kata_adapter/build_provider_error.ex`
   - Validates PRD ACs: AC-007-1, AC-007-2, AC-007-4
   - Implementation AC:
-    - [ ] AC-007-1 — A Kata failure that matches a known code maps to that code with its existing retryable flag (AC-013-2 overrides it for the claimed-by-other code); the mapping is read from `BeadsAdapter.CodeMap`, not duplicated, while `redacted_fields` is always the Kata-sensitive list of AC-015-1.
-    - [ ] AC-007-2 — A Kata failure with an unrecognized code maps to the generic envelope code; the adapter never raises, never returns a raw string, and never mints a provider-specific code.
-    - [ ] AC-007-4 — A single construction site builds provider errors for the Kata adapter, and that site is the only place a `ProviderError` struct is created for Kata.
+    - [x] AC-007-1 — A Kata failure that matches a known code maps to that code with its existing retryable flag (AC-013-2 overrides it for the claimed-by-other code); the mapping is read from `BeadsAdapter.CodeMap`, not duplicated, while `redacted_fields` is always the Kata-sensitive list of AC-015-1.
+    - [x] AC-007-2 — A Kata failure with an unrecognized code maps to the generic envelope code; the adapter never raises, never returns a raw string, and never mints a provider-specific code.
+    - [x] AC-007-4 — A single construction site builds provider errors for the Kata adapter, and that site is the only place a `ProviderError` struct is created for Kata.
   - Dependencies: TRD-KATA-T018
 - [x] **TRD-KATA-T027**: Implement `already_terminal` guard (REQ-013-1) (1h) [satisfies REQ-013]
   - PRD task ID: KATA-T027
@@ -390,7 +390,7 @@ Task IDs are `TRD-KATA-T###`, with an optional `-TEST` suffix marking a test tas
   - Target Files: `packages/foreman_server/lib/foreman_server/task_providers/kata_adapter.ex`
   - Validates PRD ACs: AC-013-1
   - Implementation AC:
-    - [ ] AC-013-1 — When Kata reports a task as already terminal, closing it returns an explicit already-terminal success rather than a failure.
+    - [x] AC-013-1 — When Kata reports a task as already terminal, closing it returns an explicit already-terminal success rather than a failure.
   - Dependencies: TRD-KATA-T026
 - [x] **TRD-KATA-T028**: Implement `CLAIMED_BY_OTHER` guard (REQ-013-2) (1h)
   - PRD task ID: KATA-T028
@@ -398,15 +398,15 @@ Task IDs are `TRD-KATA-T###`, with an optional `-TEST` suffix marking a test tas
   - Target Files: `packages/foreman_server/lib/foreman_server/task_providers/kata_adapter.ex`
   - Validates PRD ACs: AC-013-2
   - Implementation AC:
-    - [ ] AC-013-2 — When Kata reports a task as claimed by another actor, the returned error carries the existing claimed-by-other code with `retryable?: false`, and its context carries no owner identity — no name, no id and no presence flag — only the allowlisted keys of AC-017-4.
+    - [x] AC-013-2 — When Kata reports a task as claimed by another actor, the returned error carries the existing claimed-by-other code with `retryable?: false`, and its context carries no owner identity — no name, no id and no presence flag — only the allowlisted keys of AC-017-4.
   - Dependencies: TRD-KATA-T026
 - [x] **TRD-KATA-T029-TEST**: Write tests for all error envelope paths (2h) [satisfies REQ-007]
   - PRD task ID: KATA-T029
   - Description: Write tests for all error paths, each keyed on the failing verb and exit code — `kata claim` exit 5, `kata unassign` exit 5, `kata comment` exit 5, exit 4, exit 3, exit 7 and 8, runner timeout, signal, unparseable stdout, a `changed: false` close, and the claimed-by-other guard
   - Target Files: `packages/foreman_server/test/foreman_server/task_providers/kata_adapter_test.exs`
   - Test AC:
-    - [ ] Each path has a test asserting the returned code, `retryable?` and the context keys: `kata claim` exit 5, `kata unassign` exit 5, `kata comment` exit 5, exit 4, exit 3, exit 7 and 8, runner timeout, signal, unparseable stdout, a `changed: false` close, and the claimed-by-other guard
-    - [ ] No test asserts on raw stderr text, and none finds `current_owner` in any error context
+    - [x] Each path has a test asserting the returned code, `retryable?` and the context keys: `kata claim` exit 5, `kata unassign` exit 5, `kata comment` exit 5, exit 4, exit 3, exit 7 and 8, runner timeout, signal, unparseable stdout, a `changed: false` close, and the claimed-by-other guard
+    - [x] No test asserts on raw stderr text, and none finds `current_owner` in any error context
   - Dependencies: TRD-KATA-T026, TRD-KATA-T027, TRD-KATA-T028
 
 #### Story 2.3 — Registry tightening
@@ -417,7 +417,7 @@ Task IDs are `TRD-KATA-T###`, with an optional `-TEST` suffix marking a test tas
   - Target Files: `packages/foreman_server/lib/foreman_server/task_provider/registry.ex`, `packages/foreman_server/test/foreman_server/task_provider/registry_test.exs`
   - Validates PRD ACs: AC-010-1
   - Implementation AC:
-    - [ ] AC-010-1 — The registry validates a provider's capability map against required keys and value types; an invalid map is excluded from the routing snapshot and logged with a distinguishable provider-scoped telemetry event.
+    - [x] AC-010-1 — The registry validates a provider's capability map against required keys and value types; an invalid map is excluded from the routing snapshot and logged with a distinguishable provider-scoped telemetry event.
   - Dependencies: TRD-KATA-T010
 - [x] **TRD-KATA-T031**: Audit `BeadsAdapter.capabilities/0` against the tightened validation (2h)
   - PRD task ID: KATA-T031
@@ -425,7 +425,7 @@ Task IDs are `TRD-KATA-T###`, with an optional `-TEST` suffix marking a test tas
   - Target Files: `packages/foreman_server/lib/foreman_server/task_providers/beads_adapter.ex`, `packages/foreman_server/test/foreman_server/task_providers/beads_adapter_test.exs`
   - Validates PRD ACs: AC-010-3
   - Implementation AC:
-    - [ ] AC-010-3 — The Beads adapter's declaration is audited against the tightened rules and corrected where needed, with the existing Beads test suite still green.
+    - [x] AC-010-3 — The Beads adapter's declaration is audited against the tightened rules and corrected where needed, with the existing Beads test suite still green.
   - Dependencies: TRD-KATA-T030
 - [x] **TRD-KATA-T032-TEST**: Write `test/foreman_server/task_providers/kata_registry_tightening_test.exs` (2h) [satisfies REQ-002, REQ-010]
   - PRD task ID: KATA-T032
@@ -433,8 +433,8 @@ Task IDs are `TRD-KATA-T###`, with an optional `-TEST` suffix marking a test tas
   - Target Files: `packages/foreman_server/test/foreman_server/task_providers/kata_registry_tightening_test.exs`
   - Validates PRD ACs: AC-002-2, AC-010-2
   - Test AC:
-    - [ ] AC-002-2 — The map satisfies the same registry capability validation that Beads' map satisfies, with no Kata-specific exception in the registry.
-    - [ ] AC-010-2 — Both the Beads adapter and the Kata adapter pass the tightened validation unchanged in observable behavior — no Kata-specific branch, exemption, or special case exists in the registry.
+    - [x] AC-002-2 — The map satisfies the same registry capability validation that Beads' map satisfies, with no Kata-specific exception in the registry.
+    - [x] AC-010-2 — Both the Beads adapter and the Kata adapter pass the tightened validation unchanged in observable behavior — no Kata-specific branch, exemption, or special case exists in the registry.
   - Dependencies: TRD-KATA-T030, TRD-KATA-T031
 
 #### Story 2.4 — Per-project cwd binding (REQ-003)
@@ -446,16 +446,16 @@ Task IDs are `TRD-KATA-T###`, with an optional `-TEST` suffix marking a test tas
   - Target Files: `packages/foreman_cli/cmd/foreman/project.go`, `packages/foreman_cli/cmd/foreman/project_test.go`
   - Validates PRD ACs: AC-003-1, AC-003-2
   - Implementation AC:
-    - [ ] AC-003-1 — A project whose `task_provider` is `kata` with a valid absolute `cwd` routes to `KataAdapter`; every CLI invocation it produces runs with that `cwd` as the working directory.
-    - [ ] AC-003-2 — A Kata project's config is validated without any `database_path` requirement: no code path demands or invents one, and registry routing does not fail a Kata project for its absence.
+    - [x] AC-003-1 — A project whose `task_provider` is `kata` with a valid absolute `cwd` routes to `KataAdapter`; every CLI invocation it produces runs with that `cwd` as the working directory.
+    - [x] AC-003-2 — A Kata project's config is validated without any `database_path` requirement: no code path demands or invents one, and registry routing does not fail a Kata project for its absence.
 - [x] **TRD-KATA-T053**: Make server-side routing and preflight storage-scheme-generic (4h) [satisfies REQ-003]
   - PRD task ID: KATA-T053
   - Description: Make server-side routing and preflight storage-scheme-generic — `project_provider_projector.ex` `preflight_provider/2` (returns `{:error, :preflight_failed}` when `database_path` is nil), `registry.ex` `route_provider/3` (`:database_path_mismatch`) and `run_executor.ex` `fetch_database_path/1` must key on `capabilities[:storage_scheme]`: `:sqlite` providers keep `database_path`; `:cli_process` (Kata) projects are keyed and preflighted by `config.cwd` (absolute, existing directory), with no code path demanding or inventing a `database_path`; no Kata-specific branch
   - Target Files: `packages/foreman_server/lib/foreman_server/task_provider/project_provider_projector.ex`, `packages/foreman_server/lib/foreman_server/task_provider/registry.ex`, `packages/foreman_server/lib/foreman_server/workflow/run_executor.ex`, `packages/foreman_server/test/foreman_server/task_provider/project_provider_projector_test.exs`, `packages/foreman_server/test/foreman_server/task_provider/registry_route_test.exs`
   - Validates PRD ACs: AC-003-2, AC-010-2
   - Implementation AC:
-    - [ ] AC-003-2 — A Kata project's config is validated without any `database_path` requirement: no code path demands or invents one, and registry routing does not fail a Kata project for its absence.
-    - [ ] AC-010-2 — Both the Beads adapter and the Kata adapter pass the tightened validation unchanged in observable behavior — no Kata-specific branch, exemption, or special case exists in the registry.
+    - [x] AC-003-2 — A Kata project's config is validated without any `database_path` requirement: no code path demands or invents one, and registry routing does not fail a Kata project for its absence.
+    - [x] AC-010-2 — Both the Beads adapter and the Kata adapter pass the tightened validation unchanged in observable behavior — no Kata-specific branch, exemption, or special case exists in the registry.
   - Dependencies: TRD-KATA-T010, TRD-KATA-T031
 - [x] **TRD-KATA-T054**: Propagate the project working directory in `KataAdapter` (2h)
   - PRD task ID: KATA-T054
@@ -531,15 +531,15 @@ Task IDs are `TRD-KATA-T###`, with an optional `-TEST` suffix marking a test tas
   - Target Files: `https://katatracker.com/docs/reference/cli` (external, read-only) and the installed `kata` binary
   - Validates PRD ACs: AC-002-1, AC-002-4
   - Implementation AC:
-    - [ ] AC-002-1 — `capabilities/0` returns a map with `provider_id: :kata`, `contract_version: "kata.capabilities.v1"`, a non-empty `supports` list covering all supported operations, and `storage_scheme: :cli_process`.
-    - [ ] AC-002-4 — `capabilities/0`'s `id_format` is `"^[a-z0-9]+$"`, and the adapter's ref parser accepts `abc4`, `4abc`, `a1b2`, and a 26-character full ULID, while rejecting an empty string, uppercase input, and any string containing a character outside `[a-z0-9]`.
+    - [x] AC-002-1 — `capabilities/0` returns a map with `provider_id: :kata`, `contract_version: "kata.capabilities.v1"`, a non-empty `supports` list covering all supported operations, and `storage_scheme: :cli_process`.
+    - [x] AC-002-4 — `capabilities/0`'s `id_format` is `"^[a-z0-9]+$"`, and the adapter's ref parser accepts `abc4`, `4abc`, `a1b2`, and a 26-character full ULID, while rejecting an empty string, uppercase input, and any string containing a character outside `[a-z0-9]`.
   - Dependencies: TRD-KATA-T010
 - [x] **TRD-KATA-T039**: Confirm OPEN-Q2 (1h)
   - PRD task ID: KATA-T039
   - Description: Confirm OPEN-Q2 — `accepted_kata_versions` format (PRD §11: list of `Version.match?/2` requirement strings) — against Kata's published version metadata and the installed binary; the `>= 0.19.0` floor gates `kata agent-hook`/`kata teams`, and Kata documents no floor for `kata claim`/`kata close`, so the range stays operator policy; adjust `config/config.exs` only if upstream documents otherwise. Outcome recorded 2026-11-19: confirmed, no change — `kata version --json` reports `version: "v0.23.0"` and `kata --version` prints `kata v0.23.0`, so the leading `v` must be stripped (the doctor does); the published reference states the 0.19.0 floor only for `agent-hook`, `teams` and the account-token bridges. The newest published release (0.21.0) lags the installed binary (0.23.0)
   - Target Files: `packages/foreman_server/config/config.exs`
   - Implementation AC:
-    - [ ] Every `accepted_kata_versions` entry parses with `Version.parse_requirement/1`; the PRD §11 resolution is either confirmed against Kata's version metadata or corrected in `config/config.exs`
+    - [x] Every `accepted_kata_versions` entry parses with `Version.parse_requirement/1`; the PRD §11 resolution is either confirmed against Kata's version metadata or corrected in `config/config.exs`
   - Dependencies: TRD-KATA-T022
 
 ### PR 4: Observability — Sensitive Fields, Doctor, Side-Channels
@@ -631,16 +631,16 @@ Task IDs are `TRD-KATA-T###`, with an optional `-TEST` suffix marking a test tas
   - Description: Update `docs/user-guide.md` and `README.md` — Kata adapter setup: `brew install kata` (macOS) or install script (Linux); `kata init` to bind the workspace; `foreman project create --path <dir> --task-provider kata` (no database path); `foreman doctor` to verify; operator triage of a claimed-but-stuck issue (`kata list --status all` plus `kata status <ref>` to inspect ownership — `--status` accepts only `open`, `closed` or `all` — then clear the claim with `kata unassign <ref>`; `kata reopen <ref>` alone does not clear the owner, `kata claim <ref>` takes it over, and `kata audit closes` replays recent closes); note Foreman does NOT scan Kata for orphans; make the stale database-path binding statements provider-conditional (`README.md` lines 46 and 114–115; `docs/user-guide.md` lines 561, 573, 2176, 2634)
   - Target Files: `docs/user-guide.md`, `README.md`
   - Implementation AC:
-    - [ ] Every `kata` command in the new text appears in the help of the pinned `kata` version
-    - [ ] `grep -n "status claimed"` finds nothing in either file, and the database-path binding is described as beads-only
+    - [x] Every `kata` command in the new text appears in the help of the pinned `kata` version (checked against the installed v0.23.0 `--help`: `claim --if-unowned`, `list --status/--limit`, `init --project`, `status`, `unassign --expect-owner`, `reopen`, `close --done --commit`, `audit closes`)
+    - [x] `grep -n "status claimed"` finds nothing in either file, and the database-path binding is described as beads-only
   - Dependencies: TRD-KATA-T042
 - [x] **TRD-KATA-T048**: Update `docs/cli-reference.md` and `CLAUDE.md` (1h)
   - PRD task ID: KATA-T048
   - Description: Update `docs/cli-reference.md` and `CLAUDE.md` — `foreman project create/update --task-provider kata` (config is the absolute `--path` as `cwd`; `--task-provider-database-path` rejected for Kata); `foreman doctor` Kata section output format; note the Kata `task_provider` payload carries `provider: "kata"` and `config.cwd` only (no `KATA_HOME`, no `kata_home`, no `database_path`); make the stale database-path statements provider-conditional (`docs/cli-reference.md` lines 301, 316, 354, 363; `CLAUDE.md` lines 577 and 579)
   - Target Files: `docs/cli-reference.md`, `CLAUDE.md`
   - Implementation AC:
-    - [ ] The two files describe the Kata binding (`--path` becomes `config.cwd`, no database path) and state the database path as required only for beads
-    - [ ] `go test ./cmd/foreman/...`, including `usage_drift_test.go`, passes
+    - [x] The two files describe the Kata binding (`--path` becomes `config.cwd`, no database path) and state the database path as required only for beads
+    - [x] `go test ./cmd/foreman/...`, including `usage_drift_test.go`, passes
   - Dependencies: TRD-KATA-T047
 - [x] **TRD-KATA-T049**: Write `packages/foreman_server/CHANGELOG.md` entry (0.5h)
   - PRD task ID: KATA-T049
