@@ -5,6 +5,16 @@ defmodule ForemanServer.TaskProviders.ConcurrencyLimiter do
   The limiter enforces `:max_in_flight` concurrent operations per project,
   queueing additional callers until a slot becomes available or their
   configured timeout elapses.
+
+  ## Single instance (TRD-KATA-T025)
+
+  This is a single globally named instance: the process registered as this module, supervised by
+  `ForemanServer.Application`. A second, separately configured instance is not possible, so
+  the limits (`:max_in_flight`, `:timeout_ms` under the `:task_provider` key) are one set for the
+  whole server. `ForemanServer.TaskProviders.KataAdapter` is its only caller: it takes a slot
+  around every `kata` runner call, keyed by the project's working directory. The
+  `ForemanServer.TaskProviders.BeadsAdapter` does not call it and is unchanged, so the limiter is
+  not shared with Beads.
   """
 
   use GenServer

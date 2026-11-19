@@ -60,6 +60,7 @@ defmodule ForemanServer.TaskProviders.KataAdapter do
   alias ForemanServer.TaskProvider.{Comment, Issue}
   alias ForemanServer.TaskProvider.Registry, as: TaskProviderRegistry
   alias ForemanServer.TaskProviders.BeadsAdapter.CodeMap.ProviderErrorInput
+  alias ForemanServer.TaskProviders.ConcurrencyLimiter
   alias ForemanServer.TaskProviders.KataAdapter.BuildProviderError
   alias ForemanServer.TaskProviders.ProviderError
 
@@ -320,11 +321,32 @@ defmodule ForemanServer.TaskProviders.KataAdapter do
     end
   end
 
+  ## Concurrency
+
+  # Every `@runner.cmd/3` call goes through here and holds one `ConcurrencyLimiter` slot, keyed by
+  # the directory the command runs in (the project's workspace), for exactly as long as the
+  # runner runs; a raise from the runner still returns it. A caller that gets no slot within the
+  # limiter's configured timeout never starts a process and receives the retryable
+  # `BR_TIMEOUT_QUEUE` instead. The limiter is the one the application supervises.
+  defp run_kata(argv, cwd) do
+    case ConcurrencyLimiter.acquire(cwd) do
+      :ok ->
+        try do
+          @runner.cmd(argv, cwd, [])
+        after
+          ConcurrencyLimiter.release(cwd)
+        end
+
+      {:error, :timeout} ->
+        {:error, queue_timeout_error()}
+    end
+  end
+
   ## Runner calls
 
   # Runs one kata command and decodes the JSON object it printed.
   defp call_json(argv, cwd) do
-    case @runner.cmd(argv, cwd, []) do
+    case run_kata(argv, cwd) do
       {:ok, stdout} ->
         decode_envelope(stdout)
 
@@ -361,7 +383,7 @@ defmodule ForemanServer.TaskProviders.KataAdapter do
   end
 
   defp version_probe_succeeds? do
-    case @runner.cmd(["--version"], File.cwd!(), []) do
+    case run_kata(["--version"], File.cwd!()) do
       {:ok, _banner} -> true
       {:error, %ProviderError{}} -> false
     end
@@ -857,6 +879,14 @@ defmodule ForemanServer.TaskProviders.KataAdapter do
   end
 
   ## Errors (every one is built by `BuildProviderError`)
+
+  defp queue_timeout_error do
+    local_error(
+      "BR_TIMEOUT_QUEUE",
+      "Kata command timed out while waiting for a concurrency slot.",
+      "Retry after the adapter queue drains."
+    )
+  end
 
   defp local_error(code, message, hint, missing_fields \\ []) do
     code

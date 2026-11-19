@@ -26,7 +26,13 @@ defmodule ForemanServer.ApplicationChildrenTest do
 
   alias ForemanServer.Aggregates.BeadsDbLease.{KeeperRegistry, KeeperSupervisor}
   alias ForemanServer.Schedule.Ticker
-  alias ForemanServer.TaskProviders.{BeadsOrphanJanitorSupervisor, BeadsWatcherSupervisor}
+
+  alias ForemanServer.TaskProviders.{
+    BeadsOrphanJanitorSupervisor,
+    BeadsWatcherSupervisor,
+    ConcurrencyLimiter
+  }
+
   alias ForemanServer.Workflow.{BootReconciliation, Dispatcher, RunSupervisor}
 
   @config_dir Path.expand("../../config", __DIR__)
@@ -261,6 +267,49 @@ defmodule ForemanServer.ApplicationChildrenTest do
       # proves the registry survives that).
       assert AggregateRegistry in ids
       assert_started_after(ids, Aggregator, [AggregateRegistry])
+    end
+  end
+
+  describe "ConcurrencyLimiter (TRD-KATA-T055, AC-009-1)" do
+    test "is supervised unconditionally, once, before the registry that routes to Kata" do
+      ids = child_ids()
+
+      assert ConcurrencyLimiter in ids
+      assert_started_after(ids, ForemanServer.TaskProvider.Registry, [ConcurrencyLimiter])
+      assert ids == Enum.uniq(ids)
+    end
+
+    test "the running application supervises it as a live, registered process" do
+      pid = Process.whereis(ConcurrencyLimiter)
+
+      assert is_pid(pid) and Process.alive?(pid)
+
+      assert Enum.any?(
+               Supervisor.which_children(ForemanServer.Application),
+               &match?({ConcurrencyLimiter, ^pid, :worker, _modules}, &1)
+             )
+    end
+
+    test "a crashed limiter is restarted and grants slots again" do
+      original = Process.whereis(ConcurrencyLimiter)
+      ref = Process.monitor(original)
+
+      Process.exit(original, :kill)
+      assert_receive {:DOWN, ^ref, :process, ^original, :killed}, 5_000
+
+      restarted =
+        ForemanServer.TestSupport.Eventually.await(
+          fn ->
+            pid = Process.whereis(ConcurrencyLimiter)
+            if is_pid(pid) and pid != original, do: pid
+          end,
+          message: "the supervisor never restarted the ConcurrencyLimiter"
+        )
+
+      project_id = make_ref()
+      assert :ok = ConcurrencyLimiter.acquire(project_id)
+      assert :ok = ConcurrencyLimiter.release(project_id)
+      assert Process.alive?(restarted)
     end
   end
 

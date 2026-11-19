@@ -2,7 +2,7 @@
 documentId: PRD-2026-8030852f
 label: prd-foreman-kata-task-provider
 title: "Foreman × Kata (kenn.io/kata) — Task-Provider Integration"
-version: 1.1.10
+version: 1.1.11
 status: Draft
 date: 2026-11-18
 scaleDepth: STANDARD
@@ -542,7 +542,7 @@ reason as a comment, and releases its own claim so the task is open, unowned and
 
 **Acceptance Criteria:**
 
-- AC-012-1: On successful execution, the task is closed in Kata carrying the run's completion message and commit SHA.
+- AC-012-1: On successful execution, the task is closed in Kata carrying the run's completion message and typed evidence: the commit SHA when the run produced one, otherwise the run's artifact path as reviewed-paths evidence (Kata refuses a `--done` close that carries none).
 - AC-012-2: On failed execution, the task is reopened in Kata, the failure reason is recorded as a comment on that task, and Foreman's own claim is released so the task is open, unowned and claimable again; the task is not closed, and a task owned by a different actor is left untouched.
 - AC-012-3: The completion message identifies the Foreman run that produced it (run identifier and artifact path) when the caller supplies no message of its own, and is at least 40 characters — Kata's minimum for `kata close --done` — so the generated default is never rejected for length.
 - AC-012-4: When Kata refuses the close, the refusal is surfaced as a typed provider error and the run does not report the task as successfully closed.
@@ -648,7 +648,7 @@ and CLI stderr is discarded except for its byte count.
 - AC-017-1: A sentinel sensitive value passed through the adapter never appears in the application log.
 - AC-017-2: A sentinel sensitive value passed through the adapter never appears in standard output or standard error.
 - AC-017-3: A sentinel sensitive value passed through the adapter never appears in telemetry event metadata.
-- AC-017-4: The provider-error context contains only the allowlisted keys (`id`, `command`, `exit_code`, `stderr_byte_count`, `sanitized?`, `redacted_fields` and, on schema-validation errors only, `missing_fields` — the names of the absent required fields, never their values); `sanitized?` is always `true` and `redacted_fields` always names the redacted fields.
+- AC-017-4: The provider-error context contains only the allowlisted keys (`id`, `command`, `exit_code`, `stderr_byte_count`, `sanitized?`, `redacted_fields` and `missing_fields`); `sanitized?` is always `true`, `redacted_fields` always names the redacted fields, and `missing_fields` is an empty list except on schema-validation errors, where it names the absent required fields and never their values.
 - AC-017-5: The domain record Foreman returns to its caller **does** contain the sensitive values, so the redaction does not silently destroy task content the caller needs.
 
 **Dependencies:** REQ-007 (error envelope), REQ-015 (classification)
@@ -980,6 +980,7 @@ list now holds 56 tasks (`KATA-T001`–`KATA-T056`).
 | 1.1.7 | 2026-11-19 | Foreman ensemble-refine-trd | Idempotency key for the failure comment now derived from the run id and a hash of the comment text rather than the run id alone: Kata refuses a reused key with a different body (`idempotency_mismatch`, exit 5), so a run-id-only key would lose a differently worded second failure comment. AC-014-1 reworded; the §11 entry states that an already-unowned task still gets reopen and comment. No AC added or removed (still 57), no §12 mapping changed, readiness gate stays PASS at 4.5. |
 | 1.1.8 | 2026-11-19 | Foreman ensemble-implement-trd | Implementation-time correction (no AC changed, still 57). The foreign-owner `CLAIMED_BY_OTHER` error from `fail/3` is non-retryable, like every Kata claimed-by-other error under AC-013-2, so `RunExecutor` does not retry it; the 1.1.6 and 1.1.7 rows' reasoning that `CodeMap` marks the code retryable no longer applies to Kata. §11 (2) updated to match. |
 | 1.1.9 | 2026-11-19 | Foreman ensemble-implement-trd | Closed a conflict between two ACs found during implementation (still 57 ACs). AC-013-2 required a boolean assignee-presence flag in the claimed-by-other context while AC-017-4 closes the context key set to `id`, `command`, `exit_code`, `stderr_byte_count`, `sanitized?` and `redacted_fields`; a per-test exception would have let any key ride under that code, so AC-013-2 now says the context carries no owner identity and only the allowlisted keys. AC-007-1 said errors take the CodeMap's existing redacted-field list, which for `CLAIMED_BY_OTHER` is `["current_assignee"]` and contradicts AC-015-1's literal `["assignee", "description"]`; it now says the retryable flag comes from CodeMap (overridden by AC-013-2) and `redacted_fields` is always the Kata list. |
-| 1.1.10 | 2026-11-19 | Foreman ensemble-implement-trd | AC-017-4's closed context key set gains `missing_fields` (schema-validation errors only; the names of absent required fields, never values). AC-006-1 requires a schema-validation error that names the missing fields, `ProviderError` carries them in `context.missing_fields`, and the implementation found the closed set had no room for them. Still 57 ACs. |
+| 1.1.10 | 2026-11-19 | Foreman ensemble-implement-trd | AC-017-4's closed context key set gains `missing_fields`. `ProviderError.new/3` seeds `missing_fields: []` into every context (the shared struct, Beads included) and AC-006-1 requires schema-validation errors to name the absent fields, so a literal six-key set could never hold; the key is now part of the closed set, always a list of field names, empty except on schema-validation errors, never values. Naming the fields only in the error message was considered and rejected because it would not remove the seeded key. Still 57 ACs. |
+| 1.1.11 | 2026-11-19 | Foreman ensemble-implement-trd | AC-012-1 no longer requires a commit SHA on every close. Probed on `kata` v0.23.0: `kata close --done` needs typed evidence (`commit:`, `pr:`, `test:`, `reviewed-paths:`, `external:` or `attachment:`) and exits 3 without it; an empty `--commit` is also refused (`evidence[0] commit requires non-empty sha`). A phase that produces no commit therefore cannot supply a SHA, so the close carries the commit SHA when the run produced one and otherwise the run's artifact path as reviewed-paths evidence; a run with neither gets a typed validation error rather than an invented value. Still 57 ACs. |
 
 ---

@@ -100,6 +100,12 @@ defmodule ForemanServer.Application do
         # path that resolves a Beads provider, including the
         # TaskProvider.Registry snapshot and BootReconciliation's lazy
         # orphan-reopen pass.
+        # ConcurrencyLimiter bounds the `kata` CLI processes in flight per
+        # project (TRD-KATA-T055). KataAdapter acquires a slot around every
+        # runner call, including the `available?/0` probe the Registry makes
+        # while it boots, so it must be alive before the Registry. One
+        # globally named instance; the Beads adapter does not use it.
+        ForemanServer.TaskProviders.ConcurrencyLimiter,
         # TaskProvider.Registry owns configured task provider routing and must
         # start before dispatch paths resolve a provider snapshot.
         ForemanServer.TaskProvider.Registry
