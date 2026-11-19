@@ -503,7 +503,7 @@ Task IDs are `TRD-KATA-T###`, with an optional `-TEST` suffix marking a test tas
   - Dependencies: TRD-KATA-T015, TRD-KATA-T033
 - [ ] **TRD-KATA-T036-TEST**: Write `test/foreman_server/task_providers/kata_lifecycle_test.exs` (3h) [satisfies REQ-011, REQ-012, REQ-013]
   - PRD task ID: KATA-T036
-  - Description: Write `test/foreman_server/task_providers/kata_lifecycle_test.exs` — exercise claim → complete; exercise claim → fail (status, reopen, comment, unassign); exercise fail when a different actor owns the task (only the status call is issued; `CLAIMED_BY_OTHER`) and when the task is already unowned (reopen and comment, no unassign); exercise a retried fail after the comment succeeded (the replay is `changed: false`, no second comment); exercise already-closed idempotency; exercise already-claimed conflict; exercise claim-lost re-list-and-drop
+  - Description: Write `test/foreman_server/task_providers/kata_lifecycle_test.exs` — exercise claim → complete; exercise claim → fail (status, reopen, comment, unassign); exercise fail when a different actor owns the task (only the status call is issued; `CLAIMED_BY_OTHER`), when the task is already unowned (reopen and comment, no unassign), and when ownership changes between the status read and the unassign (`owner_mismatch` → `CLAIMED_BY_OTHER`); exercise a retried fail after the comment succeeded (the replay is `changed: false`, no second comment); exercise already-closed idempotency; exercise already-claimed conflict; exercise claim-lost re-list-and-drop
   - Target Files: `packages/foreman_server/test/foreman_server/task_providers/kata_lifecycle_test.exs`
   - Test AC:
     - [ ] Claim → complete, claim → fail, already-closed, already-claimed and claim-lost each have a passing test
