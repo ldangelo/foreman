@@ -97,6 +97,9 @@ func projectCreate(c *client.Client, args []string) error {
 	if *projectID == "" || *path == "" || *taskProvider == "" {
 		return usageError(fs, "foreman project create: --id, --path, and --task-provider are required")
 	}
+	if *taskProvider == "kata" && !filepath.IsAbs(*path) {
+		return usageError(fs, "foreman project create: --path must be absolute with --task-provider=kata")
+	}
 	switch *format {
 	case "", "json":
 	default:
@@ -112,7 +115,7 @@ func projectCreate(c *client.Client, args []string) error {
 		Payload: map[string]any{
 			"project_id":    *projectID,
 			"path":          *path,
-			"task_provider": taskProviderPayload(*taskProvider, *taskProviderDatabasePath),
+			"task_provider": taskProviderPayload(*taskProvider, *taskProviderDatabasePath, *path),
 		},
 	}
 
@@ -232,7 +235,7 @@ func projectUpdate(c *client.Client, args []string) error {
 		if err := validateTaskProviderConfig(fs, *taskProvider, *taskProviderDatabasePath, "foreman project update"); err != nil {
 			return err
 		}
-		payload["task_provider"] = taskProviderPayload(*taskProvider, *taskProviderDatabasePath)
+		payload["task_provider"] = taskProviderPayload(*taskProvider, *taskProviderDatabasePath, "")
 		changes++
 	}
 
@@ -702,10 +705,12 @@ func printProject(out map[string]any) error {
 	// Task provider info
 	taskProvider := ""
 	databasePath := ""
+	cwd := ""
 	if tp, ok := project["task_provider"].(map[string]any); ok {
 		taskProvider = projectStringField(tp, "provider")
 		if cfg, ok := tp["config"].(map[string]any); ok {
 			databasePath = projectStringField(cfg, "database_path")
+			cwd = projectStringField(cfg, "cwd")
 		}
 	}
 
@@ -733,6 +738,9 @@ func printProject(out map[string]any) error {
 	if databasePath != "" {
 		fmt.Printf("database_path: %s\n", databasePath)
 	}
+	if cwd != "" {
+		fmt.Printf("cwd: %s\n", cwd)
+	}
 
 	return nil
 }
@@ -749,9 +757,16 @@ func projectStringField(project map[string]any, key string) string {
 	return value
 }
 
-func taskProviderPayload(provider, databasePath string) map[string]any {
+// taskProviderPayload builds the task_provider payload. Kata projects carry
+// config.cwd (the absolute project path) and never database_path; update has no
+// project path, so it passes "" and emits no cwd.
+func taskProviderPayload(provider, databasePath, projectPath string) map[string]any {
 	payload := map[string]any{"provider": provider}
-	if databasePath != "" {
+	if provider == "kata" {
+		if projectPath != "" {
+			payload["config"] = map[string]any{"cwd": projectPath}
+		}
+	} else if databasePath != "" {
 		payload["config"] = map[string]any{"database_path": databasePath}
 	}
 	return payload
@@ -760,6 +775,9 @@ func taskProviderPayload(provider, databasePath string) map[string]any {
 func validateTaskProviderConfig(fs *flagSet, provider, databasePath, command string) error {
 	if provider == "beads" && databasePath == "" {
 		return usageError(fs, "%s", command+": --task-provider-database-path is required when --task-provider=beads")
+	}
+	if provider == "kata" && databasePath != "" {
+		return usageError(fs, "%s", command+": --task-provider-database-path is not supported with --task-provider=kata (Kata projects use --path as their working directory)")
 	}
 	if databasePath != "" && !filepath.IsAbs(databasePath) {
 		return usageError(fs, "%s", command+": --task-provider-database-path must be absolute")

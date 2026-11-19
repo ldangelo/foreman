@@ -1450,3 +1450,69 @@ func TestProjectScheduleCreateRejectionPrintsServerError(t *testing.T) {
 		t.Fatal("exit code = 0, want non-zero")
 	}
 }
+
+func TestProjectCreateKataEmitsCwdNotDatabasePath(t *testing.T) {
+	var seen []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"status":"accepted","result":{"events":1}}`))
+	}))
+	defer srv.Close()
+	c := &client.Client{BaseURL: srv.URL, HTTP: srv.Client()}
+
+	captureStdout(t, func() {
+		if err := projectCreate(c, []string{"--id", "project-kata", "--path", "/tmp/kata-ws", "--task-provider", "kata"}); err != nil {
+			t.Fatalf("projectCreate: %v", err)
+		}
+	})
+
+	var env commandEnvelope
+	if err := json.Unmarshal(seen, &env); err != nil {
+		t.Fatalf("decode: %v: %s", err, seen)
+	}
+	tp := env.Payload["task_provider"].(map[string]any)
+	config := tp["config"].(map[string]any)
+	if config["cwd"] != "/tmp/kata-ws" {
+		t.Fatalf("config.cwd = %#v, want /tmp/kata-ws", config["cwd"])
+	}
+	if _, present := config["database_path"]; present {
+		t.Fatalf("config has database_path: %#v", config)
+	}
+}
+
+func TestProjectCreateKataRejectsDatabasePathBeforePost(t *testing.T) {
+	var seenMethod string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenMethod = r.Method
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer srv.Close()
+	c := &client.Client{BaseURL: srv.URL, HTTP: srv.Client()}
+
+	err := projectCreate(c, []string{"--id", "p", "--path", "/tmp/kata-ws", "--task-provider", "kata", "--task-provider-database-path", "/tmp/x.db"})
+	if err == nil || client.ExitCode(err) != 1 {
+		t.Fatalf("err = %v, want usage error exit 1", err)
+	}
+	if !strings.Contains(err.Error(), "--task-provider-database-path is not supported with --task-provider=kata") {
+		t.Fatalf("error = %q", err.Error())
+	}
+	if seenMethod != "" {
+		t.Fatalf("unexpected HTTP call %q", seenMethod)
+	}
+}
+
+func TestProjectGetRendersKataCwd(t *testing.T) {
+	out := captureStdout(t, func() {
+		if err := printProject(map[string]any{"project": map[string]any{
+			"project_id":    "p",
+			"task_provider": map[string]any{"provider": "kata", "config": map[string]any{"cwd": "/tmp/kata-ws"}},
+		}}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(out, "cwd: /tmp/kata-ws") || strings.Contains(out, "database_path:") {
+		t.Fatalf("out = %q", out)
+	}
+}
