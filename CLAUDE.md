@@ -577,8 +577,10 @@ JSON round-trip is lossless.
   cannot be overridden by operator payload or phase YAML context.
 - **Beads scope.** For `implement-trd-beads`, freeze
   `task_provider.config.database_path` (from the TaskProvider
-  Registry, not cwd discovery; Go CLI project create/update requires
-  `--task-provider-database-path` when `--task-provider=beads`) and
+  Registry, not cwd discovery; the database path is required for Beads only: Go CLI
+  project create/update requires `--task-provider-database-path` when
+  `--task-provider=beads`, and rejects it for `--task-provider=kata`, whose binding is
+  `config.cwd`, see §13.2) and
   `TRD_SCOPE = <trd-slug>-<first-12-of-key>`
   at approval. Every `br`/`bv` invocation passes `BEADS_DB` and
   `TRD_SCOPE` explicitly. Scaffolds are prefixed `[trd:<TRD_SCOPE>]`.
@@ -807,6 +809,37 @@ Source of truth: `docs/TRD/TRD-2026-a804d1c7-phase-0-durable-execution.md`.
   `PATH` must not decide a test; a test that needs a skill absent overrides
   `:skill_home` itself.
 
+## 13.3 Kata task provider (`ForemanServer.TaskProviders.KataAdapter`)
+
+- **Binding is provider-conditional, keyed on the capability `storage_scheme`.**
+  `:sqlite` (Beads) binds by `task_provider.config.database_path`; `:cli_process`
+  (Kata, provider id `kata`, contract `kata.capabilities.v1`) binds by an absolute
+  `config.cwd`. `ForemanServer.TaskProvider.StorageBinding` is the one place that
+  maps scheme to key; the Registry, the projector preflight and `RunExecutor` read it through there.
+  `project.update` keeps a stored `config` when the provider is unchanged and no
+  `config` is sent; a provider switch without the new scheme's key returns
+  `{:missing_or_invalid, :cwd | :database_path}`.
+- **CLI.** `foreman project create --task-provider kata --path <absolute dir>`
+  sends `config.cwd = --path` (payload: `provider: "kata"` and `config.cwd` only: no `KATA_HOME`,
+  `kata_home` or `database_path`); `--task-provider-database-path` is rejected for Kata.
+  `project update --task-provider kata` reads the project's registered path
+  and sends it as `config.cwd`.
+- **Kata is authoritative for claims.** Foreman never scans Kata for orphans
+  (no watcher or janitor starts for Kata projects); an operator frees a stranded claim with
+  `kata unassign <ref>`. `fail/3` reopens, comments and releases only Foreman's
+  own claim (writes nothing if another actor owns the task). `complete/3` needs
+  typed evidence (commit SHA / `evidence`, else the run's artifact file as
+  `reviewed-paths:`) or fails with `VALIDATION_FAILED`; the close message is
+  at least 40 characters. Every `kata` call holds a `ConcurrencyLimiter` slot
+  (max 4 per project directory, 30 s queue timeout, `BR_TIMEOUT_QUEUE`).
+- **Doctor** (`accepted_kata_versions`, `Version.match?/2` requirements under
+  `:task_provider`): report keys `kata_version`, `warnings`, `sample_list`; warning codes
+  `KATA_VERSION_OUT_OF_RANGE`, `KATA_VERSION_UNPARSEABLE`,
+  `KATA_VERSION_REQUIREMENT_INVALID` never make the project unhealthy;
+  `CWD_MISSING` and `PROVIDER_MISSING` do. The adapter itself has no version gate.
+  Telemetry: `[:foreman_server, :task_provider, :kata, :subprocess, :spawned]`,
+  `[:foreman_server, :task_provider, :registry, :invalid_capabilities]`.
+
 ## 14. Beads sync invariants (Go/Elixir CQRS slice)
 
 Atomic `task.create` and bidirectional Beads sync are governed by
@@ -874,17 +907,16 @@ these invariants. Drift without a tracked TRD is a regression.
   remain adapter callbacks. No operator surface promotes them into
   Foreman commands in this slice.
 - **Doctor surface is honest about current scope** — about its *fields*, not
-  its existence. `foreman doctor` is not a command: the Go CLI dispatches only
-  `project`, `commands`, `task`, `run`, `workflow`, `init`
-  (`packages/foreman_cli/cmd/foreman/main.go`), which `README.md:70` and
-  `docs/user-guide.md:595` already state. The field list below describes what
-  the surface would report, and matches the server-side shape; treat it as a
-  spec, not as an operator command.
-  `foreman doctor task_provider` reports the fields it actually
-  emits per project: `project_id`, `healthy`, `provider_id`,
-  `contract_version`, `br_version`, `capabilities`, `sample_ready`,
-  `schema_validation_failures`, `janitor_enabled`, `janitor_running`,
-  `orphan_backlog`, and (on the unhappy branch) `error`. The
+  its existence. The Go `foreman doctor` (`GET /api/doctor`) reports
+  server-wide rows and has no task-provider rows; `foreman doctor
+  task_provider` is **not** routed (the Go CLI ignores the extra argument,
+  `packages/foreman_cli/cmd/foreman/main.go`). The per-project report comes from
+  `ForemanServer.CLI.run(["doctor", "task_provider"])` and reports, per project:
+  `project_id`, `healthy`, `provider_id`, `contract_version`,
+  `schema_validation_failures` and (on the unhappy branch) `error`, plus, for
+  Beads, `br_version`, `capabilities`, `sample_ready`, `janitor_enabled`,
+  `janitor_running`, `orphan_backlog`; for Kata, `kata_version`, `warnings` and
+  `sample_list` (see §13.2). The
   janitor fields are a CQRS read of the cached snapshot maintained
   by `BeadsOrphanJanitor`'s own scan loop; the doctor MUST NOT
   invoke `BeadsOrphanJanitor.run_scan/2` itself. Operators needing

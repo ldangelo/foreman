@@ -45,6 +45,8 @@ Quickstart (server running via `devbox run server`; `FOREMAN_API_URL` defaults t
 ```bash
 foreman project create --id demo --path /srv/demo \
   --task-provider beads --task-provider-database-path /srv/demo/.beads
+# A Kata-backed project instead binds --path (absolute) as the kata working directory:
+#   foreman project create --id demo-kata --path /srv/demo-kata --task-provider kata
 foreman project update --goal "Ship the importer" --instructions-file ./INSTRUCTIONS.md demo
 foreman project memory write --name conventions --file notes.md demo
 foreman project chat demo "triage the failing nightly build"
@@ -111,9 +113,13 @@ passes `prompt` separately for `:prompt`-action phases, and defaults
   `GET /api/tasks/:id`. Projects without a `:create` provider take
   the no-op path: no Bead is minted, no `external_id` is surfaced,
   and the `task.create` response carries only the Foreman `task_id`.
-- **Beads provider config.** Register Beads-backed projects with an
-  absolute `task_provider.config.database_path`; the Go CLI requires
-  `--task-provider-database-path` when `--task-provider=beads`.
+- **Task-provider config (provider-conditional).** The project's binding to
+  its tracker follows the provider's declared `storage_scheme`. Beads
+  (`sqlite`) needs an absolute `task_provider.config.database_path`; the Go CLI
+  requires `--task-provider-database-path` only when `--task-provider=beads`.
+  Kata (`cli_process`) needs an absolute `task_provider.config.cwd`; the Go CLI
+  sends the absolute `--path` as `config.cwd` and rejects
+  `--task-provider-database-path` for Kata. See "Kata task provider" below.
 - **Beads → Foreman (inbound).** Opt in with
   `config :foreman_server, :start_beads_watcher?, true`. The
   `BeadsWatcherSupervisor` spawns one `BeadsWatcher` per registered
@@ -162,6 +168,30 @@ for the current invocation path. See
 [`docs/cli-reference.md`](./docs/cli-reference.md) for the CLI surface
 and [`CLAUDE.md`](./CLAUDE.md) §11–§13 for the architectural
 invariants.
+
+## Kata task provider
+
+Foreman can use [Kata](https://katatracker.com) (`kata`, tested against
+v0.23.0) instead of Beads as a project's task tracker (provider id `kata`,
+contract version `kata.capabilities.v1`). Setup:
+
+```bash
+brew install kata                                  # macOS
+curl -fsSL https://katatracker.com/install.sh | bash   # Linux
+cd /srv/demo-kata && kata init                      # binds the workspace (.kata.toml)
+foreman project create --id demo-kata --path /srv/demo-kata --task-provider kata
+```
+
+`--path` must be absolute; it becomes `task_provider.config.cwd`, the
+directory every `kata` command runs in. `--task-provider-database-path` is
+rejected for Kata. Switch an existing project with
+`foreman project update --task-provider kata <id>` (the CLI reads the
+project's registered path and sends it as `config.cwd`). Kata, not Foreman, is
+authoritative for claim state, and Foreman does not scan Kata for orphans: a
+stranded claim is released by an operator with `kata unassign <ref>`. The Kata
+health report (`ForemanServer.CLI.DoctorTaskProvider`, same not-yet-wired
+caveat as above) and the operator semantics are in
+[`docs/user-guide.md`](./docs/user-guide.md) §10.
 
 ## Per-DB Beads lease (Beads write serialization)
 
@@ -221,7 +251,8 @@ See [`CLAUDE.md`](./CLAUDE.md) §15 for the architectural invariants.
 ## Task-provider boundary overview
 
 The Go/Elixir CQRS task-provider slice keeps task-tracker ownership on
-the Beads side and splits Foreman's responsibilities by lifecycle:
+the tracker side (Beads or Kata, chosen per project by the `task_provider`
+block) and splits Foreman's responsibilities by lifecycle:
 
 - `RunExecutor` drives claim, complete, and fail transitions during an
   active run.

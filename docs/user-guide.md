@@ -562,6 +562,12 @@ foreman project create \
   --task-provider-database-path /srv/foreman/project-123/.beads
 ```
 
+The database path is required for Beads only. A Kata-backed project needs none: `--path` (absolute) becomes the kata working directory (see "Task-provider (Beads) enablement", subsection "Kata task provider").
+
+```
+foreman project create --id project-123 --path /srv/foreman/project-123 --task-provider kata
+```
+
 ### Get one project
 
 ```
@@ -572,6 +578,12 @@ foreman project get project-123
 
 ```
 foreman project update --task-provider beads --task-provider-database-path /srv/foreman/project-123/.beads project-123
+```
+
+Switching to Kata takes no database path; the CLI sends the project's registered (absolute) path as `config.cwd`:
+
+```
+foreman project update --task-provider kata project-123
 ```
 
 ### Delete a project
@@ -2222,8 +2234,8 @@ Coordinator HTTP routes (bearer token): `POST /api/projects/:id/coordinator/mess
 `foreman_project_settings_get` returns the same typed payload as
 `GET /api/projects/<id>/settings` (`project_id`, `status`, `settings`, `limits`;
 no env values). Project reads over HTTP and MCP replace `config.env` /
-`config.environment` values with `"[redacted]"` (keys, `name`, `task_provider` and
-`database_path` stay visible). The write tools `foreman_project_settings_update`
+`config.environment` values with `"[redacted]"` (keys, `name`, `task_provider` (its
+`database_path` for Beads, its `cwd` for Kata) stay visible). The write tools `foreman_project_settings_update`
 (arguments: `project_id`, `goal`, `instructions`, `thread_model`, `thread_effort`,
 `coordinator_provider`, `coordinator_model`, `coordinator_effort`,
 `max_concurrent_runs`, `daily_thread_cap`, `coordinator_propose_before_start`,
@@ -2307,10 +2319,14 @@ The catch-all is a known limit: the typed code lives only in `data.code`.
 ## 10. Task-provider (Beads) enablement
 
 A project links to a task tracker by setting a `task_provider` block in
-its project config (`provider:` + `config:`, including `database_path` for
-the Beads JSONL/db). `bv`/`br` remain the only writers of that store from
+its project config (`provider:` + `config:`). The binding key depends on the
+provider: `database_path` for the Beads JSONL/db (required for Beads only),
+`cwd` for Kata (see
+[Kata task provider](#kata-task-provider-setup-and-operation) at the end of this
+section). `bv`/`br` remain the only writers of the Beads store from
 outside Foreman; see the "Per-DB Beads lease" section of `docs/lessons/architecture-and-events.md` for the
 write-serialization guarantee Foreman itself provides once a run is admitted.
+Everything below this paragraph up to the Kata subsection describes Beads.
 
 - **Atomic `task.create`.** For a project with a configured `:create`
   provider, `task.create` mints the Bead and emits `TaskCreated`
@@ -2376,13 +2392,17 @@ write-serialization guarantee Foreman itself provides once a run is admitted.
   never closed; one that is never dispatched stays open until an operator acts.
 - **Health check.** `ForemanServer.CLI.DoctorTaskProvider.run/1`
   (dispatched via `ForemanServer.CLI.run(["doctor", "task_provider"])`)
-  reports per-project provider health and the janitor's cached
-  `orphan_backlog` counters. It is **not wired to the Go CLI**: the Go
-  dispatch table has a `doctor` case (`packages/foreman_cli/cmd/foreman/main.go`),
-  but `foreman doctor` runs `GET /api/doctor` and reads no positional
-  argument, so `foreman doctor task_provider` is the ordinary `foreman doctor`,
-  not this check; invoke the Elixir module directly (e.g. from
-  an `iex -S mix` session) until that wiring exists.
+  reports per-project provider health as one JSON line per project: for Beads
+  projects the `br` probes and the janitor's cached `orphan_backlog` counters,
+  for Kata projects the Kata section described in
+  [Kata task provider](#kata-task-provider-setup-and-operation). It is **not
+  currently wired to the Go CLI**: `foreman doctor` (`GET /api/doctor`) is a
+  different, server-wide command that has no task-provider rows, and there is
+  no `doctor task_provider` case in
+  `packages/foreman_cli/cmd/foreman/main.go`'s dispatch table, so
+  `foreman doctor task_provider` does not report this. Invoke the Elixir module
+  directly (e.g. from an `iex -S mix` session in `packages/foreman_server`)
+  until that wiring exists.
 - **Effect keys of provider state changes.** A task-provider `claim`, `complete`,
   `fail` and `reopen` is a keyed external effect (class `task_provider`, key
   `effect:task_provider:<run_id>:<op>:<issue_id>`; the claim's key also records the
@@ -2397,6 +2417,146 @@ write-serialization guarantee Foreman itself provides once a run is admitted.
   2026-09-13); see §4 for what's unchanged internally and what isn't.
   Never mutate the provider issue by hand while Foreman still owns
   it.
+
+### Kata task provider: setup and operation
+
+Kata (the `kata` CLI, <https://katatracker.com>) is a second task provider
+(provider id `kata`, contract version `kata.capabilities.v1`), validated against
+`kata` v0.23.0. Foreman runs `kata` as a subprocess in the project's directory;
+it never opens Kata's database or talks to its daemon directly. A project
+selects its provider with the `task_provider` block: Beads is bound by a
+database file (`config.database_path`, storage scheme `sqlite`), Kata by a working
+directory (`config.cwd`, storage scheme `cli_process`). The routing, the
+project-registration preflight and the run executor read whichever key the
+provider's declared `storage_scheme` names; none of them recognises a provider
+by name. The Beads watcher and orphan janitor are Beads-only: the server starts
+neither for a Kata project.
+
+**1. Install `kata`.**
+
+```bash
+brew install kata                                       # macOS
+curl -fsSL https://katatracker.com/install.sh | bash    # Linux
+kata --version                                          # confirm it is on PATH
+```
+
+**2. Bind the workspace.** In the repository the project will use:
+
+```bash
+cd /srv/foreman/project-123
+kata init        # writes .kata.toml; see `kata init --help` for --project and the agent-hook flags
+```
+
+**3. Register the project.**
+
+```bash
+foreman project create \
+  --id project-123 \
+  --path /srv/foreman/project-123 \
+  --task-provider kata
+```
+
+- `--path` must be absolute (the CLI refuses a relative one with
+  `--task-provider=kata`). It is sent as the project's `task_provider`:
+  `{"provider": "kata", "config": {"cwd": "<the absolute --path>"}}`. There is no
+  `database_path`, `KATA_HOME` or `kata_home` in the payload.
+- `--task-provider-database-path` is rejected for Kata. It remains required, and
+  must be absolute, only for `--task-provider=beads`.
+- On registration the server checks that `config.cwd` is an absolute, existing
+  directory; otherwise the project is left unrouted with reason `:cwd_missing`,
+  `:cwd_not_absolute` or `:cwd_not_found`.
+
+**Switching an existing project.**
+
+```bash
+foreman project update --task-provider kata project-123
+```
+
+The CLI reads the project's registered path from the server
+(`GET /api/projects/<id>`) and sends it as `config.cwd`; it refuses, and sends
+nothing, if the project cannot be fetched or the registered path is not
+absolute. On the server, `project.update` keeps a stored `config` when the
+provider is unchanged and the request carries no `config`; when the provider
+changes (or none was stored) the request's `config` must carry the new scheme's
+key, otherwise the update fails with `{:missing_or_invalid, :cwd}` (to Kata) or
+`{:missing_or_invalid, :database_path}` (to Beads). No value is derived or
+defaulted. A request that carries a `config` replaces the stored block
+atomically, so the Go CLI (which always sends `config` for Kata and for Beads)
+rewrites it.
+
+**Verify with the health check** (see "Health check" above for how to invoke
+it): each Kata project yields one JSON line, shaped like
+
+```json
+{"project_id":"project-123","healthy":true,"provider_id":"kata",
+ "contract_version":"kata.capabilities.v1",
+ "kata_version":{"exit_code":0,"stdout":"kata v0.23.0 ..."},
+ "warnings":[],
+ "sample_list":{"outcome":"ok","issue_count":1},
+ "schema_validation_failures":[]}
+```
+
+(Key order is not significant; `kata_version.stdout` is the trimmed
+`kata --version` banner.) It runs `kata --version`, then `kata list --limit 1
+--json` in the project's `cwd`, and requires the output to be an object whose
+`issues` is an array. An unhealthy report carries an `error` with `code`,
+`message`, `hint`, `exit_code`, `stderr_byte_count` and `redacted_fields`
+(stderr text is never reported). Failures: `CWD_MISSING` (the project has no
+`config.cwd`), `PROVIDER_MISSING` (`kata not installed`, or `kata --version
+failed`), a Kata or runner error from either probe, or a `sample_list` payload
+that is not shaped like a listing (reported under `schema_validation_failures`,
+with no `error`). Warnings never change `healthy`:
+
+| `warnings[].code` | Meaning |
+| --- | --- |
+| `KATA_VERSION_OUT_OF_RANGE` | the installed version satisfies none of `accepted_kata_versions` |
+| `KATA_VERSION_UNPARSEABLE` | the `kata --version` banner does not start `kata v<semver>` |
+| `KATA_VERSION_REQUIREMENT_INVALID` | an `accepted_kata_versions` entry (or the whole value) is not a valid requirement |
+
+`accepted_kata_versions` is a list of Elixir `Version.match?/2` requirement
+strings under `config :foreman_server, :task_provider` (shipped default
+`[">= 0.19.0"]`); absent or empty means no range is configured. It is read only
+by the doctor: the adapter itself accepts any `kata` that answers `--version`,
+and an out-of-range version is a warning, not an unavailable provider.
+
+**Operator semantics.**
+
+- **Kata owns claim state.** Foreman claims with one atomic `kata claim <ref>
+  --if-unowned`; a task another actor owns is `CLAIMED_BY_OTHER`, which is not
+  retryable. Kata errors reuse the existing task-provider error codes
+  (`CLAIMED_BY_OTHER`, `VALIDATION_FAILED`, `SCHEMA_VALIDATION_FAILED`,
+  `BR_TIMEOUT_QUEUE`, ...), so existing handling applies.
+- **No orphan scan.** Foreman never scans Kata for orphans or stranded claims. A
+  claim stranded by a crashed run is released by the operator: inspect with
+  `kata list --status all` (`--status` takes only `open`, `closed` or `all`) and
+  `kata status <ref>` (owner, your actor, claim hold), then clear it with
+  `kata unassign <ref>`. `kata reopen <ref>` alone does not clear the owner,
+  `kata claim <ref>` takes it over, and `kata audit closes` replays recent
+  closes. Boot reconciliation's orphan-reopen pass also skips Kata projects: it
+  needs a Beads `database_path` and the optional `coordination_status` callback,
+  which the Kata adapter does not implement.
+- **On failure** Foreman reopens the task, comments the failure reason, and
+  releases its own claim (`kata unassign --expect-owner <actor>`). If another
+  actor owns the task it writes nothing and reports `CLAIMED_BY_OTHER`. The
+  comment carries an idempotency key, so a retried failure does not repeat it.
+- **Closing needs typed evidence.** `kata close --done` is refused without it,
+  so Foreman attaches only evidence it can vouch for: a commit SHA or typed
+  evidence entries when the completion carries them, otherwise the run's
+  artifact path as `reviewed-paths:<path>` when that file exists. With none of
+  these the close is refused with a `VALIDATION_FAILED` error and `kata` is
+  not called. Foreman's default close message
+  (`foreman-run:<run_id>:<artifact_path>`) is padded to Kata's 40-character
+  minimum; a custom message must itself be at least 40 characters.
+- **Concurrency.** At most 4 `kata` subprocesses run at once per project working
+  directory; a call that gets no slot within 30 s never starts a process and
+  fails with the retryable `BR_TIMEOUT_QUEUE`. The limits are the
+  `max_in_flight` and `timeout_ms` keys under `config :foreman_server,
+  :task_provider`.
+
+Telemetry: `[:foreman_server, :task_provider, :kata, :subprocess, :spawned]`
+(one event per `kata` subprocess, carrying its OS pid only) and
+`[:foreman_server, :task_provider, :registry, :invalid_capabilities]` (a provider
+whose capability map the registry refused).
 
 ## 11. Jobsite: scripted agent runs
 
@@ -2777,7 +2937,11 @@ points at the running server (`http://127.0.0.1:4766` in dev) and that
 ### 2. Register the project (once)
 
 ```bash
+# Beads-backed project: the Beads database path is required (beads only)
 foreman project create --id my-project --path /path/to/repo --task-provider beads --task-provider-database-path /path/to/repo/.beads
+
+# Kata-backed project: --path must be absolute and becomes the kata working directory; no database path
+foreman project create --id my-project --path /path/to/repo --task-provider kata
 ```
 
 ### 3. Create and approve a task
