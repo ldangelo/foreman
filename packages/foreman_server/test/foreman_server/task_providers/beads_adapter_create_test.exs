@@ -18,7 +18,8 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterCreateTest do
   setup :verify_on_exit!
 
   setup do
-    _previous_config = Application.get_env(:foreman_server, :task_provider, [])
+    previous_config = Application.get_env(:foreman_server, :task_provider, [])
+    on_exit(fn -> Application.put_env(:foreman_server, :task_provider, previous_config) end)
 
     Application.put_env(
       :foreman_server,

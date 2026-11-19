@@ -104,6 +104,12 @@ defmodule ForemanServer.TaskProvider.Telemetry do
       scrub_required?: false,
       description: "Registry removed a per-project task provider registration."
     },
+    [:foreman_server, :task_provider, :registry, :invalid_capabilities] => %{
+      metadata_keys: [:provider, :violations],
+      scrub_required?: false,
+      description:
+        "Registry left a provider out of its routing snapshot because its capability map breaks the provider contract."
+    },
     [:foreman_server, :task_provider, :beads, :contract, :version_changed] => %{
       metadata_keys: [:previous_version, :current_version],
       scrub_required?: false,

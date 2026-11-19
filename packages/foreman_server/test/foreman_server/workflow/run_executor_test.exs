@@ -1492,7 +1492,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
   test "runner source resolves providers through Registry.route/2 and never directly invokes reopen or BeadsAdapter transitions" do
     source = File.read!(@run_executor_source)
 
-    assert source =~ "TaskProviderRegistry.route(transition, {project_id, database_path})"
+    assert source =~ "TaskProviderRegistry.route(transition, {project_id, binding})"
     refute source =~ "BeadsAdapter.claim("
     refute source =~ "BeadsAdapter.complete("
     refute source =~ "BeadsAdapter.fail("

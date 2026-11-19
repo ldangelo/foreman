@@ -84,6 +84,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   alias ForemanServer.Aggregate.Actor
   alias ForemanServer.Incarnation
   alias ForemanServer.PrRisk
+  alias ForemanServer.TaskProvider.StorageBinding
   alias ForemanServer.Workflow.OrphanReaper
   alias ForemanServer.Workflow.Worktree
   alias ForemanServer.Workflow.RepoPr
@@ -5990,9 +5991,11 @@ defmodule ForemanServer.Workflow.RunExecutor do
     with {:ok, project} <- fetch_project_projection(project_id),
          {:ok, task_provider} <- fetch_task_provider(project),
          {:ok, project_config} <- fetch_project_config(task_provider),
-         {:ok, database_path} <- fetch_database_path(project_config),
+         {:ok, %{provider_module: registered_module}} <-
+           TaskProviderRegistry.project_config(project_id),
+         {:ok, binding} <- fetch_storage_binding(registered_module, project_config),
          {:ok, provider_module} <-
-           TaskProviderRegistry.route(transition, {project_id, database_path}) do
+           TaskProviderRegistry.route(transition, {project_id, binding}) do
       project_config =
         if run_id && run_id != "",
           do: Map.put(project_config, :run_id, run_id),
@@ -6029,10 +6032,12 @@ defmodule ForemanServer.Workflow.RunExecutor do
       else: {:error, :task_provider_not_configured}
   end
 
-  defp fetch_database_path(project_config) do
-    case Map.get(project_config, :database_path) || Map.get(project_config, "database_path") do
-      database_path when is_binary(database_path) and database_path != "" -> {:ok, database_path}
-      _ -> {:error, :task_provider_not_configured}
+  # The project's binding to its provider's storage: the config key the provider's declared storage
+  # scheme names (`database_path` for `:sqlite`, `cwd` for `:cli_process`).
+  defp fetch_storage_binding(provider_module, project_config) do
+    case StorageBinding.fetch(provider_module, project_config) do
+      {:ok, binding} -> {:ok, binding}
+      {:error, _reason} -> {:error, :task_provider_not_configured}
     end
   end
 

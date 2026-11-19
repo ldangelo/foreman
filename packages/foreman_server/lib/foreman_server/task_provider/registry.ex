@@ -5,6 +5,13 @@ defmodule ForemanServer.TaskProvider.Registry do
   Loads configured providers at boot and exposes an atomic routing snapshot for
   the dispatch path.
 
+  Every provider is admitted through one provider-generic contract
+  (`validate_capabilities/1`): `capabilities/0` must be a map carrying
+  `provider_id`, `contract_version`, `supports` and `storage_scheme` at the right
+  types. A provider whose map breaks it is left out of the routing snapshot and
+  reported on `[:foreman_server, :task_provider, :registry, :invalid_capabilities]`;
+  nothing in the registry recognises a provider by name.
+
   Restart strategy: `:permanent` (must be supervised with `restart: :permanent`).
   Emits `[:foreman_server, :task_provider, :registry, :restarted]` on each
   restart after the initial boot.
@@ -13,6 +20,7 @@ defmodule ForemanServer.TaskProvider.Registry do
   use GenServer
 
   alias ForemanServer.TaskProvider
+  alias ForemanServer.TaskProvider.StorageBinding
   alias ForemanServer.TaskProvider.Telemetry, as: TaskProviderTelemetry
 
   require Logger
@@ -31,6 +39,8 @@ defmodule ForemanServer.TaskProvider.Registry do
     :registry,
     :unregister_for_project
   ]
+  @invalid_capabilities_event [:foreman_server, :task_provider, :registry, :invalid_capabilities]
+  @required_capability_keys [:provider_id, :contract_version, :supports, :storage_scheme]
   @required_callbacks TaskProvider.behaviour_info(:callbacks)
 
   @type per_project_state ::
@@ -41,6 +51,9 @@ defmodule ForemanServer.TaskProvider.Registry do
           accepted_versions: [String.t()],
           per_project: %{String.t() => per_project_state()}
         }
+
+  @typedoc "One way a `capabilities/0` map breaks the provider contract; names the key, never the value."
+  @type violation :: :not_a_map | {:missing_key, atom()} | {:invalid_value, atom()}
 
   ## Public API
 
@@ -60,9 +73,13 @@ defmodule ForemanServer.TaskProvider.Registry do
   @doc """
   Route a transition to a provider.
 
-  Canonical per-project routing uses `{project_id, database_path}` as the
-  routing key. Legacy global routing by provider atom remains supported for
-  callers that still pass `:beads`-style provider identifiers.
+  Canonical per-project routing uses `{project_id, binding}` as the routing key, where
+  `binding` is the project's value for the config key its provider's storage scheme names
+  (`database_path` for `:sqlite`, `cwd` for `:cli_process`; see
+  `ForemanServer.TaskProvider.StorageBinding`). A binding that differs from the registered
+  one is `:database_path_mismatch` or `:cwd_mismatch` accordingly. Legacy global routing by
+  provider atom remains supported for callers that still pass `:beads`-style provider
+  identifiers.
   """
   @spec route(transition :: atom(), routing_key :: term()) ::
           {:ok, module()} | {:error, atom()}
@@ -75,7 +92,7 @@ defmodule ForemanServer.TaskProvider.Registry do
   """
   @spec register(module()) ::
           {:ok, module()}
-          | {:error, :contract_version_mismatch | :invalid_module}
+          | {:error, :contract_version_mismatch | :invalid_module | :invalid_capabilities}
   def register(provider_module) when is_atom(provider_module) do
     GenServer.call(__MODULE__, {:register, provider_module})
   end
@@ -85,7 +102,11 @@ defmodule ForemanServer.TaskProvider.Registry do
   @spec register_for_project(String.t(), module(), map()) ::
           :ok
           | {:error,
-             :contract_version_mismatch | :invalid_module | :invalid_project_id | :unavailable}
+             :contract_version_mismatch
+             | :invalid_module
+             | :invalid_capabilities
+             | :invalid_project_id
+             | :unavailable}
   def register_for_project(project_id, provider_module, config) do
     GenServer.call(__MODULE__, {:register_for_project, project_id, provider_module, config})
   end
@@ -102,6 +123,27 @@ defmodule ForemanServer.TaskProvider.Registry do
   def unregister_for_project(project_id, reason) do
     GenServer.call(__MODULE__, {:unregister_for_project, project_id, reason})
   end
+
+  @doc """
+  Checks a `capabilities/0` map against the contract every provider shares.
+
+  Required: `provider_id` (an atom), `contract_version` (a non-empty string), `supports` (a list
+  of atoms) and `storage_scheme` (one of `ForemanServer.TaskProvider.StorageBinding.schemes/0`).
+  `id_format` is optional and, when present, must be a pattern that compiles. Unknown keys are
+  ignored.
+
+  Returns every violation, required keys first in declaration order, so a map that breaks several
+  rules is diagnosed in one pass.
+  """
+  @spec validate_capabilities(term()) :: :ok | {:error, [violation(), ...]}
+  def validate_capabilities(capabilities) when is_map(capabilities) do
+    case capability_violations(capabilities) do
+      [] -> :ok
+      violations -> {:error, violations}
+    end
+  end
+
+  def validate_capabilities(_capabilities), do: {:error, [:not_a_map]}
 
   @spec child_spec(keyword()) :: Supervisor.child_spec()
   def child_spec(opts) do
@@ -235,9 +277,9 @@ defmodule ForemanServer.TaskProvider.Registry do
   defp register_global_provider(provider_module, routing, accepted_versions) do
     with :ok <- ensure_provider_module(provider_module),
          capabilities <- provider_module.capabilities(),
+         :ok <- ensure_valid_capabilities(provider_module, capabilities),
          :ok <- ensure_contract_version(capabilities, accepted_versions) do
-      provider_id = provider_id(provider_module, capabilities)
-      {:ok, provider_id, Map.put(routing, provider_id, provider_module)}
+      {:ok, capabilities.provider_id, Map.put(routing, capabilities.provider_id, provider_module)}
     end
   end
 
@@ -283,6 +325,63 @@ defmodule ForemanServer.TaskProvider.Registry do
     end
   end
 
+  defp ensure_valid_capabilities(provider_module, capabilities) do
+    case validate_capabilities(capabilities) do
+      :ok ->
+        :ok
+
+      {:error, violations} ->
+        Logger.warning(
+          "rejecting task provider #{inspect(provider_module)}: invalid capabilities " <>
+            inspect(violations)
+        )
+
+        TaskProviderTelemetry.emit(@invalid_capabilities_event, %{count: 1}, %{
+          provider: provider_module,
+          violations: violations
+        })
+
+        {:error, :invalid_capabilities}
+    end
+  end
+
+  defp capability_violations(capabilities) do
+    required = Enum.flat_map(@required_capability_keys, &required_violation(capabilities, &1))
+    required ++ optional_violation(capabilities, :id_format)
+  end
+
+  defp required_violation(capabilities, key) do
+    case Map.fetch(capabilities, key) do
+      {:ok, value} -> invalid_value(key, value)
+      :error -> [{:missing_key, key}]
+    end
+  end
+
+  defp optional_violation(capabilities, key) do
+    case Map.fetch(capabilities, key) do
+      {:ok, value} -> invalid_value(key, value)
+      :error -> []
+    end
+  end
+
+  defp invalid_value(key, value) do
+    if valid_capability_value?(key, value), do: [], else: [{:invalid_value, key}]
+  end
+
+  defp valid_capability_value?(:provider_id, value),
+    do: is_atom(value) and value not in [nil, true, false]
+
+  defp valid_capability_value?(:contract_version, value), do: is_binary(value) and value != ""
+  defp valid_capability_value?(:supports, value), do: atom_list?(value)
+  defp valid_capability_value?(:storage_scheme, value), do: value in StorageBinding.schemes()
+
+  defp valid_capability_value?(:id_format, value),
+    do: is_binary(value) and match?({:ok, _regex}, Regex.compile(value))
+
+  defp atom_list?([]), do: true
+  defp atom_list?([head | tail]) when is_atom(head), do: atom_list?(tail)
+  defp atom_list?(_other), do: false
+
   defp ensure_available(provider_module) do
     case provider_module.available?() do
       true -> :ok
@@ -290,13 +389,12 @@ defmodule ForemanServer.TaskProvider.Registry do
     end
   end
 
-  defp route_provider(state, transition, {project_id, database_path})
-       when is_binary(project_id) do
+  defp route_provider(state, transition, {project_id, binding}) when is_binary(project_id) do
     case Map.fetch(state.per_project, project_id) do
       {:ok, {:active, %{provider_module: provider_module, config: config}}} ->
         cond do
-          project_database_path(config) != database_path ->
-            {:error, :database_path_mismatch}
+          registered_binding(provider_module, config) != binding ->
+            {:error, binding_mismatch_reason(provider_module)}
 
           not supports_transition?(provider_module, transition) ->
             {:error, :no_provider_for_transition}
@@ -362,15 +460,21 @@ defmodule ForemanServer.TaskProvider.Registry do
 
   defp provider_capabilities(provider_module), do: provider_module.capabilities()
 
-  defp provider_id(provider_module, capabilities) do
-    capabilities[:provider_id] || provider_module.name()
+  # The value the project's config holds under the key its provider's storage scheme names
+  # (`StorageBinding`); `nil` when it holds none.
+  defp registered_binding(provider_module, config) do
+    case StorageBinding.fetch(provider_module, config) do
+      {:ok, binding} -> binding
+      {:error, _reason} -> nil
+    end
   end
 
-  defp project_database_path(config) when is_map(config) do
-    Map.get(config, :database_path) || Map.get(config, "database_path")
+  defp binding_mismatch_reason(provider_module) do
+    case StorageBinding.scheme(provider_module) do
+      {:ok, scheme} -> StorageBinding.mismatch_reason(scheme)
+      {:error, :invalid_capabilities} -> :invalid_capabilities
+    end
   end
-
-  defp project_database_path(_config), do: nil
 
   defp emit_route_telemetry(result, transition, routing_key) do
     case result do
@@ -390,8 +494,8 @@ defmodule ForemanServer.TaskProvider.Registry do
     end
   end
 
-  defp telemetry_routing_key({project_id, database_path}) when is_binary(database_path) do
-    {project_id, "/abs/<redacted:#{String.length(database_path)}>"}
+  defp telemetry_routing_key({project_id, binding}) when is_binary(binding) do
+    {project_id, "/abs/<redacted:#{String.length(binding)}>"}
   end
 
   defp telemetry_routing_key(routing_key), do: routing_key

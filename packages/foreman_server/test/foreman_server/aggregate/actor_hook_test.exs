@@ -171,6 +171,9 @@ defmodule ForemanServer.ActorHookTest do
   # ---------------------------------------------------------------------------
 
   setup do
+    previous_config = Application.get_env(:foreman_server, :task_provider, [])
+    on_exit(fn -> Application.put_env(:foreman_server, :task_provider, previous_config) end)
+
     Application.put_env(:foreman_server, :task_provider,
       actor: nil,
       accepted_contract_versions: ["br.capabilities.v1"],
@@ -653,6 +656,7 @@ defmodule ForemanServer.ActorHookTest do
       provider_id: :stub_actor_hook,
       contract_version: "br.capabilities.v1",
       id_format: "stub:%s",
+      storage_scheme: :sqlite,
       supports: supports
     }
   end
@@ -797,6 +801,7 @@ defmodule ForemanServer.ActorHookTest.StubProvider do
       provider_id: :stub_actor_hook,
       contract_version: "br.capabilities.v1",
       id_format: "stub:%s",
+      storage_scheme: :sqlite,
       supports: supports
     }
   end

@@ -647,6 +647,7 @@ defmodule ForemanServer.ActorCompensationTest.StubProvider do
       provider_id: :stub_compensation,
       contract_version: "br.capabilities.v1",
       id_format: "stub:%s",
+      storage_scheme: :sqlite,
       supports: [:create]
     }
   end
