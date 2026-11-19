@@ -580,7 +580,7 @@ JSON round-trip is lossless.
   Registry, not cwd discovery; the database path is required for Beads only: Go CLI
   project create/update requires `--task-provider-database-path` when
   `--task-provider=beads`, and rejects it for `--task-provider=kata`, whose binding is
-  `config.cwd`, see §13.2) and
+  `config.cwd`, see §13.3) and
   `TRD_SCOPE = <trd-slug>-<first-12-of-key>`
   at approval. Every `br`/`bv` invocation passes `BEADS_DB` and
   `TRD_SCOPE` explicitly. Scaffolds are prefixed `[trd:<TRD_SCOPE>]`.
@@ -916,7 +916,7 @@ these invariants. Drift without a tracked TRD is a regression.
   `schema_validation_failures` and (on the unhappy branch) `error`, plus, for
   Beads, `br_version`, `capabilities`, `sample_ready`, `janitor_enabled`,
   `janitor_running`, `orphan_backlog`; for Kata, `kata_version`, `warnings` and
-  `sample_list` (see §13.2). The
+  `sample_list` (see §13.3). The
   janitor fields are a CQRS read of the cached snapshot maintained
   by `BeadsOrphanJanitor`'s own scan loop; the doctor MUST NOT
   invoke `BeadsOrphanJanitor.run_scan/2` itself. Operators needing
