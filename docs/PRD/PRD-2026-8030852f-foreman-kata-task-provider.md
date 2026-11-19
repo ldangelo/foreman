@@ -2,7 +2,7 @@
 documentId: PRD-2026-8030852f
 label: prd-foreman-kata-task-provider
 title: "Foreman × Kata (kenn.io/kata) — Task-Provider Integration"
-version: 1.1.7
+version: 1.1.8
 status: Draft
 date: 2026-11-18
 scaleDepth: STANDARD
@@ -818,9 +818,10 @@ None.
   (1) `fail/3` reads `kata status <ref> --json` first.
   (2) If a different actor owns the task it writes nothing — no reopen, comment or
   unassign — and returns a typed `CLAIMED_BY_OTHER` error that carries no owner name.
-  That code is retryable in the existing `CodeMap`, so the run executor repeats the
-  notification on its own schedule; every repeat re-reads the status and again writes
-  nothing, so the owner's issue never collects a failure comment from Foreman.
+  As AC-013-2 requires of every Kata claimed-by-other error, the code is non-retryable
+  (`retryable?: false`, overriding the `CodeMap` default), so the run executor classifies
+  it as permanent and does not repeat the notification: another operator's issue never
+  collects a failure comment from Foreman.
   (3) Otherwise the order is reopen, then comment, then unassign, so the failure reason
   is on record before the task becomes ready.
   (4) The comment carries an idempotency key derived from the run id and a hash of the
@@ -977,5 +978,6 @@ list now holds 56 tasks (`KATA-T001`–`KATA-T056`).
 | 1.1.5 | 2026-11-19 | Foreman ensemble-refine-trd | Failure-path claim release decided (user decision). `fail/3` now runs `kata reopen`, `kata comment`, then `kata unassign <ref> --expect-owner <actor>` (actor from `kata status <ref> --json` `.actor`, the daemon-aware effective actor), so a failed task returns to `kata ready --unowned` and can be re-claimed. AC-005-4, AC-012-2 and AC-014-1 reworded and AC-014-2 clarified that the single-reference actor lookup is not a sweep; no AC added or removed (still 57) and no §12 mapping changed. The §11 marker is closed with the probe evidence, `readiness_gate` returns PENDING → PASS and `readinessScore` 4.0 → 4.5. Operator reclaim of a crashed run's claim now names `kata unassign` (Won't, CONCERN 8, REQ-014): `kata reopen` leaves `owner` set and is a no-op on an open issue. |
 | 1.1.6 | 2026-11-19 | Foreman ensemble-refine-trd | `fail/3` failure path tightened (user decision). It now reads `kata status <ref> --json` first and, when a different actor owns the task, writes nothing and returns a typed `CLAIMED_BY_OTHER` error — that code is retryable in the existing `CodeMap`, so the run executor retries the notification, and the earlier unconditional reopen + comment would have re-appended the failure comment to another operator's issue on every attempt. The comment now carries an idempotency key derived from the run id (probed on `kata` v0.23.0: an identical replay is `changed: false` and adds no comment; the same key with a different body is refused with `idempotency_mismatch`). The unassign is skipped when the task is already unowned and no longer depends on reading `error.data`. AC-005-4, AC-012-2 and AC-014-1 reworded; no AC added or removed (still 57), no §12 mapping changed, readiness gate stays PASS at 4.5. |
 | 1.1.7 | 2026-11-19 | Foreman ensemble-refine-trd | Idempotency key for the failure comment now derived from the run id and a hash of the comment text rather than the run id alone: Kata refuses a reused key with a different body (`idempotency_mismatch`, exit 5), so a run-id-only key would lose a differently worded second failure comment. AC-014-1 reworded; the §11 entry states that an already-unowned task still gets reopen and comment. No AC added or removed (still 57), no §12 mapping changed, readiness gate stays PASS at 4.5. |
+| 1.1.8 | 2026-11-19 | Foreman ensemble-implement-trd | Implementation-time correction (no AC changed, still 57). The foreign-owner `CLAIMED_BY_OTHER` error from `fail/3` is non-retryable, like every Kata claimed-by-other error under AC-013-2, so `RunExecutor` does not retry it; the 1.1.6 and 1.1.7 rows' reasoning that `CodeMap` marks the code retryable no longer applies to Kata. §11 (2) updated to match. |
 
 ---

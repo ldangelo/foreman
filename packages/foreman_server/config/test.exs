@@ -65,6 +65,9 @@ config :foreman_server, :secret_log_filter, enabled: false
 # foreman_server: br_runner test override (TRD-030)
 config :foreman_server, :br_runner, ForemanServer.TaskProviders.BrRunnerMock
 
+# foreman_server: kata_runner test override (TRD-KATA-T005)
+config :foreman_server, :kata_runner, ForemanServer.TaskProviders.KataRunnerMock
+
 config :foreman_server, :start_project_provider_projector?, false
 config :foreman_server, :start_messaging_dispatcher?, false
 config :foreman_server, :start_notifier?, false

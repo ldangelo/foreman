@@ -124,6 +124,11 @@ defmodule ForemanServer.TaskProvider.Telemetry do
       scrub_required?: true,
       description: "BeadsAdapter preflight returned a ProviderError."
     },
+    [:foreman_server, :task_provider, :kata, :subprocess, :spawned] => %{
+      metadata_keys: [:os_pid],
+      scrub_required?: false,
+      description: "SystemKataRunner spawned a kata subprocess; carries its OS pid only."
+    },
     [:foreman_server, :task_provider, :concurrency_limiter, :acquire] => %{
       metadata_keys: [:project_id, :source, :in_flight],
       scrub_required?: false,
