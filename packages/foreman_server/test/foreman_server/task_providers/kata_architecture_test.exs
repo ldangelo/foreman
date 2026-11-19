@@ -43,6 +43,10 @@ defmodule ForemanServer.TaskProviders.KataArchitectureTest do
   # takes a claim another actor holds.
   @forbidden_flags ~w(--all --owner --force)
 
+  # AC-014-2: `list_ready/2` carries this, as a code comment, to tell the next reader that nothing
+  # may scan Kata for claimed or orphaned work.
+  @authority_comment "Kata is authoritative for claim state — Foreman does NOT scan for orphans."
+
   @def_kinds [:def, :defp, :defmacro, :defmacrop]
   @network_modules [:Req, :Finch, :Mint, :HTTPoison, :Tesla, :Postgrex, :Exqlite]
   @network_erlang [:gen_tcp, :gen_udp, :httpc, :ssl, :socket, :inet]
@@ -155,6 +159,25 @@ defmodule ForemanServer.TaskProviders.KataArchitectureTest do
       """
 
       assert Enum.map(adapter_violations(source), & &1.line) == [2, 3, 4, 5, 6]
+    end
+
+    test "the adapter calls the runner at one site only, inside run_kata/2" do
+      assert [%{enclosing: :run_kata}] = runner_call_sites(File.read!(@adapter_file))
+    end
+
+    test "the scanner finds a call on a runner module looked up at runtime or bound at compile time" do
+      source = """
+      defmodule Fixture do
+        @runner Application.compile_env(:app, :runner)
+        def a, do: runner().cmd(["ready"], "/", [])
+        def b, do: @runner.cmd(["ready"], "/", [])
+        def c(runner), do: runner.cmd(["ready"], "/", [])
+        defp runner, do: Application.get_env(:app, :runner)
+        def not_a_site, do: System.cmd("git", ["status"], [])
+      end
+      """
+
+      assert [%{enclosing: :a}, %{enclosing: :b}, %{enclosing: :c}] = runner_call_sites(source)
     end
   end
 
@@ -306,6 +329,64 @@ defmodule ForemanServer.TaskProviders.KataArchitectureTest do
       """
 
       assert adapter_sweep_violations(permitted) == []
+    end
+
+    test "list_ready/2 says that Kata owns claim state and Foreman does not scan for orphans (AC-014-2)" do
+      assert authority_comment?(File.read!(@adapter_file), :list_ready, 2)
+    end
+
+    test "the comment check fails when the phrase is absent, misplaced or not a comment" do
+      # The real source with the phrase taken out of its comment.
+      source = File.read!(@adapter_file)
+      removed = String.replace(source, @authority_comment, "removed")
+
+      refute removed == source
+      refute authority_comment?(removed, :list_ready, 2)
+
+      comment = "# " <> @authority_comment
+      fixture = fn body -> "defmodule Fixture do\n#{body}\nend\n" end
+
+      assert authority_comment?(
+               fixture.("def list_ready(_c, _o) do\n  #{comment}\n  :ok\nend"),
+               :list_ready,
+               2
+             )
+
+      # In another function.
+      refute authority_comment?(
+               fixture.(
+                 "def list_ready(_c, _o), do: :ok\ndef get(_a, _b) do\n  #{comment}\n  :ok\nend"
+               ),
+               :list_ready,
+               2
+             )
+
+      # A string, not a comment.
+      refute authority_comment?(
+               fixture.("def list_ready(_c, _o) do\n  \"#{@authority_comment}\"\nend"),
+               :list_ready,
+               2
+             )
+    end
+
+    test "a sweep planted into the real adapter source is flagged; the real source is clean" do
+      source = File.read!(@adapter_file)
+      assert adapter_sweep_violations(source) == []
+
+      plants = [
+        {~s|call_json(["show", task_id, "--json"], cwd)|,
+         ~s|call_json(["list", "--owner", "someone", "--json"], cwd)|},
+        {~s|call_json(["claim", task_id, "--if-unowned", "--json"], cwd)|,
+         ~s|call_json(["status", task_id, "--json"], cwd)|},
+        {~s|["ready", "--unowned", "--json"]|, ~s|["ready", "--json"]|}
+      ]
+
+      for {from, to} <- plants do
+        planted = String.replace(source, from, to, global: false)
+
+        refute planted == source, "the plant did not apply: #{from}"
+        assert [_ | _] = adapter_sweep_violations(planted), "not flagged: #{to}"
+      end
     end
   end
 
@@ -516,6 +597,28 @@ defmodule ForemanServer.TaskProviders.KataArchitectureTest do
 
   defp non_spawn_violation(_node), do: nil
 
+  # `%{line:, enclosing:}` for every `<module>.cmd(argv, cwd, opts)` whose module is not named in
+  # the call: `runner().cmd(...)`, `@runner.cmd(...)` or a variable. That is how the adapter
+  # reaches whichever runner is configured; `System.cmd/3` names its module and is the spawn
+  # scan's business.
+  defp runner_call_sites(source) do
+    source
+    |> parse()
+    |> reduce([], fn
+      {{:., _, [receiver, :cmd]}, _, [_argv, _cwd, _opts]} = node, enclosing, acc ->
+        if module_named_in_call?(receiver),
+          do: acc,
+          else: [%{line: node_line(node), enclosing: definition_name(enclosing)} | acc]
+
+      _node, _enclosing, acc ->
+        acc
+    end)
+    |> Enum.reverse()
+  end
+
+  defp module_named_in_call?({:__aliases__, _, _parts}), do: true
+  defp module_named_in_call?(receiver), do: is_atom(receiver)
+
   ## 2. alias scan
 
   # Lines of every reference to a `KataAdapter` module (an alias, a grouped alias or a call).
@@ -554,6 +657,35 @@ defmodule ForemanServer.TaskProviders.KataArchitectureTest do
     end)
     |> Enum.reverse()
   end
+
+  defp authority_comment?(source, name, arity) do
+    source
+    |> definition_comments(name, arity)
+    |> Enum.any?(&String.contains?(&1, @authority_comment))
+  end
+
+  # The `#` comments written inside the body of `def name/arity`.
+  defp definition_comments(source, name, arity) do
+    {ast, comments} =
+      Code.string_to_quoted_with_comments!(source, token_metadata: true)
+
+    {_ast, ranges} =
+      Macro.prewalk(ast, [], fn
+        {kind, meta, [head, _body]} = node, acc when kind in @def_kinds ->
+          if definition_signature(head) == {name, arity},
+            do: {node, [meta[:line]..(get_in(meta, [:end, :line]) || meta[:line]) | acc]},
+            else: {node, acc}
+
+        node, acc ->
+          {node, acc}
+      end)
+
+    for range <- ranges, %{line: line, text: text} <- comments, line in range, do: text
+  end
+
+  defp definition_signature({:when, _, [head | _guards]}), do: definition_signature(head)
+  defp definition_signature({name, _, args}) when is_list(args), do: {name, length(args)}
+  defp definition_signature({name, _, nil}), do: {name, 0}
 
   # `%{verb:, args:, line:, enclosing:}` for every list literal that starts with a kata verb and has
   # more elements: an argv. `args` holds the literal strings, with nil for a computed element.

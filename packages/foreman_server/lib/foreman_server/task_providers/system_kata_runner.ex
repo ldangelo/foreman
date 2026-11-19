@@ -13,7 +13,9 @@ defmodule ForemanServer.TaskProviders.SystemKataRunner do
   (AC-008-2), and returns the retryable `BR_TIMEOUT_SUBPROCESS` error. The temp
   file is removed on every path (AC-008-3). The OS pid of the spawned child is
   emitted on the `[:foreman_server, :task_provider, :kata, :subprocess, :spawned]`
-  telemetry event for diagnosis; no output text is attached (AC-008-4).
+  telemetry event for diagnosis; no output text is attached (AC-008-4). Nothing the child
+  prints or the caller passes reaches a log, standard output or a raise message (REQ-017):
+  stdout of a failed command is dropped and stderr only leaves as a byte count.
 
   Return shape (`ForemanServer.TaskProviders.KataRunner`): `{:ok, stdout}` on
   exit status 0. Every failure is a `ProviderError` built by
@@ -122,15 +124,17 @@ defmodule ForemanServer.TaskProviders.SystemKataRunner do
     end
   end
 
+  # An argv holds comment bodies and issue descriptions (REQ-017), so none of these messages
+  # quotes the argument it rejects: an exception message ends up in a crash report.
   defp validate_argv!(argv) do
     unless is_list(argv) and Enum.all?(argv, &is_binary/1) do
-      raise ArgumentError, "expected argv to be a list of binaries, got: #{inspect(argv)}"
+      raise ArgumentError, "expected argv to be a list of binaries"
     end
   end
 
   defp validate_cwd!(cwd) do
     unless is_binary(cwd) and cwd != "" do
-      raise ArgumentError, "expected cwd to be a non-empty binary, got: #{inspect(cwd)}"
+      raise ArgumentError, "expected cwd to be a non-empty binary"
     end
   end
 
@@ -139,9 +143,8 @@ defmodule ForemanServer.TaskProviders.SystemKataRunner do
       timeout_ms when is_integer(timeout_ms) and timeout_ms >= 0 ->
         timeout_ms
 
-      other ->
-        raise ArgumentError,
-              "expected :timeout_ms to be a non-negative integer, got: #{inspect(other)}"
+      _other ->
+        raise ArgumentError, "expected :timeout_ms to be a non-negative integer"
     end
   end
 

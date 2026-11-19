@@ -161,6 +161,62 @@ defmodule ForemanServer.TaskProviders.KataAdapterTest do
     end
   end
 
+  ## Runner resolution
+
+  describe "the runner is resolved when a callback runs (T008)" do
+    defmodule SwappedRunner do
+      @moduledoc false
+      @behaviour ForemanServer.TaskProviders.KataRunner
+
+      # The adapter runs the runner in the calling process, so it can report to it.
+      @impl true
+      def cmd(argv, cwd, opts) do
+        send(self(), {:swapped_runner, argv, cwd, opts})
+        {:ok, ~s({"kata_api_version": 1, "issues": []})}
+      end
+    end
+
+    setup do
+      previous = Application.fetch_env!(:foreman_server, :kata_runner)
+      on_exit(fn -> Application.put_env(:foreman_server, :kata_runner, previous) end)
+
+      {:ok, previous: previous}
+    end
+
+    test "rebinding :kata_runner at runtime changes which runner the adapter calls", %{
+      previous: previous
+    } do
+      assert previous == KataRunnerMock
+
+      # The configured mock runs (and would raise on a second, unexpected call).
+      expect_kata(["ready", "--unowned", "--json"], ok(%{"issues" => []}))
+      assert KataAdapter.list_ready(@config, []) == {:ok, []}
+      refute_received {:swapped_runner, _argv, _cwd, _opts}
+
+      # Rebound: only the other runner runs now; the mock has no expectation left.
+      Application.put_env(:foreman_server, :kata_runner, SwappedRunner)
+      assert KataAdapter.list_ready(@config, []) == {:ok, []}
+      assert_received {:swapped_runner, ["ready", "--unowned", "--json"], @cwd, []}
+
+      # Rebound back to the mock.
+      Application.put_env(:foreman_server, :kata_runner, previous)
+      expect_kata(["ready", "--unowned", "--json"], ok(%{"issues" => []}))
+      assert KataAdapter.list_ready(@config, []) == {:ok, []}
+      refute_received {:swapped_runner, _argv, _cwd, _opts}
+    end
+
+    test "without a :kata_runner config the production default runs kata for real", %{
+      temp_dir: temp_dir
+    } do
+      Application.delete_env(:foreman_server, :kata_runner)
+      payload = Jason.encode!(%{"issues" => [ready_record(%{"short_id" => "j04d"})]})
+
+      with_fake_kata(temp_dir, "printf '%s' '#{payload}'", fn ->
+        assert {:ok, [%Issue{id: "j04d"}]} = KataAdapter.list_ready(%{cwd: temp_dir}, [])
+      end)
+    end
+  end
+
   ## available?/0
 
   describe "available?/0 (AC-002-3)" do
@@ -375,10 +431,6 @@ defmodule ForemanServer.TaskProviders.KataAdapterTest do
         exit_code: 7,
         stderr_byte_count: 31
       )
-    end
-
-    test "a project config without a working directory raises instead of running kata" do
-      assert_raise ArgumentError, ~r/:cwd/, fn -> KataAdapter.list_ready(%{}, []) end
     end
   end
 
@@ -709,7 +761,11 @@ defmodule ForemanServer.TaskProviders.KataAdapterTest do
       expect(KataRunnerMock, :cmd, fn ["close" | _], @cwd, [] -> runner_exit(3, 188) end)
 
       assert_kata_error(
-        KataAdapter.complete("j04d", %{run_id: "run-1", artifact_path: "a.md"}, @config),
+        KataAdapter.complete(
+          "j04d",
+          %{run_id: "run-1", artifact_path: "a.md", commit_sha: "abc123"},
+          @config
+        ),
         "VALIDATION_FAILED",
         false,
         exit_code: 3,
@@ -749,6 +805,239 @@ defmodule ForemanServer.TaskProviders.KataAdapterTest do
 
       assert_raise ArgumentError, ~r/evidence/, fn ->
         KataAdapter.complete("j04d", %{run_id: "run-1", evidence: [""]}, @config)
+      end
+
+      assert_raise ArgumentError, ~r/artifact_path/, fn ->
+        KataAdapter.complete("j04d", %{run_id: "run-1", artifact_path: 42}, @config)
+      end
+    end
+  end
+
+  describe "complete/3 typed evidence (AC-005-3, AC-012-1)" do
+    # Kata exits 3 on a `--done` close that carries no typed evidence and refuses an empty
+    # `--commit`, and it does not check that evidence is true. So `complete/3` sends only
+    # evidence it can stand behind, or nothing at all (a typed error, without calling Kata).
+
+    setup %{temp_dir: temp_dir} do
+      artifact = Path.join(temp_dir, "phase-1.md")
+      File.write!(artifact, "# phase report\n")
+
+      {:ok, artifact: artifact, missing: Path.join(temp_dir, "never-written.md")}
+    end
+
+    test "a commit sha is sent as --commit, and an existing artifact is not added next to it", %{
+      artifact: artifact
+    } do
+      expect_kata(
+        [
+          "close",
+          "j04d",
+          "--done",
+          "--message",
+          close_message(artifact),
+          "--commit",
+          "abc123",
+          "--json"
+        ],
+        ok(mutation(kata_issue(), "issue.closed", true))
+      )
+
+      assert KataAdapter.complete(
+               "j04d",
+               %{run_id: "run-1", artifact_path: artifact, commit_sha: "abc123"},
+               @config
+             ) == {:ok, :terminal}
+    end
+
+    test "evidence without a commit sha is sent as --evidence entries, in order, never as --commit",
+         %{artifact: artifact} do
+      expect_kata(
+        [
+          "close",
+          "j04d",
+          "--done",
+          "--message",
+          close_message(artifact),
+          "--evidence",
+          "pr:https://example.test/pull/1",
+          "--evidence",
+          "test:mix test",
+          "--json"
+        ],
+        ok(mutation(kata_issue(), "issue.closed", true))
+      )
+
+      token = %{
+        run_id: "run-1",
+        artifact_path: artifact,
+        evidence: ["pr:https://example.test/pull/1", "test:mix test"]
+      }
+
+      assert KataAdapter.complete("j04d", token, @config) == {:ok, :terminal}
+    end
+
+    test "an empty or absent commit sha is never sent as --commit", %{artifact: artifact} do
+      for sha <- [%{commit_sha: ""}, %{commit_sha: nil}, %{}] do
+        expect_kata(
+          [
+            "close",
+            "j04d",
+            "--done",
+            "--message",
+            close_message(artifact),
+            "--evidence",
+            "pr:https://example.test/pull/1",
+            "--json"
+          ],
+          ok(mutation(kata_issue(), "issue.closed", true))
+        )
+
+        token =
+          Map.merge(
+            %{
+              run_id: "run-1",
+              artifact_path: artifact,
+              evidence: ["pr:https://example.test/pull/1"]
+            },
+            sha
+          )
+
+        assert KataAdapter.complete("j04d", token, @config) == {:ok, :terminal}
+      end
+    end
+
+    test "with no sha and no evidence the artifact is reviewed-paths evidence when it is a file",
+         %{artifact: artifact} do
+      for no_proof <- [%{}, %{commit_sha: "", evidence: []}, %{commit_sha: nil, evidence: nil}] do
+        expect_kata(
+          [
+            "close",
+            "j04d",
+            "--done",
+            "--message",
+            close_message(artifact),
+            "--evidence",
+            "reviewed-paths:" <> artifact,
+            "--json"
+          ],
+          ok(mutation(kata_issue(), "issue.closed", true))
+        )
+
+        token = Map.merge(%{run_id: "run-1", artifact_path: artifact}, no_proof)
+
+        assert KataAdapter.complete("j04d", token, @config) == {:ok, :terminal}
+      end
+    end
+
+    test "a sha or evidence is enough on its own: an artifact that was never written does not block",
+         %{missing: missing} do
+      expect_kata(
+        [
+          "close",
+          "j04d",
+          "--done",
+          "--message",
+          close_message(missing),
+          "--commit",
+          "abc123",
+          "--json"
+        ],
+        ok(mutation(kata_issue(), "issue.closed", true))
+      )
+
+      assert {:ok, :terminal} =
+               KataAdapter.complete(
+                 "j04d",
+                 %{run_id: "run-1", artifact_path: missing, commit_sha: "abc123"},
+                 @config
+               )
+
+      expect_kata(
+        [
+          "close",
+          "j04d",
+          "--done",
+          "--message",
+          close_message(missing),
+          "--evidence",
+          "pr:https://example.test/pull/1",
+          "--json"
+        ],
+        ok(mutation(kata_issue(), "issue.closed", true))
+      )
+
+      assert {:ok, :terminal} =
+               KataAdapter.complete(
+                 "j04d",
+                 %{
+                   run_id: "run-1",
+                   artifact_path: missing,
+                   evidence: ["pr:https://example.test/pull/1"]
+                 },
+                 @config
+               )
+    end
+
+    test "no sha, no evidence and no file at the artifact path is a typed error and kata is not called",
+         %{temp_dir: temp_dir, missing: missing} do
+      stub(KataRunnerMock, :cmd, fn argv, _cwd, _opts ->
+        flunk("kata must not be called without evidence: #{inspect(argv)}")
+      end)
+
+      directory = Path.join(temp_dir, "reports")
+      File.mkdir_p!(directory)
+
+      tokens = [
+        %{run_id: "run-1", artifact_path: missing},
+        %{run_id: "run-1", artifact_path: directory},
+        %{run_id: "run-1", artifact_path: ""},
+        %{run_id: "run-1", artifact_path: nil},
+        %{run_id: "run-1"},
+        %{run_id: "run-1", artifact_path: missing, commit_sha: "", evidence: []}
+      ]
+
+      for token <- tokens do
+        error =
+          assert_kata_error(
+            KataAdapter.complete("j04d", token, @config),
+            "VALIDATION_FAILED",
+            false
+          )
+
+        assert error.message =~ "evidence"
+      end
+    end
+
+    test "test: and external: evidence is never made up", %{artifact: artifact} do
+      test_pid = self()
+
+      stub(KataRunnerMock, :cmd, fn argv, _cwd, _opts ->
+        send(test_pid, {:close_argv, argv})
+        ok(mutation(kata_issue(), "issue.closed", true))
+      end)
+
+      supplied = ["pr:https://example.test/pull/1"]
+
+      tokens = [
+        %{run_id: "run-1", artifact_path: artifact, commit_sha: "abc123"},
+        %{run_id: "run-1", artifact_path: artifact},
+        %{run_id: "run-1", artifact_path: artifact, evidence: supplied},
+        %{run_id: "run-1", artifact_path: artifact, commit_sha: "abc123", evidence: supplied}
+      ]
+
+      for token <- tokens do
+        assert {:ok, :terminal} = KataAdapter.complete("j04d", token, @config)
+        assert_received {:close_argv, argv}
+
+        evidence = flag_values(argv, "--evidence")
+        refute Enum.any?(evidence, &String.starts_with?(&1, ["test:", "external:"]))
+
+        assert Enum.all?(
+                 evidence,
+                 &(&1 in (Map.get(token, :evidence, []) ++ ["reviewed-paths:" <> artifact]))
+               )
+
+        assert flag_values(argv, "--commit") == List.wrap(Map.get(token, :commit_sha))
       end
     end
   end
@@ -1371,6 +1660,176 @@ defmodule ForemanServer.TaskProviders.KataAdapterTest do
         false
       )
     end
+
+    test "a project registered with the string key cwd (JSON ingress) runs kata in that directory" do
+      project_id = "kata-create-string-#{System.unique_integer([:positive])}"
+
+      expect(KataRunnerMock, :cmd, fn ["--version"], _cwd, [] -> {:ok, "kata v0.23.0\n"} end)
+
+      assert :ok =
+               TaskProviderRegistry.register_for_project(project_id, KataAdapter, %{
+                 "cwd" => @cwd
+               })
+
+      expect_kata(
+        [
+          "create",
+          "--idempotency-key",
+          "cmd-1",
+          "--json",
+          "--meta",
+          "foreman.task_id=tsk-1",
+          "--meta",
+          "foreman.command_id=cmd-1",
+          "--",
+          "x"
+        ],
+        ok(mutation(kata_issue(%{"title" => "x"}), "issue.created"))
+      )
+
+      assert {:ok, %Issue{title: "x"}} =
+               KataAdapter.create(project_id, %{task_id: "tsk-1", command_id: "cmd-1", title: "x"})
+    end
+
+    test "a registered project whose cwd is not an absolute path is a typed error and runs nothing" do
+      stub(KataRunnerMock, :cmd, fn argv, _cwd, _opts ->
+        flunk("kata must not run without a usable cwd: #{inspect(argv)}")
+      end)
+
+      for {config, key} <- [
+            {%{cwd: "relative/dir"}, :atom},
+            {%{"cwd" => "relative/dir"}, :string}
+          ] do
+        project_id = "kata-create-relative-#{key}-#{System.unique_integer([:positive])}"
+
+        # Registration probes `kata --version`; this stub only answers that probe.
+        stub(KataRunnerMock, :cmd, fn
+          ["--version"], _cwd, [] -> {:ok, "kata v0.23.0\n"}
+          argv, _cwd, _opts -> flunk("kata must not run without a usable cwd: #{inspect(argv)}")
+        end)
+
+        assert :ok = TaskProviderRegistry.register_for_project(project_id, KataAdapter, config)
+
+        error =
+          assert_kata_error(
+            KataAdapter.create(project_id, %{task_id: "t", command_id: "c", title: "x"}),
+            "VALIDATION_FAILED",
+            false
+          )
+
+        assert error.message =~ "must be an absolute path"
+        refute inspect(error) =~ "relative/dir"
+      end
+    end
+  end
+
+  ## Project working directory (T054)
+
+  describe "the project's working directory (AC-003-1, AC-003-3)" do
+    test "every kata command of every callback runs in the project's directory, under either key" do
+      stub_recording_runner()
+      cwd = "/projects/kata-t054"
+
+      configs = [
+        %{cwd: cwd},
+        %{"cwd" => cwd},
+        # As `RunExecutor` hands a stored config over: strings from JSON ingress, plus its run id.
+        %{"cwd" => cwd, run_id: "run-9"}
+      ]
+
+      for config <- configs, {label, call} <- callbacks_with_config(config) do
+        result = call.()
+
+        assert result == :ok or match?({:ok, _}, result),
+               "#{label} did not succeed for #{inspect(config)}: #{inspect(result)}"
+
+        commands = received_commands()
+        assert commands != [], "#{label} ran no kata command"
+
+        assert Enum.all?(commands, fn {_argv, ran_in} -> ran_in == cwd end),
+               "#{label} ran kata outside #{cwd}: #{inspect(commands)}"
+      end
+    end
+
+    test "reads the atom key before the string key, as Aggregate.get/2 does" do
+      config = %{"cwd" => "/projects/string", cwd: "/projects/atom"}
+      assert ForemanServer.Aggregate.get(config, :cwd) == "/projects/atom"
+
+      expect(KataRunnerMock, :cmd, fn ["ready" | _], ran_in, [] ->
+        assert ran_in == "/projects/atom"
+        ok(%{"issues" => []})
+      end)
+
+      assert KataAdapter.list_ready(config, []) == {:ok, []}
+    end
+
+    test "a missing, blank, relative or non-string cwd is a typed error and runs nothing" do
+      stub(KataRunnerMock, :cmd, fn argv, _cwd, _opts ->
+        flunk("kata must not run without a usable cwd: #{inspect(argv)}")
+      end)
+
+      missing = "no working directory configured"
+      invalid = "must be an absolute path"
+
+      configs = [
+        {%{}, missing},
+        {%{cwd: nil}, missing},
+        {%{"cwd" => nil}, missing},
+        {%{cwd: ""}, missing},
+        {%{"cwd" => ""}, missing},
+        {%{database_path: "/projects/beads/.beads/beads.db"}, missing},
+        {%{cwd: "relative/dir"}, invalid},
+        {%{"cwd" => "./kata"}, invalid},
+        {%{cwd: "~/kata"}, invalid},
+        {%{cwd: 42}, invalid},
+        {%{"cwd" => ["/projects/kata"]}, invalid},
+        {%{cwd: :"/projects/kata"}, invalid}
+      ]
+
+      for {config, expected} <- configs, {label, call} <- callbacks_with_config(config) do
+        result = call.()
+
+        error = assert_kata_error(result, "VALIDATION_FAILED", false)
+
+        assert error.message =~ expected,
+               "#{label} for #{inspect(config)} said: #{error.message}"
+
+        # The error never echoes what the config held.
+        for value <- Map.values(config), is_binary(value), value != "" do
+          refute inspect(error) =~ value
+        end
+      end
+    end
+
+    test "two projects with different directories never share adapter state" do
+      stub(KataRunnerMock, :cmd, fn [verb | _rest], cwd, [] ->
+        # The same short id exists in both Kata projects, with different content.
+        title = "Task of " <> Path.basename(cwd)
+
+        case verb do
+          "ready" ->
+            ok(%{"issues" => [ready_record(%{"short_id" => "zq27", "title" => title})]})
+
+          "show" ->
+            ok(show_payload(kata_issue(%{"short_id" => "zq27", "title" => title})))
+        end
+      end)
+
+      tasks =
+        for _round <- 1..5,
+            {config, name} <- [{%{cwd: "/p/alpha"}, "alpha"}, {%{"cwd" => "/p/beta"}, "beta"}] do
+          Task.async(fn ->
+            {name, KataAdapter.list_ready(config, []), KataAdapter.get("zq27", config)}
+          end)
+        end
+
+      for {name, ready, shown} <- Task.await_many(tasks, 10_000) do
+        title = "Task of " <> name
+
+        assert {:ok, [%Issue{title: ^title}]} = ready
+        assert {:ok, %Issue{title: ^title}} = shown
+      end
+    end
   end
 
   ## Error envelope (T029-TEST): every path keyed on the failing verb and exit code
@@ -1968,6 +2427,69 @@ defmodule ForemanServer.TaskProviders.KataAdapterTest do
       do: message,
       else: message <> " - closed by the Foreman task runner"
   end
+
+  # The values that follow every occurrence of `flag` in a kata argv.
+  defp flag_values(argv, flag) do
+    for [^flag, value] <- Enum.chunk_every(argv, 2, 1, :discard), do: value
+  end
+
+  # One call per callback that takes a project config; each succeeds against `kata_reply/2`.
+  # `create/2` resolves its config from the registry and has its own tests.
+  defp callbacks_with_config(config) do
+    [
+      {"list_ready/2", fn -> KataAdapter.list_ready(config, []) end},
+      {"get/2", fn -> KataAdapter.get("zq27", config) end},
+      {"claim/3", fn -> KataAdapter.claim("j04d", nil, config) end},
+      {"complete/3",
+       fn ->
+         KataAdapter.complete("j04d", %{run_id: "run-1", commit_sha: "abc123"}, config)
+       end},
+      {"fail/3", fn -> KataAdapter.fail("j04d", failure_token("run-1", "boom"), config) end},
+      {"reopen/3", fn -> KataAdapter.reopen("j04d", "why", config) end},
+      {"set_priority/3", fn -> KataAdapter.set_priority("j04d", 1, config) end},
+      {"add_dependency/3", fn -> KataAdapter.add_dependency("mwfm", "zq27", config) end},
+      {"annotate/3", fn -> KataAdapter.annotate("j04d", "a note", config) end}
+    ]
+  end
+
+  # Answers every verb the adapter runs as kata v0.23.0 would, and reports each command to the
+  # test process as `{:kata_command, argv, cwd}`.
+  defp stub_recording_runner do
+    test_pid = self()
+
+    stub(KataRunnerMock, :cmd, fn [verb | _rest] = argv, cwd, [] ->
+      send(test_pid, {:kata_command, argv, cwd})
+      kata_reply(verb, argv)
+    end)
+  end
+
+  defp received_commands(commands \\ []) do
+    receive do
+      {:kata_command, argv, cwd} -> received_commands([{argv, cwd} | commands])
+    after
+      0 -> Enum.reverse(commands)
+    end
+  end
+
+  defp kata_reply("ready", _argv), do: ok(%{"issues" => [ready_record(%{"short_id" => "j04d"})]})
+
+  defp kata_reply("show", ["show", ref | _rest]),
+    do: ok(show_payload(kata_issue(%{"short_id" => ref})))
+
+  defp kata_reply("claim", _argv) do
+    ok(mutation(kata_issue(%{"short_id" => "j04d", "owner" => "ldangelo"}), "issue.assigned"))
+  end
+
+  defp kata_reply("close", _argv),
+    do: ok(mutation(kata_issue(%{"status" => "closed"}), "issue.closed"))
+
+  defp kata_reply("status", _argv), do: ok(status("ldangelo", "ldangelo"))
+
+  defp kata_reply("unassign", _argv),
+    do: ok(%{"changed" => true, "event" => %{"type" => "issue.unassigned"}})
+
+  defp kata_reply(verb, _argv) when verb in ["reopen", "comment", "edit"],
+    do: ok(%{"changed" => true, "issue" => kata_issue()})
 
   defp put_fake_kata_on_path(temp_dir) do
     bin_dir = Path.join(temp_dir, "bin")

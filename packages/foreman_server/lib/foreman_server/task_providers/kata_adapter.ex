@@ -2,9 +2,9 @@ defmodule ForemanServer.TaskProviders.KataAdapter do
   @moduledoc """
   `ForemanServer.TaskProvider` backed by the `kata` CLI (kenn.io/kata).
 
-  Every call runs `kata` through the module bound to `:kata_runner`
-  (`SystemKataRunner` in production, `KataRunnerMock` under test) in the project's
-  `project_config[:cwd]`, with `--json` wherever a payload is read. The adapter opens
+  Every call runs `kata` through the module configured as `:kata_runner`, looked up when the
+  call runs (`SystemKataRunner` by default, `KataRunnerMock` under test), in the project's
+  working directory, with `--json` wherever a payload is read. The adapter opens
   no Kata database, speaks no daemon protocol and starts no other binary (AC-001-3).
   Kata validates by field mapping, not JSON Schema, and is authoritative for claim
   state.
@@ -43,16 +43,33 @@ defmodule ForemanServer.TaskProviders.KataAdapter do
 
   `complete/3` reads the completion token `%{run_id:, artifact_path:}` that
   `RunExecutor` builds, plus the optional `:transition_comment` (the close message),
-  `:commit_sha` and `:evidence` (a list of typed evidence strings such as
-  `"pr:<url>"`). `fail/3` reads the failure token `RunExecutor.build_failure_token/2`
-  builds: `:run_id`, `:reason` (the rendered reason text) and `:transition_comment`.
-  `claim/3` ignores its claim token: Kata resolves the acting identity itself.
+  `:commit_sha` and `:evidence` (a list of typed evidence strings such as `"pr:<url>"`),
+  which it turns into the close's typed evidence. `fail/3` reads the failure token
+  `RunExecutor.build_failure_token/2` builds: `:run_id`, `:reason` (the rendered reason
+  text) and `:transition_comment`. `claim/3` ignores its claim token: Kata resolves the
+  acting identity itself.
 
   ## Errors
 
   Every error is a `ProviderError` built by `KataAdapter.BuildProviderError`, in the
   `BeadsAdapter.CodeMap` vocabulary. A wrongly typed argument is a programming error
-  and raises.
+  and raises, with one exception: the project config. Its `cwd` (an atom or a string key,
+  as the config was stored) must be an absolute path string; if it is absent, blank, not a
+  string or not absolute the result is a `VALIDATION_FAILED` error and nothing runs.
+
+  ## Sensitive fields (REQ-015, REQ-017)
+
+  The `assignee` (Kata's `owner`) and the `description` (Kata's `body`) are sensitive, and so is
+  every Kata field the Foreman issue has no place for: nothing may be emitted unless it is on an
+  allowlist. A value reaches one place only, the `Issue` handed to the caller (`assignee`,
+  `description` and `metadata`). It never reaches a log line, standard output, telemetry
+  metadata, a `ProviderError` or an exception message. So this module and the runner call no
+  `Logger`, `IO` or `inspect`; the runner's only telemetry is the OS pid of a spawned child;
+  every error is built by `KataAdapter.BuildProviderError`, whose context is closed (the code,
+  the binary, the exit status, the stderr byte count and the *names* of absent fields); and no
+  raise message quotes a value, because it ends up in a crash report.
+  `kata_side_channel_test.exs` proves it with sentinel values and scans the source for each of
+  those channels.
   """
 
   @behaviour ForemanServer.TaskProvider
@@ -63,12 +80,6 @@ defmodule ForemanServer.TaskProviders.KataAdapter do
   alias ForemanServer.TaskProviders.ConcurrencyLimiter
   alias ForemanServer.TaskProviders.KataAdapter.BuildProviderError
   alias ForemanServer.TaskProviders.ProviderError
-
-  @runner Application.compile_env(
-            :foreman_server,
-            :kata_runner,
-            ForemanServer.TaskProviders.SystemKataRunner
-          )
 
   # Declared to the registry. `valid_ref?/1` enforces the same rule with `\A...\z`, so a
   # trailing newline cannot pass.
@@ -146,8 +157,11 @@ defmodule ForemanServer.TaskProviders.KataAdapter do
   @doc "Lists the open, unblocked, unowned issues of the project as `Issue` structs."
   @impl true
   def list_ready(project_config, _opts) when is_map(project_config) do
-    with {:ok, envelope} <-
-           call_json(["ready", "--unowned", "--json"], fetch_cwd!(project_config)),
+    # Kata is authoritative for claim state — Foreman does NOT scan for orphans. This is the only
+    # enumeration: what is open, unblocked and unowned. Nothing lists claimed, in-progress or
+    # orphaned work; an operator triages that with Kata's own commands (REQ-014).
+    with {:ok, cwd} <- fetch_cwd(project_config),
+         {:ok, envelope} <- call_json(["ready", "--unowned", "--json"], cwd),
          {:ok, records} <- fetch_list(envelope, "issues") do
       parse_issues(records)
     end
@@ -159,8 +173,9 @@ defmodule ForemanServer.TaskProviders.KataAdapter do
   """
   @impl true
   def get(task_id, project_config) when is_map(project_config) do
-    with :ok <- validate_ref(task_id),
-         {:ok, envelope} <- call_json(["show", task_id, "--json"], fetch_cwd!(project_config)),
+    with {:ok, cwd} <- fetch_cwd(project_config),
+         :ok <- validate_ref(task_id),
+         {:ok, envelope} <- call_json(["show", task_id, "--json"], cwd),
          {:ok, record} <- fetch_record(envelope, "issue"),
          {:ok, issue} <- parse_issue(record),
          {:ok, labels} <- show_labels(envelope),
@@ -182,32 +197,41 @@ defmodule ForemanServer.TaskProviders.KataAdapter do
   """
   @impl true
   def claim(task_id, _claim_token, project_config) when is_map(project_config) do
-    with :ok <- validate_ref(task_id),
-         {:ok, envelope} <-
-           call_json(["claim", task_id, "--if-unowned", "--json"], fetch_cwd!(project_config)),
+    with {:ok, cwd} <- fetch_cwd(project_config),
+         :ok <- validate_ref(task_id),
+         {:ok, envelope} <- call_json(["claim", task_id, "--if-unowned", "--json"], cwd),
          {:ok, record} <- fetch_record(envelope, "issue") do
       parse_issue(record, ["owner"])
     end
   end
 
   @doc """
-  Closes the issue as done.
+  Closes the issue as done: `{:ok, :terminal}` when this call closed it, `{:ok, :already_terminal}`
+  when Kata reports `changed: false` (it was already closed).
 
-  Returns `{:ok, :terminal}` when this call closed it and `{:ok, :already_terminal}`
-  when Kata reports `changed: false` (it was already closed). Without a
-  `:transition_comment` the close message is the deterministic
+  Without a `:transition_comment` the close message is the deterministic
   `foreman-run:<run_id>:<artifact_path>`, padded to Kata's 40-character minimum.
+
+  Kata refuses a `--done` close without typed evidence (exit 3) and never checks the evidence it
+  is given, so the close carries only evidence the token vouches for:
+
+    1. `--commit <sha>` for a non-empty `:commit_sha` (Kata refuses an empty one), then one
+       `--evidence <e>` per `:evidence` entry (`"pr:<url>"`, ...), exactly as given;
+    2. with neither, `--evidence reviewed-paths:<artifact_path>`, but only when `:artifact_path`
+       is a regular file: a path to a report the run never wrote would be a false completion
+       claim;
+    3. with none of the three, a `VALIDATION_FAILED` error and no call to Kata.
+
+  `test:` and `external:` evidence is never made up.
   """
   @impl true
   def complete(task_id, completion_token, project_config)
       when is_map(completion_token) and is_map(project_config) do
-    with :ok <- validate_ref(task_id),
+    with {:ok, cwd} <- fetch_cwd(project_config),
+         :ok <- validate_ref(task_id),
          {:ok, message} <- close_message(completion_token),
-         {:ok, changed?} <-
-           call_changed(
-             close_argv(task_id, message, completion_token),
-             fetch_cwd!(project_config)
-           ) do
+         {:ok, evidence} <- close_evidence_args(completion_token),
+         {:ok, changed?} <- call_changed(close_argv(task_id, message, evidence), cwd) do
       if changed?, do: {:ok, :terminal}, else: {:ok, :already_terminal}
     end
   end
@@ -234,9 +258,8 @@ defmodule ForemanServer.TaskProviders.KataAdapter do
   @impl true
   def fail(task_id, failure_token, project_config)
       when is_map(failure_token) and is_map(project_config) do
-    cwd = fetch_cwd!(project_config)
-
-    with :ok <- validate_ref(task_id),
+    with {:ok, cwd} <- fetch_cwd(project_config),
+         :ok <- validate_ref(task_id),
          {:ok, body} <- failure_comment(failure_token),
          run_id = fetch_run_id!(failure_token),
          {:ok, status} <- call_json(["status", task_id, "--json"], cwd),
@@ -264,25 +287,24 @@ defmodule ForemanServer.TaskProviders.KataAdapter do
   @doc "Reopens the issue with `transition_comment` as the reason; an open issue is a no-op."
   @impl true
   def reopen(task_id, transition_comment, project_config) when is_map(project_config) do
-    with :ok <- validate_ref(task_id),
+    with {:ok, cwd} <- fetch_cwd(project_config),
+         :ok <- validate_ref(task_id),
          :ok <- validate_comment(transition_comment),
          {:ok, _changed?} <-
-           call_changed(
-             ["reopen", task_id, "--comment", transition_comment, "--json"],
-             fetch_cwd!(project_config)
-           ) do
+           call_changed(["reopen", task_id, "--comment", transition_comment, "--json"], cwd) do
       :ok
     end
   end
 
   @impl true
   def set_priority(task_id, priority, project_config) when is_map(project_config) do
-    with :ok <- validate_ref(task_id),
+    with {:ok, cwd} <- fetch_cwd(project_config),
+         :ok <- validate_ref(task_id),
          :ok <- validate_priority(priority),
          {:ok, _changed?} <-
            call_changed(
              ["edit", task_id, "--priority", Integer.to_string(priority), "--json"],
-             fetch_cwd!(project_config)
+             cwd
            ) do
       :ok
     end
@@ -294,14 +316,12 @@ defmodule ForemanServer.TaskProviders.KataAdapter do
   """
   @impl true
   def add_dependency(dependent_id, dependency_id, project_config) when is_map(project_config) do
-    with :ok <- validate_ref(dependent_id),
+    with {:ok, cwd} <- fetch_cwd(project_config),
+         :ok <- validate_ref(dependent_id),
          :ok <- validate_ref(dependency_id),
          :ok <- validate_not_self_dependency(dependent_id, dependency_id),
          {:ok, _changed?} <-
-           call_changed(
-             ["edit", dependent_id, "--blocked-by", dependency_id, "--json"],
-             fetch_cwd!(project_config)
-           ) do
+           call_changed(["edit", dependent_id, "--blocked-by", dependency_id, "--json"], cwd) do
       :ok
     end
   end
@@ -309,13 +329,10 @@ defmodule ForemanServer.TaskProviders.KataAdapter do
   @doc "Appends `body` as a comment; Kata must report that it added one."
   @impl true
   def annotate(task_id, body, project_config) when is_map(project_config) do
-    with :ok <- validate_ref(task_id),
+    with {:ok, cwd} <- fetch_cwd(project_config),
+         :ok <- validate_ref(task_id),
          :ok <- validate_comment(body),
-         {:ok, added?} <-
-           call_changed(
-             ["comment", task_id, "--body", body, "--json"],
-             fetch_cwd!(project_config)
-           ),
+         {:ok, added?} <- call_changed(["comment", task_id, "--body", body, "--json"], cwd),
          :ok <- require_comment_added(added?) do
       {:ok, %Comment{provider_issue_id: task_id, status: "comment_added", provider_metadata: %{}}}
     end
@@ -323,7 +340,7 @@ defmodule ForemanServer.TaskProviders.KataAdapter do
 
   ## Concurrency
 
-  # Every `@runner.cmd/3` call goes through here and holds one `ConcurrencyLimiter` slot, keyed by
+  # Every runner call goes through here and holds one `ConcurrencyLimiter` slot, keyed by
   # the directory the command runs in (the project's workspace), for exactly as long as the
   # runner runs; a raise from the runner still returns it. A caller that gets no slot within the
   # limiter's configured timeout never starts a process and receives the retryable
@@ -332,7 +349,7 @@ defmodule ForemanServer.TaskProviders.KataAdapter do
     case ConcurrencyLimiter.acquire(cwd) do
       :ok ->
         try do
-          @runner.cmd(argv, cwd, [])
+          runner().cmd(argv, cwd, [])
         after
           ConcurrencyLimiter.release(cwd)
         end
@@ -340,6 +357,17 @@ defmodule ForemanServer.TaskProviders.KataAdapter do
       {:error, :timeout} ->
         {:error, queue_timeout_error()}
     end
+  end
+
+  # Looked up on every call, not compiled in: a runner bound after this module was compiled (the
+  # end-to-end test binds `SystemKataRunner` over the mock `config/test.exs` sets) takes effect.
+  # `run_kata/2` is the only caller.
+  defp runner do
+    Application.get_env(
+      :foreman_server,
+      :kata_runner,
+      ForemanServer.TaskProviders.SystemKataRunner
+    )
   end
 
   ## Runner calls
@@ -391,24 +419,32 @@ defmodule ForemanServer.TaskProviders.KataAdapter do
 
   ## Project configuration
 
-  defp fetch_cwd!(%{cwd: cwd}) when is_binary(cwd) and cwd != "", do: cwd
+  # The project's working directory: where every `kata` command of the project runs, and so which
+  # Kata project it talks to. The config reaches an adapter as stored, so the key arrives in
+  # either convention (in-process commands carry atoms, JSON ingress, such as the CLI over HTTP,
+  # carries strings). This is the one place that reads either, atom first as `Aggregate.get/2`
+  # does, and every callback goes through it. Anything but an absolute path string is a typed
+  # error, so a misconfigured project never runs `kata` in the server's own directory.
+  defp fetch_cwd(project_config) when is_map(project_config) do
+    case cwd_entry(project_config) do
+      cwd when cwd in [nil, ""] -> {:error, missing_cwd_error()}
+      cwd when is_binary(cwd) -> absolute_cwd(cwd)
+      _not_a_string -> {:error, invalid_cwd_error()}
+    end
+  end
 
-  defp fetch_cwd!(other) do
-    raise ArgumentError, "expected project_config with a binary :cwd, got: #{inspect(other)}"
+  defp cwd_entry(%{cwd: cwd}), do: cwd
+  defp cwd_entry(%{"cwd" => cwd}), do: cwd
+  defp cwd_entry(_no_cwd), do: nil
+
+  defp absolute_cwd(cwd) do
+    if Path.type(cwd) == :absolute, do: {:ok, cwd}, else: {:error, invalid_cwd_error()}
   end
 
   defp resolve_project_cwd(project_id) do
     case TaskProviderRegistry.project_config(project_id) do
-      {:ok, %{config: %{cwd: cwd}}} when is_binary(cwd) and cwd != "" ->
-        {:ok, cwd}
-
-      {:ok, %{config: _config}} ->
-        {:error,
-         local_error(
-           "VALIDATION_FAILED",
-           "Kata project has no working directory configured.",
-           "Bind the project to a kata workspace so its config carries :cwd."
-         )}
+      {:ok, %{config: config}} ->
+        fetch_cwd(config)
 
       {:error, reason} when is_atom(reason) ->
         {:error,
@@ -444,8 +480,8 @@ defmodule ForemanServer.TaskProviders.KataAdapter do
      )}
   end
 
-  defp validate_ref(other) do
-    raise ArgumentError, "expected a binary Kata issue reference, got: #{inspect(other)}"
+  defp validate_ref(_other) do
+    raise ArgumentError, "expected a binary Kata issue reference"
   end
 
   defp valid_ref?(ref), do: Regex.match?(~r/\A[a-z0-9]+\z/, ref)
@@ -456,8 +492,8 @@ defmodule ForemanServer.TaskProviders.KataAdapter do
 
   defp validate_comment(nil), do: {:error, invalid_comment_error()}
 
-  defp validate_comment(other) do
-    raise ArgumentError, "expected a binary comment, got: #{inspect(other)}"
+  defp validate_comment(_other) do
+    raise ArgumentError, "expected a binary comment"
   end
 
   defp invalid_comment_error do
@@ -593,18 +629,40 @@ defmodule ForemanServer.TaskProviders.KataAdapter do
     end
   end
 
-  defp close_argv(task_id, message, completion_token) do
-    ["close", task_id, "--done", "--message", message] ++
-      commit_args(Map.get(completion_token, :commit_sha)) ++
-      evidence_args(Map.get(completion_token, :evidence)) ++
-      ["--json"]
+  defp close_argv(task_id, message, evidence_args) do
+    ["close", task_id, "--done", "--message", message] ++ evidence_args ++ ["--json"]
   end
 
-  defp commit_args(nil), do: []
-  defp commit_args(sha) when is_binary(sha) and sha != "", do: ["--commit", sha]
+  # Kata refuses a `--done` close that carries no typed evidence and never checks what it is given
+  # (see `complete/3`). Both token entries are validated even when the other supplies the proof.
+  defp close_evidence_args(completion_token) do
+    case commit_args(Map.get(completion_token, :commit_sha)) ++
+           evidence_args(Map.get(completion_token, :evidence)) do
+      [] -> artifact_evidence_args(Map.get(completion_token, :artifact_path))
+      supplied -> {:ok, supplied}
+    end
+  end
 
-  defp commit_args(other) do
-    raise ArgumentError, "expected :commit_sha to be a non-empty binary, got: #{inspect(other)}"
+  # `RunExecutor` wrote the phase report to this path as seen by this process, so it is checked as
+  # given, not against the project's directory.
+  defp artifact_evidence_args(nil), do: {:error, missing_close_evidence_error()}
+
+  defp artifact_evidence_args(path) when is_binary(path) do
+    if File.regular?(path),
+      do: {:ok, ["--evidence", "reviewed-paths:" <> path]},
+      else: {:error, missing_close_evidence_error()}
+  end
+
+  defp artifact_evidence_args(_other) do
+    raise ArgumentError, "expected :artifact_path to be a binary or nil"
+  end
+
+  # Kata refuses `--commit` with an empty value, so an empty sha is no sha.
+  defp commit_args(sha) when is_nil(sha) or sha == "", do: []
+  defp commit_args(sha) when is_binary(sha), do: ["--commit", sha]
+
+  defp commit_args(_other) do
+    raise ArgumentError, "expected :commit_sha to be a binary or nil"
   end
 
   defp evidence_args(nil), do: []
@@ -614,14 +672,13 @@ defmodule ForemanServer.TaskProviders.KataAdapter do
       item when is_binary(item) and item != "" ->
         ["--evidence", item]
 
-      other ->
-        raise ArgumentError,
-              "expected :evidence entries to be non-empty binaries, got: #{inspect(other)}"
+      _entry ->
+        raise ArgumentError, "expected :evidence entries to be non-empty binaries"
     end)
   end
 
-  defp evidence_args(other) do
-    raise ArgumentError, "expected :evidence to be a list, got: #{inspect(other)}"
+  defp evidence_args(_other) do
+    raise ArgumentError, "expected :evidence to be a list"
   end
 
   ## Completion and failure tokens
@@ -671,8 +728,8 @@ defmodule ForemanServer.TaskProviders.KataAdapter do
 
   defp fetch_run_id!(%{run_id: run_id}) when is_binary(run_id) and run_id != "", do: run_id
 
-  defp fetch_run_id!(other) do
-    raise ArgumentError, "expected failure_token with a binary :run_id, got: #{inspect(other)}"
+  defp fetch_run_id!(_failure_token) do
+    raise ArgumentError, "expected failure_token with a binary :run_id"
   end
 
   defp failure_idempotency_key(run_id, body) do
@@ -885,6 +942,30 @@ defmodule ForemanServer.TaskProviders.KataAdapter do
       "BR_TIMEOUT_QUEUE",
       "Kata command timed out while waiting for a concurrency slot.",
       "Retry after the adapter queue drains."
+    )
+  end
+
+  defp missing_cwd_error do
+    local_error(
+      "VALIDATION_FAILED",
+      "Kata project has no working directory configured.",
+      "Bind the project to a kata workspace so its config carries an absolute cwd."
+    )
+  end
+
+  defp invalid_cwd_error do
+    local_error(
+      "VALIDATION_FAILED",
+      "Kata project working directory must be an absolute path.",
+      "Set the project's cwd to the absolute path of its kata workspace."
+    )
+  end
+
+  defp missing_close_evidence_error do
+    local_error(
+      "VALIDATION_FAILED",
+      "Kata close needs evidence: a commit sha, typed evidence, or an artifact file that exists.",
+      "Pass :commit_sha or :evidence in the completion token, or write the artifact at :artifact_path first."
     )
   end
 

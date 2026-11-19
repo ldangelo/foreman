@@ -250,13 +250,13 @@ Task IDs are `TRD-KATA-T###`, with an optional `-TEST` suffix marking a test tas
   - Implementation AC:
     - [ ] AC-005-2 — `claim/3` issues exactly one atomic Kata claim operation for the given reference and returns the claimed task.
   - Dependencies: TRD-KATA-T008
-- [ ] **TRD-KATA-T014**: Implement `complete/3` (2h) [satisfies REQ-012]
+- [x] **TRD-KATA-T014**: Implement `complete/3` (2h) [satisfies REQ-012]
   - PRD task ID: KATA-T014
-  - Description: Implement `complete/3` — invoke `kata close <ref> --done --message "<msg>"` with typed evidence: `--commit <sha>` when the completion token carries a non-empty SHA (an empty `--commit` is refused by Kata), plus any `--evidence` the token carries; when the token has no SHA and no evidence, fall back to `--evidence reviewed-paths:<artifact_path>`; when it has none of the three, return a typed validation error without calling Kata (Kata exits 3 on a `--done` close with no evidence); when no message is supplied fabricate the deterministic default `"foreman-run:<run_id>:<artifact_path>"` padded to satisfy Kata's 40-character minimum for `--done`; on success return `{:ok, :terminal}` (`run_executor.ex` matches `{:ok, term()}`, not bare `:ok`)
+  - Description: Implement `complete/3` — invoke `kata close <ref> --done --message "<msg>"` with typed evidence: `--commit <sha>` when the completion token carries a non-empty SHA (an empty `--commit` is refused by Kata), plus any `--evidence` the token carries; when the token has no SHA and no evidence, fall back to `--evidence reviewed-paths:<artifact_path>` only if that path exists as a regular file (a path to a report the run never wrote is a false completion claim, and Kata does not check); when it has none of the three, return a typed validation error without calling Kata (Kata exits 3 on a `--done` close with no evidence); never synthesise `test:` or `external:` evidence; when no message is supplied fabricate the deterministic default `"foreman-run:<run_id>:<artifact_path>"` padded to satisfy Kata's 40-character minimum for `--done`; on success return `{:ok, :terminal}` (`run_executor.ex` matches `{:ok, term()}`, not bare `:ok`)
   - Target Files: `packages/foreman_server/lib/foreman_server/task_providers/kata_adapter.ex`
   - Validates PRD ACs: AC-005-3
   - Implementation AC:
-    - [ ] AC-005-3 — `complete/3` closes the task in Kata with the run's completion message, the produced commit SHA, and evidence when available.
+    - [x] AC-005-3 — `complete/3` closes the task in Kata with the run's completion message, the produced commit SHA, and evidence when available.
   - Dependencies: TRD-KATA-T008
 - [x] **TRD-KATA-T015**: Implement `fail/3` (1h)
   - PRD task ID: KATA-T015
@@ -411,7 +411,7 @@ Task IDs are `TRD-KATA-T###`, with an optional `-TEST` suffix marking a test tas
 
 #### Story 2.3 — Registry tightening
 
-- [ ] **TRD-KATA-T030**: Extend `TaskProvider.Registry` capability validation (REQ-010-1) (3h) [satisfies REQ-010]
+- [x] **TRD-KATA-T030**: Extend `TaskProvider.Registry` capability validation (REQ-010-1) (3h) [satisfies REQ-010]
   - PRD task ID: KATA-T030
   - Description: Extend `TaskProvider.Registry` capability validation (REQ-010-1) — validate `capabilities/0` maps: required keys `provider_id`, `contract_version`, `supports`, `storage_scheme`; value-type checking; invalid maps logged with `[:foreman_server, :task_provider, :registry, :invalid_capabilities]` and excluded from snapshot
   - Target Files: `packages/foreman_server/lib/foreman_server/task_provider/registry.ex`, `packages/foreman_server/test/foreman_server/task_provider/registry_test.exs`
@@ -419,7 +419,7 @@ Task IDs are `TRD-KATA-T###`, with an optional `-TEST` suffix marking a test tas
   - Implementation AC:
     - [ ] AC-010-1 — The registry validates a provider's capability map against required keys and value types; an invalid map is excluded from the routing snapshot and logged with a distinguishable provider-scoped telemetry event.
   - Dependencies: TRD-KATA-T010
-- [ ] **TRD-KATA-T031**: Audit `BeadsAdapter.capabilities/0` against the tightened validation (2h)
+- [x] **TRD-KATA-T031**: Audit `BeadsAdapter.capabilities/0` against the tightened validation (2h)
   - PRD task ID: KATA-T031
   - Description: Audit `BeadsAdapter.capabilities/0` against the tightened validation — it declares no `storage_scheme` (a required key per KATA-T030): add `storage_scheme: :sqlite` (database-file scheme, the counterpart of Kata's `:cli_process`) and fix any ordering/optional-field issue the validation would reject; run the full Beads adapter test suite to confirm no regressions
   - Target Files: `packages/foreman_server/lib/foreman_server/task_providers/beads_adapter.ex`, `packages/foreman_server/test/foreman_server/task_providers/beads_adapter_test.exs`
@@ -427,7 +427,7 @@ Task IDs are `TRD-KATA-T###`, with an optional `-TEST` suffix marking a test tas
   - Implementation AC:
     - [ ] AC-010-3 — The Beads adapter's declaration is audited against the tightened rules and corrected where needed, with the existing Beads test suite still green.
   - Dependencies: TRD-KATA-T030
-- [ ] **TRD-KATA-T032-TEST**: Write `test/foreman_server/task_providers/kata_registry_tightening_test.exs` (2h) [satisfies REQ-002, REQ-010]
+- [x] **TRD-KATA-T032-TEST**: Write `test/foreman_server/task_providers/kata_registry_tightening_test.exs` (2h) [satisfies REQ-002, REQ-010]
   - PRD task ID: KATA-T032
   - Description: Write `test/foreman_server/task_providers/kata_registry_tightening_test.exs` — verify both adapters pass through shared capability validation; verify overlapping `supports` sets both in snapshot; verify routing prefers providers with required transition
   - Target Files: `packages/foreman_server/test/foreman_server/task_providers/kata_registry_tightening_test.exs`
@@ -447,7 +447,7 @@ Task IDs are `TRD-KATA-T###`, with an optional `-TEST` suffix marking a test tas
   - Implementation AC:
     - [ ] AC-003-1 — A project whose `task_provider` is `kata` with a valid absolute `cwd` routes to `KataAdapter`; every CLI invocation it produces runs with that `cwd` as the working directory.
     - [ ] AC-003-2 — A Kata project's config is validated without any `database_path` requirement: no code path demands or invents one, and registry routing does not fail a Kata project for its absence.
-- [ ] **TRD-KATA-T053**: Make server-side routing and preflight storage-scheme-generic (4h) [satisfies REQ-003]
+- [x] **TRD-KATA-T053**: Make server-side routing and preflight storage-scheme-generic (4h) [satisfies REQ-003]
   - PRD task ID: KATA-T053
   - Description: Make server-side routing and preflight storage-scheme-generic — `project_provider_projector.ex` `preflight_provider/2` (returns `{:error, :preflight_failed}` when `database_path` is nil), `registry.ex` `route_provider/3` (`:database_path_mismatch`) and `run_executor.ex` `fetch_database_path/1` must key on `capabilities[:storage_scheme]`: `:sqlite` providers keep `database_path`; `:cli_process` (Kata) projects are keyed and preflighted by `config.cwd` (absolute, existing directory), with no code path demanding or inventing a `database_path`; no Kata-specific branch
   - Target Files: `packages/foreman_server/lib/foreman_server/task_provider/project_provider_projector.ex`, `packages/foreman_server/lib/foreman_server/task_provider/registry.ex`, `packages/foreman_server/lib/foreman_server/workflow/run_executor.ex`, `packages/foreman_server/test/foreman_server/task_provider/project_provider_projector_test.exs`, `packages/foreman_server/test/foreman_server/task_provider/registry_route_test.exs`
@@ -456,14 +456,14 @@ Task IDs are `TRD-KATA-T###`, with an optional `-TEST` suffix marking a test tas
     - [ ] AC-003-2 — A Kata project's config is validated without any `database_path` requirement: no code path demands or invents one, and registry routing does not fail a Kata project for its absence.
     - [ ] AC-010-2 — Both the Beads adapter and the Kata adapter pass the tightened validation unchanged in observable behavior — no Kata-specific branch, exemption, or special case exists in the registry.
   - Dependencies: TRD-KATA-T010, TRD-KATA-T031
-- [ ] **TRD-KATA-T054**: Propagate the project working directory in `KataAdapter` (2h)
+- [x] **TRD-KATA-T054**: Propagate the project working directory in `KataAdapter` (2h)
   - PRD task ID: KATA-T054
   - Description: Propagate the project working directory in `KataAdapter` — every callback reads `project_config[:cwd]` (normalized once at the boundary, atom keys, no atom/string fallback chains) and passes it as the `cwd` argument of `@runner.cmd/3` so each `kata` invocation runs in that directory; a missing or non-absolute `cwd` returns a typed `INVALID_PARAMS`-style `ProviderError` via the factory; two projects with different `cwd` never share adapter state
   - Target Files: `packages/foreman_server/lib/foreman_server/task_providers/kata_adapter.ex`, `packages/foreman_server/test/foreman_server/task_providers/kata_adapter_test.exs`
   - Validates PRD ACs: AC-003-1, AC-003-3
   - Implementation AC:
-    - [ ] AC-003-1 — A project whose `task_provider` is `kata` with a valid absolute `cwd` routes to `KataAdapter`; every CLI invocation it produces runs with that `cwd` as the working directory.
-    - [ ] AC-003-3 — Two projects bound to different `cwd` values never share adapter state: listing/getting for project A never observes tasks from project B's Kata project.
+    - [x] AC-003-1 — A project whose `task_provider` is `kata` with a valid absolute `cwd` routes to `KataAdapter`; every CLI invocation it produces runs with that `cwd` as the working directory.
+    - [x] AC-003-3 — Two projects bound to different `cwd` values never share adapter state: listing/getting for project A never observes tasks from project B's Kata project.
   - Dependencies: TRD-KATA-T008, TRD-KATA-T053
 
 ### PR 3: Lifecycle — Claim, Close, Idempotency
@@ -488,7 +488,7 @@ Task IDs are `TRD-KATA-T###`, with an optional `-TEST` suffix marking a test tas
   - Target Files: `packages/foreman_server/lib/foreman_server/workflow/run_executor.ex`
   - Validates PRD ACs: AC-012-1, AC-012-3, AC-012-4
   - Implementation AC:
-    - [ ] AC-012-1 — On successful execution, the task is closed in Kata carrying the run's completion message and typed evidence: the commit SHA when the run produced one, otherwise the run's artifact path as reviewed-paths evidence (Kata refuses a `--done` close that carries none).
+    - [ ] AC-012-1 — On successful execution, the task is closed in Kata carrying the run's completion message and typed evidence: the commit SHA when the run produced one, otherwise the run's artifact path as reviewed-paths evidence when that file exists (Kata refuses a `--done` close that carries none, and a path to a report the run never wrote would be a false completion claim).
     - [ ] AC-012-3 — The completion message identifies the Foreman run that produced it (run identifier and artifact path) when the caller supplies no message of its own, and is at least 40 characters — Kata's minimum for `kata close --done` — so the generated default is never rejected for length.
     - [ ] AC-012-4 — When Kata refuses the close, the refusal is surfaced as a typed provider error and the run does not report the task as successfully closed.
   - Dependencies: TRD-KATA-T014, TRD-KATA-T033
@@ -516,13 +516,13 @@ Task IDs are `TRD-KATA-T###`, with an optional `-TEST` suffix marking a test tas
 
 #### Story 3.2 — Kata authority and open questions
 
-- [ ] **TRD-KATA-T037**: Document and verify REQ-014 enforcement (1h) [satisfies REQ-004, REQ-014]
+- [x] **TRD-KATA-T037**: Document and verify REQ-014 enforcement (1h) [satisfies REQ-004, REQ-014]
   - PRD task ID: KATA-T037
   - Description: Document and verify REQ-014 enforcement — no code path under `lib/foreman_server/task_providers/` or `workflow/run_executor.ex` enumerates Kata claim state (owner-filtered listings, `--all`, `kata status`/`kata audit` sweeps); the architecture test (KATA-T020) covers this; add code-comment on `list_ready/2`: "Kata is authoritative for claim state — Foreman does NOT scan for orphans"
   - Target Files: `packages/foreman_server/lib/foreman_server/task_providers/kata_adapter.ex`
   - Validates PRD ACs: AC-014-2
   - Implementation AC:
-    - [ ] AC-014-2 — No code path under `lib/foreman_server/task_providers/` scans Kata for claimed, in-progress or orphaned work (any `kata list`/`kata status`/`kata audit`-based sweep); the single-reference `kata status <ref> --json` lookup of the effective actor inside `fail/3` is not a sweep; `list_ready/2` carries an explicit comment: "Kata is authoritative for claim state — Foreman does NOT scan for orphans."
+    - [x] AC-014-2 — No code path under `lib/foreman_server/task_providers/` scans Kata for claimed, in-progress or orphaned work (any `kata list`/`kata status`/`kata audit`-based sweep); the single-reference `kata status <ref> --json` lookup of the effective actor inside `fail/3` is not a sweep; `list_ready/2` carries an explicit comment: "Kata is authoritative for claim state — Foreman does NOT scan for orphans."
   - Dependencies: TRD-KATA-T011, TRD-KATA-T020-TEST
 - [x] **TRD-KATA-T038**: Confirm OPEN-Q1 (1h)
   - PRD task ID: KATA-T038
@@ -547,26 +547,26 @@ Task IDs are `TRD-KATA-T###`, with an optional `-TEST` suffix marking a test tas
 
 #### Story 4.1 — Side-channel silence and doctor
 
-- [ ] **TRD-KATA-T040**: Implement sensitive field side-channel silence (REQ-017) (3h) [satisfies REQ-015, REQ-017]
+- [x] **TRD-KATA-T040**: Implement sensitive field side-channel silence (REQ-017) (3h) [satisfies REQ-015, REQ-017]
   - PRD task ID: KATA-T040
   - Description: Implement sensitive field side-channel silence (REQ-017) — `assignee` and `description`/`body` MUST NOT appear in `Logger.*`, `IO.*`, `:telemetry` metadata, or `ProviderError.context` keys other than `redacted_fields`; `ProviderError` context allowlist: `id`, `command`, `exit_code`, `stderr_byte_count`, `sanitized?`, `redacted_fields` and `missing_fields` (always a list; empty except on schema-validation errors, where it holds field names, never values); `sanitized?` always `true`; `redacted_fields` always `["assignee", "description"]`; stderr unconditionally discarded (only `stderr_byte_count` retained)
   - Target Files: `packages/foreman_server/lib/foreman_server/task_providers/kata_adapter.ex`, `packages/foreman_server/lib/foreman_server/task_providers/system_kata_runner.ex`
   - Validates PRD ACs: AC-015-1, AC-015-2
   - Implementation AC:
-    - [ ] AC-015-1 — `assignee` and the task body/description are classified as sensitive fields for the Kata provider, and the provider-error context carries them as the literal list `redacted_fields: ["assignee", "description"]`.
-    - [ ] AC-015-2 — A Kata field not present in the Foreman issue contract is treated as sensitive by default: it appears in no log line, telemetry metadata or error context, because only allowlisted keys may be emitted there (REQ-017); `redacted_fields` declares the known-sensitive set and is not the enforcement mechanism.
+    - [x] AC-015-1 — `assignee` and the task body/description are classified as sensitive fields for the Kata provider, and the provider-error context carries them as the literal list `redacted_fields: ["assignee", "description"]`.
+    - [x] AC-015-2 — A Kata field not present in the Foreman issue contract is treated as sensitive by default: it appears in no log line, telemetry metadata or error context, because only allowlisted keys may be emitted there (REQ-017); `redacted_fields` declares the known-sensitive set and is not the enforcement mechanism.
   - Dependencies: TRD-KATA-T018
-- [ ] **TRD-KATA-T041-TEST**: Write `test/foreman_server/task_providers/kata_side_channel_test.exs` (4h) [satisfies REQ-015, REQ-017]
+- [x] **TRD-KATA-T041-TEST**: Write `test/foreman_server/task_providers/kata_side_channel_test.exs` (4h) [satisfies REQ-015, REQ-017]
   - PRD task ID: KATA-T041
   - Description: Write `test/foreman_server/task_providers/kata_side_channel_test.exs` — AC-017-1: sentinel payload via `CaptureLog.capture_log/1`; AC-017-2: via `CaptureIO.capture_io/2`; AC-017-3: telemetry handlers via `:telemetry_test.attach_event_handlers/2`; AC-017-4: `ProviderError.context` only allowlisted keys + `sanitized?` always `true`; AC-017-5: domain return struct DOES contain sentinel values
   - Target Files: `packages/foreman_server/test/foreman_server/task_providers/kata_side_channel_test.exs`
   - Validates PRD ACs: AC-017-1, AC-017-2, AC-017-3, AC-017-4, AC-017-5
   - Test AC:
-    - [ ] AC-017-1 — A sentinel sensitive value passed through the adapter never appears in the application log.
-    - [ ] AC-017-2 — A sentinel sensitive value passed through the adapter never appears in standard output or standard error.
-    - [ ] AC-017-3 — A sentinel sensitive value passed through the adapter never appears in telemetry event metadata.
-    - [ ] AC-017-4 — The provider-error context contains only the allowlisted keys (`id`, `command`, `exit_code`, `stderr_byte_count`, `sanitized?`, `redacted_fields` and `missing_fields`); `sanitized?` is always `true`, `redacted_fields` always names the redacted fields, and `missing_fields` is an empty list except on schema-validation errors, where it names the absent required fields and never their values.
-    - [ ] AC-017-5 — The domain record Foreman returns to its caller **does** contain the sensitive values, so the redaction does not silently destroy task content the caller needs.
+    - [x] AC-017-1 — A sentinel sensitive value passed through the adapter never appears in the application log.
+    - [x] AC-017-2 — A sentinel sensitive value passed through the adapter never appears in standard output or standard error.
+    - [x] AC-017-3 — A sentinel sensitive value passed through the adapter never appears in telemetry event metadata.
+    - [x] AC-017-4 — The provider-error context contains only the allowlisted keys (`id`, `command`, `exit_code`, `stderr_byte_count`, `sanitized?`, `redacted_fields` and `missing_fields`); `sanitized?` is always `true`, `redacted_fields` always names the redacted fields, and `missing_fields` is an empty list except on schema-validation errors, where it names the absent required fields and never their values.
+    - [x] AC-017-5 — The domain record Foreman returns to its caller **does** contain the sensitive values, so the redaction does not silently destroy task content the caller needs.
   - Dependencies: TRD-KATA-T040
 - [x] **TRD-KATA-T056**: Make `foreman doctor` provider-generic (3h)
   - PRD task ID: KATA-T056
@@ -625,7 +625,7 @@ Task IDs are `TRD-KATA-T###`, with an optional `-TEST` suffix marking a test tas
 
 #### Story 5.2 — Documentation
 
-- [ ] **TRD-KATA-T047**: Update `docs/user-guide.md` and `README.md` (2h)
+- [x] **TRD-KATA-T047**: Update `docs/user-guide.md` and `README.md` (2h)
   - PRD task ID: KATA-T047
   - Description: Update `docs/user-guide.md` and `README.md` — Kata adapter setup: `brew install kata` (macOS) or install script (Linux); `kata init` to bind the workspace; `foreman project create --path <dir> --task-provider kata` (no database path); `foreman doctor` to verify; operator triage commands (`kata list --status all` plus `kata status <ref>` to inspect ownership — `--status` accepts only `open`, `closed` or `all` — `kata audit closes`, `kata reopen`, `kata claim`); note Foreman does NOT scan Kata for orphans; make the stale database-path binding statements provider-conditional (`README.md` lines 46 and 114–115; `docs/user-guide.md` lines 561, 573, 2176, 2634)
   - Target Files: `docs/user-guide.md`, `README.md`
@@ -633,7 +633,7 @@ Task IDs are `TRD-KATA-T###`, with an optional `-TEST` suffix marking a test tas
     - [ ] Every `kata` command in the new text appears in the help of the pinned `kata` version
     - [ ] `grep -n "status claimed"` finds nothing in either file, and the database-path binding is described as beads-only
   - Dependencies: TRD-KATA-T042
-- [ ] **TRD-KATA-T048**: Update `docs/cli-reference.md` and `CLAUDE.md` (1h)
+- [x] **TRD-KATA-T048**: Update `docs/cli-reference.md` and `CLAUDE.md` (1h)
   - PRD task ID: KATA-T048
   - Description: Update `docs/cli-reference.md` and `CLAUDE.md` — `foreman project create/update --task-provider kata` (config is the absolute `--path` as `cwd`; `--task-provider-database-path` rejected for Kata); `foreman doctor` Kata section output format; note the Kata `task_provider` payload carries `provider: "kata"` and `config.cwd` only (no `KATA_HOME`, no `kata_home`, no `database_path`); make the stale database-path statements provider-conditional (`docs/cli-reference.md` lines 301, 316, 354, 363; `CLAUDE.md` lines 577 and 579)
   - Target Files: `docs/cli-reference.md`, `CLAUDE.md`
@@ -793,7 +793,7 @@ These are verification tasks, not design decisions — PRD §11 has already reso
 | Version | Date | Changes |
 |---|---|---|
 | 2.0.9 | 2026-11-19 | KATA-T038 and T039 amended and ticked. The TRD's "pinned upstream revision" cannot be met (Kata publishes none and `kenn.io/kata` returns 404), so both now confirm against the published CLI reference (katatracker.com) and the installed v0.23.0 binary; both confirmed the declared values and changed no code. No task added or removed (still 56). |
-| 2.0.8 | 2026-11-19 | PRD 1.1.11: AC-012-1 and KATA-T014 and T034 follow the probe that `kata close --done` needs typed evidence and refuses an empty `--commit`. The completion token carries the commit SHA when the run produced one and always the artifact path; `complete/3` sends `--commit` only for a non-empty SHA, falls back to `reviewed-paths:<artifact_path>`, and otherwise returns a typed validation error without calling Kata. No task added or removed (still 56). |
+| 2.0.8 | 2026-11-19 | PRD 1.1.11: AC-012-1 and KATA-T014 and T034 follow the probe that `kata close --done` needs typed evidence and refuses an empty `--commit`. The completion token carries the commit SHA when the run produced one and always the artifact path; `complete/3` sends `--commit` only for a non-empty SHA, falls back to `reviewed-paths:<artifact_path>` only when that file exists, and otherwise returns a typed validation error without calling Kata. No task added or removed (still 56). |
 | 2.0.7 | 2026-11-19 | PRD 1.1.10 adds `missing_fields` to AC-017-4's closed context key set: `ProviderError.new/3` seeds it into every context and AC-006-1 requires schema errors to name the absent fields. KATA-T040 and the AC-017-4 checklist text follow; KATA-T041 asserts the full seven-key set. No task added or removed (still 56). |
 | 2.0.6 | 2026-11-19 | PRD 1.1.9 closes a conflict between AC-013-2 (boolean assignee-presence flag in the claimed-by-other context) and AC-017-4 (closed context key set): the flag is dropped, so no test exception is needed and KATA-T041 stays strict. AC-007-1 and KATA-T018 now take only the code and `retryable?` from `BeadsAdapter.CodeMap`; `redacted_fields` is always the Kata literal list. KATA-T028 and the AC-013-2 and AC-007-1 checklist text follow the PRD. No task added or removed (still 56). |
 | 2.0.5 | 2026-11-19 | Implementation-time corrections, PRD 1.1.8 (no AC changed, still 57, no task added or removed). (1) The runner never reads stderr (AC-007-3, AC-017-4 allow only `exit_code` and `stderr_byte_count`), so KATA-T026 maps errors by failing verb plus exit code instead of by `error.code`: exit 5 is `CLAIMED_BY_OTHER` from `claim` and `unassign` but a generic error from `comment`; KATA-T013, T015, T027 and T029 follow. (2) The foreign-owner `CLAIMED_BY_OTHER` from `fail/3` is `retryable?: false` (AC-013-2, KATA-T027), so `RunExecutor` does not retry it — the 2.0.3 and 2.0.4 rows' reasoning that `CodeMap` marks it retryable no longer applies; KATA-T015, T035 and T036-TEST follow. (3) KATA-T002 records what the runner actually does: it spawns through a `Port` (no literal `System.cmd("kata", ...)`), emits the OS pid as a telemetry event, maps timeout to `BR_TIMEOUT_SUBPROCESS`, nonzero exit to `BR_ERROR_ENVELOPE` and a missing cwd to `WORKSPACE_NOT_FOUND`, and its target files now include `task_provider/telemetry.ex`. |
