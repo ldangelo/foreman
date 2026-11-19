@@ -235,7 +235,19 @@ func projectUpdate(c *client.Client, args []string) error {
 		if err := validateTaskProviderConfig(fs, *taskProvider, *taskProviderDatabasePath, "foreman project update"); err != nil {
 			return err
 		}
-		payload["task_provider"] = taskProviderPayload(*taskProvider, *taskProviderDatabasePath, "")
+		projectPath := ""
+		if *taskProvider == "kata" {
+			var existing map[string]any
+			if err := c.GetJSON(client.JoinPath("/api/projects", fs.Arg(0)), &existing); err != nil {
+				return err
+			}
+			project, _ := existing["project"].(map[string]any)
+			projectPath = projectStringField(project, "path")
+			if !filepath.IsAbs(projectPath) {
+				return usageError(fs, "foreman project update: cannot switch to --task-provider=kata: registered project path %q is not an absolute path", projectPath)
+			}
+		}
+		payload["task_provider"] = taskProviderPayload(*taskProvider, *taskProviderDatabasePath, projectPath)
 		changes++
 	}
 
@@ -758,8 +770,8 @@ func projectStringField(project map[string]any, key string) string {
 }
 
 // taskProviderPayload builds the task_provider payload. Kata projects carry
-// config.cwd (the absolute project path) and never database_path; update has no
-// project path, so it passes "" and emits no cwd.
+// config.cwd (the absolute project path) and never database_path; project update
+// fetches the registered path first and passes it here.
 func taskProviderPayload(provider, databasePath, projectPath string) map[string]any {
 	payload := map[string]any{"provider": provider}
 	if provider == "kata" {
