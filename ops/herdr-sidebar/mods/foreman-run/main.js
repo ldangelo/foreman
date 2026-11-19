@@ -42,6 +42,11 @@ const oneLine = (v, max = 200) => {
   return s.length > max ? `${s.slice(0, max - 1)}…` : s;
 };
 
+// A turn with nothing to read: only whitespace, control characters, or control characters the server
+// stored escaped as text (a terminal bell arrives as the six characters \u0007, not as a BEL).
+const ESCAPED_CONTROL = /\\u(?:00[01][0-9a-fA-F]|007[fF])/g;
+const isBlankTurn = (t) => String(t.text ?? "").replace(ESCAPED_CONTROL, "").replace(/[\p{C}\s]/gu, "") === "";
+
 // The phase strip: the phases the server has started, with the status each one reports
 // (GET /api/runs/:id/phases), then the workflow's remaining phases (from the run's snapshot) as
 // "pending" while the run can still reach them or "skipped" once it is over.
@@ -176,10 +181,11 @@ export default class ForemanRun extends View {
       }
       const fresh = (page.turns ?? []).filter((t) => t.seq > this.cursor);
       if (fresh.length > 0) {
-        // The agent's stream is chunked and many chunks are only newlines; a row that says "agent"
-        // and nothing else tells the reader nothing, and they would crowd real turns out of the
-        // buffer. They are not kept, but the cursor still moves past them (it is the raw page's).
-        this.turns.push(...fresh.filter((t) => String(t.text ?? "").trim() !== ""));
+        // The agent's stream is chunked and many chunks are only newlines or a terminal bell; a row
+        // that says "agent" or "err" and nothing else tells the reader nothing, and they would crowd
+        // real turns out of the buffer. They are not kept, but the cursor still moves past them (it is
+        // the raw page's).
+        this.turns.push(...fresh.filter((t) => !isBlankTurn(t)));
         this.cursor = fresh[fresh.length - 1].seq;
         if (this.turns.length > MAX_TURNS) {
           this.dropped += this.turns.length - MAX_TURNS;
