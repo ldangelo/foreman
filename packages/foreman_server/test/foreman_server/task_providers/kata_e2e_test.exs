@@ -11,8 +11,12 @@ defmodule ForemanServer.TaskProviders.KataE2ETest do
   span so no call can reach a daemon that is not this module's. The daemon the first `kata` call
   starts is stopped, by this `KATA_HOME`, and the directory removed when the module ends.
 
-  Exclusion. When `kata` is not on `PATH` at load time the whole module is skipped (ExUnit reports
-  it as skipped, never failed) and no setup runs.
+  Exclusion. The whole module is skipped (ExUnit reports it as skipped, never failed, and no setup
+  runs) when `kata` is not on `PATH` at load time, or when `$HOME` is so long that the scratch
+  `KATA_HOME` would exceed the length at which `kata`'s daemon socket path stops fitting the OS
+  limit (probed on v0.23.0: 60 bytes work, 70 do not, so the budget is 55 to leave room for a longer
+  socket file name; the local-ci gate's scratch HOME is such a case). A path that long cannot be
+  made shorter without leaving `$HOME`, and scratch is never put under `/tmp`.
 
   What is observed. State is read back with the `kata` CLI itself (`status`, `show`, `ready`,
   `events`), not through `KataAdapter`, so the assertions do not share a parser with the code under
@@ -30,8 +34,22 @@ defmodule ForemanServer.TaskProviders.KataE2ETest do
   alias ForemanServer.TestSupport.{DispatcherRestart, RunSlotsReset}
   alias ForemanServer.Workflow.RunExecutor
 
-  if is_nil(System.find_executable("kata")) do
-    @moduletag skip: "kata is not on PATH: the Kata end-to-end test needs the real binary"
+  # The base of this module's `KATA_HOME`. `@kata_home_bytes` adds the `/` and the 8 hex digits of
+  # the per-run directory.
+  @kata_home_base Path.join([System.user_home!(), ".foreman", "kata-e2e"])
+  @kata_home_bytes byte_size(@kata_home_base) + 9
+  @max_kata_home_bytes 55
+
+  cond do
+    is_nil(System.find_executable("kata")) ->
+      @moduletag skip: "kata is not on PATH: the Kata end-to-end test needs the real binary"
+
+    @kata_home_bytes > @max_kata_home_bytes ->
+      @moduletag skip:
+                   "$HOME is too long for kata's daemon socket (#{@kata_home_bytes} > #{@max_kata_home_bytes} bytes of KATA_HOME)"
+
+    true ->
+      :ok
   end
 
   @poll_timeout_ms 20_000
@@ -449,7 +467,7 @@ defmodule ForemanServer.TaskProviders.KataE2ETest do
   # A short directory (a unix socket path is limited to ~100 bytes on macOS) that is this module's
   # `KATA_HOME` and `TMPDIR` for the module's life. The previous values are kept by `restore_env!/1`.
   defp isolate_kata_env!() do
-    base = Path.join([System.user_home!(), ".foreman", "kata-e2e"])
+    base = @kata_home_base
     home = Path.join(base, Base.encode16(:crypto.strong_rand_bytes(4), case: :lower))
     File.mkdir_p!(home)
 
