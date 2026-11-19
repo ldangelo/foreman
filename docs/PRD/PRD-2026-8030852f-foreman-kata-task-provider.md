@@ -2,7 +2,7 @@
 documentId: PRD-2026-8030852f
 label: prd-foreman-kata-task-provider
 title: "Foreman × Kata (kenn.io/kata) — Task-Provider Integration"
-version: 1.1.8
+version: 1.1.10
 status: Draft
 date: 2026-11-18
 scaleDepth: STANDARD
@@ -410,7 +410,7 @@ failed.
 
 **Acceptance Criteria:**
 
-- AC-007-1: A Kata failure that matches a known code maps to that code with its existing retryable flag and redacted-field list; the mapping is read from `BeadsAdapter.CodeMap`, not duplicated.
+- AC-007-1: A Kata failure that matches a known code maps to that code with its existing retryable flag (AC-013-2 overrides it for the claimed-by-other code); the mapping is read from `BeadsAdapter.CodeMap`, not duplicated, while `redacted_fields` is always the Kata-sensitive list of AC-015-1.
 - AC-007-2: A Kata failure with an unrecognized code maps to the generic envelope code; the adapter never raises, never returns a raw string, and never mints a provider-specific code.
 - AC-007-3: Every `ProviderError` produced by the adapter carries `command.binary: "kata"` in its context, together with the run's identifier, exit code, and stderr byte count — never the stderr text.
 - AC-007-4: A single construction site builds provider errors for the Kata adapter, and that site is the only place a `ProviderError` struct is created for Kata.
@@ -569,7 +569,7 @@ present — never the assignee's identity.
 **Acceptance Criteria:**
 
 - AC-013-1: When Kata reports a task as already terminal, closing it returns an explicit already-terminal success rather than a failure.
-- AC-013-2: When Kata reports a task as claimed by another actor, the returned error carries the existing claimed-by-other code with `retryable?: false`, and its context contains only a boolean presence flag for the current assignee.
+- AC-013-2: When Kata reports a task as claimed by another actor, the returned error carries the existing claimed-by-other code with `retryable?: false`, and its context carries no owner identity — no name, no id and no presence flag — only the allowlisted keys of AC-017-4.
 
 **Dependencies:** REQ-012
 **Constraints (not ordering edges):** the already-terminal and claimed-by-other results use REQ-007's error envelope.
@@ -648,7 +648,7 @@ and CLI stderr is discarded except for its byte count.
 - AC-017-1: A sentinel sensitive value passed through the adapter never appears in the application log.
 - AC-017-2: A sentinel sensitive value passed through the adapter never appears in standard output or standard error.
 - AC-017-3: A sentinel sensitive value passed through the adapter never appears in telemetry event metadata.
-- AC-017-4: The provider-error context contains only the allowlisted keys (`id`, `command`, `exit_code`, `stderr_byte_count`, `sanitized?`, `redacted_fields`); `sanitized?` is always `true` and `redacted_fields` always names the redacted fields.
+- AC-017-4: The provider-error context contains only the allowlisted keys (`id`, `command`, `exit_code`, `stderr_byte_count`, `sanitized?`, `redacted_fields` and, on schema-validation errors only, `missing_fields` — the names of the absent required fields, never their values); `sanitized?` is always `true` and `redacted_fields` always names the redacted fields.
 - AC-017-5: The domain record Foreman returns to its caller **does** contain the sensitive values, so the redaction does not silently destroy task content the caller needs.
 
 **Dependencies:** REQ-007 (error envelope), REQ-015 (classification)
@@ -979,5 +979,7 @@ list now holds 56 tasks (`KATA-T001`–`KATA-T056`).
 | 1.1.6 | 2026-11-19 | Foreman ensemble-refine-trd | `fail/3` failure path tightened (user decision). It now reads `kata status <ref> --json` first and, when a different actor owns the task, writes nothing and returns a typed `CLAIMED_BY_OTHER` error — that code is retryable in the existing `CodeMap`, so the run executor retries the notification, and the earlier unconditional reopen + comment would have re-appended the failure comment to another operator's issue on every attempt. The comment now carries an idempotency key derived from the run id (probed on `kata` v0.23.0: an identical replay is `changed: false` and adds no comment; the same key with a different body is refused with `idempotency_mismatch`). The unassign is skipped when the task is already unowned and no longer depends on reading `error.data`. AC-005-4, AC-012-2 and AC-014-1 reworded; no AC added or removed (still 57), no §12 mapping changed, readiness gate stays PASS at 4.5. |
 | 1.1.7 | 2026-11-19 | Foreman ensemble-refine-trd | Idempotency key for the failure comment now derived from the run id and a hash of the comment text rather than the run id alone: Kata refuses a reused key with a different body (`idempotency_mismatch`, exit 5), so a run-id-only key would lose a differently worded second failure comment. AC-014-1 reworded; the §11 entry states that an already-unowned task still gets reopen and comment. No AC added or removed (still 57), no §12 mapping changed, readiness gate stays PASS at 4.5. |
 | 1.1.8 | 2026-11-19 | Foreman ensemble-implement-trd | Implementation-time correction (no AC changed, still 57). The foreign-owner `CLAIMED_BY_OTHER` error from `fail/3` is non-retryable, like every Kata claimed-by-other error under AC-013-2, so `RunExecutor` does not retry it; the 1.1.6 and 1.1.7 rows' reasoning that `CodeMap` marks the code retryable no longer applies to Kata. §11 (2) updated to match. |
+| 1.1.9 | 2026-11-19 | Foreman ensemble-implement-trd | Closed a conflict between two ACs found during implementation (still 57 ACs). AC-013-2 required a boolean assignee-presence flag in the claimed-by-other context while AC-017-4 closes the context key set to `id`, `command`, `exit_code`, `stderr_byte_count`, `sanitized?` and `redacted_fields`; a per-test exception would have let any key ride under that code, so AC-013-2 now says the context carries no owner identity and only the allowlisted keys. AC-007-1 said errors take the CodeMap's existing redacted-field list, which for `CLAIMED_BY_OTHER` is `["current_assignee"]` and contradicts AC-015-1's literal `["assignee", "description"]`; it now says the retryable flag comes from CodeMap (overridden by AC-013-2) and `redacted_fields` is always the Kata list. |
+| 1.1.10 | 2026-11-19 | Foreman ensemble-implement-trd | AC-017-4's closed context key set gains `missing_fields` (schema-validation errors only; the names of absent required fields, never values). AC-006-1 requires a schema-validation error that names the missing fields, `ProviderError` carries them in `context.missing_fields`, and the implementation found the closed set had no room for them. Still 57 ACs. |
 
 ---

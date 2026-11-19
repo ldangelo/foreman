@@ -60,10 +60,16 @@ config :foreman_server, ForemanServer.Idempotency.Reconciler,
 # foreman_server: task_provider subsystem (TRD-029)
 config :foreman_server, :br_runner, ForemanServer.TaskProviders.SystemBrRunner
 
+# `accepted_kata_versions` are `Version.match?/2` requirements read only by `foreman doctor`; the
+# adapter itself accepts any kata that answers `--version` (TRD-KATA-T009, T022).
 config :foreman_server, :task_provider,
   actor: nil,
-  accepted_contract_versions: ["br.capabilities.v1"],
-  providers: [ForemanServer.TaskProviders.BeadsAdapter]
+  accepted_contract_versions: ["br.capabilities.v1", "kata.capabilities.v1"],
+  accepted_kata_versions: [">= 0.19.0"],
+  providers: [
+    ForemanServer.TaskProviders.BeadsAdapter,
+    ForemanServer.TaskProviders.KataAdapter
+  ]
 
 # Per-project Beads JSONL watcher + orphan janitor supervisors (TRD-014).
 # Both default `false` — operators opt in for production via

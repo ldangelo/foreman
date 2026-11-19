@@ -118,11 +118,12 @@ defmodule ForemanServer.TaskProviders.SystemKataRunnerTest do
         assert error.retryable? == false
 
         assert error.context == %{
+                 id: "BR_ERROR_ENVELOPE",
                  command: %{binary: "kata"},
                  exit_code: 5,
                  stderr_byte_count: byte_size("SECRET-OWNER-TEXT"),
                  sanitized?: true,
-                 redacted_fields: [],
+                 redacted_fields: ["assignee", "description"],
                  missing_fields: []
                }
 

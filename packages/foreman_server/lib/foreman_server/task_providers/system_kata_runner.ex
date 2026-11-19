@@ -16,8 +16,10 @@ defmodule ForemanServer.TaskProviders.SystemKataRunner do
   telemetry event for diagnosis; no output text is attached (AC-008-4).
 
   Return shape (`ForemanServer.TaskProviders.KataRunner`): `{:ok, stdout}` on
-  exit status 0. Every failure is a `ProviderError` with the context keys
-  `command` (`%{binary: "kata"}`), `exit_code` and `stderr_byte_count`:
+  exit status 0. Every failure is a `ProviderError` built by
+  `KataAdapter.BuildProviderError`, the single construction site (AC-007-4), so its
+  context is that module's closed key set with `command` (`%{binary: "kata"}`),
+  `exit_code` and `stderr_byte_count` filled in:
 
     * timeout -> `BR_TIMEOUT_SUBPROCESS`, retryable, `exit_code: nil`.
     * missing working directory -> `WORKSPACE_NOT_FOUND`, not retryable.
@@ -31,7 +33,8 @@ defmodule ForemanServer.TaskProviders.SystemKataRunner do
   @behaviour ForemanServer.TaskProviders.KataRunner
 
   alias ForemanServer.TaskProvider.Telemetry, as: TaskProviderTelemetry
-  alias ForemanServer.TaskProviders.ProviderError
+  alias ForemanServer.TaskProviders.BeadsAdapter.CodeMap.ProviderErrorInput
+  alias ForemanServer.TaskProviders.KataAdapter.BuildProviderError
 
   @binary "kata"
   @default_timeout_ms 30_000
@@ -52,7 +55,6 @@ defmodule ForemanServer.TaskProviders.SystemKataRunner do
          "WORKSPACE_NOT_FOUND",
          "Kata working directory does not exist.",
          "Verify the project path before retrying.",
-         false,
          nil,
          0
        )}
@@ -82,7 +84,6 @@ defmodule ForemanServer.TaskProviders.SystemKataRunner do
                  "BR_ERROR_ENVELOPE",
                  "Kata CLI exited with a non-zero status.",
                  nil,
-                 false,
                  exit_code,
                  stderr_byte_count(stderr_path)
                )}
@@ -96,7 +97,6 @@ defmodule ForemanServer.TaskProviders.SystemKataRunner do
                  "BR_TIMEOUT_SUBPROCESS",
                  "Kata command timed out while the subprocess was running.",
                  "Retry the command after checking Kata responsiveness.",
-                 true,
                  nil,
                  stderr_byte_count(stderr_path)
                )}
@@ -107,7 +107,6 @@ defmodule ForemanServer.TaskProviders.SystemKataRunner do
                  "BR_ERROR_ENVELOPE",
                  "Kata CLI port closed without an exit status.",
                  nil,
-                 false,
                  nil,
                  stderr_byte_count(stderr_path)
                )}
@@ -146,16 +145,11 @@ defmodule ForemanServer.TaskProviders.SystemKataRunner do
     end
   end
 
-  defp build_error(code, message, hint, retryable?, exit_code, stderr_byte_count) do
-    ProviderError.new(code, message,
-      hint: hint,
-      retryable?: retryable?,
-      context: %{
-        command: %{binary: @binary},
-        exit_code: exit_code,
-        stderr_byte_count: stderr_byte_count
-      }
-    )
+  # Retryability is the `CodeMap` row's, not an argument: BR_TIMEOUT_SUBPROCESS is retryable.
+  defp build_error(code, message, hint, exit_code, stderr_byte_count) do
+    code
+    |> ProviderErrorInput.from_local(message, hint, false)
+    |> BuildProviderError.build_provider_error(exit_code, stderr_byte_count)
   end
 
   defp build_shell_command(argv, stderr_path) do
