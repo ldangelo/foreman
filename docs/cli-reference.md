@@ -301,7 +301,7 @@ Manage Elixir-registered projects.
 
 ### `foreman project create`
 
-Register a new project. `--id`, `--path`, and `--task-provider` are required. `--task-provider=beads` also requires `--task-provider-database-path` with an absolute Beads database path.
+Register a new project. `--id`, `--path`, and `--task-provider` are required. The binding to the tracker is provider-conditional: `--task-provider=beads` also requires `--task-provider-database-path` with an absolute Beads database path (stored as `task_provider.config.database_path`); `--task-provider=kata` requires `--path` to be absolute, sends it as `task_provider.config.cwd` (the payload carries `provider: "kata"` and `config.cwd` only: no `KATA_HOME`, `kata_home` or `database_path`), and rejects `--task-provider-database-path`. The server preflights a Kata project's `cwd` (absolute, existing directory) and leaves the project unrouted otherwise (`:cwd_missing`, `:cwd_not_absolute`, `:cwd_not_found`).
 
 ```
 foreman project create \
@@ -311,12 +311,21 @@ foreman project create \
   --task-provider-database-path /srv/foreman/project-123/.beads
 ```
 
+Kata: no database path; `--path` (absolute) is the kata working directory:
+
+```
+foreman project create \
+  --id project-123 \
+  --path /srv/foreman/project-123 \
+  --task-provider kata
+```
+
 | Option | Description |
 |--------|-------------|
 | `--id <id>` | Project ID (required) |
-| `--path <path>` | Project path (required) |
-| `--task-provider <provider>` | Task provider (required) |
-| `--task-provider-database-path <path>` | Absolute task-provider database path; required when `--task-provider=beads` |
+| `--path <path>` | Project path (required); must be absolute with `--task-provider=kata`, where it becomes `task_provider.config.cwd` |
+| `--task-provider <provider>` | Task provider (required): `beads` or `kata` |
+| `--task-provider-database-path <path>` | Absolute task-provider database path; required only when `--task-provider=beads` and rejected when `--task-provider=kata` |
 | `--idempotency-key <key>` | Idempotency key |
 | `--format json` | Print the raw command response as JSON |
 
@@ -354,16 +363,22 @@ foreman project open project-123
 
 ### `foreman project update <id>`
 
-Update a project's task provider and/or settings. At least one change flag is required; `--task-provider` is only required when changing the provider. `--task-provider=beads` also requires `--task-provider-database-path` with an absolute Beads database path. The server is the single validator: its error (for example `{:instructions_too_long, 16001, 16000}`) is printed verbatim. `status` cannot be set here (use `pause`/`resume`/`reactivate`).
+Update a project's task provider and/or settings. At least one change flag is required; `--task-provider` is only required when changing the provider. `--task-provider=beads` requires `--task-provider-database-path` with an absolute Beads database path. `--task-provider=kata` takes no database path (it is rejected): the CLI first reads the project's registered path with `GET /api/projects/<id>` and sends it as `task_provider.config.cwd`, and refuses (sending nothing) if that read fails or the registered path is not absolute. The server keeps a stored `config` when the provider is unchanged and the request carries no `config`, and fails with `{:missing_or_invalid, :cwd}` or `{:missing_or_invalid, :database_path}` when the provider changes and the request's `config` lacks the new provider's key. The server is the single validator: its error (for example `{:instructions_too_long, 16001, 16000}`) is printed verbatim. `status` cannot be set here (use `pause`/`resume`/`reactivate`).
 
 ```
 foreman project update --task-provider beads --task-provider-database-path /srv/foreman/project-123/.beads project-123
 ```
 
+Switching to Kata (no database path; the CLI sends the project's registered path as `config.cwd`):
+
+```
+foreman project update --task-provider kata project-123
+```
+
 | Option | Description |
 |--------|-------------|
 | `--task-provider <provider>` | Task provider (required only when changing the provider) |
-| `--task-provider-database-path <path>` | Absolute task-provider database path; required when `--task-provider=beads` |
+| `--task-provider-database-path <path>` | Absolute task-provider database path; required only when `--task-provider=beads` and rejected when `--task-provider=kata` |
 | `--goal <text>` | Project goal (max 2000 characters) |
 | `--instructions <text>` | Standing instructions (max 16000 characters); exclusive with `--instructions-file` |
 | `--instructions-file <path>` | Read the instructions from a file |
@@ -1222,6 +1237,8 @@ foreman doctor --format json         # Machine-readable output
 
 Exit code: `0` when no check has status `fail` (and, with `--strict`, none `warn`); `1` otherwise or on a usage error.
 
+`foreman doctor` reports server-wide rows only (the `jido_harness` provider rows, workflows, notifier, setup recommendations); it has no task-provider rows, and a trailing `task_provider` argument is ignored (it runs the same `GET /api/doctor` checks). The per-project task-provider health report, including the Kata section (`kata_version`, `warnings`, `sample_list`), is produced by the server module `ForemanServer.CLI.DoctorTaskProvider` (`ForemanServer.CLI.run(["doctor", "task_provider"])`), which the Go CLI does not route; see `docs/user-guide.md` §10, "Kata task provider".
+
 **NOT IMPLEMENTED:** `--fix` and `--dry-run` (passing them is a usage error), and the Pi SDK, DB integrity, bundled-skill, prompt/workflow-staleness, duplicate `task_type`, zombie-run, stale-run and stale-worktree checks. Use `foreman init --force` to refresh installed prompts and workflows.
 
 ### `foreman server`
@@ -1713,8 +1730,8 @@ unless `allow_workflow_writes: true`.
 `foreman_project_settings_get` returns the same typed payload as
 `GET /api/projects/<id>/settings` (`project_id`, `status`, `settings`, `limits`;
 no env values). Project reads over HTTP and MCP replace `config.env` /
-`config.environment` values with `"[redacted]"` (keys, `name`, `task_provider` and
-`database_path` stay visible). The write tools `foreman_project_settings_update`
+`config.environment` values with `"[redacted]"` (keys, `name`, `task_provider` (its
+`database_path` for Beads, its `cwd` for Kata) stay visible). The write tools `foreman_project_settings_update`
 (arguments: `project_id`, `goal`, `instructions`, `thread_model`, `thread_effort`,
 `coordinator_provider`, `coordinator_model`, `coordinator_effort`,
 `max_concurrent_runs`, `daily_thread_cap`, `coordinator_propose_before_start`,

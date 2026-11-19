@@ -40,11 +40,12 @@ defmodule ForemanServer.TaskProviders.ConcurrencyLimiterTest do
       |> Keyword.put(:timeout_ms, 30_000)
     )
 
-    start_supervised!(ConcurrencyLimiter)
+    restart_application_limiter!()
     ForemanServer.TestSupport.TestApplication.reset_application_child!(Registry)
 
     on_exit(fn ->
       Application.put_env(:foreman_server, :task_provider, previous_config)
+      restart_application_limiter!()
       System.put_env("PATH", original_path)
       File.rm_rf!(temp_dir)
     end)
@@ -359,6 +360,14 @@ defmodule ForemanServer.TaskProviders.ConcurrencyLimiterTest do
 
     File.chmod!(script_path, 0o755)
     System.put_env("PATH", "#{temp_dir}:#{original_path}")
+  end
+
+  # The limiter is a child of the application (TRD-KATA-T055). Restarting it gives each test an
+  # empty slot table and re-reads the `:task_provider` env set above.
+  defp restart_application_limiter! do
+    :ok = Supervisor.terminate_child(ForemanServer.Application, ConcurrencyLimiter)
+    {:ok, _pid} = Supervisor.restart_child(ForemanServer.Application, ConcurrencyLimiter)
+    :ok
   end
 
   defp fill_slots(project_id, count) do

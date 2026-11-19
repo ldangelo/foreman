@@ -5,6 +5,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterTest do
 
   alias ForemanServer.TaskProvider
   alias ForemanServer.TaskProvider.Issue
+  alias ForemanServer.TaskProvider.Registry, as: TaskProviderRegistry
   alias ForemanServer.TaskProviders.BeadsAdapter
   alias ForemanServer.TaskProviders.BrRunnerMock
   alias ForemanServer.TaskProviders.JsonSchemaCache
@@ -14,6 +15,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterTest do
     provider_id: :beads,
     contract_version: "br.capabilities.v1",
     id_format: "^[A-Za-z0-9][A-Za-z0-9:_-]*$",
+    storage_scheme: :sqlite,
     supports: [
       :claim,
       :close,
@@ -61,6 +63,32 @@ defmodule ForemanServer.TaskProviders.BeadsAdapterTest do
 
   test "capabilities/0 returns expected map" do
     assert BeadsAdapter.capabilities() == @expected_capabilities
+  end
+
+  describe "capabilities/0 against the registry contract (TRD-KATA-T031, AC-010-3)" do
+    test "declares the database-file storage scheme, the counterpart of a CLI-process provider" do
+      assert BeadsAdapter.capabilities().storage_scheme == :sqlite
+    end
+
+    test "satisfies the provider-generic capability validation unchanged" do
+      assert :ok = TaskProviderRegistry.validate_capabilities(BeadsAdapter.capabilities())
+    end
+
+    test "a registry configured with the adapter admits it into its routing snapshot" do
+      previous_config = Application.get_env(:foreman_server, :task_provider, [])
+      on_exit(fn -> Application.put_env(:foreman_server, :task_provider, previous_config) end)
+
+      Application.put_env(:foreman_server, :task_provider,
+        actor: nil,
+        accepted_contract_versions: ["br.capabilities.v1"],
+        providers: [BeadsAdapter]
+      )
+
+      name = :beads_adapter_registry_admission
+      start_supervised!({TaskProviderRegistry, [name: name]}, id: name)
+
+      assert GenServer.call(name, :routing_snapshot) == %{beads: BeadsAdapter}
+    end
   end
 
   describe "capabilities/0 :create support" do

@@ -2,8 +2,11 @@ defmodule ForemanServer.TaskProvider.RegistryTest do
   use ExUnit.Case, async: false
 
   alias ForemanServer.TaskProvider.Registry
+  alias ForemanServer.TaskProvider.Telemetry, as: TaskProviderTelemetry
+  alias ForemanServer.Test.Support.CapabilityStubProvider
 
   @restart_event [:foreman_server, :task_provider, :registry, :restarted]
+  @invalid_event [:foreman_server, :task_provider, :registry, :invalid_capabilities]
 
   defmodule CompatibleProvider do
     @behaviour ForemanServer.TaskProvider
@@ -13,7 +16,12 @@ defmodule ForemanServer.TaskProvider.RegistryTest do
 
     @impl true
     def capabilities do
-      %{provider_id: :compatible, contract_version: "br.capabilities.v1", supports: [:claim]}
+      %{
+        provider_id: :compatible,
+        contract_version: "br.capabilities.v1",
+        supports: [:claim],
+        storage_scheme: :sqlite
+      }
     end
 
     @impl true
@@ -60,7 +68,12 @@ defmodule ForemanServer.TaskProvider.RegistryTest do
 
     @impl true
     def capabilities do
-      %{provider_id: :incompatible, contract_version: "br.capabilities.v2", supports: [:claim]}
+      %{
+        provider_id: :incompatible,
+        contract_version: "br.capabilities.v2",
+        supports: [:claim],
+        storage_scheme: :sqlite
+      }
     end
 
     @impl true
@@ -107,7 +120,12 @@ defmodule ForemanServer.TaskProvider.RegistryTest do
 
     @impl true
     def capabilities do
-      %{provider_id: :concurrent, contract_version: "br.capabilities.v1", supports: [:claim]}
+      %{
+        provider_id: :concurrent,
+        contract_version: "br.capabilities.v1",
+        supports: [:claim],
+        storage_scheme: :sqlite
+      }
     end
 
     @impl true
@@ -154,7 +172,12 @@ defmodule ForemanServer.TaskProvider.RegistryTest do
 
     @impl true
     def capabilities do
-      %{provider_id: :unavailable, contract_version: "br.capabilities.v1", supports: [:claim]}
+      %{
+        provider_id: :unavailable,
+        contract_version: "br.capabilities.v1",
+        supports: [:claim],
+        storage_scheme: :sqlite
+      }
     end
 
     @impl true
@@ -600,6 +623,217 @@ defmodule ForemanServer.TaskProvider.RegistryTest do
     end
   end
 
+  describe "validate_capabilities/1 (TRD-KATA-T030, AC-010-1)" do
+    @valid %{
+      provider_id: :stub,
+      contract_version: "br.capabilities.v1",
+      supports: [:claim],
+      storage_scheme: :sqlite
+    }
+
+    test "accepts every required key at its documented type" do
+      assert :ok = Registry.validate_capabilities(@valid)
+    end
+
+    test "accepts both storage schemes, an empty supports list, a compilable id_format and unknown keys" do
+      assert :ok = Registry.validate_capabilities(%{@valid | storage_scheme: :cli_process})
+      assert :ok = Registry.validate_capabilities(%{@valid | supports: []})
+
+      assert :ok =
+               Registry.validate_capabilities(
+                 Map.merge(@valid, %{id_format: "^[a-z0-9]+$", note: "unknown keys are ignored"})
+               )
+    end
+
+    for key <- [:provider_id, :contract_version, :supports, :storage_scheme] do
+      test "a map without #{key} is rejected, naming that key" do
+        assert {:error, [{:missing_key, unquote(key)}]} =
+                 Registry.validate_capabilities(Map.delete(@valid, unquote(key)))
+      end
+    end
+
+    for {key, bad} <- [
+          provider_id: "stub",
+          provider_id: nil,
+          provider_id: true,
+          contract_version: :v1,
+          contract_version: "",
+          supports: :claim,
+          supports: ["claim"],
+          supports: [:claim | :tail],
+          storage_scheme: :postgres,
+          storage_scheme: "sqlite",
+          storage_scheme: nil,
+          id_format: :pattern,
+          id_format: "(unclosed"
+        ] do
+      test "#{key} #{inspect(bad)} is rejected as an invalid value" do
+        assert {:error, [{:invalid_value, unquote(key)}]} =
+                 Registry.validate_capabilities(
+                   Map.put(@valid, unquote(key), unquote(Macro.escape(bad)))
+                 )
+      end
+    end
+
+    test "every violation is reported, required keys first in declaration order, then the optional ones" do
+      assert {:error,
+              [
+                {:missing_key, :provider_id},
+                {:invalid_value, :contract_version},
+                {:invalid_value, :supports},
+                {:missing_key, :storage_scheme},
+                {:invalid_value, :id_format}
+              ]} =
+               Registry.validate_capabilities(%{
+                 contract_version: 1,
+                 supports: :all,
+                 id_format: 7
+               })
+    end
+
+    test "a declaration that is not a map is rejected" do
+      for bad <- [nil, [], "capabilities", [provider_id: :stub]] do
+        assert {:error, [:not_a_map]} = Registry.validate_capabilities(bad)
+      end
+    end
+  end
+
+  describe "registry exclusion of invalid capability maps (TRD-KATA-T030, AC-010-1)" do
+    setup do
+      handler_id = "registry-invalid-capabilities-#{System.unique_integer([:positive])}"
+      :ok = :telemetry.attach(handler_id, @invalid_event, &__MODULE__.handle_telemetry/4, self())
+      on_exit(fn -> :telemetry.detach(handler_id) end)
+
+      Application.put_env(:foreman_server, :task_provider,
+        actor: nil,
+        accepted_contract_versions: ["br.capabilities.v1"],
+        providers: []
+      )
+
+      :ok
+    end
+
+    test "a provider with an invalid map is left out of the boot snapshot and reported; valid providers still load" do
+      invalid = stub_without_scheme()
+
+      Application.put_env(:foreman_server, :task_provider,
+        actor: nil,
+        accepted_contract_versions: ["br.capabilities.v1"],
+        providers: [CompatibleProvider, invalid]
+      )
+
+      name = :task_provider_registry_invalid_boot
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          start_supervised!({Registry, [name: name]}, id: name)
+        end)
+
+      assert log =~ "storage_scheme"
+      assert GenServer.call(name, :routing_snapshot) == %{compatible: CompatibleProvider}
+
+      assert_receive {:telemetry, @invalid_event, %{count: 1},
+                      %{provider: ^invalid, violations: [{:missing_key, :storage_scheme}]}},
+                     1_000
+    end
+
+    test "register/1 returns :invalid_capabilities, leaves the snapshot unchanged and reports the provider" do
+      invalid = stub_without_scheme()
+
+      Application.put_env(:foreman_server, :task_provider,
+        actor: nil,
+        accepted_contract_versions: ["br.capabilities.v1"],
+        providers: [CompatibleProvider]
+      )
+
+      name = :task_provider_registry_invalid_register
+      start_supervised!({Registry, [name: name]}, id: name)
+
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert {:error, :invalid_capabilities} = GenServer.call(name, {:register, invalid})
+      end)
+
+      assert GenServer.call(name, :routing_snapshot) == %{compatible: CompatibleProvider}
+
+      assert_receive {:telemetry, @invalid_event, %{count: 1},
+                      %{provider: ^invalid, violations: [{:missing_key, :storage_scheme}]}},
+                     1_000
+    end
+
+    test "register_for_project/3 refuses an invalid provider and registers nothing for the project" do
+      invalid = stub_without_scheme()
+      ForemanServer.TestSupport.TestApplication.reset_application_child!(Registry)
+
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert {:error, :invalid_capabilities} =
+                 Registry.register_for_project("project-invalid", invalid, %{
+                   "database_path" => "/tmp/project-invalid.db"
+                 })
+      end)
+
+      assert :sys.get_state(Registry).per_project == %{}
+      assert_receive {:telemetry, @invalid_event, %{count: 1}, %{provider: ^invalid}}, 1_000
+    end
+
+    test "each event names the provider that broke the contract and every key it broke" do
+      bad_types =
+        CapabilityStubProvider.define!(
+          name: :bad_types,
+          capabilities: %{
+            provider_id: "bad",
+            contract_version: "br.capabilities.v1",
+            supports: [:claim],
+            storage_scheme: :mongo
+          }
+        )
+
+      not_a_map = CapabilityStubProvider.define!(name: :not_a_map, capabilities: nil)
+      ForemanServer.TestSupport.TestApplication.reset_application_child!(Registry)
+
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert {:error, :invalid_capabilities} = Registry.register(bad_types)
+        assert {:error, :invalid_capabilities} = Registry.register(not_a_map)
+      end)
+
+      assert_receive {:telemetry, @invalid_event, %{count: 1},
+                      %{
+                        provider: ^bad_types,
+                        violations: [
+                          {:invalid_value, :provider_id},
+                          {:invalid_value, :storage_scheme}
+                        ]
+                      }},
+                     1_000
+
+      assert_receive {:telemetry, @invalid_event, %{count: 1},
+                      %{provider: ^not_a_map, violations: [:not_a_map]}},
+                     1_000
+    end
+
+    test "validity is judged before the contract version" do
+      both =
+        CapabilityStubProvider.define!(
+          name: :both,
+          capabilities: %{
+            provider_id: :both,
+            contract_version: "br.capabilities.v999",
+            supports: [:claim]
+          }
+        )
+
+      ForemanServer.TestSupport.TestApplication.reset_application_child!(Registry)
+
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert {:error, :invalid_capabilities} = Registry.register(both)
+      end)
+    end
+
+    test "the event is part of the documented telemetry taxonomy" do
+      assert %{metadata_keys: [:provider, :violations], scrub_required?: false} =
+               TaskProviderTelemetry.taxonomy()[@invalid_event]
+    end
+  end
+
   defp wait_for_restart(name, previous_pid, attempts \\ 40)
 
   defp wait_for_restart(_name, _previous_pid, 0) do
@@ -624,5 +858,17 @@ defmodule ForemanServer.TaskProvider.RegistryTest do
 
   def handle_telemetry(event, measurements, metadata, pid) do
     send(pid, {:telemetry, event, measurements, metadata})
+  end
+
+  # A provider whose map is valid except that it never declares `storage_scheme`.
+  defp stub_without_scheme do
+    CapabilityStubProvider.define!(
+      name: :no_scheme,
+      capabilities: %{
+        provider_id: :no_scheme,
+        contract_version: "br.capabilities.v1",
+        supports: [:claim]
+      }
+    )
   end
 end

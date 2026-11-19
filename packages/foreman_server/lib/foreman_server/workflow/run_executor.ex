@@ -84,6 +84,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   alias ForemanServer.Aggregate.Actor
   alias ForemanServer.Incarnation
   alias ForemanServer.PrRisk
+  alias ForemanServer.TaskProvider.StorageBinding
   alias ForemanServer.Workflow.OrphanReaper
   alias ForemanServer.Workflow.Worktree
   alias ForemanServer.Workflow.RepoPr
@@ -102,6 +103,9 @@ defmodule ForemanServer.Workflow.RunExecutor do
   }
   @claim_lost_event [:foreman_server, :task_provider, :claim, :lost]
   @resumed_event [:foreman_server, :workflow, :run_executor, :resumed]
+  # The codes a provider refuses a claim with when another actor holds the task: Beads'
+  # `NOT_CLAIMABLE` and `CLAIMED_BY_OTHER`, and Kata's `CLAIMED_BY_OTHER`.
+  @claim_refusal_codes ["NOT_CLAIMABLE", "CLAIMED_BY_OTHER"]
   @type state :: %{
           task: map(),
           phase_specs: [map()],
@@ -150,29 +154,36 @@ defmodule ForemanServer.Workflow.RunExecutor do
              fn -> provider_module.claim(task_id, actor, project_config) end,
              %{actor: if(is_binary(actor), do: actor)}
            ) do
-      maybe_retry_lost_claim(result, provider_module, project_config, task_id)
+      maybe_retry_lost_claim(result, provider_module, project_config, task_id, actor)
     end
   end
 
   def claim(_project_id, _task_id, _actor, _run_id), do: {:error, :invalid_claim}
 
-  @spec complete(String.t(), String.t(), String.t(), String.t() | nil) ::
+  # `commit_sha` is the newest commit the run itself made (`completion_commit_sha/1`), or `nil` when
+  # it made none. It rides in the completion token only when there is one: a provider that needs
+  # proof of the work (Kata refuses a `--done` close without any) finds the key absent, never
+  # empty, and falls back to the artifact path.
+  @spec complete(String.t(), String.t(), String.t(), String.t() | nil, String.t() | nil) ::
           {:ok, term()} | {:error, term()}
-  def complete(project_id, task_id, run_id, artifact_path)
+  def complete(project_id, task_id, run_id, artifact_path, commit_sha \\ nil)
+
+  def complete(project_id, task_id, run_id, artifact_path, commit_sha)
       when is_binary(project_id) and project_id != "" and is_binary(task_id) and task_id != "" and
-             is_binary(run_id) and run_id != "" do
+             is_binary(run_id) and run_id != "" and
+             (is_nil(commit_sha) or (is_binary(commit_sha) and commit_sha != "")) do
     with {:ok, provider_module, project_config} <- resolve_provider(project_id, :close, run_id) do
       TaskProviderEffect.run(run_id, project_id, :complete, task_id, fn ->
         provider_module.complete(
           task_id,
-          %{run_id: run_id, artifact_path: artifact_path},
+          completion_token(run_id, artifact_path, commit_sha),
           project_config
         )
       end)
     end
   end
 
-  def complete(_project_id, _task_id, _run_id, _artifact_path),
+  def complete(_project_id, _task_id, _run_id, _artifact_path, _commit_sha),
     do: {:error, :invalid_completion}
 
   @spec fail(String.t(), String.t(), String.t(), term()) :: {:ok, term()} | {:error, term()}
@@ -5724,7 +5735,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
                project_id(state),
                provider_task_id(state),
                state.run_id,
-               completion_artifact_path(state)
+               completion_artifact_path(state),
+               completion_commit_sha(state)
              ) do
           {:ok, :already_terminal} -> :ok
           {:ok, _issue} -> dispatch_task_execution_complete(state)
@@ -5990,9 +6002,11 @@ defmodule ForemanServer.Workflow.RunExecutor do
     with {:ok, project} <- fetch_project_projection(project_id),
          {:ok, task_provider} <- fetch_task_provider(project),
          {:ok, project_config} <- fetch_project_config(task_provider),
-         {:ok, database_path} <- fetch_database_path(project_config),
+         {:ok, %{provider_module: registered_module}} <-
+           TaskProviderRegistry.project_config(project_id),
+         {:ok, binding} <- fetch_storage_binding(registered_module, project_config),
          {:ok, provider_module} <-
-           TaskProviderRegistry.route(transition, {project_id, database_path}) do
+           TaskProviderRegistry.route(transition, {project_id, binding}) do
       project_config =
         if run_id && run_id != "",
           do: Map.put(project_config, :run_id, run_id),
@@ -6029,10 +6043,12 @@ defmodule ForemanServer.Workflow.RunExecutor do
       else: {:error, :task_provider_not_configured}
   end
 
-  defp fetch_database_path(project_config) do
-    case Map.get(project_config, :database_path) || Map.get(project_config, "database_path") do
-      database_path when is_binary(database_path) and database_path != "" -> {:ok, database_path}
-      _ -> {:error, :task_provider_not_configured}
+  # The project's binding to its provider's storage: the config key the provider's declared storage
+  # scheme names (`database_path` for `:sqlite`, `cwd` for `:cli_process`).
+  defp fetch_storage_binding(provider_module, project_config) do
+    case StorageBinding.fetch(provider_module, project_config) do
+      {:ok, binding} -> {:ok, binding}
+      {:error, _reason} -> {:error, :task_provider_not_configured}
     end
   end
 
@@ -6068,6 +6084,39 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
   end
 
+  # The one commit a completion may name as evidence: the newest commit the run itself made on its
+  # branch, the head of `base_ref..HEAD` in the run's worktree. `base_ref` is the commit the
+  # worktree was cut from, so a run that made no commit has an empty list and NO sha: HEAD is then
+  # the base, a commit that predates the run, and naming it would be a false completion claim. That
+  # covers a clean tree after every phase and a run whose phases all declare `commit: false`.
+  # Commits the agent made itself count along with Foreman's phase commits, so a phase whose
+  # commit step reports `:nothing_to_commit` still yields one. `finalize_run/1` reaches the close
+  # only after `finish_phases/1`, so every phase's commit step has already run by now.
+  defp completion_commit_sha(state) do
+    case Map.get(state, :run_worktree) do
+      nil ->
+        nil
+
+      %{worktree_path: path, base_ref: base_ref} when is_binary(path) and is_binary(base_ref) ->
+        case JobsiteGit.commits_between(path, base_ref, "HEAD") do
+          # `git log` lists the head first.
+          {:ok, [%{sha: sha} | _older]} ->
+            sha
+
+          {:ok, []} ->
+            nil
+
+          {:error, %JobsiteError{} = error} ->
+            Logger.warning(
+              "RunExecutor #{state.run_id} could not list the commits its run made in #{path}, " <>
+                "so its completion names none: #{inspect(error)}"
+            )
+
+            nil
+        end
+    end
+  end
+
   defp build_failure_token(run_id, reason) do
     failure_reason = normalize_failure_reason(reason)
 
@@ -6088,6 +6137,12 @@ defmodule ForemanServer.Workflow.RunExecutor do
     |> Map.put(:artifact_path, artifact_path)
     |> Map.put(:transition_comment, transition_comment)
   end
+
+  defp completion_token(run_id, artifact_path, nil),
+    do: %{run_id: run_id, artifact_path: artifact_path}
+
+  defp completion_token(run_id, artifact_path, commit_sha),
+    do: %{run_id: run_id, artifact_path: artifact_path, commit_sha: commit_sha}
 
   defp normalize_failure_reason(%FailureCause{} = reason),
     do: %{reason: FailureCause.render(reason)}
@@ -6114,27 +6169,55 @@ defmodule ForemanServer.Workflow.RunExecutor do
     "foreman-run:#{run_id}:#{artifact_path}"
   end
 
+  # A claim another actor holds is refused with one of `@claim_refusal_codes`. Foreman refreshes
+  # its ready set exactly once: a task that is no longer ready is lost, one that is still ready is
+  # claimed once more, and a claim refused again is lost too. Losing a claim fails the run before
+  # any phase dispatches, which drops the task from the dispatch set, and records the loss on
+  # `[:foreman_server, :task_provider, :claim, :lost]`. There is no third attempt. Any other
+  # failure, a failed refresh included, proves nothing about the claim and is returned as it came.
   defp maybe_retry_lost_claim(
-         {:error, %{code: "NOT_CLAIMABLE"} = error},
+         {:error, %ProviderError{code: code} = refusal},
          provider_module,
          project_config,
-         task_id
-       ) do
+         task_id,
+         actor
+       )
+       when code in @claim_refusal_codes do
     case provider_module.list_ready(project_config, []) do
       {:ok, issues} when is_list(issues) ->
         if Enum.any?(issues, &issue_matches_task_id?(&1, task_id)) do
-          {:error, error}
+          retry_refused_claim(provider_module, project_config, task_id, actor)
         else
-          TaskProviderTelemetry.emit(@claim_lost_event, %{count: 1}, %{})
-          {:error, error}
+          claim_lost(refusal)
         end
 
-      _other ->
-        {:error, error}
+      other ->
+        Logger.warning(
+          "RunExecutor claim #{task_id}: refreshing the ready set after a refused claim " <>
+            "did not return a list of issues: #{inspect(other)}"
+        )
+
+        {:error, refusal}
     end
   end
 
-  defp maybe_retry_lost_claim(result, _provider_module, _project_config, _task_id), do: result
+  defp maybe_retry_lost_claim(result, _provider_module, _project_config, _task_id, _actor),
+    do: result
+
+  defp retry_refused_claim(provider_module, project_config, task_id, actor) do
+    case provider_module.claim(task_id, actor, project_config) do
+      {:error, %ProviderError{code: code} = refusal} when code in @claim_refusal_codes ->
+        claim_lost(refusal)
+
+      result ->
+        result
+    end
+  end
+
+  defp claim_lost(refusal) do
+    TaskProviderTelemetry.emit(@claim_lost_event, %{count: 1}, %{})
+    {:error, refusal}
+  end
 
   defp issue_matches_task_id?(issue, task_id) when is_map(issue) do
     Map.get(issue, :id) == task_id || Map.get(issue, "id") == task_id
