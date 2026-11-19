@@ -19,11 +19,7 @@ defmodule ForemanServer.CLI.DoctorTaskProvider do
   @probe_timeout_ms 30_000
   @version_argv ["br", "--version"]
 
-  @kata_runner Application.compile_env(
-                 :foreman_server,
-                 :kata_runner,
-                 ForemanServer.TaskProviders.SystemKataRunner
-               )
+  @kata_runner_default ForemanServer.TaskProviders.SystemKataRunner
   @kata_version_argv ["--version"]
   @kata_sample_list_argv ["list", "--limit", "1", "--json"]
 
@@ -224,14 +220,17 @@ defmodule ForemanServer.CLI.DoctorTaskProvider do
   end
 
   defp kata_version_probe do
-    case @kata_runner.cmd(@kata_version_argv, File.cwd!(), timeout_ms: @probe_timeout_ms) do
+    case kata_runner().cmd(@kata_version_argv, File.cwd!(), timeout_ms: @probe_timeout_ms) do
       {:ok, stdout} when is_binary(stdout) -> {:ok, String.trim(stdout)}
       {:error, %ProviderError{} = error} -> {:error, provider_error_map(error)}
     end
   end
 
+  # Resolved at call time, like KataAdapter, so both follow a runtime rebinding of `:kata_runner`.
+  defp kata_runner, do: Application.get_env(:foreman_server, :kata_runner, @kata_runner_default)
+
   defp sample_kata_listing(report, cwd) do
-    case @kata_runner.cmd(@kata_sample_list_argv, cwd, timeout_ms: @probe_timeout_ms) do
+    case kata_runner().cmd(@kata_sample_list_argv, cwd, timeout_ms: @probe_timeout_ms) do
       {:ok, stdout} when is_binary(stdout) ->
         case decode_kata_listing(stdout) do
           {:ok, issue_count} ->

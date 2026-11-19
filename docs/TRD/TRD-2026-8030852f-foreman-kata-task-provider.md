@@ -472,46 +472,46 @@ Task IDs are `TRD-KATA-T###`, with an optional `-TEST` suffix marking a test tas
 
 #### Story 3.1 — Claim, close and fail through RunExecutor
 
-- [ ] **TRD-KATA-T033**: Exercise the provider-generic claim path in `RunExecutor` for Kata projects (3h)
+- [x] **TRD-KATA-T033**: Exercise the provider-generic claim path in `RunExecutor` for Kata projects (3h)
   - PRD task ID: KATA-T033
   - Description: Exercise the provider-generic claim path in `RunExecutor` for Kata projects (`provider_module.claim(task_id, actor, project_config)`, `run_executor.ex` ~121–125; no Kata-specific branch) — before dispatch claim via `KataAdapter.claim/3`; on a `CLAIMED_BY_OTHER` refusal re-call `list_ready/2` once; if the issue is no longer ready, drop it from the dispatch set and emit `[:foreman_server, :task_provider, :claim, :lost]` telemetry; handle `{:ok, term()}`
   - Target Files: `packages/foreman_server/lib/foreman_server/workflow/run_executor.ex`
   - Validates PRD ACs: AC-011-1, AC-011-2, AC-011-3
   - Implementation AC:
-    - [ ] AC-011-1 — No task is dispatched to an agent unless Foreman first received a successful claim response from Kata for that task.
-    - [ ] AC-011-2 — When the claim is refused because another actor holds the task, Foreman refreshes its ready set once and retries the claim; it does not loop.
-    - [ ] AC-011-3 — When the task is still not claimable after that refresh, it is dropped from the dispatch set and a distinguishable provider-scoped telemetry event records the claim loss.
+    - [x] AC-011-1 — No task is dispatched to an agent unless Foreman first received a successful claim response from Kata for that task.
+    - [x] AC-011-2 — When the claim is refused because another actor holds the task, Foreman refreshes its ready set once and retries the claim; it does not loop.
+    - [x] AC-011-3 — When the task is still not claimable after that refresh, it is dropped from the dispatch set and a distinguishable provider-scoped telemetry event records the claim loss.
   - Dependencies: TRD-KATA-T013, TRD-KATA-T011, TRD-KATA-T053
-- [ ] **TRD-KATA-T034**: Exercise the provider-generic complete path in `RunExecutor` for Kata (2h)
+- [x] **TRD-KATA-T034**: Exercise the provider-generic complete path in `RunExecutor` for Kata (2h)
   - PRD task ID: KATA-T034
   - Description: Exercise the provider-generic complete path in `RunExecutor` (`provider_module.complete/…`, `run_executor.ex` ~134–138) for Kata — on `TaskExecutionCompleted`, build a completion token that carries the run's commit SHA when the run produced one (and always the artifact path) and invoke `complete/3`, which runs `kata close <ref> --done --message "<msg>"` with the typed evidence of KATA-T014; on a close envelope with `changed: false` → `{:ok, :already_terminal}`; on Kata-side reject → surface the mapped `ProviderError` and stop
   - Target Files: `packages/foreman_server/lib/foreman_server/workflow/run_executor.ex`
   - Validates PRD ACs: AC-012-1, AC-012-3, AC-012-4
   - Implementation AC:
-    - [ ] AC-012-1 — On successful execution, the task is closed in Kata carrying the run's completion message and typed evidence: the commit SHA when the run produced one, otherwise the run's artifact path as reviewed-paths evidence when that file exists (Kata refuses a `--done` close that carries none, and a path to a report the run never wrote would be a false completion claim).
-    - [ ] AC-012-3 — The completion message identifies the Foreman run that produced it (run identifier and artifact path) when the caller supplies no message of its own, and is at least 40 characters — Kata's minimum for `kata close --done` — so the generated default is never rejected for length.
-    - [ ] AC-012-4 — When Kata refuses the close, the refusal is surfaced as a typed provider error and the run does not report the task as successfully closed.
+    - [x] AC-012-1 — On successful execution, the task is closed in Kata carrying the run's completion message and typed evidence: the commit SHA when the run produced one, otherwise the run's artifact path as reviewed-paths evidence when that file exists (Kata refuses a `--done` close that carries none, and a path to a report the run never wrote would be a false completion claim).
+    - [x] AC-012-3 — The completion message identifies the Foreman run that produced it (run identifier and artifact path) when the caller supplies no message of its own, and is at least 40 characters — Kata's minimum for `kata close --done` — so the generated default is never rejected for length.
+    - [x] AC-012-4 — When Kata refuses the close, the refusal is surfaced as a typed provider error and the run does not report the task as successfully closed.
   - Dependencies: TRD-KATA-T014, TRD-KATA-T033
-- [ ] **TRD-KATA-T035**: Exercise the provider-generic fail path in `RunExecutor` for Kata (2h)
+- [x] **TRD-KATA-T035**: Exercise the provider-generic fail path in `RunExecutor` for Kata (2h)
   - PRD task ID: KATA-T035
   - Description: Exercise the provider-generic fail path in `RunExecutor` (`provider_module.fail(task_id, failure_token, project_config)`, `run_executor.ex` ~154) for Kata — on `TaskExecutionFailed`, `KataAdapter.fail/3` (KATA-T015) reads `kata status <ref> --json`, then runs `kata reopen <ref>`, `kata comment <ref> --body "<reason>" --idempotency-key foreman-fail:<run_id>:<body_hash>` and `kata unassign <ref> --expect-owner <actor>`; return `{:ok, :reopened}`. When a different actor owns the task nothing is written and a non-retryable `CLAIMED_BY_OTHER` error comes back, which the existing `fail_retry_loop` classifies as permanent and does not repeat. This is the Foreman-side failure-path release only (Kata owns crash reconciliation; a run that dies mid-flight is reclaimed by the operator with `kata unassign <ref>`)
   - Target Files: `packages/foreman_server/lib/foreman_server/workflow/run_executor.ex`
   - Validates PRD ACs: AC-012-2, AC-014-1
   - Implementation AC:
-    - [ ] AC-012-2 — On failed execution, the task is reopened in Kata, the failure reason is recorded as a comment on that task, and Foreman's own claim is released so the task is open, unowned and claimable again; the task is not closed, and a task owned by a different actor is left untouched.
-    - [ ] AC-014-1 — On `TaskExecutionFailed`, `KataAdapter.fail/3` first reads the task's effective actor and current owner with `kata status <ref> --json`; if a different actor owns the task it writes nothing to it and returns a typed `CLAIMED_BY_OTHER` provider error. Otherwise it invokes `kata reopen <ref>`, then `kata comment <ref> --body "<reason>"` under an idempotency key derived from the run id and the comment text (a retried notification never duplicates the comment, and a differently worded comment is never refused), then, unless the task is already unowned, `kata unassign <ref> --expect-owner <actor>`; returns `{:ok, :reopened}`. A release refused because ownership changed in the meantime surfaces the same typed error. This is the Foreman-side failure-path release only (Kata owns crash reconciliation; a run that dies mid-flight is reclaimed by the operator).
+    - [x] AC-012-2 — On failed execution, the task is reopened in Kata, the failure reason is recorded as a comment on that task, and Foreman's own claim is released so the task is open, unowned and claimable again; the task is not closed, and a task owned by a different actor is left untouched.
+    - [x] AC-014-1 — On `TaskExecutionFailed`, `KataAdapter.fail/3` first reads the task's effective actor and current owner with `kata status <ref> --json`; if a different actor owns the task it writes nothing to it and returns a typed `CLAIMED_BY_OTHER` provider error. Otherwise it invokes `kata reopen <ref>`, then `kata comment <ref> --body "<reason>"` under an idempotency key derived from the run id and the comment text (a retried notification never duplicates the comment, and a differently worded comment is never refused), then, unless the task is already unowned, `kata unassign <ref> --expect-owner <actor>`; returns `{:ok, :reopened}`. A release refused because ownership changed in the meantime surfaces the same typed error. This is the Foreman-side failure-path release only (Kata owns crash reconciliation; a run that dies mid-flight is reclaimed by the operator).
   - Dependencies: TRD-KATA-T015, TRD-KATA-T033
-- [ ] **TRD-KATA-T036-TEST**: Write `test/foreman_server/task_providers/kata_lifecycle_test.exs` (3h) [satisfies REQ-011, REQ-012, REQ-013]
+- [x] **TRD-KATA-T036-TEST**: Write `test/foreman_server/task_providers/kata_lifecycle_test.exs` (3h) [satisfies REQ-011, REQ-012, REQ-013]
   - PRD task ID: KATA-T036
   - Description: Write `test/foreman_server/task_providers/kata_lifecycle_test.exs` — exercise claim → complete; exercise claim → fail (status, reopen, comment, unassign); exercise fail when a different actor owns the task (only the status call is issued; `CLAIMED_BY_OTHER`), when the task is already unowned (reopen and comment, no unassign), and when ownership changes between the status read and the unassign (`owner_mismatch` → `CLAIMED_BY_OTHER`); exercise a retried fail after the comment succeeded (the replay is `changed: false`, no second comment); exercise already-closed idempotency; exercise already-claimed conflict; exercise claim-lost re-list-and-drop
   - Target Files: `packages/foreman_server/test/foreman_server/task_providers/kata_lifecycle_test.exs`
   - Test AC:
-    - [ ] Claim → complete, claim → fail, already-closed, already-claimed and claim-lost each have a passing test
-    - [ ] The fail test asserts `status`, `reopen`, `comment` (with `--idempotency-key foreman-fail:<run_id>:<body_hash>`) and `unassign --expect-owner <actor>` are issued in that order with `<actor>` taken from `$.actor` of `kata status <ref> --json`, and `close` is not
-    - [ ] When `kata status` shows a different actor as owner, no `reopen`, `comment` or `unassign` is issued and a typed `CLAIMED_BY_OTHER` error is returned
-    - [ ] When `kata status` shows the task already unowned, `reopen` and `comment` are issued, `unassign` is not, and the call succeeds
-    - [ ] When ownership changes between the status read and the unassign, `kata unassign` exiting 5 surfaces as a typed non-retryable `CLAIMED_BY_OTHER` error
-    - [ ] A retried fail after the comment succeeded replays the comment (`changed: false`) without creating a second one
+    - [x] Claim → complete, claim → fail, already-closed, already-claimed and claim-lost each have a passing test
+    - [x] The fail test asserts `status`, `reopen`, `comment` (with `--idempotency-key foreman-fail:<run_id>:<body_hash>`) and `unassign --expect-owner <actor>` are issued in that order with `<actor>` taken from `$.actor` of `kata status <ref> --json`, and `close` is not
+    - [x] When `kata status` shows a different actor as owner, no `reopen`, `comment` or `unassign` is issued and a typed `CLAIMED_BY_OTHER` error is returned
+    - [x] When `kata status` shows the task already unowned, `reopen` and `comment` are issued, `unassign` is not, and the call succeeds
+    - [x] When ownership changes between the status read and the unassign, `kata unassign` exiting 5 surfaces as a typed non-retryable `CLAIMED_BY_OTHER` error
+    - [x] A retried fail after the comment succeeded replays the comment (`changed: false`) without creating a second one
   - Dependencies: TRD-KATA-T033, TRD-KATA-T034, TRD-KATA-T035
 
 #### Story 3.2 — Kata authority and open questions
@@ -607,13 +607,13 @@ Task IDs are `TRD-KATA-T###`, with an optional `-TEST` suffix marking a test tas
     - [ ] Against a real `kata` in a scratch workspace the issue goes open → owned → closed on success, and on failure is reopened with a comment and released (open, unowned, listed by `kata ready --unowned`, claimable again)
     - [ ] The test is excluded (not failed) when `kata` is not on `PATH`
   - Dependencies: TRD-KATA-T033, TRD-KATA-T034, TRD-KATA-T035
-- [ ] **TRD-KATA-T045-TEST**: Verify `KataAdapter` registered correctly in `TaskProvider.Registry` (2h) [satisfies REQ-003]
+- [x] **TRD-KATA-T045-TEST**: Verify `KataAdapter` registered correctly in `TaskProvider.Registry` (2h) [satisfies REQ-003]
   - PRD task ID: KATA-T045
   - Description: Verify `KataAdapter` registered correctly in `TaskProvider.Registry` — integration test asserting `KataAdapter` in `routing_snapshot/0`; assert both `BeadsAdapter` and `KataAdapter` appear with overlapping `supports`; assert per-project provider config (REQ-003) routes correctly
   - Target Files: `packages/foreman_server/test/foreman_server/task_provider/registry_routing_test.exs`
   - Validates PRD ACs: AC-003-4
   - Test AC:
-    - [ ] AC-003-4 — A project may switch between `beads` and `kata` (and back) without losing Foreman run history; the provider choice is data, not a fork in the dispatch path.
+    - [x] AC-003-4 — A project may switch between `beads` and `kata` (and back) without losing Foreman run history; the provider choice is data, not a fork in the dispatch path.
   - Dependencies: TRD-KATA-T021, TRD-KATA-T032-TEST, TRD-KATA-T053
 - [ ] **TRD-KATA-T046-TEST**: Run full Foreman test suite (`mix test`) (2h)
   - PRD task ID: KATA-T046
@@ -651,19 +651,19 @@ Task IDs are `TRD-KATA-T###`, with an optional `-TEST` suffix marking a test tas
 
 #### Story 5.3 — Review and architecture gate
 
-- [ ] **TRD-KATA-T050**: Code review pass (1h)
+- [x] **TRD-KATA-T050**: Code review pass (1h)
   - PRD task ID: KATA-T050
   - Description: Code review pass — consistency with BeadsAdapter patterns; `@runner` compile-time binding; no `System.cmd` outside `SystemKataRunner`; no direct `KataAdapter` imports outside `task_providers/`; all `ProviderError` constructions route through factory
   - Target Files: `packages/foreman_server/lib/foreman_server/task_providers/` (review scope)
   - Implementation AC:
-    - [ ] The review confirms: `@runner` bound via `Application.compile_env/3`; one `System.cmd("kata"` site; no `KataAdapter` alias outside `task_providers/`; every `%ProviderError{}` built by the factory; findings are fixed or filed
+    - [x] The review confirms: `@runner` bound via `Application.compile_env/3`; one `System.cmd("kata"` site; no `KataAdapter` alias outside `task_providers/`; every `%ProviderError{}` built by the factory; findings are fixed or filed
   - Dependencies: TRD-KATA-T020-TEST
-- [ ] **TRD-KATA-T051-TEST**: Final architecture test run (0.5h)
+- [x] **TRD-KATA-T051-TEST**: Final architecture test run (0.5h)
   - PRD task ID: KATA-T051
   - Description: Final architecture test run — run `mix test test/foreman_server/task_providers/kata_architecture_test.exs` alone to verify all three assertion classes pass
   - Target Files: `packages/foreman_server/test/foreman_server/task_providers/kata_architecture_test.exs`
   - Test AC:
-    - [ ] `mix test test/foreman_server/task_providers/kata_architecture_test.exs` exits 0 on its own, and all three assertion classes (single runner site, alias boundary, claim-state sweep) execute
+    - [x] `mix test test/foreman_server/task_providers/kata_architecture_test.exs` exits 0 on its own, and all three assertion classes (single runner site, alias boundary, claim-state sweep) execute
   - Dependencies: TRD-KATA-T050
 
 ---
