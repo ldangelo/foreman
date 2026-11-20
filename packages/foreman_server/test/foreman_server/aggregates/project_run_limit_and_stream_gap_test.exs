@@ -336,14 +336,19 @@ defmodule ForemanServer.Aggregates.RunSlotsIndependentQueuesTest do
 
   defp full_queue(project, cap) do
     holders = for i <- 1..cap, do: "#{project}-h#{i}"
+
     state =
       Enum.reduce(holders, RunSlots.initial_state(), fn id, st ->
         {_, st} = run(st, "run_slots.acquire", project, %{run_id: id, capacity: cap})
         st
       end)
 
-    {_, state} = run(state, "run_slots.acquire", project, %{run_id: "#{project}-w1", capacity: cap})
-    {_, state} = run(state, "run_slots.acquire", project, %{run_id: "#{project}-w2", capacity: cap})
+    {_, state} =
+      run(state, "run_slots.acquire", project, %{run_id: "#{project}-w1", capacity: cap})
+
+    {_, state} =
+      run(state, "run_slots.acquire", project, %{run_id: "#{project}-w2", capacity: cap})
+
     state
   end
 

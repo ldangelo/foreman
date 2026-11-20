@@ -159,6 +159,53 @@ defmodule ForemanServer.Aggregates.RunSlots do
       else: ForemanServer.RunSlots.Config.max_concurrent_runs_per_project()
   end
 
+  @doc """
+  The `run_slots.remove_waiter` command envelopes that empty a project's queue:
+  one per waiter in `state`, FIFO order, on `stream_id(project_id)`. Pure; holders
+  are never named. Command ids are unique per call.
+  """
+  @spec drop_project_commands(State.t(), String.t()) :: [map()]
+  def drop_project_commands(%State{waiters: waiters}, project_id) when is_binary(project_id) do
+    Enum.map(waiters, fn %Waiter{run_id: run_id} ->
+      %{
+        type: "run_slots.remove_waiter",
+        command_id:
+          "run_slots:drop_project:#{project_id}:#{run_id}:#{System.system_time(:millisecond)}:" <>
+            Integer.to_string(System.unique_integer([:positive, :monotonic])),
+        aggregate_id: stream_id(project_id),
+        payload: %{run_id: run_id, project_id: project_id}
+      }
+    end)
+  end
+
+  @doc """
+  Removes every waiter of `project_id`'s run-slot queue and touches no holder
+  (a running run keeps its slot). Returns the removed run ids in queue order;
+  `{:ok, []}` when the queue is empty (idempotent).
+
+  This is the ONE function a future project-delete command must call (groundwork
+  for REQ-017; there is no delete command yet). It reads the stream's own state,
+  not a projection, and dispatches through `CommandGateway.dispatch_system/2`;
+  the first dispatch failure stops the loop and is returned.
+  """
+  @spec drop_project(String.t()) :: {:ok, [String.t()]} | {:error, term()}
+  def drop_project(project_id) when is_binary(project_id) do
+    {state, _version} = Aggregate.load(__MODULE__, stream_id(project_id))
+
+    state
+    |> drop_project_commands(project_id)
+    |> Enum.reduce_while({:ok, []}, fn command, {:ok, removed} ->
+      case ForemanServer.CommandGateway.dispatch_system(command, 5_000) do
+        {:ok, _} -> {:cont, {:ok, [command.payload.run_id | removed]}}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, removed} -> {:ok, Enum.reverse(removed)}
+      error -> error
+    end
+  end
+
   @impl true
   def initial_state, do: %State{capacity: nil, holders: %{}, waiters: []}
 
