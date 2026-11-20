@@ -20,17 +20,7 @@ defmodule ForemanServer.Workflow.FollowUp do
   @doc "The admission payload of a recorded request."
   @spec run_payload(map()) :: RunPayload.t()
   def run_payload(%{run_id: run_id, project_id: project_id} = request) do
-    snapshot = workflow_snapshot(request)
-
-    %RunPayload{
-      run_id: run_id,
-      task_id: nil,
-      project_id: project_id,
-      approval_id: nil,
-      workflow_snapshot: snapshot,
-      phase_specs: Map.fetch!(snapshot, "phases"),
-      source: :followup
-    }
+    RunPayload.from_followup(run_id, project_id, workflow_snapshot(request))
   end
 
   @doc "The task-shaped map `RunExecutor` runs against (no task id, no provider tracking)."

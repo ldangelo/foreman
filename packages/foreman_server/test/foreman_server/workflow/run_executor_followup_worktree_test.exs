@@ -74,8 +74,7 @@ defmodule ForemanServer.Workflow.RunExecutorFollowUpWorktreeTest do
     assert File.read!(Path.join(original, "pr.txt")) == "pr work"
     assert record.base_ref == git!(original, ["rev-parse", "HEAD"])
 
-    assert [%{worktree_path: ^original, branch: @branch}] =
-             ProjectionStore.worktrees_for_run("run-" <> String.duplicate("b", 32))
+    assert [%{worktree_path: ^original, branch: @branch}] = await_worktrees("run-" <> String.duplicate("b", 32))
   end
 
   test "reuses the linked worktree that already holds the branch", %{root: root, repo: repo} do
@@ -107,5 +106,17 @@ defmodule ForemanServer.Workflow.RunExecutorFollowUpWorktreeTest do
                state(repo, %{repo_path: "/somewhere/else"}),
                1
              )
+  end
+
+  # The recorder's event reaches the projection through the router; read it back until it has.
+  defp await_worktrees(run_id, attempts \\ 100) do
+    case ProjectionStore.worktrees_for_run(run_id) do
+      [] when attempts > 0 ->
+        Process.sleep(20)
+        await_worktrees(run_id, attempts - 1)
+
+      found ->
+        found
+    end
   end
 end

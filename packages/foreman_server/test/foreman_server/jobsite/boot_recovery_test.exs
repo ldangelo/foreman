@@ -8,7 +8,7 @@ defmodule ForemanServer.Jobsite.BootRecoveryTest do
 
   import ExUnit.CaptureLog
 
-  alias ForemanServer.{CommandGateway, EventStore, Jobsite}
+  alias ForemanServer.{CommandGateway, EventStore}
   alias ForemanServer.Jobsite.BootRecovery
 
   defp wait_until(fun, deadline_ms \\ 5_000) do
@@ -50,7 +50,7 @@ defmodule ForemanServer.Jobsite.BootRecoveryTest do
       max_iterations: 3
     })
 
-    wait_until(fn -> Jobsite.get(id) != nil end)
+    wait_until(fn -> ForemanServer.ProjectionStore.jobsite(id) != nil end)
   end
 
   # Worktree provisioned, sandbox up, iteration 1 open: what a restart mid-agent leaves, up to
@@ -66,7 +66,7 @@ defmodule ForemanServer.Jobsite.BootRecoveryTest do
 
     provision_sandbox!(id, "sb1")
     dispatch!(id, "jobsite.iteration.start", "it1", %{index: 1})
-    wait_until(fn -> Jobsite.get(id)[:iteration_index] == 1 end)
+    wait_until(fn -> ForemanServer.ProjectionStore.jobsite(id)[:iteration_index] == 1 end)
   end
 
   # The same, after the agent reported its session and the executor recorded it
@@ -74,7 +74,7 @@ defmodule ForemanServer.Jobsite.BootRecoveryTest do
   defp seed_running!(id) do
     seed_iteration_open!(id)
     dispatch!(id, "jobsite.session.bind", "s1", %{index: 1, session_id: "boot-recovery-session"})
-    wait_until(fn -> Jobsite.get(id)[:session_id] == "boot-recovery-session" end)
+    wait_until(fn -> ForemanServer.ProjectionStore.jobsite(id)[:session_id] == "boot-recovery-session" end)
   end
 
   defp provision_sandbox!(id, suffix) do
@@ -84,7 +84,7 @@ defmodule ForemanServer.Jobsite.BootRecoveryTest do
       container_id: nil
     })
 
-    wait_until(fn -> Jobsite.get(id)[:status] == "running" end)
+    wait_until(fn -> ForemanServer.ProjectionStore.jobsite(id)[:status] == "running" end)
   end
 
   defp events(id) do
@@ -111,11 +111,11 @@ defmodule ForemanServer.Jobsite.BootRecoveryTest do
 
     assert {:failed, ^id} = outcome_for(scan_outcomes!(), id)
 
-    wait_until(fn -> Jobsite.get(id).status == "failed" end)
+    wait_until(fn -> ForemanServer.ProjectionStore.jobsite(id).status == "failed" end)
     assert "JobsiteFailed" in event_types(id)
     failed = events(id) |> Enum.find(&(&1.event_type == "JobsiteFailed"))
     assert field(failed.data, :code) == "jobsite_retired"
-    assert Jobsite.get(id).worktree_path == "/tmp/boot-recovery-no-such-worktree"
+    assert ForemanServer.ProjectionStore.jobsite(id).worktree_path == "/tmp/boot-recovery-no-such-worktree"
   end
 
   test "a jobsite that never provisioned a worktree, and a paused one, are failed too" do
@@ -125,7 +125,7 @@ defmodule ForemanServer.Jobsite.BootRecoveryTest do
     paused = unique_id("js-paused")
     seed_running!(paused)
     dispatch!(paused, "jobsite.pause", "p", %{reason: "server_restart", iteration_index: 0})
-    wait_until(fn -> Jobsite.get(paused).status == "paused" end)
+    wait_until(fn -> ForemanServer.ProjectionStore.jobsite(paused).status == "paused" end)
 
     outcomes = scan_outcomes!()
     assert {:failed, ^started} = outcome_for(outcomes, started)
@@ -136,7 +136,7 @@ defmodule ForemanServer.Jobsite.BootRecoveryTest do
     id = unique_id("js-terminal")
     seed_running!(id)
     dispatch!(id, "jobsite.complete", "done", %{iterations_run: 1})
-    wait_until(fn -> Jobsite.get(id).status == "completed" end)
+    wait_until(fn -> ForemanServer.ProjectionStore.jobsite(id).status == "completed" end)
     types_before = event_types(id)
 
     assert outcome_for(scan_outcomes!(), id) == nil
@@ -191,7 +191,7 @@ defmodule ForemanServer.Jobsite.BootRecoveryTest do
                outcome_for(outcomes, ids[n])
 
       assert log =~ "Jobsite boot recovery failed for #{ids[n]}"
-      assert Jobsite.get(ids[n]).status == "running"
+      assert ForemanServer.ProjectionStore.jobsite(ids[n]).status == "running"
     end
 
     assert {:failed, _} = outcome_for(outcomes, ids["ok"])
@@ -205,7 +205,7 @@ defmodule ForemanServer.Jobsite.BootRecoveryTest do
     ref = Process.monitor(pid)
     assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 10_000
 
-    wait_until(fn -> Jobsite.get(id).status == "failed" end)
+    wait_until(fn -> ForemanServer.ProjectionStore.jobsite(id).status == "failed" end)
   end
 
   test "Application builds the child only while :start_jobsite_boot_recovery? is not false" do
