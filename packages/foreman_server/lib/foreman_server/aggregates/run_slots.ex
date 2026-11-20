@@ -1,6 +1,8 @@
 defmodule ForemanServer.Aggregates.RunSlots do
   @moduledoc """
-  Global run-slot admission gate on stream `run_slots:global`.
+  Run-slot admission gate. One aggregate per project, on stream
+  `run_slots:<project_id>` (`stream_id/1`); the legacy `run_slots:global`
+  stream is still folded for history written before per-project queues.
 
   State is `RunSlots.State` (`defstruct [:capacity, holders: %{}, waiters: []]`).
 
@@ -11,11 +13,13 @@ defmodule ForemanServer.Aggregates.RunSlots do
 
   ## Stream id
 
-      run_slots:global
+      run_slots:<project_id>      (legacy: run_slots:global)
 
   ## Events folded
 
-      RunSlotAcquired     — run added to holders; capacity set from event
+      RunSlotAcquired     — run added to holders (and dropped from waiters, as
+                            a promoted or forced waiter leaves the queue);
+                            capacity set from event
       RunSlotQueued      — run appended to FIFO waiters
       RunSlotReleased    — run removed from holders
       RunSlotTransferred — run removed from holders; FIFO head promoted
@@ -29,6 +33,24 @@ defmodule ForemanServer.Aggregates.RunSlots do
   via `event_data_to_map/1`.
 
   ## Command dispatch
+
+  Map-envelope commands: `run_slots.acquire`, `run_slots.release`,
+  `run_slots.remove_waiter` and `run_slots.promote`.
+
+  `run_slots.acquire` payload flags:
+
+    * `force: true`  — record the run as a holder regardless of capacity
+      (adoption of already-running work); a queued run is acquired and the
+      fold drops its waiter entry.
+    * `enqueue_only: true` — queue the run even when capacity is free (the
+      queue is then drained by `run_slots.promote`).
+
+  A run that is already a holder, or already a waiter, yields `{:ok, nil}`
+  (never a second slot or queue position).
+
+  `run_slots.promote` (`payload: %{capacity, project_id?}`) emits ONE
+  `RunSlotAcquired` (`promoted: true`) for the FIFO head waiter when
+  `map_size(holders) < capacity`; otherwise `{:ok, nil}`.
 
   Commands may be sent either as typed structs (`%RunSlotsAcquire{}`,
   `%RunSlotsRelease{}`) or as map envelopes with `type` field
@@ -91,17 +113,16 @@ defmodule ForemanServer.Aggregates.RunSlots do
   def apply_event(%State{} = state, %RunSlotAcquired{} = event) do
     payload = event_data_to_map(event)
 
+    run_id = Aggregate.get(payload, :run_id)
+
     %State{
       state
       | capacity: Aggregate.get(payload, :capacity),
         holders:
-          Map.put(
-            state.holders,
-            Aggregate.get(payload, :run_id),
-            %{
-              acquired_at_ms: Aggregate.get(payload, :acquired_at_ms)
-            }
-          )
+          Map.put(state.holders, run_id, %{
+            acquired_at_ms: Aggregate.get(payload, :acquired_at_ms)
+          }),
+        waiters: drop_waiter(state.waiters, run_id)
     }
   end
 
@@ -168,17 +189,16 @@ defmodule ForemanServer.Aggregates.RunSlots do
 
     case Aggregate.event_type(event) do
       "RunSlotAcquired" ->
+        run_id = Aggregate.get(payload, :run_id)
+
         %State{
           state
           | capacity: Aggregate.get(payload, :capacity),
             holders:
-              Map.put(
-                state.holders,
-                Aggregate.get(payload, :run_id),
-                %{
-                  acquired_at_ms: Aggregate.get(payload, :acquired_at_ms)
-                }
-              )
+              Map.put(state.holders, run_id, %{
+                acquired_at_ms: Aggregate.get(payload, :acquired_at_ms)
+              }),
+            waiters: drop_waiter(state.waiters, run_id)
         }
 
       "RunSlotQueued" ->
@@ -278,9 +298,37 @@ defmodule ForemanServer.Aggregates.RunSlots do
 
     with {:ok, run_id} <- Aggregate.required_binary(run_id, :run_id),
          {:ok, capacity} <- required_non_neg_integer(capacity, :capacity) do
-      do_acquire(state, run_id, capacity, project_id)
+      opts = [
+        force: Aggregate.get(payload, :force) == true,
+        enqueue_only: Aggregate.get(payload, :enqueue_only) == true
+      ]
+
+      do_acquire(state, run_id, capacity, project_id, opts)
     else
       {:error, _} = err -> err
+    end
+  end
+
+  @impl true
+  def handle_command(%State{} = state, %{type: "run_slots.promote"} = command) do
+    payload = Map.get(command, :payload) || %{}
+
+    with {:ok, capacity} <- required_non_neg_integer(Aggregate.get(payload, :capacity), :capacity) do
+      case state.waiters do
+        [head | _] when map_size(state.holders) < capacity ->
+          Telemetry.run_slots_acquired(head.run_id, map_size(state.holders) + 1, capacity)
+          {:ok,
+           %RunSlotAcquired{
+             run_id: head.run_id,
+             capacity: capacity,
+             acquired_at_ms: System.system_time(:millisecond),
+             project_id: optional_project_id(payload),
+             promoted: true
+           }}
+
+        _ ->
+          {:ok, nil}
+      end
     end
   end
 
@@ -320,14 +368,33 @@ defmodule ForemanServer.Aggregates.RunSlots do
   # Internal command helpers
   # -------------------------------------------------------------------------
 
-  defp do_acquire(state, run_id, capacity, project_id) do
+  defp do_acquire(state, run_id, capacity, project_id, opts \\ []) do
     now_ms = System.system_time(:millisecond)
+    force? = Keyword.get(opts, :force, false)
+    enqueue_only? = Keyword.get(opts, :enqueue_only, false)
+    waiting? = Enum.any?(state.waiters, &(&1.run_id == run_id))
 
     cond do
       Map.has_key?(state.holders, run_id) ->
         {:ok, nil}
 
-      map_size(state.holders) < capacity ->
+      # A queued run keeps its single position; force from the queue is
+      # deliberately a no-op here (promotion/adoption goes through the head).
+      waiting? ->
+        {:ok, nil}
+
+      force? ->
+        Telemetry.run_slots_acquired(run_id, map_size(state.holders) + 1, capacity)
+
+        {:ok,
+         %RunSlotAcquired{
+           run_id: run_id,
+           capacity: capacity,
+           acquired_at_ms: now_ms,
+           project_id: project_id
+         }}
+
+      not enqueue_only? and map_size(state.holders) < capacity ->
         Telemetry.run_slots_acquired(run_id, map_size(state.holders) + 1, capacity)
         {:ok, %RunSlotAcquired{run_id: run_id, capacity: capacity,
            acquired_at_ms: now_ms,
