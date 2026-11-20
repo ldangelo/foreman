@@ -108,19 +108,6 @@ defmodule ForemanServer.Threads.ActionsTest do
     id
   end
 
-  defp pause_jobsite!(id) do
-    assert {:ok, _} =
-             CommandGateway.dispatch_system(%{
-               type: "jobsite.pause",
-               command_id: "thread-stop-test:#{id}:pause",
-               aggregate_id: "jobsite:#{id}",
-               payload: %{jobsite_id: id, reason: "manual"}
-             })
-
-    await_event("JobsitePaused", :jobsite_id, id)
-    :ok
-  end
-
   defp field(data, key), do: data[key] || data[to_string(key)]
 
   defp await_event(type, key, id) do
