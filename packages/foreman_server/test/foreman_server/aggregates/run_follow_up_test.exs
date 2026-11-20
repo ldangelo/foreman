@@ -8,8 +8,9 @@ defmodule ForemanServer.Aggregates.RunFollowUpTest do
   alias ForemanServer.FollowUpRuns
 
   setup do
+    # on by default; a test that turns it off must leave it on
     FollowUpRuns.enable!()
-    on_exit(&FollowUpRuns.disable!/0)
+    on_exit(&FollowUpRuns.enable!/0)
     :ok
   end
 

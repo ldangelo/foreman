@@ -13,8 +13,9 @@ defmodule ForemanServer.PrWatcherFollowUpTest do
   alias ForemanServer.Workflow.FollowUp
 
   setup do
+    # on by default; a test that turns it off must leave it on
     FollowUpRuns.enable!()
-    on_exit(&FollowUpRuns.disable!/0)
+    on_exit(&FollowUpRuns.enable!/0)
 
     :ok = ProjectionStore.subscribe(replay_existing: false)
     test_pid = self()
@@ -26,11 +27,6 @@ defmodule ForemanServer.PrWatcherFollowUpTest do
       {:ok, request.run_id}
     end
 
-    jobsite = fn opts ->
-      send(test_pid, {:jobsite_start, opts})
-      {:ok, "js-should-not-start"}
-    end
-
     ctx = Fix.watched!([])
     Agent.update(github, fn _ -> ctx.status end)
     fetch = fn _url -> Agent.get(github, &{:ok, &1}) end
@@ -40,7 +36,6 @@ defmodule ForemanServer.PrWatcherFollowUpTest do
        [
          fetch_fun: fetch,
          followup_starter: followup,
-         jobsite_starter: jobsite,
          plan_opts: [fetch_fun: fetch, log_fetcher: fn _url, _check -> {:error, :none} end]
        ]}
     )
@@ -93,7 +88,6 @@ defmodule ForemanServer.PrWatcherFollowUpTest do
     request_fix!(ctx, %{note: "keep the diff small"})
 
     assert_receive {:followup_start, request}, 10_000
-    refute_received {:jobsite_start, _}
 
     assert request.attach_branch == ctx.status.head_branch
     assert request.push == true

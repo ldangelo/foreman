@@ -57,7 +57,7 @@ defmodule ForemanServer.PrWatcher do
 
   use GenServer
 
-  alias ForemanServer.{CommandGateway, FollowUpRuns, Jobsite, PrFix, PrObservation, ProjectionStore}
+  alias ForemanServer.{CommandGateway, PrFix, PrObservation, ProjectionStore}
   alias ForemanServer.Workflow.FollowUp
   alias ForemanServer.PrWatcher.Observer
 
@@ -83,8 +83,9 @@ defmodule ForemanServer.PrWatcher do
   @doc """
   Start the watcher. Options: `:name` (default `#{inspect(__MODULE__)}`),
   `:fetch_fun` (`pr_url -> {:ok, PrStatus.t()} | {:error, term()}`, defaults to
-  `Observer.default_fetch/1`), `:jobsite_starter` (`opts -> {:ok, jobsite_id} |
-  {:error, term()}`, defaults to `Jobsite.run_async/1`) and `:plan_opts` (keyword passed to
+  `Observer.default_fetch/1`), `:followup_starter` (`request -> {:ok, run_id} |
+  {:error, term()}`, defaults to `Workflow.FollowUp.request/1`), `:jobsite_starter` (`opts -> {:ok, jobsite_id}`,
+  tests of the retired jobsite path only: absent in production) and `:plan_opts` (keyword passed to
   `PrFix.plan/4`, for tests).
   """
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -125,7 +126,7 @@ defmodule ForemanServer.PrWatcher do
          %{
            supervisor: supervisor,
            fetch_fun: Keyword.get(opts, :fetch_fun, &Observer.default_fetch/1),
-           jobsite_starter: Keyword.get(opts, :jobsite_starter, &Jobsite.run_async/1),
+           jobsite_starter: Keyword.get(opts, :jobsite_starter),
            followup_starter: Keyword.get(opts, :followup_starter, &FollowUp.request/1),
            plan_opts: Keyword.get(opts, :plan_opts, []),
            inflight: %{},
@@ -261,7 +262,11 @@ defmodule ForemanServer.PrWatcher do
     if MapSet.member?(state.starting, key) or not requested?(key, payload) do
       state
     else
-      starters = %{jobsite: state.jobsite_starter, followup: state.followup_starter}
+      starters = %{
+        jobsite: state.jobsite_starter,
+        followup: state.followup_starter,
+        legacy_jobsites: is_function(state.jobsite_starter, 1)
+      }
       plan_opts = state.plan_opts
 
       task =
@@ -329,10 +334,13 @@ defmodule ForemanServer.PrWatcher do
     end
   end
 
-  # A fix runs as a follow-up run while the `followup_runs` gate is on, else as a jobsite (the door
-  # stays functional until it is retired). The id of either is what the PR's fix-in-flight records.
+  # A fix runs as a follow-up run. The `followup_runs` gate is its kill switch: with it off the request
+  # is refused (`:followup_runs_disabled`) and the fix is finished as failed. The jobsite starter is
+  # kept only until the door is deleted.
   defp start_fix_execution(starters, plan, payload) do
-    if FollowUpRuns.enabled?() do
+    if starters[:legacy_jobsites] do
+      with {:ok, id} <- start_jobsite(starters.jobsite, plan), do: {:ok, {:jobsite, id}}
+    else
       run_id =
         FollowUp.run_id(
           get(payload, :run_id),
@@ -343,8 +351,6 @@ defmodule ForemanServer.PrWatcher do
 
       with {:ok, id} <- starters.followup.(Map.put(plan.followup, :run_id, run_id)),
            do: {:ok, {:followup, id}}
-    else
-      with {:ok, id} <- start_jobsite(starters.jobsite, plan), do: {:ok, {:jobsite, id}}
     end
   end
 

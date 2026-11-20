@@ -1,55 +1,29 @@
 defmodule ForemanServer.Jobsite.BootRecovery do
   @moduledoc """
-  One-shot boot scan that makes jobsites orphaned by a server restart visible
-  and resumable.
+  One-shot boot closer of the jobsite door's stranded jobsites (docs/plans/retire-jobsites.md §6).
 
-  `Jobsite.Supervisor` starts executors as `:temporary`, so an executor killed
-  by a restart or crash leaves its `jobsite:<id>` aggregate non-terminal
-  forever (status `running`, often with an open `JobsiteIterationStarted`).
-  At boot this scan finds every such jobsite and records it as paused with
-  reason `"server_restart"`, so it shows as `paused` in
-  `GET /api/jobsites` and is continued through the existing
-  `Jobsite.resume/1` / `resume_async/2` / `POST /api/jobsites/:id/resume` path.
+  The jobsite dispatch path is retired: a PR fix now runs as a follow-up run, so nothing can start
+  or resume a jobsite any more. A jobsite that a server restart or crash left non-terminal (running,
+  starting or paused) would otherwise show as live to Threads and the Overview forever. At boot this
+  closer records each such jobsite as FAILED with code `jobsite_retired`.
 
-  It NEVER resumes anything itself: a resume starts an agent unattended,
-  `agent.env` is deliberately not persisted, and remote start is gated by
-  `allow_remote_start`. Recovery stays an explicit operator decision.
+  Its worktree and branch stay on disk: nothing is force-deleted (CLAUDE.md §12, clean-vs-dirty
+  rule), and the `jobsite:` streams stay readable forever (the fold and projections are kept).
 
   Per jobsite, decided from the authoritative aggregate (not the projection):
 
-    * terminal, already `paused`, or unknown to the event store — untouched.
-    * has a live executor in `Jobsite.Registry` — untouched, so a scan racing
-      a legitimate start never pauses a live run.
-    * no worktree was ever provisioned (`starting`) — there is nothing for
-      `resume` to continue, so it is failed with `:executor_lost` rather than
-      left permanently non-terminal.
-    * no provider session was ever recorded (its agent died before reporting
-      one; see `Executor.check_resumable/1`) — a resume would start a blank
-      agent and is refused (`:no_session`), so it is failed with
-      `:executor_lost` too instead of being paused as "resumable" and left
-      that way forever. Its worktree and branch stay on disk for inspection.
-    * otherwise — `jobsite.pause` with `reason: "server_restart"`.
+    * terminal, or unknown to the event store: untouched.
+    * anything else (`starting`, `running`, `paused`): `jobsite.fail` with `code: "jobsite_retired"`.
 
-  Commands are system commands through `CommandGateway.dispatch_system/1`
-  with a command id derived from the jobsite id and the stream version the
-  scan observed. Re-running over an unchanged stream is therefore a no-op, yet
-  a jobsite that is resumed and orphaned again by a later restart (a longer
-  stream) gets a fresh id and is paused again.
+  Commands are system commands through `CommandGateway.dispatch_system/1` with a command id derived
+  from the jobsite id and the stream version the scan observed, so re-running over an unchanged
+  stream is a no-op.
 
-  Candidates are the event store's `jobsite:` streams, not
-  `ProjectionStore.list_jobsites/0`: a projection whose boot replay failed is
-  empty, and an empty candidate list must never mean "nothing to recover".
-  Failing to list the streams is logged at error and returned as
-  `{:error, %Error{code: :boot_recovery_failed}}`.
-
-  A failure to reconcile one jobsite is logged at error with its id and does
-  not stop the others or application boot.
-
-  Known residual window: the `Jobsite.Registry` check and the pause dispatch
-  are not atomic (a few microseconds). That is acceptable here because the
-  scan runs once at boot, before anything has started an executor in this
-  VM; closing it would need `Jobsite.Supervisor`'s admission lock, which is
-  not worth taking for a scan that cannot race a resume in practice.
+  Candidates are the event store's `jobsite:` streams, not `ProjectionStore.list_jobsites/0`: a
+  projection whose boot replay failed is empty, and an empty candidate list must never mean
+  "nothing to close". Failing to list the streams is logged at error and returned as
+  `{:error, %Error{code: :boot_recovery_failed}}`. A failure to close one jobsite is logged at
+  error with its id and does not stop the others or application boot.
   """
 
   use GenServer, restart: :temporary
@@ -60,16 +34,15 @@ defmodule ForemanServer.Jobsite.BootRecovery do
   alias EventStore.Streams.StreamInfo
   alias ForemanServer.{Aggregate, CommandGateway, EventStore}
   alias ForemanServer.Aggregates.Jobsite, as: JobsiteAggregate
-  alias ForemanServer.Jobsite.{Error, Executor}
+  alias ForemanServer.Jobsite.Error
 
-  @pause_reason "server_restart"
+  @retired_code "jobsite_retired"
   @stream_prefix "jobsite:"
   @stream_page_size 100
 
   @type outcome ::
-          {:paused, String.t()}
-          | {:failed, String.t()}
-          | {:skipped, String.t(), :absent | :terminal | :already_paused | :executor_live}
+          {:failed, String.t()}
+          | {:skipped, String.t(), :absent | :terminal}
           | {:error, String.t(), Error.t()}
 
   @spec start_link(term()) :: GenServer.on_start()
@@ -186,68 +159,23 @@ defmodule ForemanServer.Jobsite.BootRecovery do
   defp decide(jobsite_id, %{terminal?: true}, _version, _dispatch),
     do: {:skipped, jobsite_id, :terminal}
 
-  defp decide(jobsite_id, %{status: "paused"}, _version, _dispatch),
-    do: {:skipped, jobsite_id, :already_paused}
-
-  defp decide(jobsite_id, state, version, dispatch) do
-    # Checked after the (slow) aggregate load, immediately before dispatching.
-    if Executor.pid_for(jobsite_id) do
-      {:skipped, jobsite_id, :executor_live}
-    else
-      recover(jobsite_id, state, version, dispatch)
-    end
-  end
-
-  defp recover(jobsite_id, %{worktree_path: nil}, version, dispatch) do
-    executor_lost(
-      jobsite_id,
-      version,
-      dispatch,
-      "executor lost at server restart before a worktree was provisioned; nothing to resume"
-    )
-  end
-
-  defp recover(jobsite_id, %{session_id: nil}, version, dispatch) do
-    executor_lost(
-      jobsite_id,
-      version,
-      dispatch,
-      "executor lost at server restart before its agent reported a provider session; " <>
-        "a resume would start a blank agent, so there is nothing to resume"
-    )
-  end
-
-  defp recover(jobsite_id, state, version, dispatch) do
-    "jobsite.pause"
-    |> command(jobsite_id, version, %{
-      reason: @pause_reason,
-      iteration_index: last_completed_index(state)
-    })
-    |> dispatch.()
-    |> outcome(jobsite_id, :paused)
-  end
-
-  defp executor_lost(jobsite_id, version, dispatch, message) do
-    error = Error.new(:executor_lost, message, %{jobsite_id: jobsite_id})
-
+  defp decide(jobsite_id, _state, version, dispatch) do
     "jobsite.fail"
     |> command(jobsite_id, version, %{
-      code: Atom.to_string(error.code),
-      message: error.message,
-      details: error.details
+      code: @retired_code,
+      message:
+        "the jobsite dispatch path was retired; this jobsite was still open at server start " <>
+          "and can no longer be resumed (its worktree and branch are kept)",
+      details: %{jobsite_id: jobsite_id}
     })
     |> dispatch.()
     |> outcome(jobsite_id, :failed)
   end
 
-  # Mirrors what `Executor` records on a pause: the last iteration that finished.
-  defp last_completed_index(%{iteration_open?: true, iteration_index: index}), do: index - 1
-  defp last_completed_index(%{iteration_index: index}), do: index
-
   defp command(type, jobsite_id, version, payload) do
     %{
       type: type,
-      command_id: "jobsite:#{jobsite_id}:#{type}:#{@pause_reason}:v#{version}",
+      command_id: "jobsite:#{jobsite_id}:#{type}:#{@retired_code}:v#{version}",
       aggregate_id: "jobsite:#{jobsite_id}",
       payload: Map.put(payload, :jobsite_id, jobsite_id)
     }
@@ -269,13 +197,11 @@ defmodule ForemanServer.Jobsite.BootRecovery do
   end
 
   defp log_summary(outcomes) do
-    paused = for {:paused, id} <- outcomes, do: id
     failed = for {:failed, id} <- outcomes, do: id
 
-    if paused != [] or failed != [] do
+    if failed != [] do
       Logger.warning(
-        "Jobsite boot recovery: #{length(paused)} jobsite(s) orphaned by server restart " <>
-          "paused (resumable): #{inspect(paused)}; #{length(failed)} failed as unrecoverable: " <>
+        "Jobsite boot closer: #{length(failed)} open jobsite(s) closed as jobsite_retired: " <>
           "#{inspect(failed)}"
       )
     end

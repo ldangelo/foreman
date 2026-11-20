@@ -1,34 +1,15 @@
 defmodule ForemanServer.Jobsite.BootRecoveryTest do
-  # A jobsite whose executor died with the server (`:temporary` children are
-  # never restarted) stays non-terminal forever. The boot scan must record it as
-  # paused with reason "server_restart" -- never resume it -- so the existing
-  # resume path picks it up.
-  #
-  # No mocks: the real event store, Jobsite aggregate/projection/executor, and
-  # a real fake-agent process. Jobsites are orphaned by hard-killing their real
-  # executor, or seeded through real system commands. The one seam is `scan/1`'s
-  # injectable dispatcher, used only to make individual jobsites fail.
+  # The jobsite dispatch path is retired (docs/plans/retire-jobsites.md): a jobsite a restart left
+  # non-terminal can never be resumed, so the boot closer records it as failed with `jobsite_retired`
+  # (worktree and branch stay on disk). No mocks: the real event store and Jobsite aggregate, jobsites
+  # seeded through real system commands; the one seam is `scan/1`'s injectable dispatcher, used only to
+  # make individual jobsites fail.
   use ExUnit.Case, async: false
 
   import ExUnit.CaptureLog
 
   alias ForemanServer.{CommandGateway, EventStore, Jobsite}
-  alias ForemanServer.Jobsite.{Agents, BootRecovery, Executor, Sandboxes}
-
-  @fake_agent Path.join(__DIR__, "support/fake_agent.sh")
-
-  defp tmp_repo! do
-    path = Path.join(System.tmp_dir!(), "jobsite-bootrec-#{System.unique_integer([:positive])}")
-    File.mkdir_p!(path)
-    {_output, 0} = System.cmd("git", ["-C", path, "init", "-q"])
-    {_output, 0} = System.cmd("git", ["-C", path, "config", "user.email", "test@example.com"])
-    {_output, 0} = System.cmd("git", ["-C", path, "config", "user.name", "Test"])
-    File.write!(Path.join(path, "README.md"), "hello\n")
-    {_output, 0} = System.cmd("git", ["-C", path, "add", "-A"])
-    {_output, 0} = System.cmd("git", ["-C", path, "commit", "-q", "-m", "init"])
-    on_exit(fn -> File.rm_rf(path) end)
-    path
-  end
+  alias ForemanServer.Jobsite.BootRecovery
 
   defp wait_until(fun, deadline_ms \\ 5_000) do
     deadline = System.monotonic_time(:millisecond) + deadline_ms
@@ -124,103 +105,31 @@ defmodule ForemanServer.Jobsite.BootRecoveryTest do
     Enum.find(outcomes, fn outcome -> elem(outcome, 1) == id end)
   end
 
-  test "killed executor: scan pauses it as server_restart, and the existing resume path completes it" do
-    repo = tmp_repo!()
+  test "a running jobsite is failed as jobsite_retired, its worktree untouched" do
+    id = unique_id("js-running")
+    seed_running!(id)
 
-    fake_agent =
-      Agents.pi("x",
-        binary: @fake_agent,
-        env: %{
-          "FAKE_AGENT_TEXT" => "did some work",
-          "FAKE_AGENT_SLEEP_ON_RUN" => "2",
-          "FAKE_AGENT_SLEEP_SECS" => "5"
-        }
-      )
+    assert {:failed, ^id} = outcome_for(scan_outcomes!(), id)
 
-    {:ok, id} =
-      Jobsite.run_async(
-        repo_path: repo,
-        strategy: :merge_to_head,
-        sandbox: Sandboxes.host(),
-        agent: fake_agent,
-        prompt: "go",
-        max_iterations: 3,
-        completion_signal: "NEVER"
-      )
-
-    wait_until(fn -> (Jobsite.get(id) || %{})[:iteration_index] == 2 end)
-
-    executor_pid = Executor.pid_for(id)
-    ref = Process.monitor(executor_pid)
-    Process.exit(executor_pid, :kill)
-    assert_receive {:DOWN, ^ref, :process, ^executor_pid, :killed}, 2_000
-    wait_until(fn -> Executor.pid_for(id) == nil end)
-
-    # The bug this scan fixes: nothing marks the orphan as interrupted.
-    assert Jobsite.get(id).status == "running"
-
-    assert {:paused, ^id} = outcome_for(scan_outcomes!(), id)
-
-    wait_until(fn -> Jobsite.get(id).status == "paused" end)
-    paused = Jobsite.get(id)
-    assert paused.paused_reason == "server_restart"
-    assert paused.terminal? == false
-
-    pauses = Enum.filter(events(id), &(&1.event_type == "JobsitePaused"))
-    assert [%{data: data}] = pauses
-    assert field(data, :reason) == "server_restart"
-    # Iteration 2 was open at the crash, so the last completed one is 1.
-    assert field(data, :iteration_index) == 1
-
-    # It was not resumed by the scan.
-    assert Executor.pid_for(id) == nil
-
-    # Second run over the unchanged stream is a no-op.
-    version_before = length(events(id))
-    assert {:skipped, ^id, :already_paused} = outcome_for(scan_outcomes!(), id)
-    assert length(events(id)) == version_before
-
-    # The existing resume path takes it from there, through the open iteration.
-    assert {:ok, result} = Jobsite.resume(id)
-    assert Enum.map(result.iterations, & &1.index) == [1, 2, 3]
-    assert Enum.at(result.iterations, 1).status == :failed
-    wait_until(fn -> Jobsite.get(id).status == "completed" end)
-    refute Map.has_key?(Jobsite.get(id), :paused_reason)
+    wait_until(fn -> Jobsite.get(id).status == "failed" end)
+    assert "JobsiteFailed" in event_types(id)
+    failed = events(id) |> Enum.find(&(&1.event_type == "JobsiteFailed"))
+    assert field(failed.data, :code) == "jobsite_retired"
+    assert Jobsite.get(id).worktree_path == "/tmp/boot-recovery-no-such-worktree"
   end
 
-  test "a jobsite with a live executor is never touched" do
-    repo = tmp_repo!()
+  test "a jobsite that never provisioned a worktree, and a paused one, are failed too" do
+    started = unique_id("js-started")
+    seed_started!(started)
 
-    fake_agent =
-      Agents.pi("x",
-        binary: @fake_agent,
-        env: %{
-          "FAKE_AGENT_TEXT" => "did some work",
-          "FAKE_AGENT_SLEEP_ON_RUN" => "1",
-          "FAKE_AGENT_SLEEP_SECS" => "5"
-        }
-      )
+    paused = unique_id("js-paused")
+    seed_running!(paused)
+    dispatch!(paused, "jobsite.pause", "p", %{reason: "server_restart", iteration_index: 0})
+    wait_until(fn -> Jobsite.get(paused).status == "paused" end)
 
-    {:ok, id} =
-      Jobsite.run_async(
-        repo_path: repo,
-        strategy: :merge_to_head,
-        sandbox: Sandboxes.host(),
-        agent: fake_agent,
-        prompt: "go",
-        max_iterations: 3,
-        completion_signal: "NEVER"
-      )
-
-    wait_until(fn -> (Jobsite.get(id) || %{})[:iteration_index] == 1 end)
-    version_before = length(events(id))
-
-    assert {:skipped, ^id, :executor_live} = outcome_for(scan_outcomes!(), id)
-    assert length(events(id)) == version_before
-    assert Jobsite.get(id).status == "running"
-
-    assert :ok = Jobsite.cancel(id, "test cleanup")
-    wait_until(fn -> Jobsite.get(id).status == "cancelled" end, 15_000)
+    outcomes = scan_outcomes!()
+    assert {:failed, ^started} = outcome_for(outcomes, started)
+    assert {:failed, ^paused} = outcome_for(outcomes, paused)
   end
 
   test "terminal jobsites are untouched" do
@@ -230,18 +139,14 @@ defmodule ForemanServer.Jobsite.BootRecoveryTest do
     wait_until(fn -> Jobsite.get(id).status == "completed" end)
     types_before = event_types(id)
 
-    outcomes = scan_outcomes!()
-
-    assert outcome_for(outcomes, id) == nil
+    assert outcome_for(scan_outcomes!(), id) == nil
     assert event_types(id) == types_before
   end
 
-  test "an unreplayed (empty) projection does not hide an orphaned jobsite from the scan" do
+  test "an unreplayed (empty) projection does not hide an open jobsite from the closer" do
     id = unique_id("js-empty-projection")
     seed_running!(id)
 
-    # What `ProjectionStore.init/1` installs when its boot replay of the event
-    # log fails: `initial_state()`, i.e. no jobsites at all.
     :sys.replace_state(ForemanServer.ProjectionStore, fn state -> %{state | jobsites: %{}} end)
 
     on_exit(fn ->
@@ -249,69 +154,21 @@ defmodule ForemanServer.Jobsite.BootRecoveryTest do
     end)
 
     assert ForemanServer.ProjectionStore.list_jobsites() == []
-
-    assert {:paused, ^id} = outcome_for(scan_outcomes!(), id)
-    assert "JobsitePaused" in event_types(id)
+    assert {:failed, ^id} = outcome_for(scan_outcomes!(), id)
+    assert "JobsiteFailed" in event_types(id)
   end
 
-  test "a jobsite orphaned again after a resume is paused again (new stream version, new command id)" do
+  test "a second scan over the closed stream does nothing" do
     id = unique_id("js-twice")
     seed_running!(id)
-
-    assert {:paused, ^id} = outcome_for(scan_outcomes!(), id)
-    wait_until(fn -> Jobsite.get(id).status == "paused" end)
-    assert {:skipped, ^id, :already_paused} = outcome_for(scan_outcomes!(), id)
-
-    # A resume that got as far as re-provisioning the sandbox, then died with
-    # the next server restart.
-    provision_sandbox!(id, "sb2")
-    assert Jobsite.get(id).status == "running"
-    refute Map.has_key?(Jobsite.get(id), :paused_reason)
-
-    assert {:paused, ^id} = outcome_for(scan_outcomes!(), id)
-    wait_until(fn -> Jobsite.get(id).status == "paused" end)
-
-    assert Enum.count(event_types(id), &(&1 == "JobsitePaused")) == 2
-  end
-
-  test "a jobsite whose worktree was never provisioned is failed, not left unresumable" do
-    id = unique_id("js-no-worktree")
-    seed_started!(id)
-    assert Jobsite.get(id).status == "starting"
-
     assert {:failed, ^id} = outcome_for(scan_outcomes!(), id)
-    wait_until(fn -> Jobsite.get(id).status == "failed" end)
+    types = event_types(id)
 
-    failed = Jobsite.get(id)
-    assert failed.terminal? == true
-    assert failed.last_error.code == "executor_lost"
-    refute "JobsitePaused" in event_types(id)
+    assert outcome_for(scan_outcomes!(), id) == nil
+    assert event_types(id) == types
   end
 
-  # foreman-cm8nv: the aggregate has a worktree and an open iteration, but no provider session, so
-  # `Jobsite.resume/1` refuses it (`:no_session`: it would start a blank agent). Pausing it as
-  # "resumable" would leave it paused forever with a resume that can never be accepted.
-  test "a jobsite whose agent never reported a provider session is failed, not paused as resumable" do
-    id = unique_id("js-no-session")
-    seed_iteration_open!(id)
-    assert Jobsite.get(id).status == "running"
-    assert Jobsite.get(id)[:session_id] == nil
-
-    assert {:failed, ^id} = outcome_for(scan_outcomes!(), id)
-    wait_until(fn -> Jobsite.get(id).status == "failed" end)
-
-    failed = Jobsite.get(id)
-    assert failed.terminal? == true
-    assert failed.last_error.code == "executor_lost"
-    assert failed.last_error.message =~ "provider session"
-    refute "JobsitePaused" in event_types(id)
-
-    # Nothing is left to resume: the jobsite is terminal now, not paused-and-unresumable.
-    assert {:error, %ForemanServer.Jobsite.Error{code: :not_resumable}} =
-             Executor.check_resumable(id)
-  end
-
-  test "one jobsite failing to reconcile is logged with its id and does not stop the others" do
+  test "one jobsite failing to close is logged with its id and does not stop the others" do
     ids = for n <- ~w(error raise exit ok), into: %{}, do: {n, unique_id("js-iso-#{n}")}
     for {_n, id} <- ids, do: seed_running!(id)
 
@@ -329,23 +186,15 @@ defmodule ForemanServer.Jobsite.BootRecoveryTest do
     log = capture_log(fn -> send(self(), {:outcomes, scan_outcomes!(dispatch)}) end)
     assert_received {:outcomes, outcomes}
 
-    assert {:error, _, %ForemanServer.Jobsite.Error{code: :boot_recovery_failed}} =
-             outcome_for(outcomes, ids["error"])
-
-    assert {:error, _, %ForemanServer.Jobsite.Error{code: :boot_recovery_failed}} =
-             outcome_for(outcomes, ids["raise"])
-
-    assert {:error, _, %ForemanServer.Jobsite.Error{code: :boot_recovery_failed}} =
-             outcome_for(outcomes, ids["exit"])
-
-    assert {:paused, _} = outcome_for(outcomes, ids["ok"])
-
     for n <- ~w(error raise exit) do
+      assert {:error, _, %ForemanServer.Jobsite.Error{code: :boot_recovery_failed}} =
+               outcome_for(outcomes, ids[n])
+
       assert log =~ "Jobsite boot recovery failed for #{ids[n]}"
       assert Jobsite.get(ids[n]).status == "running"
     end
 
-    wait_until(fn -> Jobsite.get(ids["ok"]).status == "paused" end)
+    assert {:failed, _} = outcome_for(outcomes, ids["ok"])
   end
 
   test "the GenServer runs one scan at start and stops normally" do
@@ -356,8 +205,7 @@ defmodule ForemanServer.Jobsite.BootRecoveryTest do
     ref = Process.monitor(pid)
     assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 10_000
 
-    wait_until(fn -> Jobsite.get(id).status == "paused" end)
-    assert Jobsite.get(id).paused_reason == "server_restart"
+    wait_until(fn -> Jobsite.get(id).status == "failed" end)
   end
 
   test "Application builds the child only while :start_jobsite_boot_recovery? is not false" do
