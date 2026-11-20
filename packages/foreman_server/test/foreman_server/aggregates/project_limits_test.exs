@@ -55,22 +55,25 @@ defmodule ForemanServer.Aggregates.ProjectLimitsTest do
   defp admit({:ok, spec}, state), do: Project.apply_event(state, spec)
   defp today, do: Date.utc_today() |> Date.to_iso8601()
 
-  describe "max_concurrent_runs" do
-    test "a project limit of 1 admits one run and rejects the second" do
+  describe "max_concurrent_runs (not a Project refusal since TRD-006)" do
+    # The run-slot stream (`run_slots:<project_id>`) is the only concurrency
+    # authority. `project.reserve_run` is dispatched for a run the slot stream
+    # already admitted, so the project's limit no longer refuses it here.
+    test "a project at its limit still reserves a slot holder's run" do
       state = registered(%{max_concurrent_runs: 1})
       state = admit(reserve_run(state, "r1"), state)
 
-      assert {:error, :run_limit_exceeded} = reserve_run(state, "r2")
+      assert {:ok, %{event_type: "ProjectRunReserved"}} = reserve_run(state, "r2")
     end
 
     test "another project without a setting is unaffected" do
       assert {:ok, %{event_type: "ProjectRunReserved"}} = reserve_run(registered(), "r1")
     end
 
-    test "changing the setting takes effect on the next reservation" do
+    test "changing the setting does not change reservation behaviour" do
       state = registered(%{max_concurrent_runs: 1})
       state = admit(reserve_run(state, "r1"), state)
-      assert {:error, :run_limit_exceeded} = reserve_run(state, "r2")
+      assert {:ok, %{event_type: "ProjectRunReserved"}} = reserve_run(state, "r2")
 
       {:ok, upd} =
         Project.handle_command(state, %{
@@ -82,22 +85,22 @@ defmodule ForemanServer.Aggregates.ProjectLimitsTest do
       assert {:ok, %{event_type: "ProjectRunReserved"}} = reserve_run(state, "r2")
     end
 
-    test "a payload override still wins over the setting (test seam)" do
+    test "the reservation map still records every reserved run" do
       state = registered(%{max_concurrent_runs: 1})
       state = admit(reserve_run(state, "r1"), state)
+      state = admit(reserve_run(state, "r2"), state)
 
-      assert {:ok, _} =
-               Project.handle_command(state, %{
-                 type: "project.reserve_run",
-                 payload: %{
-                   project_id: "p1",
-                   run_id: "r2",
-                   command_id: "cmd-r2",
-                   sequence: 0,
-                   run_start_payload: %{},
-                   max_concurrent_runs_per_project: 5
-                 }
-               })
+      assert map_size(state.active_run_reservations) == 2
+    end
+
+    test "run_limit_refusal/2 no longer exists" do
+      refute function_exported?(Project, :run_limit_refusal, 2)
+    end
+
+    test "paused, archived and daily-cap refusals are unchanged" do
+      state = registered(%{daily_thread_cap: 1})
+      state = admit(reserve_run(state, "r1"), state)
+      assert {:error, {:daily_thread_cap_exceeded, 1, _day}} = reserve_run(state, "r2")
     end
   end
 

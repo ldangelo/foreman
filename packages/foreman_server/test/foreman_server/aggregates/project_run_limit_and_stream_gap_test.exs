@@ -316,3 +316,138 @@ defmodule ForemanServer.StreamGapDetectorTest do
     end
   end
 end
+
+defmodule ForemanServer.Aggregates.RunSlotsIndependentQueuesTest do
+  # TRD-006-TEST, AC-001-3: per-project queues advance independently.
+  use ExUnit.Case, async: true
+
+  alias ForemanServer.Aggregates.RunSlots
+  alias ForemanServer.Events.{RunSlotAcquired, RunSlotTransferred}
+
+  defp run(state, type, project, payload) do
+    {:ok, event} =
+      RunSlots.handle_command(state, %{
+        type: type,
+        payload: Map.put(payload, :project_id, project)
+      })
+
+    {event, if(event, do: RunSlots.apply_event(state, event), else: state)}
+  end
+
+  defp full_queue(project, cap) do
+    holders = for i <- 1..cap, do: "#{project}-h#{i}"
+    state =
+      Enum.reduce(holders, RunSlots.initial_state(), fn id, st ->
+        {_, st} = run(st, "run_slots.acquire", project, %{run_id: id, capacity: cap})
+        st
+      end)
+
+    {_, state} = run(state, "run_slots.acquire", project, %{run_id: "#{project}-w1", capacity: cap})
+    {_, state} = run(state, "run_slots.acquire", project, %{run_id: "#{project}-w2", capacity: cap})
+    state
+  end
+
+  test "A and B at their limits: an A run finishing advances only A's queue" do
+    a = full_queue("a", 2)
+    b = full_queue("b", 3)
+
+    assert length(a.waiters) == 2 and length(b.waiters) == 2
+
+    {event, a2} = run(a, "run_slots.release", "a", %{run_id: "a-h1", capacity: 2})
+
+    assert %RunSlotTransferred{released_run_id: "a-h1", acquired_run_id: "a-w1"} = event
+    assert Enum.map(a2.waiters, & &1.run_id) == ["a-w2"]
+    assert Map.has_key?(a2.holders, "a-w1")
+
+    # B has its own stream and state: nothing in it moved.
+    assert b.waiters |> Enum.map(& &1.run_id) == ["b-w1", "b-w2"]
+    assert RunSlots.stream_id("a") != RunSlots.stream_id("b")
+  end
+
+  test "drop_project_commands/2 targets exactly the waiters, in order, on the project stream" do
+    state = full_queue("a", 2)
+
+    cmds = RunSlots.drop_project_commands(state, "a")
+
+    assert Enum.map(cmds, & &1.payload.run_id) == ["a-w1", "a-w2"]
+    assert Enum.all?(cmds, &(&1.type == "run_slots.remove_waiter"))
+    assert Enum.all?(cmds, &(&1.aggregate_id == "run_slots:a"))
+    assert RunSlots.drop_project_commands(RunSlots.initial_state(), "a") == []
+  end
+
+  test "applying the drop commands removes every waiter and touches no holder" do
+    state = full_queue("a", 2)
+    holders_before = Map.keys(state.holders) |> Enum.sort()
+
+    dropped =
+      Enum.reduce(RunSlots.drop_project_commands(state, "a"), state, fn cmd, st ->
+        {:ok, event} = RunSlots.handle_command(st, cmd)
+        RunSlots.apply_event(st, event)
+      end)
+
+    assert dropped.waiters == []
+    assert Map.keys(dropped.holders) |> Enum.sort() == holders_before
+    refute match?(%RunSlotAcquired{}, hd(RunSlots.drop_project_commands(state, "a")))
+  end
+end
+
+defmodule ForemanServer.Aggregates.RunSlotsDropProjectTest do
+  # TRD-006-TEST: `drop_project/1` against the real event store. Groundwork
+  # only; it does not validate AC-017-2.
+  use ExUnit.Case, async: false
+
+  alias ForemanServer.{Aggregate, CommandGateway}
+  alias ForemanServer.Aggregates.RunSlots
+
+  setup_all do
+    {:ok, _} = Application.ensure_all_started(:eventstore)
+    :ok
+  end
+
+  setup do
+    ForemanServer.TestSupport.RunSlotsReset.reset!()
+    on_exit(fn -> ForemanServer.TestSupport.RunSlotsReset.reset!() end)
+    :ok
+  end
+
+  defp acquire(project, run_id, cap) do
+    {:ok, _} =
+      CommandGateway.dispatch_system(
+        %{
+          type: "run_slots.acquire",
+          command_id: "drop-test:#{project}:#{run_id}",
+          aggregate_id: RunSlots.stream_id(project),
+          payload: %{run_id: run_id, capacity: cap, project_id: project}
+        },
+        5_000
+      )
+  end
+
+  defp state(project), do: elem(Aggregate.load(RunSlots, RunSlots.stream_id(project)), 0)
+
+  test "removes the waiters of the project and leaves its holders" do
+    project = "drop-a-#{System.unique_integer([:positive])}"
+    for id <- ~w(h1 h2), do: acquire(project, id, 2)
+    for id <- ~w(w1 w2 w3), do: acquire(project, id, 2)
+    assert length(state(project).waiters) == 3
+
+    assert {:ok, ["w1", "w2", "w3"]} = RunSlots.drop_project(project)
+
+    after_drop = state(project)
+    assert after_drop.waiters == []
+    assert Map.keys(after_drop.holders) |> Enum.sort() == ["h1", "h2"]
+  end
+
+  test "does not touch another project's queue, and is idempotent" do
+    a = "drop-a-#{System.unique_integer([:positive])}"
+    b = "drop-b-#{System.unique_integer([:positive])}"
+    acquire(a, "h1", 1)
+    acquire(a, "w1", 1)
+    acquire(b, "h1", 1)
+    acquire(b, "w1", 1)
+
+    assert {:ok, ["w1"]} = RunSlots.drop_project(a)
+    assert {:ok, []} = RunSlots.drop_project(a)
+    assert Enum.map(state(b).waiters, & &1.run_id) == ["w1"]
+  end
+end
