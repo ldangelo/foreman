@@ -84,8 +84,8 @@ defmodule ForemanServer.Aggregates.RunSlotsCommandTest do
   end
 
   describe "a run that is already a waiter acquires again" do
-    # Resume re-acquires with a fresh command id (run_admission.ex), and
-    # do_acquire only checks holders, so these shapes are reachable.
+    # A paused waiting run is released (a no-op for a non-holder) but stays a waiter, and
+    # RunAdmission.acquire_slot_for_resume/2 acquires again with a fresh command id.
     test "at full capacity it is not queued a second time" do
       state = %State{
         capacity: 1,
@@ -95,6 +95,7 @@ defmodule ForemanServer.Aggregates.RunSlotsCommandTest do
 
       result = RunSlots.handle_command(state, %RunSlotsAcquire{run_id: "run-2", capacity: 1})
 
+      assert {:ok, nil} = result
       assert Enum.count(apply_result(state, result).waiters, &(&1.run_id == "run-2")) == 1
     end
 

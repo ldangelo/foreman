@@ -61,6 +61,22 @@ defmodule ForemanServer.Aggregates.RunSlotsTest do
       assert next.capacity == 3
       assert %{"run-1" => %{acquired_at_ms: 100}} = next.holders
     end
+
+    test "a recorded acquire removes the run from waiters, duplicates included" do
+      state =
+        RunSlots.initial_state()
+        |> replay("RunSlotQueued", %{"run_id" => "run-1", "position" => 1, "enqueued_at_ms" => 10})
+        |> replay("RunSlotQueued", %{"run_id" => "run-2", "position" => 2, "enqueued_at_ms" => 11})
+        |> replay("RunSlotQueued", %{"run_id" => "run-1", "position" => 3, "enqueued_at_ms" => 12})
+        |> replay("RunSlotAcquired", %{
+          "run_id" => "run-1",
+          "capacity" => 3,
+          "acquired_at_ms" => 20
+        })
+
+      assert Map.has_key?(state.holders, "run-1")
+      assert Enum.map(state.waiters, & &1.run_id) == ["run-2"]
+    end
   end
 
   describe "apply_event — RunSlotQueued" do

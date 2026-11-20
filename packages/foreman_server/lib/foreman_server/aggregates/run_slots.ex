@@ -15,7 +15,7 @@ defmodule ForemanServer.Aggregates.RunSlots do
 
   ## Events folded
 
-      RunSlotAcquired     — run added to holders; capacity set from event
+      RunSlotAcquired     — run added to holders (and dropped from waiters if it was one); capacity set from event
       RunSlotQueued      — run appended to FIFO waiters
       RunSlotReleased    — run removed from holders
       RunSlotTransferred — run removed from holders; FIFO head promoted
@@ -116,7 +116,8 @@ defmodule ForemanServer.Aggregates.RunSlots do
             %{
               acquired_at_ms: Aggregate.get(payload, :acquired_at_ms)
             }
-          )
+          ),
+        waiters: drop_waiter(state.waiters, Aggregate.get(payload, :run_id))
     }
   end
 
@@ -204,7 +205,8 @@ defmodule ForemanServer.Aggregates.RunSlots do
                 %{
                   acquired_at_ms: Aggregate.get(payload, :acquired_at_ms)
                 }
-              )
+              ),
+            waiters: drop_waiter(state.waiters, Aggregate.get(payload, :run_id))
         }
 
       "RunSlotQueued" ->
@@ -283,7 +285,13 @@ defmodule ForemanServer.Aggregates.RunSlots do
     end
   end
 
-  defp append_waiter(waiters, %Waiter{} = waiter), do: waiters ++ [waiter]
+  # A run already waiting keeps its place; history written before do_acquire guarded this can hold
+  # the same run twice. ProjectionStore folds RunSlotQueued the same way.
+  defp append_waiter(waiters, %Waiter{} = waiter) do
+    if Enum.any?(waiters, &(&1.run_id == waiter.run_id)),
+      do: waiters,
+      else: waiters ++ [waiter]
+  end
 
   defp drop_waiter(waiters, run_id) do
     Enum.reject(waiters, &(&1.run_id == run_id))
@@ -422,6 +430,11 @@ defmodule ForemanServer.Aggregates.RunSlots do
       map_size(state.holders) < capacity ->
         Telemetry.run_slots_acquired(run_id, map_size(state.holders) + 1, capacity)
         {:ok, %RunSlotAcquired{run_id: run_id, capacity: capacity, acquired_at_ms: now_ms}}
+
+      # Already waiting and still no free slot: it keeps its place. A second RunSlotQueued would
+      # list it twice (a paused waiting run re-acquires on resume).
+      Enum.any?(state.waiters, &(&1.run_id == run_id)) ->
+        {:ok, nil}
 
       true ->
         position = length(state.waiters) + 1

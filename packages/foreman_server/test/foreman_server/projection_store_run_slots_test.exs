@@ -134,6 +134,20 @@ defmodule ForemanServer.ProjectionStoreRunSlotsTest do
       status = ProjectionStore.queue_status()
       assert status.waiting == ["run-4", "run-5", "run-6"]
     end
+
+    test "a run queued twice is listed once, keeping its first place" do
+      :ok = ProjectionStore.apply_events([queued("run-1"), queued("run-2"), queued("run-1")])
+
+      assert ProjectionStore.queue_status().waiting == ["run-1", "run-2"]
+    end
+
+    test "a run that then acquires a slot is running and no longer waiting" do
+      :ok = ProjectionStore.apply_events([queued("run-1"), queued("run-2"), acquired("run-1")])
+
+      status = ProjectionStore.queue_status()
+      assert status.running == ["run-1"]
+      assert status.waiting == ["run-2"]
+    end
   end
 
   # ---------------------------------------------------------------------------
