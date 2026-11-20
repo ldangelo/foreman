@@ -3795,7 +3795,12 @@ defmodule ForemanServer.ProjectionStore do
 
     if valid_id?(run_id) do
       Map.update!(state, :run_slots, fn slots ->
-        %{slots | capacity: capacity, holders: Map.put(slots.holders, run_id, :held)}
+        %{
+          slots
+          | capacity: capacity,
+            holders: Map.put(slots.holders, run_id, :held),
+            waiters: Enum.reject(slots.waiters, &(&1.run_id == run_id))
+        }
       end)
     else
       state
@@ -3810,7 +3815,12 @@ defmodule ForemanServer.ProjectionStore do
     if valid_id?(run_id) do
       Map.update!(state, :run_slots, fn slots ->
         waiter = %{run_id: run_id, position: position, enqueued_at_ms: enqueued_at_ms}
-        %{slots | waiters: slots.waiters ++ [waiter]}
+
+        # A run already waiting keeps its place (history written before the acquire guard can
+        # hold the same run twice).
+        if Enum.any?(slots.waiters, &(&1.run_id == run_id)),
+          do: slots,
+          else: %{slots | waiters: slots.waiters ++ [waiter]}
       end)
     else
       state
