@@ -314,6 +314,115 @@ defmodule ForemanServer.Aggregates.PhaseTest do
                  payload: %{run_id: skipped.run_id, phase_id: skipped.phase_id}
                })
     end
+
+    test "permits from in_progress only for reason resumed and stamps attempt from the stream" do
+      started = fold(started_state(), "PhaseStarted", %{run_id: "r", phase_id: "p", attempt: 1})
+      assert started.attempt == 1
+
+      {:ok, spec} =
+        Phase.handle_command(started, %{
+          type: "phase.retry",
+          # A caller-supplied attempt is ignored: the stream owns it.
+          payload: %{
+            run_id: started.run_id,
+            phase_id: started.phase_id,
+            index: 1,
+            reason: "resumed",
+            attempt: 99
+          }
+        })
+
+      assert spec.event_type == "PhaseRetried"
+      assert spec.payload.attempt == 2
+
+      for reason <- ["failed", "other", nil] do
+        assert {:error, :phase_not_retryable} =
+                 Phase.handle_command(started, %{
+                   type: "phase.retry",
+                   payload: %{run_id: started.run_id, phase_id: started.phase_id, reason: reason}
+                 })
+      end
+    end
+
+    test "rejects reason resumed from failed, timed_out and retrying (scoped to in_progress)" do
+      for {event, status} <- [
+            {"PhaseFailed", "failed"},
+            {"PhaseTimedOut", "timed_out"},
+            {"PhaseRetried", "retrying"}
+          ] do
+        started = fold(started_state(), "PhaseStarted", %{run_id: "r", phase_id: "p", attempt: 1})
+        state = fold(started, event, %{run_id: "r", phase_id: "p", reason: "boom"})
+        assert state.status == status
+
+        assert {:error, :phase_not_retryable} =
+                 Phase.handle_command(state, %{
+                   type: "phase.retry",
+                   payload: %{run_id: "r", phase_id: "p", reason: "resumed"}
+                 })
+
+        assert {:ok, %{event_type: "PhaseRetried"}} =
+                 Phase.handle_command(state, %{
+                   type: "phase.retry",
+                   payload: %{run_id: "r", phase_id: "p", reason: "again"}
+                 })
+      end
+    end
+
+    test "stores only the declared PhaseRetried fields, so the event decodes strictly" do
+      started = fold(started_state(), "PhaseStarted", %{run_id: "r", phase_id: "p", attempt: 1})
+
+      {:ok, spec} =
+        Phase.handle_command(started, %{
+          type: "phase.retry",
+          payload: %{
+            run_id: "r",
+            phase_id: "p",
+            index: 1,
+            reason: "resumed",
+            prior_worktree_discarded: nil,
+            surprise: "x",
+            command_id: "c"
+          }
+        })
+
+      assert spec.payload == %{
+               run_id: "r",
+               phase_id: "p",
+               index: 1,
+               reason: "resumed",
+               attempt: 2
+             }
+
+      assert %ForemanServer.Events.PhaseRetried{attempt: 2, reason: "resumed"} =
+               ForemanServer.EventCodec.decode!("PhaseRetried", spec.payload)
+
+      {:ok, with_discard} =
+        Phase.handle_command(started, %{
+          type: "phase.retry",
+          payload: %{
+            run_id: "r",
+            phase_id: "p",
+            index: 1,
+            reason: "resumed",
+            prior_worktree_discarded: %{name: "wt", path: nil}
+          }
+        })
+
+      assert with_discard.payload.prior_worktree_discarded == %{name: "wt", path: nil}
+    end
+
+    test "a resumed retry keeps in_progress and advances attempt on each restart" do
+      started = fold(started_state(), "PhaseStarted", %{run_id: "r", phase_id: "p", attempt: 1})
+      command = %{type: "phase.retry", payload: %{run_id: "r", phase_id: "p", reason: "resumed"}}
+
+      {:ok, first} = Phase.handle_command(started, command)
+      resumed = fold(started, first.event_type, first.payload)
+      assert {resumed.status, resumed.attempt, resumed.terminal?} == {"in_progress", 2, false}
+
+      {:ok, second} = Phase.handle_command(resumed, command)
+      again = fold(resumed, second.event_type, second.payload)
+      assert {again.status, again.attempt} == {"in_progress", 3}
+    end
   end
 
   # ---------------------------------------------------------------------------
@@ -400,6 +509,77 @@ defmodule ForemanServer.Aggregates.PhaseTest do
                  type: "phase.unknown",
                  payload: %{run_id: "run", phase_id: "phase"}
                })
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # phase.context (TRD-017)
+  # ---------------------------------------------------------------------------
+
+  describe "handle_command/2 - phase.context" do
+    defp context_payload(started, overrides \\ %{}) do
+      Map.merge(
+        %{
+          run_id: started.run_id,
+          phase_id: started.phase_id,
+          sections: [%{id: "instructions", bytes: 12}],
+          sha256: String.duplicate("a", 64),
+          bytes: 40,
+          truncated: [%{section: "memory", omitted_bytes: 5, omitted_lines: 1}],
+          redactions: 1,
+          redaction_scope: "project_context_sections"
+        },
+        overrides
+      )
+    end
+
+    defp record_context(state, payload),
+      do: Phase.handle_command(state, %{type: "phase.context", payload: payload})
+
+    test "a started phase records the context as PhaseContextRecorded on its own stream" do
+      started = started_state()
+
+      assert {:ok, %{event_type: "PhaseContextRecorded", stream_id: stream_id, payload: event}} =
+               record_context(started, context_payload(started))
+
+      assert stream_id == "phase:#{started.run_id}:#{started.phase_id}"
+      assert event.sections == [%{id: "instructions", bytes: 12}]
+      assert event.redaction_scope == "project_context_sections"
+    end
+
+    test "a phase that never started, or already ended, cannot record one" do
+      started = started_state()
+
+      assert {:error, :phase_not_started} =
+               record_context(start_state(), context_payload(started))
+
+      done =
+        fold(started, "PhaseCompleted", %{run_id: started.run_id, phase_id: started.phase_id})
+
+      assert {:error, :phase_terminal} = record_context(done, context_payload(started))
+    end
+
+    test "a malformed payload is rejected by the aggregate" do
+      started = started_state()
+
+      for {field, bad} <- [
+            {:sha256, nil},
+            {:sha256, ""},
+            {:bytes, -1},
+            {:bytes, "40"},
+            {:redactions, nil},
+            {:sections, %{id: "x", bytes: 1}},
+            {:sections, [%{id: "x"}]},
+            {:sections, ["x"]},
+            {:truncated, [%{section: "memory"}]},
+            {:truncated, nil},
+            {:redaction_scope, "none"},
+            {:redaction_scope, nil}
+          ] do
+        assert {:error, {:missing_or_invalid, _}} =
+                 record_context(started, context_payload(started, %{field => bad})),
+               "#{field}: #{inspect(bad)} must be rejected"
+      end
     end
   end
 end

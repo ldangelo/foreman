@@ -501,3 +501,64 @@ func TestProjectSettingsPrintsRepoPolicy(t *testing.T) {
 		t.Fatalf("null not rendered as (unset):\n%s", null)
 	}
 }
+
+func TestProjectUpdateRequiredChecksSendsArrayAndRejectsNonArraysBeforeAnyRequest(t *testing.T) {
+	for _, tc := range []struct {
+		arg  string
+		want []any
+	}{
+		{`[]`, []any{}},
+		{`[{"name":"build","kind":"check_run","allow_skipped":true}]`, []any{map[string]any{"name": "build", "kind": "check_run", "allow_skipped": true}}},
+	} {
+		env, err := runUpdate(t, "--required-checks", tc.arg, "p1")
+		if err != nil {
+			t.Fatalf("--required-checks %s: %v", tc.arg, err)
+		}
+		got, ok := env.Payload["required_checks"].([]any)
+		if !ok || !reflect.DeepEqual(got, tc.want) {
+			t.Fatalf("required_checks = %#v, want %#v", env.Payload["required_checks"], tc.want)
+		}
+	}
+
+	for _, bad := range []string{`null`, `{}`, `{"name":"build"}`, `not json`, `"build"`, ``} {
+		c, rec := recordingServer(t, http.StatusOK, acceptedBody)
+		if err := runProject(c, []string{"update", "--required-checks", bad, "p1"}); err == nil {
+			t.Fatalf("--required-checks %q must be rejected", bad)
+		}
+		if rec.calls != 0 {
+			t.Fatalf("--required-checks %q sent %d request(s), want none", bad, rec.calls)
+		}
+	}
+}
+
+func TestProjectUpdateClearRequiredChecksAndSettingsPrintsIt(t *testing.T) {
+	env, err := runUpdate(t, "--clear", "required_checks", "p1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]any{"project_id": "p1", "cleared_settings": []any{"required_checks"}}
+	if !reflect.DeepEqual(env.Payload, want) {
+		t.Fatalf("payload = %v, want %v", env.Payload, want)
+	}
+
+	resp := `{"project_id":"p1","status":"active","settings":{"required_checks":[{"kind":"check_run","name":"build"}]},"limits":{}}`
+	c, _ := recordingServer(t, http.StatusOK, resp)
+	stdout := captureStdout(t, func() {
+		if err := runProject(c, []string{"settings", "p1"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(stdout, `required_checks: [{"kind":"check_run","name":"build"}]`) {
+		t.Fatalf("stdout missing required_checks:\n%s", stdout)
+	}
+
+	c, _ = recordingServer(t, http.StatusOK, `{"project_id":"p1","status":"active","settings":{"required_checks":[]},"limits":{}}`)
+	empty := captureStdout(t, func() {
+		if err := runProject(c, []string{"settings", "p1"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(empty, "required_checks: []") {
+		t.Fatalf("[] must print as gate on with no checks, not unset:\n%s", empty)
+	}
+}

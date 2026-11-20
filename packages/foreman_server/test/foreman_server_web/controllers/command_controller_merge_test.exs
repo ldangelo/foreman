@@ -31,6 +31,12 @@ defmodule ForemanServerWeb.CommandControllerMergeTest do
     :ok =
       ForemanServer.ProjectionStore.apply_events([%{event_type: "RunStarted", payload: started}])
 
+    # The gate reads the run's project policy: the project must be known to the projection.
+    :ok =
+      ForemanServer.ProjectionStore.apply_events([
+        %{event_type: "ProjectRegistered", payload: %{project_id: "project-http", path: nil}}
+      ])
+
     {:ok, _} =
       CommandGateway.dispatch_system(%{
         type: "run.pr.ready",
@@ -47,20 +53,43 @@ defmodule ForemanServerWeb.CommandControllerMergeTest do
         }
       })
 
+    # the base branch the executor records when it starts: without it the risk rubric reads HIGH
+    # and a HIGH level refuses a gated approval (`risk_high`)
+    {:ok, _} =
+      CommandGateway.dispatch_system(%{
+        type: "run.record_base_branch",
+        command_id: "base-#{run_id}",
+        aggregate_id: "run:#{run_id}",
+        payload: %{run_id: run_id, base_branch: "main"}
+      })
+
     test_pid = self()
+    {:ok, rollup} = Agent.start_link(fn -> [] end)
 
     RunPrMerge.set_command_runner(fn "gh", args, _opts ->
       send(test_pid, {:gh, args})
 
       case args do
         ["pr", "view" | _] ->
-          {Jason.encode!(%{
-             "state" => "OPEN",
-             "mergeable" => "MERGEABLE",
-             "headRefOid" => @sha,
-             "headRefName" => "foreman/task-http/run",
-             "baseRefName" => "main"
-           }), 0}
+          view = %{
+            "state" => "OPEN",
+            "mergeable" => "MERGEABLE",
+            "headRefOid" => @sha,
+            "headRefName" => "foreman/task-http/run",
+            "baseRefName" => "main",
+            "files" => [%{"path" => "lib/a.ex", "additions" => 3, "deletions" => 1}],
+            "changedFiles" => 1,
+            "additions" => 3,
+            "deletions" => 1
+          }
+
+          view =
+            case Agent.get(rollup, & &1) do
+              [] -> view
+              checks -> Map.put(view, "statusCheckRollup", checks)
+            end
+
+          {Jason.encode!(view), 0}
 
         ["pr", "merge" | _] ->
           {"", 0}
@@ -69,7 +98,7 @@ defmodule ForemanServerWeb.CommandControllerMergeTest do
 
     on_exit(&RunPrMerge.clear_command_runner/0)
 
-    %{run_id: run_id}
+    %{run_id: run_id, rollup: rollup}
   end
 
   defp command(type, payload) do
@@ -117,8 +146,9 @@ defmodule ForemanServerWeb.CommandControllerMergeTest do
   end
 
   test "approve then merge over HTTP merges exactly the approved PR and head", %{run_id: run_id} do
-    assert %{"status" => "accepted"} =
-             json_response(command("merge_approve", approve_body(run_id, "github:ldangelo")), 201)
+    body = run_id |> approve_body("github:ldangelo") |> Map.put("acknowledge_gate_off", true)
+
+    assert %{"status" => "accepted"} = json_response(command("merge_approve", body), 201)
 
     # The caller tries to steer the merge; the server must ignore all of it.
     conn =
@@ -168,6 +198,241 @@ defmodule ForemanServerWeb.CommandControllerMergeTest do
              json_response(command("run.pr.merge", %{"run_id" => run_id}), 422)
 
     assert refused =~ "pr_not_acceptable"
+  end
+
+  describe "a project with required_checks (TRD-022: POST /api/commands -> CommandGateway.dispatch_operator)" do
+    defp gate_events(run_id, type) do
+      {:ok, events} = ForemanServer.EventStore.read_stream_forward("run:#{run_id}", 0, 1_000)
+      for %{event_type: ^type, data: data} <- events, do: data
+    end
+
+    setup do
+      ForemanServer.TestSupport.MeckScope.new_once!([ForemanServer.CommandRouter])
+      :ok
+    end
+
+    @inputs ~w(checks_head_sha checks_observed_at evidence_digest checks_ref findings_head_sha
+               findings_digest risk_head_sha risk_digest)
+
+    defp check_run(name, conclusion) do
+      %{
+        "__typename" => "CheckRun",
+        "completedAt" => "2026-11-12T13:58:49Z",
+        "conclusion" => conclusion,
+        "name" => name,
+        "startedAt" => "2026-11-12T13:58:43Z",
+        "status" => if(conclusion == "", do: "IN_PROGRESS", else: "COMPLETED"),
+        "workflowName" => "ci"
+      }
+    end
+
+    defp gate!(run_id, rollup, checks, opts \\ []) do
+      :ok =
+        ForemanServer.ProjectionStore.apply_events([
+          %{
+            event_type: "ProjectUpdated",
+            payload: %{
+              project_id: "project-http",
+              required_checks: [%{"name" => "unit", "kind" => "check_run"}]
+            }
+          }
+        ])
+
+      Agent.update(rollup, fn _ -> checks end)
+
+      unless opts[:no_findings] do
+        :ok =
+          ForemanServer.TestSupport.GateEvidence.record_findings!(
+            %{run_id: run_id, project_id: "project-http", task_id: "task-http", pr_url: @pr_url},
+            @sha
+          )
+      end
+    end
+
+    test "the approval records a forced observation for the head first, then approves", %{
+      run_id: run_id,
+      rollup: rollup
+    } do
+      gate!(run_id, rollup, [check_run("unit", "SUCCESS")])
+
+      body =
+        run_id
+        |> approve_body("github:ldangelo")
+        |> Map.put("evidence", %{"checks_ref" => "forged"})
+
+      assert %{"status" => "accepted"} = json_response(command("merge_approve", body), 201)
+
+      assert [forced] = gate_events(run_id, "PrChecksChanged")
+      assert ForemanServer.Aggregate.get(forced, :source) == "gate"
+      nonce = ForemanServer.Aggregate.get(forced, :observation_ref)
+
+      # what the gateway stamped on the approval it dispatched: its own evidence, not the forged one
+      assert [%{payload: %{evidence: evidence} = stamped}] =
+               for(
+                 {_pid,
+                  {ForemanServer.CommandRouter, :dispatch, [%{type: "merge_approve"} = c | _]},
+                  _result} <- :meck.history(ForemanServer.CommandRouter),
+                 do: c
+               )
+
+      refute Map.has_key?(stamped, "evidence")
+      assert evidence.checks_ref == nonce
+      assert [%{"name" => "unit"}] = evidence.policy.required
+      assert is_binary(evidence.policy.version)
+      assert is_integer(evidence.now_ms)
+      assert [_] = gate_events(run_id, "PrRiskRecorded")
+
+      # the decision is recorded with the approval: the eight inputs, the nonce the batch carried
+      assert [approved] = gate_events(run_id, "MergeGateApproved")
+      recorded = ForemanServer.Aggregate.get(approved, :evidence)
+      assert ForemanServer.Aggregate.get(recorded, :status) == "eligible"
+      assert ForemanServer.Aggregate.get(recorded, :checks_ref) == nonce
+      inputs = ForemanServer.Aggregate.get(recorded, :inputs)
+      assert Enum.sort(Enum.map(Map.keys(inputs), &to_string/1)) == Enum.sort(@inputs)
+      assert ForemanServer.Aggregate.get(inputs, :checks_head_sha) == @sha
+      assert ForemanServer.Aggregate.get(inputs, :findings_head_sha) == @sha
+      assert ForemanServer.Aggregate.get(inputs, :risk_head_sha) == @sha
+    end
+
+    for {label, rollup, codes, subject_code} <- [
+          {"a failing required check", [{"unit", "FAILURE"}], ["failing"], "failing"},
+          {"a pending required check", [{"unit", ""}], ["pending"], "pending"},
+          {"a missing required check", [], ["missing"], "missing"}
+        ] do
+      test "#{label} is a 422 evidence_ineligible with the reasons and the inputs; nothing is approved",
+           %{run_id: run_id, rollup: rollup} do
+        checks =
+          for {name, conclusion} <- unquote(Macro.escape(rollup)), do: check_run(name, conclusion)
+
+        gate!(run_id, rollup, checks)
+
+        conn = command("merge_approve", approve_body(run_id, "github:ldangelo"))
+        assert %{"error" => error, "detail" => detail} = json_response(conn, 422)
+        assert error =~ "evidence_ineligible"
+        assert error =~ @sha
+        assert error =~ unquote(subject_code)
+
+        assert detail["status"] == "ineligible"
+        assert detail["head_sha"] == @sha
+        assert is_binary(detail["policy_version"])
+        assert is_binary(detail["checks_ref"])
+        assert is_integer(detail["now_ms"])
+        assert detail["waived"] == []
+        assert detail["waiver"] == nil
+        # a check that is not passing makes the rubric read the PR as HIGH, so `risk_high` is
+        # listed beside the check's own reason
+        assert Enum.reject(Enum.map(detail["reasons"], & &1["code"]), &(&1 == "risk_high")) ==
+                 unquote(codes)
+
+        assert [%{"subject" => "unit"} | _] = detail["reasons"]
+        assert Enum.sort(Map.keys(detail["inputs"])) == Enum.sort(@inputs)
+        assert detail["inputs"]["checks_ref"] == detail["checks_ref"]
+        assert detail["inputs"]["findings_head_sha"] == @sha
+        assert detail["inputs"]["risk_head_sha"] == @sha
+
+        assert gate_events(run_id, "MergeGateApproved") == []
+
+        # the gate is still shut: the merge is refused
+        assert %{"error" => refused} =
+                 json_response(command("run.pr.merge", %{"run_id" => run_id}), 422)
+
+        assert refused =~ "pr_not_acceptable"
+      end
+    end
+
+    test "findings that were never recorded are a 422 findings_absent, with the findings inputs nil",
+         %{run_id: run_id, rollup: rollup} do
+      gate!(run_id, rollup, [check_run("unit", "SUCCESS")], no_findings: true)
+
+      conn = command("merge_approve", approve_body(run_id, "github:ldangelo"))
+      assert %{"error" => error, "detail" => detail} = json_response(conn, 422)
+      assert error =~ "findings_absent"
+      assert detail["inputs"]["findings_head_sha"] == nil
+      assert detail["inputs"]["findings_digest"] == nil
+      assert gate_events(run_id, "MergeGateApproved") == []
+    end
+
+    test "a project without required_checks approves only when acknowledged, recording a gate-off decision",
+         %{run_id: run_id} do
+      body = run_id |> approve_body("github:ldangelo") |> Map.put("acknowledge_gate_off", true)
+
+      assert %{"status" => "accepted"} = json_response(command("merge_approve", body), 201)
+
+      assert [approved] = gate_events(run_id, "MergeGateApproved")
+      recorded = ForemanServer.Aggregate.get(approved, :evidence)
+      assert ForemanServer.Aggregate.get(recorded, :status) == "off"
+      assert ForemanServer.Aggregate.get(approved, :gate_off_acknowledged) == true
+      assert gate_events(run_id, "PrChecksChanged") == []
+    end
+
+    test "a project without required_checks and no acknowledgement is a 422 naming the flag; nothing is recorded",
+         %{run_id: run_id} do
+      for body <- [
+            approve_body(run_id, "github:ldangelo"),
+            Map.put(approve_body(run_id, "github:ldangelo"), "acknowledge_gate_off", false)
+          ] do
+        assert %{"error" => error, "message" => message} =
+                 json_response(command("merge_approve", body), 422)
+
+        assert error == ":gate_off_not_acknowledged"
+        assert message =~ "--acknowledge-gate-off"
+      end
+
+      assert gate_events(run_id, "MergeGateApproved") == []
+
+      # the gate is still shut
+      assert %{"error" => refused} =
+               json_response(command("run.pr.merge", %{"run_id" => run_id}), 422)
+
+      assert refused =~ "pr_not_acceptable"
+    end
+
+    test "a flag that is not a boolean is a 422 naming it, and gh is not asked", %{run_id: run_id} do
+      for bad <- ["true", "1", 1] do
+        body = run_id |> approve_body("github:ldangelo") |> Map.put("acknowledge_gate_off", bad)
+
+        assert %{"error" => error} = json_response(command("merge_approve", body), 422)
+        assert error =~ "acknowledge_gate_off"
+        refute error =~ "gate_off_not_acknowledged"
+      end
+
+      assert_received_no_gh_calls()
+      assert gate_events(run_id, "MergeGateApproved") == []
+    end
+
+    test "a waiver on a project whose gate is off keeps its own refusal, not the acknowledgement's",
+         %{run_id: run_id} do
+      body =
+        run_id
+        |> approve_body("github:ldangelo")
+        |> Map.merge(%{"reasons" => ["checks_stale"], "reason" => "x"})
+
+      conn = command("run.pr.waive_evidence", body)
+      assert %{"error" => error} = json_response(conn, 422)
+      assert error == ":gate_off"
+      refute Map.has_key?(json_response(conn, 422), "message")
+    end
+
+    test "a project the projection does not know is a 422 policy_unavailable and nothing is recorded",
+         %{run_id: run_id} do
+      :ok =
+        ForemanServer.ProjectionStore.apply_events([
+          %{
+            event_type: "RunStarted",
+            payload: %{run_id: run_id, project_id: "project-gone", task_id: "task-http"}
+          }
+        ])
+
+      assert %{"error" => error} =
+               json_response(
+                 command("merge_approve", approve_body(run_id, "github:ldangelo")),
+                 422
+               )
+
+      assert error =~ "policy_unavailable"
+      assert gate_events(run_id, "PrChecksChanged") == []
+      assert gate_events(run_id, "MergeGateApproved") == []
+    end
   end
 
   test "run.pr.rehold is system-only: the HTTP allowlist refuses it", %{run_id: run_id} do

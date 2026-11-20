@@ -487,9 +487,11 @@ The Go CLI only:
 The `TaskProvider` behaviour (`ForemanServer.TaskProvider`) defines the contract for
 issue tracker adapters. The existing production adapter is `BeadsAdapter` (backed by
 `beads_rust` / `br` CLI). A second adapter, `KataAdapter` (backed by the
-`kata` CLI), is designed but not yet implemented — no `task_providers/kata_*`
-files exist under `lib/`; see `docs/TRD/TRD-2026-8030852f-foreman-kata-task-provider.md`
-(status: Draft) for the plan.
+`kata` CLI, spawned only through `SystemKataRunner` and resolved at call time via
+the `:kata_runner` application env), is implemented under
+`lib/foreman_server/task_providers/kata_*`; see
+`docs/TRD/TRD-2026-8030852f-foreman-kata-task-provider.md` for the design and
+`docs/user-guide.md` for operator setup.
 
 ### TaskProvider Behaviour Callbacks
 

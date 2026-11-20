@@ -62,6 +62,7 @@ defmodule ForemanServer.CommandRouter do
   @spec dispatch(command :: map(), timeout :: integer()) ::
           {:ok, event_spec :: map() | nil}
           | {:error, any()}
+          | {:error, reason :: any(), details :: any()}
   def dispatch(command, timeout \\ 5_000)
 
   def dispatch(%{type: "run.start"}, _timeout) do

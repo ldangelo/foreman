@@ -2,7 +2,7 @@
 documentId: PRD-2026-8030852f
 label: prd-foreman-kata-task-provider
 title: "Foreman × Kata (kenn.io/kata) — Task-Provider Integration"
-version: 1.1.7
+version: 1.1.14
 status: Draft
 date: 2026-11-18
 scaleDepth: STANDARD
@@ -410,7 +410,7 @@ failed.
 
 **Acceptance Criteria:**
 
-- AC-007-1: A Kata failure that matches a known code maps to that code with its existing retryable flag and redacted-field list; the mapping is read from `BeadsAdapter.CodeMap`, not duplicated.
+- AC-007-1: A Kata failure that matches a known code maps to that code with its existing retryable flag (AC-013-2 overrides it for the claimed-by-other code); the mapping is read from `BeadsAdapter.CodeMap`, not duplicated, while `redacted_fields` is always the Kata-sensitive list of AC-015-1.
 - AC-007-2: A Kata failure with an unrecognized code maps to the generic envelope code; the adapter never raises, never returns a raw string, and never mints a provider-specific code.
 - AC-007-3: Every `ProviderError` produced by the adapter carries `command.binary: "kata"` in its context, together with the run's identifier, exit code, and stderr byte count — never the stderr text.
 - AC-007-4: A single construction site builds provider errors for the Kata adapter, and that site is the only place a `ProviderError` struct is created for Kata.
@@ -542,7 +542,7 @@ reason as a comment, and releases its own claim so the task is open, unowned and
 
 **Acceptance Criteria:**
 
-- AC-012-1: On successful execution, the task is closed in Kata carrying the run's completion message and commit SHA.
+- AC-012-1: On successful execution, the task is closed in Kata carrying the run's completion message and typed evidence: the commit SHA when the run produced one, otherwise the run's artifact path as reviewed-paths evidence when that file exists (Kata refuses a `--done` close that carries none, and a path to a report the run never wrote would be a false completion claim).
 - AC-012-2: On failed execution, the task is reopened in Kata, the failure reason is recorded as a comment on that task, and Foreman's own claim is released so the task is open, unowned and claimable again; the task is not closed, and a task owned by a different actor is left untouched.
 - AC-012-3: The completion message identifies the Foreman run that produced it (run identifier and artifact path) when the caller supplies no message of its own, and is at least 40 characters — Kata's minimum for `kata close --done` — so the generated default is never rejected for length.
 - AC-012-4: When Kata refuses the close, the refusal is surfaced as a typed provider error and the run does not report the task as successfully closed.
@@ -569,7 +569,7 @@ present — never the assignee's identity.
 **Acceptance Criteria:**
 
 - AC-013-1: When Kata reports a task as already terminal, closing it returns an explicit already-terminal success rather than a failure.
-- AC-013-2: When Kata reports a task as claimed by another actor, the returned error carries the existing claimed-by-other code with `retryable?: false`, and its context contains only a boolean presence flag for the current assignee.
+- AC-013-2: When Kata reports a task as claimed by another actor, the returned error carries the existing claimed-by-other code with `retryable?: false`, and its context carries no owner identity — no name, no id and no presence flag — only the allowlisted keys of AC-017-4.
 
 **Dependencies:** REQ-012
 **Constraints (not ordering edges):** the already-terminal and claimed-by-other results use REQ-007's error envelope.
@@ -648,7 +648,7 @@ and CLI stderr is discarded except for its byte count.
 - AC-017-1: A sentinel sensitive value passed through the adapter never appears in the application log.
 - AC-017-2: A sentinel sensitive value passed through the adapter never appears in standard output or standard error.
 - AC-017-3: A sentinel sensitive value passed through the adapter never appears in telemetry event metadata.
-- AC-017-4: The provider-error context contains only the allowlisted keys (`id`, `command`, `exit_code`, `stderr_byte_count`, `sanitized?`, `redacted_fields`); `sanitized?` is always `true` and `redacted_fields` always names the redacted fields.
+- AC-017-4: The provider-error context contains only the allowlisted keys (`id`, `command`, `exit_code`, `stderr_byte_count`, `sanitized?`, `redacted_fields` and `missing_fields`); `sanitized?` is always `true`, `redacted_fields` always names the redacted fields, and `missing_fields` is an empty list except on schema-validation errors, where it names the absent required fields and never their values.
 - AC-017-5: The domain record Foreman returns to its caller **does** contain the sensitive values, so the redaction does not silently destroy task content the caller needs.
 
 **Dependencies:** REQ-007 (error envelope), REQ-015 (classification)
@@ -682,6 +682,15 @@ and does not block task calls.
 > duplicating the probe logic per surface is a defect. The TRD's KATA-T042 covers
 > the CLI probe and KATA-T043 the controller side — both must reach the same
 > shared verdict.
+
+> **As built (forward pointer, v1.1.14; the text above is left as written).** On
+> `main` the HTTP `DoctorController`, and so the Go `foreman doctor` that renders
+> it, carries no task-provider section for any provider: it builds only
+> `provider.<name>` rows for the agent harness providers. The Beads project-health
+> verdict this requirement cites exists only in `foreman doctor task_provider`
+> (`CLI.DoctorTaskProvider`), so there was never a second surface to match. The
+> both-surfaces clause is therefore unmet and is tracked in TRD §5 "Not verified
+> here"; the Kata verdict is rendered by the Elixir probe only.
 
 **Acceptance Criteria:**
 
@@ -818,9 +827,10 @@ None.
   (1) `fail/3` reads `kata status <ref> --json` first.
   (2) If a different actor owns the task it writes nothing — no reopen, comment or
   unassign — and returns a typed `CLAIMED_BY_OTHER` error that carries no owner name.
-  That code is retryable in the existing `CodeMap`, so the run executor repeats the
-  notification on its own schedule; every repeat re-reads the status and again writes
-  nothing, so the owner's issue never collects a failure comment from Foreman.
+  As AC-013-2 requires of every Kata claimed-by-other error, the code is non-retryable
+  (`retryable?: false`, overriding the `CodeMap` default), so the run executor classifies
+  it as permanent and does not repeat the notification: another operator's issue never
+  collects a failure comment from Foreman.
   (3) Otherwise the order is reopen, then comment, then unassign, so the failure reason
   is on record before the task becomes ready.
   (4) The comment carries an idempotency key derived from the run id and a hash of the
@@ -859,6 +869,11 @@ None.
   KATA-T038 still runs the upstream check and files an upstream issue if Kata ships
   an explicit regex that contradicts this, in which case the declaration follows
   upstream.
+  *Resolution note (KATA-T038):* the upstream check could not be done as written —
+  no pinned upstream revision exists and the upstream source is not reachable
+  (`kenn.io/kata` returns 404). The published CLI reference (katatracker.com) and
+  the installed `kata` v0.23.0 binary were used instead, and neither contradicts
+  `^[a-z0-9]+$`; filing an upstream issue was not authorised.
 - **RESOLVED (TRD OPEN-Q2 — `accepted_kata_versions` format, was blocking KATA-T039).**
   `accepted_kata_versions` is a **list of version requirement strings** evaluated
   with Elixir's `Version.match?/2` — the range syntax is exactly the one already
@@ -878,6 +893,12 @@ None.
   out of scope. Development builds report a non-semver identifier
   (`Version.parse/1` → `:error`): that is an *unparseable* version, handled as a
   warning with the raw value quoted, never a hard failure and never a silent pass.
+  *Resolution note (KATA-T039):* re-confirming the floor and the version format
+  against a pinned upstream revision could not be done — no pinned upstream
+  revision exists and the upstream source is not reachable (`kenn.io/kata` returns
+  404). The published CLI reference (katatracker.com) and the installed `kata`
+  v0.23.0 binary were used instead and confirm the declared values; filing an
+  upstream issue was not authorised.
 - **RESOLVED (queue timeout configuration).** No new config key. The Kata adapter
   reuses the existing `ConcurrencyLimiter` defaults — `max_in_flight: 4`,
   `timeout_ms: 30_000`. The limiter exposes `acquire/1,2` (the second argument is a
@@ -977,5 +998,12 @@ list now holds 56 tasks (`KATA-T001`–`KATA-T056`).
 | 1.1.5 | 2026-11-19 | Foreman ensemble-refine-trd | Failure-path claim release decided (user decision). `fail/3` now runs `kata reopen`, `kata comment`, then `kata unassign <ref> --expect-owner <actor>` (actor from `kata status <ref> --json` `.actor`, the daemon-aware effective actor), so a failed task returns to `kata ready --unowned` and can be re-claimed. AC-005-4, AC-012-2 and AC-014-1 reworded and AC-014-2 clarified that the single-reference actor lookup is not a sweep; no AC added or removed (still 57) and no §12 mapping changed. The §11 marker is closed with the probe evidence, `readiness_gate` returns PENDING → PASS and `readinessScore` 4.0 → 4.5. Operator reclaim of a crashed run's claim now names `kata unassign` (Won't, CONCERN 8, REQ-014): `kata reopen` leaves `owner` set and is a no-op on an open issue. |
 | 1.1.6 | 2026-11-19 | Foreman ensemble-refine-trd | `fail/3` failure path tightened (user decision). It now reads `kata status <ref> --json` first and, when a different actor owns the task, writes nothing and returns a typed `CLAIMED_BY_OTHER` error — that code is retryable in the existing `CodeMap`, so the run executor retries the notification, and the earlier unconditional reopen + comment would have re-appended the failure comment to another operator's issue on every attempt. The comment now carries an idempotency key derived from the run id (probed on `kata` v0.23.0: an identical replay is `changed: false` and adds no comment; the same key with a different body is refused with `idempotency_mismatch`). The unassign is skipped when the task is already unowned and no longer depends on reading `error.data`. AC-005-4, AC-012-2 and AC-014-1 reworded; no AC added or removed (still 57), no §12 mapping changed, readiness gate stays PASS at 4.5. |
 | 1.1.7 | 2026-11-19 | Foreman ensemble-refine-trd | Idempotency key for the failure comment now derived from the run id and a hash of the comment text rather than the run id alone: Kata refuses a reused key with a different body (`idempotency_mismatch`, exit 5), so a run-id-only key would lose a differently worded second failure comment. AC-014-1 reworded; the §11 entry states that an already-unowned task still gets reopen and comment. No AC added or removed (still 57), no §12 mapping changed, readiness gate stays PASS at 4.5. |
+| 1.1.8 | 2026-11-19 | Foreman ensemble-implement-trd | Implementation-time correction (no AC changed, still 57). The foreign-owner `CLAIMED_BY_OTHER` error from `fail/3` is non-retryable, like every Kata claimed-by-other error under AC-013-2, so `RunExecutor` does not retry it; the 1.1.6 and 1.1.7 rows' reasoning that `CodeMap` marks the code retryable no longer applies to Kata. §11 (2) updated to match. |
+| 1.1.9 | 2026-11-19 | Foreman ensemble-implement-trd | Closed a conflict between two ACs found during implementation (still 57 ACs). AC-013-2 required a boolean assignee-presence flag in the claimed-by-other context while AC-017-4 closes the context key set to `id`, `command`, `exit_code`, `stderr_byte_count`, `sanitized?` and `redacted_fields`; a per-test exception would have let any key ride under that code, so AC-013-2 now says the context carries no owner identity and only the allowlisted keys. AC-007-1 said errors take the CodeMap's existing redacted-field list, which for `CLAIMED_BY_OTHER` is `["current_assignee"]` and contradicts AC-015-1's literal `["assignee", "description"]`; it now says the retryable flag comes from CodeMap (overridden by AC-013-2) and `redacted_fields` is always the Kata list. |
+| 1.1.10 | 2026-11-19 | Foreman ensemble-implement-trd | AC-017-4's closed context key set gains `missing_fields`. `ProviderError.new/3` seeds `missing_fields: []` into every context (the shared struct, Beads included) and AC-006-1 requires schema-validation errors to name the absent fields, so a literal six-key set could never hold; the key is now part of the closed set, always a list of field names, empty except on schema-validation errors, never values. Naming the fields only in the error message was considered and rejected because it would not remove the seeded key. Still 57 ACs. |
+| 1.1.11 | 2026-11-19 | Foreman ensemble-implement-trd | AC-012-1 no longer requires a commit SHA on every close. Probed on `kata` v0.23.0: `kata close --done` needs typed evidence (`commit:`, `pr:`, `test:`, `reviewed-paths:`, `external:` or `attachment:`) and exits 3 without it; an empty `--commit` is also refused (`evidence[0] commit requires non-empty sha`). A phase that produces no commit therefore cannot supply a SHA, so the close carries the commit SHA when the run produced one and otherwise the run's artifact path as reviewed-paths evidence, but only when that file exists; a run with neither gets a typed validation error rather than an invented value or a claim about a file that was never written. Still 57 ACs. |
+| 1.1.12 | 2026-11-19 | Foreman ensemble-implement-trd | §11 OPEN-Q1 and OPEN-Q2 each gain a resolution note: the upstream-pinned check (KATA-T038, KATA-T039) could not be done because no pinned upstream revision exists and the upstream source is not reachable (`kenn.io/kata` returns 404); the published CLI reference (katatracker.com) and the installed `kata` v0.23.0 binary were used instead, and filing an upstream issue was not authorised. No AC added, removed or changed (still 57). |
+| 1.1.13 | 2026-11-19 | Foreman ensemble-implement-trd | Forward pointer only; no AC text changed (still 57). AC-004-1 says "`System.cmd` invocation of `kata`"; the built runner spawns `kata` through `Port.open` on `/bin/sh`, so there is no such `System.cmd`. The architecture test enforces the stronger rule (no spawn of `kata` in any form, `System.cmd`, `System.shell`, `Port.open`, `:os.cmd`, `:erlang.open_port`, outside the single runner site), and the TRD's AC-004-1 restates it that way (TRD 2.0.12). |
+| 1.1.14 | 2026-11-19 | Foreman ensemble-implement-trd | Forward pointer only; no AC text changed (still 57). REQ-016's surface note presumes that the Go `foreman doctor` (via `DoctorController`) reports task-provider health the way it reports Beads project health. It does not, for any provider: only `foreman doctor task_provider` does. A note under REQ-016 says so and points at TRD §5 (TRD 2.0.13). |
 
 ---

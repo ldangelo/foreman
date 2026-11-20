@@ -20,6 +20,12 @@ defmodule ForemanServer.PrCreateTest do
   alias ForemanServer.Aggregates.Run
   alias ForemanServer.TestSupport.PrFixSupport, as: Fix
   alias ForemanServer.TestSupport.PrWatchSupport, as: Support
+  alias ForemanServer.Idempotency.{Effect, KeyStore}
+  alias ForemanServer.Idempotency.Reconcilers.BranchPush
+  alias ForemanServer.Idempotency.Reconcilers.PrCreate, as: CreateEffect
+  alias ForemanServer.TelemetryTest.Handler
+  alias ForemanServer.TestSupport.{EffectWorld, KeyStoreReset, PrReadyGithub}
+  alias ForemanServerWeb.MCP.Tools.Doctor
 
   @base "main"
   @head_sha "0123456789abcdef0123456789abcdef01234567"
@@ -27,7 +33,15 @@ defmodule ForemanServer.PrCreateTest do
   setup do
     test_pid = self()
     pr_url = "https://github.com/acme/widgets/pull/#{System.unique_integer([:positive])}"
-    state = %{gh: {pr_url <> "\n", 0}, ahead: "2\n", push: {"", 0}, rev: {@head_sha <> "\n", 0}}
+
+    state = %{
+      gh: {pr_url <> "\n", 0},
+      ahead: "2\n",
+      push: {"", 0},
+      view: PrReadyGithub.view_reply(@head_sha),
+      list: [{"[]\n", 0}]
+    }
+
     {:ok, script} = Agent.start_link(fn -> state end)
 
     runner = fn cmd, args, opts ->
@@ -36,8 +50,13 @@ defmodule ForemanServer.PrCreateTest do
 
       case {cmd, args} do
         {"git", ["rev-list" | _]} -> {reply.ahead, 0}
-        {"git", ["rev-parse" | _]} -> reply.rev
+        # The push's intent reads the branch tip and the remote head before pushing. The gate
+        # signal reads no local revision: the head is GitHub's (`gh pr view`, `script.view`).
+        {"git", ["rev-parse", "--verify", "refs/heads/" <> _]} -> {@head_sha <> "\n", 0}
+        {"git", ["ls-remote" | _]} -> {"", 0}
+        {"gh", ["pr", "view" | _]} -> reply.view
         {"git", ["push" | _]} -> reply.push
+        {"gh", ["pr", "list" | _]} -> next_list(script)
         {"gh", ["pr", "create" | _]} -> run_gh(reply.gh, test_pid)
         other -> flunk("unexpected command #{inspect(other)}")
       end
@@ -68,6 +87,32 @@ defmodule ForemanServer.PrCreateTest do
   defp run_gh(reply, _test_pid), do: reply
 
   defp script!(script, key, value), do: Agent.update(script, &Map.put(&1, key, value))
+
+  # The answers of `gh pr list`, one per call; the last one stays.
+  defp next_list(script) do
+    Agent.get_and_update(script, fn
+      %{list: [only]} = state -> {only, state}
+      %{list: [first | rest]} = state -> {first, %{state | list: rest}}
+    end)
+  end
+
+  # What `gh pr list` answers for one PR: this repository's open PR whose head is the pushed tip,
+  # unless `attrs` say otherwise.
+  defp pr_list(url, attrs \\ %{}) do
+    pr =
+      Map.merge(
+        %{
+          "url" => url,
+          "number" => 7,
+          "state" => "OPEN",
+          "headRefOid" => @head_sha,
+          "isCrossRepository" => false
+        },
+        attrs
+      )
+
+    {Jason.encode!([pr]), 0}
+  end
 
   # A completed run on a registered project whose agent worktree branch exists.
   defp thread!(opts \\ []) do
@@ -130,17 +175,37 @@ defmodule ForemanServer.PrCreateTest do
     Map.merge(run, %{repo: repo, branch: branch})
   end
 
-  defp ran(cmd, pattern_fun \\ fn _ -> true end) do
-    Stream.repeatedly(fn ->
-      receive do
-        {:ran, ^cmd, args, opts} -> {args, opts}
-      after
-        0 -> :done
-      end
-    end)
-    |> Enum.take_while(&(&1 != :done))
-    |> Enum.filter(fn {args, _} -> pattern_fun.(args) end)
+  # What the runner was asked, oldest first. The gate signal's one `gh pr view` (GitHub's head,
+  # TRD-008) is left out unless a `pattern_fun` is given: `view_ran/0` reads exactly those.
+  defp ran(cmd, pattern_fun \\ fn args -> not match?(["pr", "view" | _], args) end) do
+    calls =
+      Stream.repeatedly(fn ->
+        receive do
+          {:ran, ^cmd, args, opts} -> {args, opts}
+        after
+          0 -> :done
+        end
+      end)
+      |> Enum.take_while(&(&1 != :done))
+
+    {taken, left} = Enum.split_with(calls, fn {args, _} -> pattern_fun.(args) end)
+    # what this read did not take stays readable by the next one
+    Enum.each(left, fn {args, opts} -> send(self(), {:ran, cmd, args, opts}) end)
+    taken
   end
+
+  defp drain_ran do
+    receive do
+      {:ran, _cmd, _args, _opts} -> drain_ran()
+    after
+      0 -> :ok
+    end
+  end
+
+  # Every call, `gh pr view` included: a refusal must not read GitHub at all.
+  defp ran_all(cmd), do: ran(cmd, fn _ -> true end)
+
+  defp view_ran, do: ran("gh", &match?(["pr", "view" | _], &1))
 
   defp create_command(run_id, payload \\ %{}) do
     %{
@@ -187,7 +252,10 @@ defmodule ForemanServer.PrCreateTest do
       # git and gh run from the project checkout: the run worktree is gone
       assert push_opts[:cd] == t.repo
 
-      assert [{gh_args, gh_opts}] = ran("gh")
+      # GitHub is asked for the PR first, in the checkout; then the PR is created.
+      assert [{list_args, list_opts}, {gh_args, gh_opts}] = ran("gh")
+      assert ["pr", "list" | _] = list_args
+      assert list_opts[:cd] == t.repo
       assert gh_opts[:cd] == t.repo
       assert Enum.chunk_every(gh_args, 2, 1, :discard) |> Enum.member?(["--head", t.branch])
       assert Enum.chunk_every(gh_args, 2, 1, :discard) |> Enum.member?(["--base", @base])
@@ -198,13 +266,15 @@ defmodule ForemanServer.PrCreateTest do
          %{pr_url: pr_url} do
       t = thread!()
       assert {:ok, _} = PrCreate.execute(t.run_id)
-      _ = {ran("gh"), ran("git")}
+      drain_ran()
 
       assert {:ok, %{pr_url: ^pr_url, head_branch: head}} = PrCreate.execute(t.run_id)
       assert head == t.branch
+      # only the head of the gate signal is read again (from GitHub, one `gh pr view`): nothing
+      # is pushed, opened or resolved locally
       assert ran("gh") == []
-      # only the head of the gate signal is resolved again: nothing is pushed or counted
-      assert [{["rev-parse" | _], _opts}] = ran("git")
+      assert [{["pr", "view", ^pr_url | _], _opts}] = view_ran()
+      assert ran("git") == []
       # ...and the repeated signal is the same deterministic command: still ONE PrReady
       assert Enum.count(Support.run_event_types(t.run_id), &(&1 == "PrReady")) == 1
     end
@@ -222,12 +292,27 @@ defmodule ForemanServer.PrCreateTest do
 
       results = Task.await_many(tasks, 15_000)
       assert [{:ok, %{pr_url: url}}, {:ok, %{pr_url: url}}] = results
-      assert length(ran("gh")) == 1
+      assert [{["pr", "list" | _], _}, {["pr", "create" | _], _}] = ran("gh")
     end
 
-    test "a PR that already exists for the branch is adopted, not duplicated", %{script: script} do
+    test "a PR GitHub already has for the branch is adopted, not duplicated: nothing is pushed or created",
+         %{script: script} do
       t = thread!()
       existing = "https://github.com/acme/widgets/pull/7"
+      script!(script, :list, [pr_list(existing)])
+
+      assert {:ok, %{pr_url: ^existing}} = PrCreate.execute(t.run_id)
+      assert {:ok, %{pr_url: ^existing}} = ProjectionStore.pr_association(t.run_id)
+
+      assert [{["pr", "list" | _], _opts}] = ran("gh")
+      assert ran("git", &(hd(&1) == "push")) == []
+    end
+
+    test "a PR that appears between the lookup and gh pr create is adopted from the second lookup",
+         %{script: script} do
+      t = thread!()
+      existing = "https://github.com/acme/widgets/pull/7"
+      script!(script, :list, [{"[]\n", 0}, pr_list(existing)])
 
       script!(script, :gh, {
         "a pull request for branch \"#{t.branch}\" into branch \"main\" already exists:\n#{existing}\n",
@@ -236,6 +321,52 @@ defmodule ForemanServer.PrCreateTest do
 
       assert {:ok, %{pr_url: ^existing}} = PrCreate.execute(t.run_id)
       assert {:ok, %{pr_url: ^existing}} = ProjectionStore.pr_association(t.run_id)
+
+      assert [["pr", "list" | _], ["pr", "create" | _], ["pr", "list" | _]] =
+               for({args, _opts} <- ran("gh"), do: args)
+    end
+
+    test "gh's text is never read: a create that names a PR GitHub does not list is an error and associates nothing",
+         %{script: script} do
+      t = thread!()
+
+      script!(script, :gh, {
+        "a pull request for branch \"#{t.branch}\" into branch \"main\" already exists:\nhttps://github.com/acme/widgets/pull/7\n",
+        1
+      })
+
+      assert {:error, {:gh_pr_create_failed, 1, text}} = PrCreate.execute(t.run_id)
+      assert text =~ "already exists"
+      assert {:error, :not_found} = ProjectionStore.pr_association(t.run_id)
+    end
+
+    test "a PR of the branch with another head is refused with both heads, and nothing is associated",
+         %{script: script} do
+      t = thread!()
+      existing = "https://github.com/acme/widgets/pull/7"
+      other = String.duplicate("b", 40)
+      script!(script, :list, [pr_list(existing, %{"headRefOid" => other})])
+
+      script!(script, :gh, {
+        "a pull request for branch \"#{t.branch}\" into branch \"main\" already exists:\n#{existing}\n",
+        1
+      })
+
+      assert {:error, {:pr_lookup_mismatch, ^existing, @head_sha, ^other}} =
+               PrCreate.execute(t.run_id)
+
+      assert {:error, :not_found} = ProjectionStore.pr_association(t.run_id)
+    end
+
+    test "a fork's PR of the same branch name is not adopted: the PR opened is the run's own",
+         %{script: script, pr_url: pr_url} do
+      t = thread!()
+      fork = "https://github.com/acme/widgets/pull/9"
+      script!(script, :list, [pr_list(fork, %{"isCrossRepository" => true})])
+
+      assert {:ok, %{pr_url: ^pr_url}} = PrCreate.execute(t.run_id)
+      assert {:ok, %{pr_url: ^pr_url}} = ProjectionStore.pr_association(t.run_id)
+      refute pr_url == fork
     end
 
     test "any other gh failure is a typed error and records no association", %{script: script} do
@@ -246,12 +377,13 @@ defmodule ForemanServer.PrCreateTest do
       assert {:error, :not_found} = ProjectionStore.pr_association(t.run_id)
     end
 
-    test "a failed push stops before gh is called", %{script: script} do
+    test "a failed push stops before gh pr create is called", %{script: script} do
       t = thread!()
       script!(script, :push, {"rejected", 1})
 
       assert {:error, {:git_push_failed, 1, "rejected"}} = PrCreate.execute(t.run_id)
-      assert ran("gh") == []
+      # GitHub was asked for the PR before the push, and never asked to create one.
+      assert [{["pr", "list" | _], _opts}] = ran("gh")
     end
 
     test "a branch with no commits beyond the base proposes nothing", %{script: script} do
@@ -259,7 +391,7 @@ defmodule ForemanServer.PrCreateTest do
       script!(script, :ahead, "0\n")
 
       assert {:error, :no_commits_to_propose} = PrCreate.execute(t.run_id)
-      assert ran("gh") == []
+      assert ran_all("gh") == []
       assert ran("git", &(hd(&1) == "push")) == []
       assert {:error, :not_found} = ProjectionStore.pr_association(t.run_id)
     end
@@ -290,7 +422,7 @@ defmodule ForemanServer.PrCreateTest do
       assert {:error, {:project_unresolved, ^project_id}} = PrCreate.execute(orphan.run_id)
 
       # none of the refusals ran a command
-      assert ran("gh") == []
+      assert ran_all("gh") == []
       assert ran("git") == []
     end
   end
@@ -338,12 +470,12 @@ defmodule ForemanServer.PrCreateTest do
     test "repeating the command is refused and opens no second PR", %{pr_url: pr_url} do
       t = thread!()
       assert {:ok, _} = CommandGateway.dispatch_operator(create_command(t.run_id))
-      _ = {ran("gh"), ran("git")}
+      drain_ran()
 
       assert {:error, {:pr_already_associated, ^pr_url}} =
                CommandGateway.dispatch_operator(create_command(t.run_id))
 
-      assert ran("gh") == []
+      assert ran_all("gh") == []
       assert Enum.count(Support.run_event_types(t.run_id), &(&1 == "PrCreated")) == 1
     end
 
@@ -353,7 +485,7 @@ defmodule ForemanServer.PrCreateTest do
       # the PR was opened and associated, but the command never reached the aggregate
       assert {:ok, _} = PrCreate.execute(t.run_id)
       refute "PrCreated" in Support.run_event_types(t.run_id)
-      _ = {ran("gh"), ran("git")}
+      drain_ran()
 
       assert {:ok, _} = CommandGateway.dispatch_operator(create_command(t.run_id))
 
@@ -373,7 +505,7 @@ defmodule ForemanServer.PrCreateTest do
 
       # the first click got as far as opening, associating and gating the PR ...
       assert {:ok, _} = PrCreate.execute(t.run_id)
-      _ = {ran("gh"), ran("git")}
+      drain_ran()
 
       # ... and then the append of its PrCreated fails inside the real router
       on_exit(fn -> release!(stream) end)
@@ -461,10 +593,15 @@ defmodule ForemanServer.PrCreateTest do
       {state, _version} = Aggregate.load(Run, "run:#{t.run_id}")
       assert Run.merge_gate(state) == :pending
 
-      # the head is resolved from the pushed branch, in the project checkout
-      assert [{["rev-parse", "--verify", rev], opts}] = ran("git", &(hd(&1) == "rev-parse"))
-      assert rev == t.branch <> "^{commit}"
-      assert opts[:cd] == t.repo
+      # the head is read from GitHub, never from the local checkout (the push's own intent
+      # read the branch tip as `refs/heads/<branch>`: a different command)
+      assert [{["pr", "view", ^pr_url | _], _opts}] = view_ran()
+
+      assert ran(
+               "git",
+               &(hd(&1) == "rev-parse" and String.ends_with?(List.last(&1), "^{commit}"))
+             ) ==
+               []
     end
 
     test "the operator can approve and merge the PR it opened, pinned to its head",
@@ -512,6 +649,7 @@ defmodule ForemanServer.PrCreateTest do
                    run_id: t.run_id,
                    approver: "leo",
                    approver_identity: "github:ldangelo",
+                   acknowledge_gate_off: true,
                    head_sha: approved_head
                  }
                })
@@ -536,11 +674,11 @@ defmodule ForemanServer.PrCreateTest do
     test "a failed gate signal is an error, never a silent success, and the retry signals it again",
          %{script: script} do
       t = thread!()
-      script!(script, :rev, {"fatal: Needed a single revision", 128})
+      script!(script, :view, {"GraphQL: Could not resolve to a PullRequest", 1})
 
       assert {:error,
               {:pr_ready_signal_failed,
-               {:unresolvable_revision, "fatal: Needed a single revision"}}} =
+               {:head_read_failed, {:gh_failed, 1, "GraphQL: Could not resolve to a PullRequest"}}}} =
                CommandGateway.dispatch_operator(create_command(t.run_id))
 
       # the PR is open and associated, but neither the gate nor PrCreated was recorded
@@ -548,17 +686,521 @@ defmodule ForemanServer.PrCreateTest do
       refute "PrReady" in Support.run_event_types(t.run_id)
       refute "PrCreated" in Support.run_event_types(t.run_id)
 
-      script!(script, :rev, {@head_sha <> "\n", 0})
-      _ = {ran("gh"), ran("git")}
+      script!(script, :view, PrReadyGithub.view_reply(@head_sha))
+      drain_ran()
 
       assert {:ok, _} = CommandGateway.dispatch_operator(create_command(t.run_id))
 
       types = Support.run_event_types(t.run_id)
       assert Enum.count(types, &(&1 == "PrReady")) == 1
       assert Enum.count(types, &(&1 == "PrCreated")) == 1
-      # the retry resumed the open PR: no second push or PR
+      # the retry resumed the open PR: no second push or PR (only the head read)
       assert ran("gh") == []
+      assert [{["pr", "view" | _], _}] = view_ran()
       assert ran("git", &(hd(&1) == "push")) == []
+    end
+  end
+
+  describe "the head of record comes from GitHub (TRD-008)" do
+    @github_head PrReadyGithub.sha("github names this head")
+    @moved_head PrReadyGithub.sha("a later force push")
+
+    test "PrReady.head_sha is the head GitHub names, not the local branch tip", %{
+      script: script,
+      pr_url: pr_url
+    } do
+      t = thread!()
+      refute @github_head == @head_sha
+      script!(script, :view, PrReadyGithub.view_reply(@github_head))
+
+      assert {:ok, _spec} = CommandGateway.dispatch_operator(create_command(t.run_id))
+
+      assert [ready] =
+               t.run_id |> Support.run_events() |> Enum.filter(&(&1.event_type == "PrReady"))
+
+      assert ready.data.head_sha == @github_head
+      assert ready.data.pr_url == pr_url
+      assert ready.data.branch_name == t.branch
+      # no revision is read from the local checkout for the signal
+      assert ran(
+               "git",
+               &(hd(&1) == "rev-parse" and String.ends_with?(List.last(&1), "^{commit}"))
+             ) ==
+               []
+    end
+
+    test "a failed GitHub read appends no PrReady and is typed head_read_failed", %{
+      script: script
+    } do
+      t = thread!()
+      script!(script, :view, {"GraphQL: boom", 1})
+
+      assert {:error,
+              {:pr_ready_signal_failed, {:head_read_failed, {:gh_failed, 1, "GraphQL: boom"}}}} =
+               PrCreate.execute(t.run_id)
+
+      refute "PrReady" in Support.run_event_types(t.run_id)
+    end
+
+    test "a repeated signal keeps the first PrReady: one event, the head it first recorded", %{
+      script: script
+    } do
+      t = thread!()
+      script!(script, :view, PrReadyGithub.view_reply(@github_head))
+      assert {:ok, _} = PrCreate.execute(t.run_id)
+
+      script!(script, :view, PrReadyGithub.view_reply(@moved_head))
+      assert {:ok, _} = PrCreate.execute(t.run_id)
+
+      assert [ready] =
+               t.run_id |> Support.run_events() |> Enum.filter(&(&1.event_type == "PrReady"))
+
+      assert ready.data.head_sha == @github_head
+    end
+  end
+
+  describe "the push and the PR create are keyed effects (TRD-013)" do
+    @terminal_event [:foreman_server, :workflow, :boot_reconciliation, :effect_on_terminal_run]
+
+    setup do
+      KeyStoreReset.reset!()
+      {handler_id, ref} = Handler.attach_event_handlers(self(), [@terminal_event])
+
+      on_exit(fn ->
+        :telemetry.detach(handler_id)
+        KeyStoreReset.reset!()
+      end)
+
+      %{ref: ref}
+    end
+
+    # A thread whose project checkout is a real repository with a bare origin and the run
+    # branch, behind the scripted GitHub (`PrCreate.set_command_runner/1` reaches AutoPR).
+    defp real_thread!(world) do
+      t = thread!()
+      fx = EffectWorld.adopt!(t.repo, t.branch)
+      PrCreate.set_command_runner(EffectWorld.runner(world))
+      {t, fx}
+    end
+
+    test "the operator path runs both under keys that carry the project checkout as cwd" do
+      t = thread!()
+
+      assert {:ok, _payload} = PrCreate.execute(t.run_id)
+
+      assert {:ok, %{status: :completed, metadata: push}} =
+               KeyStore.get(BranchPush.key(t.run_id, t.branch))
+
+      assert %{
+               "cwd" => cwd,
+               "head_branch" => head,
+               "pre_push_remote_sha" => nil,
+               "pushed_local_sha" => @head_sha
+             } = push
+
+      assert {cwd, head} == {t.repo, t.branch}
+
+      assert {:ok, %{status: :completed, metadata: create}} =
+               KeyStore.get(CreateEffect.key(t.run_id, t.branch, @base))
+
+      assert %{"cwd" => ^cwd, "head_branch" => ^head, "base_branch" => @base} = create
+    end
+
+    test "a crash after gh pr create made the PR: the sweep finds it and nothing more is created",
+         %{ref: ref} do
+      world = EffectWorld.start()
+      {t, _fx} = real_thread!(world)
+      key = CreateEffect.key(t.run_id, t.branch, @base)
+
+      EffectWorld.crash!(world, :create, :after, fn -> PrCreate.execute(t.run_id) end)
+      assert {:ok, :started} = KeyStore.status(key)
+      assert EffectWorld.executed(world, :create) == 1
+
+      EffectWorld.sweep(world)
+
+      # The operator's run is completed, so the sweep cannot block it: it reports the verdict.
+      assert_receive {@terminal_event, ^ref, %{count: 1},
+                      %{
+                        run_id: run_id,
+                        status: "completed",
+                        effect_class: "pr_create",
+                        effect_verdict: "done",
+                        reason: "effect_already_done"
+                      }}
+
+      assert run_id == t.run_id
+      assert {:ok, :ambiguous} = KeyStore.status(key)
+      assert EffectWorld.executed(world, :create) == 1
+      assert length(EffectWorld.prs(world)) == 1
+    end
+
+    test "a crash before gh pr create ran: the sweep reports it not done and the retry creates it once",
+         %{ref: ref} do
+      world = EffectWorld.start()
+      {t, _fx} = real_thread!(world)
+      key = CreateEffect.key(t.run_id, t.branch, @base)
+
+      EffectWorld.crash!(world, :create, :before, fn -> PrCreate.execute(t.run_id) end)
+      assert EffectWorld.executed(world, :create) == 0
+
+      EffectWorld.sweep(world)
+
+      assert_receive {@terminal_event, ^ref, _, %{effect_verdict: "not_done", reason: nil}}
+      assert EffectWorld.executed(world, :create) == 0
+
+      assert {:ok, %{pr_url: url}} = PrCreate.execute(t.run_id)
+
+      assert [%{"url" => ^url}] = EffectWorld.prs(world)
+      assert EffectWorld.executed(world, :create) == 1
+      assert {:ok, %{pr_url: ^url}} = ProjectionStore.pr_association(t.run_id)
+      assert {:ok, :completed} = KeyStore.status(key)
+    end
+
+    test "a crash after gh pr create made the PR: once the sweep left its key unresolved, the operator's Create PR adopts the PR through the lookup",
+         %{ref: ref} do
+      world = EffectWorld.start()
+      {t, fx} = real_thread!(world)
+      key = CreateEffect.key(t.run_id, t.branch, @base)
+
+      EffectWorld.crash!(world, :create, :after, fn -> PrCreate.execute(t.run_id) end)
+      assert {:ok, :started} = KeyStore.status(key)
+      assert [%{"url" => url}] = EffectWorld.prs(world)
+      # GitHub knows the head of the PR it made: the commit that was pushed.
+      :ok =
+        EffectWorld.report_pr!(world, url,
+          head_sha: EffectWorld.local_tip(fx),
+          cross_repository: false
+        )
+
+      EffectWorld.sweep(world)
+
+      # The run is completed, so the sweep cannot block it: it marks the key unresolved.
+      assert_receive {@terminal_event, ^ref, %{count: 1},
+                      %{effect_class: "pr_create", effect_verdict: "done"}}
+
+      assert {:ok, %{status: :ambiguous, metadata: marked}} = KeyStore.get(key)
+      assert {:ok, _version} = KeyStore.unresolved_version(marked)
+
+      assert {:ok, %{pr_url: ^url}} = PrCreate.execute(t.run_id)
+
+      assert {:ok, %{pr_url: ^url}} = ProjectionStore.pr_association(t.run_id)
+      assert EffectWorld.executed(world, :create) == 1
+      assert {:ok, %{status: :completed, metadata: settled}} = KeyStore.get(key)
+      assert KeyStore.unresolved_version(settled) == :none
+    end
+
+    test "a crash after the push reached the remote: the sweep reports it done and nothing more is pushed",
+         %{ref: ref} do
+      world = EffectWorld.start()
+      {t, fx} = real_thread!(world)
+      key = BranchPush.key(t.run_id, t.branch)
+
+      EffectWorld.crash!(world, :push, :after, fn -> PrCreate.execute(t.run_id) end)
+      assert {:ok, :started} = KeyStore.status(key)
+      assert EffectWorld.remote_tip(fx) == EffectWorld.local_tip(fx)
+
+      EffectWorld.sweep(world)
+
+      assert_receive {@terminal_event, ^ref, %{count: 1},
+                      %{
+                        run_id: run_id,
+                        status: "completed",
+                        effect_class: "branch_push",
+                        effect_verdict: "done",
+                        reason: "effect_already_done"
+                      }}
+
+      assert run_id == t.run_id
+      assert {:ok, :ambiguous} = KeyStore.status(key)
+      assert EffectWorld.executed(world, :push) == 1
+      assert EffectWorld.executed(world, :create) == 0
+    end
+
+    test "a crash before the push reached the remote: the sweep reports it not done and the retry pushes once",
+         %{ref: ref} do
+      world = EffectWorld.start()
+      {t, fx} = real_thread!(world)
+      key = BranchPush.key(t.run_id, t.branch)
+
+      EffectWorld.crash!(world, :push, :before, fn -> PrCreate.execute(t.run_id) end)
+      assert EffectWorld.executed(world, :push) == 0
+      assert EffectWorld.remote_tip(fx) == nil
+
+      EffectWorld.sweep(world)
+
+      assert_receive {@terminal_event, ^ref, _,
+                      %{effect_class: "branch_push", effect_verdict: "not_done", reason: nil}}
+
+      assert EffectWorld.executed(world, :push) == 0
+
+      assert {:ok, %{pr_url: url}} = PrCreate.execute(t.run_id)
+
+      assert EffectWorld.executed(world, :push) == 1
+      assert EffectWorld.remote_tip(fx) == EffectWorld.local_tip(fx)
+      assert [%{"url" => ^url}] = EffectWorld.prs(world)
+      assert {:ok, :completed} = KeyStore.status(key)
+    end
+  end
+
+  describe "the keys of a completed run through the operator's Create PR (TRD-039)" do
+    @effect_event [:foreman_server, :workflow, :boot_reconciliation, :effect_reconciled]
+
+    setup do
+      KeyStoreReset.reset!()
+      {handler_id, ref} = Handler.attach_event_handlers(self(), [@terminal_event, @effect_event])
+
+      on_exit(fn ->
+        :telemetry.detach(handler_id)
+        KeyStoreReset.reset!()
+      end)
+
+      %{ref: ref}
+    end
+
+    # The operator's Create PR, as the dashboard button sends it.
+    defp create_pr(t), do: CommandGateway.dispatch_operator(create_command(t.run_id))
+
+    defp created_url(t) do
+      [created] = t.run_id |> Support.run_events() |> Enum.filter(&(&1.event_type == "PrCreated"))
+      created.data.pr_url
+    end
+
+    # `EffectWorld` makes `gh pr list` fail (`fail_gh_list!/1`) but cannot make it answer again;
+    # the world is an Agent over a map, so GitHub answers again once its flag is cleared.
+    defp heal_gh_list!(world), do: Agent.update(world, &%{&1 | list_error?: false})
+
+    # The PR the operator opens on GitHub by hand: this repository's, with the pushed tip.
+    defp open_by_hand!(world, t, fx) do
+      url = EffectWorld.add_pr!(world, t.branch, @base)
+
+      :ok =
+        EffectWorld.report_pr!(world, url,
+          head_sha: EffectWorld.local_tip(fx),
+          cross_repository: false
+        )
+
+      url
+    end
+
+    test "not_done: the key is decided, the audit command rejected (audit_failed), and the next Create PR runs gh pr create once",
+         %{ref: ref} do
+      world = EffectWorld.start()
+      {t, _fx} = real_thread!(world)
+      key = CreateEffect.key(t.run_id, t.branch, @base)
+
+      EffectWorld.crash!(world, :create, :before, fn -> PrCreate.execute(t.run_id) end)
+      assert {:ok, :started} = KeyStore.status(key)
+      assert EffectWorld.executed(world, :create) == 0
+
+      # Nobody has decided the key yet.
+      assert {:error, {:effect_undecided, ^key}} = create_pr(t)
+
+      EffectWorld.sweep(world)
+
+      assert_receive {@effect_event, ^ref,
+                      %{
+                        audit_failed: 1,
+                        on_terminal_run: 0,
+                        retried: 0,
+                        blocked: 0,
+                        unresolved: 0
+                      }, _}
+
+      assert_receive {@terminal_event, ^ref, %{count: 1},
+                      %{
+                        effect_class: "pr_create",
+                        effect_verdict: "not_done",
+                        reason: nil,
+                        status: "completed"
+                      }}
+
+      # The rejected audit command appended nothing, and the key is decided all the same.
+      refute "RunRecoveryAttempted" in Support.run_event_types(t.run_id)
+      assert {:ok, %{status: :ambiguous, metadata: decided}} = KeyStore.get(key)
+      assert KeyStore.decision(decided) == :not_done
+      assert KeyStore.unresolved_version(decided) == :none
+
+      assert {:ok, _spec} = create_pr(t)
+
+      url = created_url(t)
+      assert EffectWorld.executed(world, :create) == 1
+      assert [%{"url" => ^url}] = EffectWorld.prs(world)
+      assert {:ok, %{pr_url: ^url}} = ProjectionStore.pr_association(t.run_id)
+      assert {:ok, :completed} = KeyStore.status(key)
+    end
+
+    test "done: marked unresolved, block counted on_terminal_run, Effect.run/4 refuses, and Create PR returns GitHub's PR with no gh pr create",
+         %{ref: ref} do
+      world = EffectWorld.start()
+      {t, fx} = real_thread!(world)
+      key = CreateEffect.key(t.run_id, t.branch, @base)
+
+      EffectWorld.crash!(world, :create, :after, fn -> PrCreate.execute(t.run_id) end)
+      assert {:ok, :started} = KeyStore.status(key)
+      assert [%{"url" => url}] = EffectWorld.prs(world)
+
+      :ok =
+        EffectWorld.report_pr!(world, url,
+          head_sha: EffectWorld.local_tip(fx),
+          cross_repository: false
+        )
+
+      {_state, version} = Aggregate.load(Run, "run:#{t.run_id}")
+
+      EffectWorld.sweep(world)
+
+      assert_receive {@effect_event, ^ref,
+                      %{on_terminal_run: 1, blocked: 0, audit_failed: 0, unresolved: 0}, _}
+
+      assert_receive {@terminal_event, ^ref, %{count: 1},
+                      %{
+                        effect_verdict: "done",
+                        reason: "effect_already_done",
+                        status: "completed"
+                      }}
+
+      assert {:ok, %{status: :ambiguous, metadata: marked}} = KeyStore.get(key)
+      assert KeyStore.unresolved_version(marked) == {:ok, version}
+
+      # The effect is refused ...
+      meta = CreateEffect.intent(t.run_id, t.branch, @base, t.repo)
+
+      assert {:error, {:effect_unresolved, ^key}} =
+               Effect.run(:pr_create, key, fn -> flunk("repeated") end, meta)
+
+      # ... and Create PR still returns the PR GitHub has, without creating another.
+      assert {:ok, _spec} = create_pr(t)
+
+      assert created_url(t) == url
+      assert EffectWorld.executed(world, :create) == 1
+      assert [%{"url" => ^url}] = EffectWorld.prs(world)
+      assert {:ok, %{status: :completed, metadata: settled}} = KeyStore.get(key)
+      assert KeyStore.unresolved_version(settled) == :none
+    end
+
+    test "done with a merged PR the lookup cannot adopt: Create PR is refused effect_unresolved and gh pr create is not run again",
+         %{ref: ref} do
+      world = EffectWorld.start()
+      {t, _fx} = real_thread!(world)
+      key = CreateEffect.key(t.run_id, t.branch, @base)
+
+      EffectWorld.crash!(world, :create, :after, fn -> PrCreate.execute(t.run_id) end)
+      EffectWorld.merge_prs!(world)
+
+      EffectWorld.sweep(world)
+
+      assert_receive {@effect_event, ^ref, %{on_terminal_run: 1}, _}
+      assert {:error, {:effect_unresolved, ^key}} = create_pr(t)
+
+      assert EffectWorld.executed(world, :create) == 1
+      assert [_the_merged_pr] = EffectWorld.prs(world)
+      assert {:error, :not_found} = ProjectionStore.pr_association(t.run_id)
+      assert {:ok, %{status: :ambiguous}} = KeyStore.get(key)
+    end
+
+    test "unknown: refused effect_undecided then effect_unresolved, the doctor lists the key, and a PR opened by hand is returned",
+         %{ref: ref} do
+      world = EffectWorld.start()
+      {t, fx} = real_thread!(world)
+      key = CreateEffect.key(t.run_id, t.branch, @base)
+
+      EffectWorld.crash!(world, :create, :before, fn -> PrCreate.execute(t.run_id) end)
+      EffectWorld.fail_gh_list!(world)
+
+      # The scan has not looked at the key yet: it is undecided, and GitHub cannot say more.
+      assert {:error, {:effect_undecided, ^key}} = create_pr(t)
+
+      EffectWorld.sweep(world)
+
+      assert_receive {@effect_event, ^ref, %{on_terminal_run: 1, unresolved: 0}, _}
+
+      assert_receive {@terminal_event, ^ref, %{count: 1},
+                      %{
+                        effect_verdict: "unknown",
+                        reason: "effect_outcome_ambiguous",
+                        status: "completed"
+                      }}
+
+      assert {:error, {:effect_unresolved, ^key}} = create_pr(t)
+
+      run_id = t.run_id
+      assert {:ok, entries} = Doctor.unresolved_effect_keys()
+
+      assert %{
+               key: ^key,
+               class: "pr_create",
+               run_id: ^run_id,
+               status: "completed",
+               key_status: "ambiguous",
+               decision: "none"
+             } = Enum.find(entries, &(&1.key == key))
+
+      # The operator opens the PR by hand; GitHub answers again and the lookup adopts it.
+      url = open_by_hand!(world, t, fx)
+      heal_gh_list!(world)
+
+      assert {:ok, _spec} = create_pr(t)
+
+      assert created_url(t) == url
+      assert EffectWorld.executed(world, :create) == 0
+      assert {:ok, :completed} = KeyStore.status(key)
+    end
+
+    test "a done branch_push key stays refused: Create PR names the push key, and a PR opened by hand is returned",
+         %{ref: ref} do
+      world = EffectWorld.start()
+      {t, fx} = real_thread!(world)
+      push_key = BranchPush.key(t.run_id, t.branch)
+
+      EffectWorld.crash!(world, :push, :after, fn -> PrCreate.execute(t.run_id) end)
+      EffectWorld.sweep(world)
+
+      assert_receive {@terminal_event, ^ref, %{count: 1},
+                      %{effect_class: "branch_push", effect_verdict: "done"}}
+
+      assert {:error, {:effect_unresolved, ^push_key}} = create_pr(t)
+      assert EffectWorld.executed(world, :push) == 1
+      assert EffectWorld.executed(world, :create) == 0
+
+      url = open_by_hand!(world, t, fx)
+
+      assert {:ok, _spec} = create_pr(t)
+
+      assert created_url(t) == url
+      assert EffectWorld.executed(world, :push) == 1
+      assert EffectWorld.executed(world, :create) == 0
+    end
+
+    test "a scan during Create PR leaves the key started (its writer is alive), and the key ends in the effect's own outcome",
+         %{ref: ref} do
+      world = EffectWorld.start()
+      {t, _fx} = real_thread!(world)
+      key = CreateEffect.key(t.run_id, t.branch, @base)
+      base_runner = EffectWorld.runner(world)
+      test_pid = self()
+
+      # GitHub has made the PR and the `gh pr create` call has not returned: a scan runs now.
+      PrCreate.set_command_runner(fn
+        "gh", ["pr", "create" | _] = args, opts ->
+          result = base_runner.("gh", args, opts)
+          EffectWorld.sweep(world)
+          send(test_pid, {:in_flight, KeyStore.get(key)})
+          result
+
+        cmd, args, opts ->
+          base_runner.(cmd, args, opts)
+      end)
+
+      assert {:ok, %{pr_url: url}} = PrCreate.execute(t.run_id)
+
+      assert_received {:in_flight, {:ok, %{status: :started, metadata: in_flight}}}
+      assert KeyStore.unresolved_version(in_flight) == :none
+      assert KeyStore.decision(in_flight) == :none
+      refute_received {@effect_event, ^ref, %{on_terminal_run: 1}, _}
+
+      assert EffectWorld.executed(world, :create) == 1
+      assert [%{"url" => ^url}] = EffectWorld.prs(world)
+      assert {:ok, :completed} = KeyStore.status(key)
     end
   end
 end

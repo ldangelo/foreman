@@ -13,6 +13,9 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
     * `pr_fixes` - `%{pr_url => %{attempts: %{kind => n}, in_flight: nil |
       :requested | jobsite_id, last_fix_head_sha, last_outcome: %{kind =>
       outcome}, last_finished_at, exhausted: %{kind => head_sha}}}`.
+    * `evidence` (inside each `pr_watch` record) - see `ForemanServer.PrEvidence`;
+      `run.pr.findings` (TRD-015, system-only) sets `findings` for the reviewed head.
+      `run.pr.ready_failed` (TRD-033) sets `delivery_issue`, the next `PrReady` clears it.
 
   Commands handled (all allowed on terminal runs - a PR outlives its run):
   `run.pr.checks`, `run.pr.review` (system, from `PrWatcher`),
@@ -27,6 +30,8 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
   """
 
   alias ForemanServer.Aggregate
+  alias ForemanServer.PrEvidence
+  alias ForemanServer.PrRisk
 
   @kinds %{
     "run.pr.fix_ci" => "ci",
@@ -42,7 +47,12 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
                    "run.pr.fix_exhausted",
                    "run.pr.watch_stop",
                    "run.pr.watch_start",
-                   "run.pr.create"
+                   "run.pr.create",
+                   "run.pr.ready_failed",
+                   "run.pr.findings",
+                   "run.pr.risk",
+                   "run.pr.comment_published",
+                   "run.pr.publish_report"
                  ] ++ Map.keys(@kinds)
 
   @events %{
@@ -56,7 +66,15 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
     "run.pr.fix_exhausted" => "PrFixExhausted",
     "run.pr.watch_stop" => "PrWatchStopped",
     "run.pr.watch_start" => "PrWatchStarted",
-    "run.pr.create" => "PrCreated"
+    "run.pr.create" => "PrCreated",
+    "run.pr.ready_failed" => "PrReadyFailed",
+    "run.pr.findings" => "ReviewFindingsRecorded",
+    "run.pr.risk" => "PrRiskRecorded",
+    "run.pr.comment_published" => "PrCommentPublished",
+    "run.pr.publish_report" => "PrReportRequested",
+    # Operator-only and handled by `Run` beside `merge_approve` (it needs the merge gate), so it
+    # is in neither `command_types/0` nor `operator_types/0`: this entry makes `Run` fold the event.
+    "run.pr.waive_evidence" => "PrEvidenceWaived"
   }
 
   @checks_states ~w(none pending failing passing)
@@ -65,11 +83,19 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
   @exhaust_reasons ~w(max_attempts no_progress)
   @watch_stop_reasons ~w(operator merged closed)
   @watch_start_reasons ~w(operator reopened)
+  @ready_failed_stages ~w(head_read ready_dispatch)
   @open_statuses ~w(open conflicted)
+  @report_statuses ~w(published refused)
+  @report_reasons ~w(redaction_failed effect_refused gh_failed publisher_error)
+  @max_report_detail 500
+  @max_comment_url 500
+  @max_superseded 128
+  @max_requested_by 128
 
   @hard_cap 5
   @default_auto_cap 2
   @max_note 2000
+  @max_artifact_path 1024
 
   @doc "Every command type this module handles."
   @spec command_types() :: [String.t()]
@@ -80,7 +106,7 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
   def event_types, do: @events |> Map.values() |> Enum.uniq()
 
   @operator_types ~w(run.pr.fix_ci run.pr.address_comments run.pr.resolve_conflicts
-                     run.pr.watch_stop run.pr.watch_start run.pr.create)
+                     run.pr.watch_stop run.pr.watch_start run.pr.create run.pr.publish_report)
 
   @doc """
   The PR commands an operator may issue (`CommandGateway` / `CommandController`
@@ -130,8 +156,20 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
       url when is_binary(url) and url != "" ->
         {:ok, url}
 
-      nil when type in ["run.pr.checks", "run.pr.review", "run.pr.create"] ->
+      nil
+      when type in [
+             "run.pr.checks",
+             "run.pr.review",
+             "run.pr.create",
+             "run.pr.ready_failed",
+             "run.pr.findings",
+             "run.pr.risk",
+             "run.pr.comment_published"
+           ] ->
         {:error, {:missing_or_invalid, :pr_url}}
+
+      nil when type == "run.pr.publish_report" ->
+        report_pr_url(state, payload)
 
       nil ->
         single_watched_url(state, Aggregate.get(payload, :run_id))
@@ -162,18 +200,74 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
 
   # -- observations ----------------------------------------------------------
 
+  # Who made the observation: the observer (`watch`) or a forced one for the approval gate
+  # (`gate`). Absent is accepted (an observation built before this field existed).
+  defp checks_source(source) when source in [nil, "watch", "gate"], do: {:ok, source}
+  defp checks_source(_source), do: {:error, {:missing_or_invalid, :source}}
+
+  # What moved: the notification digest (`digest`) or only the evidence (`evidence`).
+  defp checks_change(change) when change in [nil, "digest", "evidence"], do: {:ok, change}
+  defp checks_change(_change), do: {:error, {:missing_or_invalid, :change}}
+
+  # The evidence a checks observation carries, validated and normalised once here so the live
+  # fold and the replayed fold read identical values. `checks` absent stays `nil` (no list).
+  defp checks_evidence(payload) do
+    with {:ok, checks} <- optional_checks(Aggregate.get(payload, :checks)),
+         {:ok, truncated} <- boolean(Aggregate.get(payload, :checks_truncated), :checks_truncated),
+         {:ok, required} <-
+           validated(PrEvidence.validate_required(Aggregate.get(payload, :required)), :required),
+         {:ok, policy_version} <- text_field(payload, :policy_version),
+         {:ok, evidence_digest} <- text_field(payload, :evidence_digest),
+         {:ok, observation_ref} <- text_field(payload, :observation_ref) do
+      {:ok,
+       %{
+         checks: checks,
+         checks_truncated: truncated,
+         required: required,
+         policy_version: policy_version,
+         evidence_digest: evidence_digest,
+         observation_ref: observation_ref
+       }}
+    end
+  end
+
+  defp optional_checks(nil), do: {:ok, nil}
+  defp optional_checks(checks), do: validated(PrEvidence.validate_checks(checks), :checks)
+
+  defp text_field(payload, key),
+    do: validated(PrEvidence.validate_text(Aggregate.get(payload, key)), key)
+
+  defp validated({:ok, value}, _key), do: {:ok, value}
+  defp validated(:error, key), do: {:error, {:missing_or_invalid, key}}
+
+  defp boolean(nil, _key), do: {:ok, false}
+  defp boolean(value, _key) when is_boolean(value), do: {:ok, value}
+  defp boolean(_value, key), do: {:error, {:missing_or_invalid, key}}
+
   defp do_handle("run.pr.checks", state, run_id, pr_url, payload) do
     with {:ok, ids} <- identity(state, payload),
          {:ok, head_sha} <-
            Aggregate.required_binary(Aggregate.get(payload, :head_sha), :head_sha),
          {:ok, digest} <- Aggregate.required_binary(Aggregate.get(payload, :digest), :digest),
          {:ok, checks_state} <-
-           one_of(Aggregate.get(payload, :checks_state), @checks_states, :checks_state) do
-      event("run.pr.checks", run_id, pr_url, payload, ids, %{
-        head_sha: head_sha,
-        digest: digest,
-        checks_state: checks_state
-      })
+           one_of(Aggregate.get(payload, :checks_state), @checks_states, :checks_state),
+         {:ok, source} <- checks_source(Aggregate.get(payload, :source)),
+         {:ok, change} <- checks_change(Aggregate.get(payload, :change)),
+         {:ok, evidence} <- checks_evidence(payload) do
+      event(
+        "run.pr.checks",
+        run_id,
+        pr_url,
+        payload,
+        ids,
+        Map.merge(evidence, %{
+          head_sha: head_sha,
+          digest: digest,
+          checks_state: checks_state,
+          source: source,
+          change: change
+        })
+      )
     end
   end
 
@@ -342,6 +436,473 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
     end
   end
 
+  # TRD-033: the ready signal of a PR that exists failed (system-only, from `PrReadySignal`).
+  # Each attempt carries its own `failed_at` (and command id), so two attempts are two events
+  # and one attempt repeated dedupes at the gateway.
+  defp do_handle("run.pr.ready_failed", state, run_id, pr_url, payload) do
+    with {:ok, ids} <- identity(state, payload),
+         {:ok, stage} <- one_of(Aggregate.get(payload, :stage), @ready_failed_stages, :stage),
+         {:ok, reason} <- required_text(payload, :reason),
+         {:ok, failed_at} <- non_neg_integer(Aggregate.get(payload, :failed_at), :failed_at) do
+      event("run.pr.ready_failed", run_id, pr_url, payload, ids, %{
+        stage: stage,
+        reason: reason,
+        failed_at: failed_at
+      })
+    end
+  end
+
+  # TRD-015: the review findings of the run, recorded against the reviewed head (system-only,
+  # from the finalising executor). Every field is validated and normalised here and returned in
+  # `extra`; `digest` is derived from the normalised content and never read from the payload.
+  # The same content for the same head is a no-op repeat.
+  defp do_handle("run.pr.findings", state, run_id, pr_url, payload) do
+    with {:ok, ids} <- identity(state, payload),
+         :ok <- findings_repo_id(ids.repo_id),
+         :ok <- no_supplied_digest(payload),
+         {:ok, head_sha} <-
+           Aggregate.required_binary(Aggregate.get(payload, :head_sha), :head_sha),
+         {:ok, content} <-
+           validated_findings(
+             PrEvidence.validate_findings(
+               Aggregate.get(payload, :status),
+               Aggregate.get(payload, :findings),
+               Aggregate.get(payload, :defect),
+               Aggregate.get(payload, :defect_detail)
+             )
+           ),
+         {:ok, judgement} <-
+           validated_findings(PrEvidence.validate_judgement(Aggregate.get(payload, :judgement))),
+         content = Map.put(content, :judgement, judgement),
+         {:ok, artifact_path} <- bounded_path(Aggregate.get(payload, :artifact_path)),
+         {:ok, artifact_sha256} <- sha256_hex(Aggregate.get(payload, :artifact_sha256)),
+         {:ok, recorded_at} <- non_neg_integer(Aggregate.get(payload, :recorded_at), :recorded_at) do
+      digest = PrEvidence.findings_digest(content)
+
+      if recorded_findings?(state, pr_url, head_sha, digest) do
+        {:ok, nil}
+      else
+        event(
+          "run.pr.findings",
+          run_id,
+          pr_url,
+          payload,
+          ids,
+          Map.merge(content, %{
+            head_sha: head_sha,
+            artifact_path: artifact_path,
+            artifact_sha256: artifact_sha256,
+            digest: digest,
+            recorded_at: recorded_at
+          })
+        )
+      end
+    end
+  end
+
+  # The risk of the PR head the observation saw (system-only, from `PrObservation` through the
+  # Observer). Deterministic: it takes only the payload (GitHub-derived facts, the policy
+  # snapshot, `checks_ref`, `observed_at`; the aggregate has no clock) and the aggregate's
+  # `pr_watch` record and recorded base. Nothing the handler derives is read from the payload.
+  defp do_handle("run.pr.risk", state, run_id, pr_url, payload) do
+    with {:ok, ids} <- identity(state, payload),
+         :ok <- findings_repo_id(ids.repo_id),
+         :ok <- no_derived_fields(payload),
+         {:ok, head_sha} <-
+           Aggregate.required_binary(Aggregate.get(payload, :head_sha), :head_sha),
+         {:ok, record} <- watched_record(state, pr_url),
+         :ok <- head_agrees(head_sha, record),
+         {:ok, input} <- risk_payload(payload) do
+      ctx = %{
+        head_sha: head_sha,
+        policy: input.policy,
+        now_ms: input.observed_at,
+        checks_ref: input.checks_ref
+      }
+
+      {checks_status, reasons} = PrEvidence.evaluate_checks(record, ctx)
+
+      # A secondary repository's PR has no findings record (TRD-015): it is classified without one.
+      findings = if is_nil(ids.repo_id), do: record.evidence.findings
+
+      content =
+        PrRisk.record(%{
+          identity: Map.put(ids, :run_id, run_id) |> Map.put(:pr_url, pr_url),
+          head_sha: head_sha,
+          files: input.files,
+          changed_files: input.changed_files,
+          additions: input.additions,
+          deletions: input.deletions,
+          base_branch: input.base_branch,
+          recorded_base: state.base_branch,
+          checks: %{status: checks_status, reasons: reasons},
+          findings: findings,
+          policy_version: input.policy_version
+        })
+
+      stored = record.evidence.risk
+
+      if stored_risk?(stored, head_sha, content.digest) do
+        {:ok, nil}
+      else
+        event(
+          "run.pr.risk",
+          run_id,
+          pr_url,
+          payload,
+          ids,
+          Map.merge(content, %{
+            head_sha: head_sha,
+            seq: stored_seq(stored) + 1,
+            recorded_at: input.observed_at
+          })
+        )
+      end
+    end
+  end
+
+  # TRD-021: the outcome of publishing the report of the risk record `evidence.risk` holds
+  # (system-only, from `PrReport.Publisher`). The record is not derived here: the publisher
+  # names the head and digest it rendered, and the handler accepts them only when the folded
+  # risk record is that one, so an outcome can never claim a report for a record that does not
+  # exist. A `published` outcome carries the comment, a `refused` one a typed reason and a
+  # redacted detail; each is validated once here so the live and the replayed fold agree. A
+  # repeat of one command id dedupes at the gateway.
+  defp do_handle("run.pr.comment_published", state, run_id, pr_url, payload) do
+    with {:ok, ids} <- identity(state, payload),
+         :ok <- findings_repo_id(ids.repo_id),
+         {:ok, head_sha} <-
+           Aggregate.required_binary(Aggregate.get(payload, :head_sha), :head_sha),
+         {:ok, digest} <- Aggregate.required_binary(Aggregate.get(payload, :digest), :digest),
+         {:ok, record} <- watched_record(state, pr_url),
+         :ok <- report_for_known_risk(record, head_sha, digest),
+         {:ok, status} <- one_of(Aggregate.get(payload, :status), @report_statuses, :status),
+         {:ok, outcome} <- report_outcome(status, payload),
+         {:ok, recorded_at} <- non_neg_integer(Aggregate.get(payload, :recorded_at), :recorded_at) do
+      event(
+        "run.pr.comment_published",
+        run_id,
+        pr_url,
+        payload,
+        ids,
+        Map.merge(outcome, %{
+          head_sha: head_sha,
+          digest: digest,
+          status: status,
+          recorded_at: recorded_at
+        })
+      )
+    end
+  end
+
+  # TRD-030: the operator's request to publish the report of the PR's CURRENT risk record again
+  # (the retry of a refused publication). Operator-only (`operator_types/0`). The request names
+  # nothing it decides: a head, a digest or a level in the payload is refused, and the event
+  # carries the head and digest of the folded `evidence.risk`. Refused when the PR is not an open
+  # watched one, has no risk record, its risk record is for another head than the PR's, or
+  # `evidence.report` already holds a published report for that head and digest. A refused
+  # (`refused`) report does not refuse the request: it is what the request retries. Whether the
+  # project is gated is the publisher's to decide (the aggregate cannot read the policy).
+  defp do_handle("run.pr.publish_report", state, run_id, pr_url, payload) do
+    with {:ok, ids} <- identity(state, payload),
+         :ok <- findings_repo_id(ids.repo_id),
+         :ok <- no_named_report(payload),
+         {:ok, requested_by} <-
+           optional_bounded_text(
+             Aggregate.get(payload, :requested_by),
+             @max_requested_by,
+             :requested_by
+           ),
+         {:ok, requested_at} <- request_time(payload),
+         {:ok, record} <- watched_open(state, pr_url),
+         {:ok, risk} <- current_risk_record(record, pr_url),
+         :ok <- report_not_published(record, risk) do
+      event("run.pr.publish_report", run_id, pr_url, payload, ids, %{
+        head_sha: risk.head_sha,
+        digest: risk.digest,
+        requested_by: requested_by,
+        requested_at: requested_at
+      })
+    end
+  end
+
+  # The caller's own `requested_at` is a time, never another type; absent is the clock.
+  defp request_time(payload) do
+    case Aggregate.get(payload, :requested_at) do
+      nil -> {:ok, System.system_time(:millisecond)}
+      value -> non_neg_integer(value, :requested_at)
+    end
+  end
+
+  defp no_named_report(payload) do
+    case Enum.find(~w(head_sha digest level)a, &(not is_nil(Aggregate.get(payload, &1)))) do
+      nil -> :ok
+      key -> {:error, {:derived_field, key}}
+    end
+  end
+
+  defp current_risk_record(%{evidence: %{risk: %{head_sha: head} = risk}, head_sha: head}, _url),
+    do: {:ok, risk}
+
+  defp current_risk_record(%{evidence: %{risk: %{head_sha: risk_head}}, head_sha: head}, url),
+    do: {:error, {:risk_not_current, url, risk_head, head}}
+
+  defp current_risk_record(_record, url), do: {:error, {:no_risk_record, url}}
+
+  defp report_not_published(record, %{head_sha: head, digest: digest}) do
+    case record.evidence.report do
+      %{head_sha: ^head, digest: ^digest, status: "published"} ->
+        {:error, {:report_current, head, digest}}
+
+      _none_other_or_refused ->
+        :ok
+    end
+  end
+
+  # The PR the request is about: the one `repo_id` names through the merge gate's pin of that
+  # repository (the PR the gate was opened for), else the one watched PR.
+  defp report_pr_url(state, payload) do
+    case Aggregate.get(payload, :repo_id) do
+      repo_id when is_binary(repo_id) and repo_id != "" ->
+        case Map.get(state.merge_pins, repo_id) do
+          %{pr_url: url} when is_binary(url) and url != "" -> {:ok, url}
+          _no_pin -> {:error, {:pr_not_watched, nil}}
+        end
+
+      nil ->
+        single_watched_url(state, Aggregate.get(payload, :run_id))
+
+      _other ->
+        {:error, {:missing_or_invalid, :repo_id}}
+    end
+  end
+
+  defp report_for_known_risk(record, head_sha, digest) do
+    case record.evidence.risk do
+      %{head_sha: ^head_sha, digest: ^digest} -> :ok
+      _other -> {:error, {:report_for_unknown_risk, head_sha, digest}}
+    end
+  end
+
+  defp report_outcome("published", payload) do
+    with :ok <- absent(Aggregate.get(payload, :reason), :reason),
+         {:ok, detail} <-
+           optional_bounded_text(Aggregate.get(payload, :detail), @max_report_detail, :detail),
+         {:ok, comment_id} <- comment_id(Aggregate.get(payload, :comment_id)),
+         {:ok, comment_url} <-
+           required_bounded_text(
+             Aggregate.get(payload, :comment_url),
+             @max_comment_url,
+             :comment_url
+           ),
+         {:ok, superseded} <-
+           optional_bounded_text(
+             Aggregate.get(payload, :superseded),
+             @max_superseded,
+             :superseded
+           ) do
+      {:ok,
+       %{
+         reason: nil,
+         detail: detail,
+         comment_id: comment_id,
+         comment_url: comment_url,
+         superseded: superseded
+       }}
+    end
+  end
+
+  defp report_outcome("refused", payload) do
+    with {:ok, reason} <- one_of(Aggregate.get(payload, :reason), @report_reasons, :reason),
+         {:ok, detail} <-
+           required_bounded_text(Aggregate.get(payload, :detail), @max_report_detail, :detail),
+         :ok <- absent(Aggregate.get(payload, :comment_id), :comment_id),
+         :ok <- absent(Aggregate.get(payload, :comment_url), :comment_url),
+         :ok <- absent(Aggregate.get(payload, :superseded), :superseded) do
+      {:ok,
+       %{
+         reason: reason,
+         detail: detail,
+         comment_id: nil,
+         comment_url: nil,
+         superseded: nil
+       }}
+    end
+  end
+
+  defp absent(nil, _key), do: :ok
+  defp absent(_value, key), do: {:error, {:missing_or_invalid, key}}
+
+  defp comment_id(id) when is_integer(id) and id > 0, do: {:ok, id}
+  defp comment_id(_other), do: {:error, {:missing_or_invalid, :comment_id}}
+
+  defp optional_bounded_text(nil, _max, _key), do: {:ok, nil}
+  defp optional_bounded_text(value, max, key), do: required_bounded_text(value, max, key)
+
+  defp required_bounded_text(value, max, key) when is_binary(value) do
+    if value != "" and String.valid?(value) and String.length(value) <= max,
+      do: {:ok, value},
+      else: {:error, {:missing_or_invalid, key}}
+  end
+
+  defp required_bounded_text(_value, _max, key), do: {:error, {:missing_or_invalid, key}}
+
+  # `identity/2` passes `repo_id` through unvalidated; the findings record is stricter.
+  defp findings_repo_id(nil), do: :ok
+  defp findings_repo_id(id) when is_binary(id) and id != "", do: :ok
+  defp findings_repo_id(_other), do: {:error, {:missing_or_invalid, :repo_id}}
+
+  defp no_supplied_digest(payload) do
+    if is_nil(Aggregate.get(payload, :digest)),
+      do: :ok,
+      else: {:error, {:derived_field, :digest}}
+  end
+
+  defp validated_findings({:ok, content}), do: {:ok, content}
+  defp validated_findings({:error, key}), do: {:error, {:missing_or_invalid, key}}
+
+  defp bounded_path(nil), do: {:ok, nil}
+
+  defp bounded_path(path) when is_binary(path) do
+    if path != "" and String.valid?(path) and String.length(path) <= @max_artifact_path,
+      do: {:ok, path},
+      else: {:error, {:missing_or_invalid, :artifact_path}}
+  end
+
+  defp bounded_path(_other), do: {:error, {:missing_or_invalid, :artifact_path}}
+
+  defp sha256_hex(nil), do: {:ok, nil}
+
+  defp sha256_hex(value) when is_binary(value) do
+    if Regex.match?(~r/\A[0-9a-fA-F]{64}\z/, value),
+      do: {:ok, String.downcase(value)},
+      else: {:error, {:missing_or_invalid, :artifact_sha256}}
+  end
+
+  defp sha256_hex(_other), do: {:error, {:missing_or_invalid, :artifact_sha256}}
+
+  defp recorded_findings?(state, pr_url, head_sha, digest) do
+    case state.pr_watch do
+      %{^pr_url => %{evidence: %{findings: %{head_sha: ^head_sha, digest: ^digest}}}} -> true
+      _other -> false
+    end
+  end
+
+  # -- risk (TRD-018) ------------------------------------------------------------
+
+  @risk_derived ~w(level rationale instructions sensitive_hits unresolved_findings judgement
+                   evidence digest seq rubric_version findings_digest recorded_at)a
+  @max_files 100
+  @max_path 1024
+
+  defp no_derived_fields(payload) do
+    case Enum.find(@risk_derived, &(not is_nil(Aggregate.get(payload, &1)))) do
+      nil -> :ok
+      key -> {:error, {:derived_field, key}}
+    end
+  end
+
+  defp watched_record(state, pr_url) do
+    case Map.get(state.pr_watch, pr_url) do
+      %{} = record -> {:ok, record}
+      nil -> {:error, {:pr_not_watched, pr_url}}
+    end
+  end
+
+  defp head_agrees(head_sha, %{head_sha: head_sha}), do: :ok
+
+  defp head_agrees(head_sha, record),
+    do: {:error, {:head_mismatch, head_sha, Map.get(record, :head_sha)}}
+
+  defp stored_risk?(%{head_sha: head, digest: digest}, head, digest), do: true
+  defp stored_risk?(_stored, _head, _digest), do: false
+
+  defp stored_seq(%{seq: seq}) when is_integer(seq), do: seq
+  defp stored_seq(_none), do: 0
+
+  # The facts of one observation, each checked for its type. A missing list or count stays `nil`
+  # (the rubric reads it as unavailable and HIGH); a value of the wrong type is refused, and a
+  # boolean such as `files_incomplete` is never read.
+  defp risk_payload(payload) do
+    with {:ok, files} <- risk_files(Aggregate.get(payload, :files)),
+         {:ok, changed_files} <-
+           count_or_nil(Aggregate.get(payload, :changed_files), :changed_files),
+         {:ok, additions} <- count_or_nil(Aggregate.get(payload, :additions), :additions),
+         {:ok, deletions} <- count_or_nil(Aggregate.get(payload, :deletions), :deletions),
+         {:ok, base_branch} <- text_field(payload, :base_branch),
+         {:ok, required} <-
+           validated(
+             PrEvidence.validate_policy_required(Aggregate.get(payload, :required)),
+             :required
+           ),
+         {:ok, policy_version} <- text_field(payload, :policy_version),
+         :ok <- policy_version_agrees(required, policy_version),
+         {:ok, checks_ref} <- text_field(payload, :checks_ref),
+         {:ok, observed_at} <- non_neg_integer(Aggregate.get(payload, :observed_at), :observed_at) do
+      {:ok,
+       %{
+         files: files,
+         changed_files: changed_files,
+         additions: additions,
+         deletions: deletions,
+         base_branch: base_branch,
+         policy: required && %{required: required, version: policy_version},
+         policy_version: policy_version,
+         checks_ref: checks_ref,
+         observed_at: observed_at
+       }}
+    end
+  end
+
+  defp policy_version_agrees(required, policy_version) do
+    if PrEvidence.policy_version(required) == policy_version,
+      do: :ok,
+      else: {:error, {:missing_or_invalid, :policy_version}}
+  end
+
+  defp count_or_nil(nil, _key), do: {:ok, nil}
+  defp count_or_nil(value, _key) when is_integer(value) and value >= 0, do: {:ok, value}
+  defp count_or_nil(_value, key), do: {:error, {:missing_or_invalid, key}}
+
+  # A list the handler cannot hold (over `@max_files` items, or a path over `@max_path` bytes) is
+  # UNAVAILABLE, never refused and never truncated: the record is still written, with `files: nil`
+  # (the rubric reads it as HIGH, "the changed-path list is unavailable"), so the PR is not left
+  # without a risk record that nothing may waive. A payload of the wrong type stays an error,
+  # whatever else the list holds.
+  defp risk_files(nil), do: {:ok, nil}
+
+  defp risk_files(files) when is_list(files) do
+    results = Enum.map(files, &risk_file/1)
+
+    cond do
+      :error in results -> {:error, {:missing_or_invalid, :files}}
+      :oversized in results or length(files) > @max_files -> {:ok, nil}
+      true -> {:ok, Enum.map(results, fn {:ok, file} -> file end)}
+    end
+  end
+
+  defp risk_files(_other), do: {:error, {:missing_or_invalid, :files}}
+
+  defp risk_file(%{} = file) do
+    path = Aggregate.get(file, :path)
+    additions = Aggregate.get(file, :additions)
+    deletions = Aggregate.get(file, :deletions)
+
+    cond do
+      not (is_binary(path) and path != "" and String.valid?(path) and is_integer(additions) and
+             additions >= 0 and is_integer(deletions) and deletions >= 0) ->
+        :error
+
+      byte_size(path) > @max_path ->
+        :oversized
+
+      true ->
+        {:ok, %{path: path, additions: additions, deletions: deletions}}
+    end
+  end
+
+  defp risk_file(_other), do: :error
+
   # -- shared helpers ----------------------------------------------------------
 
   # project_id / task_id default to the run's own; a payload that names others is
@@ -354,6 +915,16 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
        %{project_id: project_id, task_id: task_id, repo_id: Aggregate.get(payload, :repo_id)}}
     end
   end
+
+  defp required_text(payload, key) do
+    case PrEvidence.validate_text(Aggregate.get(payload, key)) do
+      {:ok, text} when is_binary(text) -> {:ok, text}
+      _missing_or_invalid -> {:error, {:missing_or_invalid, key}}
+    end
+  end
+
+  defp non_neg_integer(value, _key) when is_integer(value) and value >= 0, do: {:ok, value}
+  defp non_neg_integer(_value, key), do: {:error, {:missing_or_invalid, key}}
 
   defp same(own, nil, key), do: Aggregate.required_binary(own, key)
   defp same(own, given, _key) when is_binary(own) and own == given, do: {:ok, own}
@@ -373,6 +944,16 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
   end
 
   defp note(_other), do: {:error, {:invalid_note, @max_note}}
+
+  @doc """
+  Whether a watch record is one the PR commands act on: watched and in an open status
+  (`open | conflicted`). `watched_open/2` and the status read's offered actions use this one
+  predicate, so an action is never offered that the command refuses `pr_not_watched` or
+  `pr_not_open`.
+  """
+  @spec watched_open?(term()) :: boolean()
+  def watched_open?(%{watching: true, status: status}), do: status in @open_statuses
+  def watched_open?(_record), do: false
 
   defp watched_open(state, pr_url) do
     case Map.get(state.pr_watch, pr_url) do
@@ -537,9 +1118,22 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
   @spec apply_event(struct(), String.t(), map()) :: struct()
   def apply_event(state, type, payload) do
     case Aggregate.get(payload, :pr_url) do
-      url when is_binary(url) and url != "" -> fold(state, type, url, payload)
-      _none -> state
+      url when is_binary(url) and url != "" ->
+        state
+        |> fold_evidence(type, url, payload)
+        |> then(&fold(&1, type, url, payload))
+
+      _none ->
+        state
     end
+  end
+
+  # The evidence record and the head reset come from `PrEvidence`, which the projection fold
+  # (`PrWatchFold`) also calls first, so the two cannot disagree.
+  defp fold_evidence(state, type, url, payload) do
+    if type in PrEvidence.events(),
+      do: watch(state, url, &PrEvidence.apply_event(&1, type, payload)),
+      else: state
   end
 
   defp fold(state, type, url, payload) when type in ["PrUpdated", "PrReady"] do
@@ -663,7 +1257,8 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
       checks_digest: nil,
       review_digest: nil,
       review_decision: nil,
-      watching: true
+      watching: true,
+      evidence: PrEvidence.empty()
     }
   end
 

@@ -56,7 +56,56 @@ defmodule ForemanServer.Workflow.AutoPR do
   branch it also counted every commit the run's base branch already carried,
   which is how a run that produced nothing could still look like it had work to
   propose.
+
+  ## The push and the PR create are keyed effects
+
+  Both external calls run through `ForemanServer.Idempotency.Effect.run/4` (TRD-013),
+  so a crash between the call and its outcome leaves an `ambiguous` key that boot
+  reconciliation hands to the class's reconciler instead of repeating the call:
+  `Reconcilers.BranchPush` keys the push by `(run_id, head_branch)` and records the
+  remote head before the push and the local tip being pushed; `Reconcilers.PrCreate`
+  keys the create by `(run_id, head_branch, base_branch)` and asks GitHub.
+
+  Both keys carry `cwd`, the directory the reconcilers run `git` and `gh` in, so a
+  context without a `cwd` cannot push or open a PR: the effect does not run and
+  `maybe_create_pr/1` returns `{:error, {:intent_not_recorded, :cwd_missing}}`. The
+  same shape comes back when the push's remote or local head cannot be read, or the
+  key cannot be written. A push or create that runs keeps its own result and error
+  shapes (`{:git_push_failed, ...}`, `{:gh_pr_create_failed, ...}`).
+
+  A key nobody has decided (`started`, or `ambiguous` with no recorded decision) refuses
+  the effect: `{:error, {:effect_undecided, key}}` comes back unchanged, the push or the
+  PR create is not made and is not retried here, and the log says it did not run and names
+  the key. An undecided PR-create key stops the push too (the preflight runs first). The
+  boot sweep decides the key; this module only reports the refusal.
+
+  ## An existing PR is adopted, never created again
+
+  Before any effect, `maybe_create_pr/1` reads the local tip of the head branch (the push's own
+  intent, `Reconcilers.BranchPush.intent/4`, read once and passed on to the push) and asks
+  GitHub, through `ForemanServer.GitHub.PrLookup`, for the open PR of this repository for the
+  head and the base. The PR whose head is that tip IS the run's PR: `{:ok, url}` comes back
+  with no preflight, no push and no `gh pr create`, and a `pr_create` key of the run that is
+  `started` or `ambiguous` is settled `completed` (GitHub has answered it, so the doctor does
+  not list it and a later Create PR after the PR was closed is not refused for good). A fork's
+  PR of the same branch name is never adopted. Every other answer (no PR, a PR with another
+  head, a failed lookup, an unreadable tip) goes on into the sequence: creating the PR stays
+  the loud authority, and a failed lookup is never a success.
+
+  After a non-zero exit of `gh pr create` the lookup runs once more before the key settles
+  `failed`. The PR with the tip is adopted (`{:ok, url}`, the key settles `completed`); a PR of
+  this repository with another head is `{:error, {:pr_lookup_mismatch, url, expected,
+  actual}}` and nothing is adopted (an operator closes or aligns it); none, or a failed
+  lookup, keeps `{:error, {:gh_pr_create_failed, code, output}}`. That is what ends the wedge
+  of a run that was blocked on a `done` verdict, reset and resumed: its PR is adopted before
+  the key is touched, not refused again by GitHub as a duplicate.
   """
+
+  alias ForemanServer.GitHub.PrLookup
+  alias ForemanServer.Idempotency.Effect
+  alias ForemanServer.Idempotency.Reconcilers.Command
+  alias ForemanServer.Idempotency.Reconcilers.BranchPush
+  alias ForemanServer.Idempotency.Reconcilers.PrCreate, as: PrCreateEffect
 
   require Logger
 
@@ -80,6 +129,8 @@ defmodule ForemanServer.Workflow.AutoPR do
           required(:base_branch) => String.t(),
           optional(:artifact_path) => String.t() | nil,
           optional(:head_branch) => String.t() | nil,
+          # Optional for the commit probe only: the push and the PR create are keyed
+          # effects that record `cwd` and refuse to run without it (TRD-013).
           optional(:cwd) => String.t() | nil,
           # A nil value means the field was never set (the Task aggregate
           # defaults description to nil). Producers MUST omit the key rather
@@ -95,9 +146,11 @@ defmodule ForemanServer.Workflow.AutoPR do
   @doc """
   Opens a PR for the run described by `context`.
 
-  Returns `{:ok, pr_url}`, `:noop` when the head branch has no commits beyond
-  the base, or `{:error, reason}`. `base_branch` must be the branch the run's
-  work was cut from; it is not defaulted.
+  Returns `{:ok, pr_url}` (the PR it created, or the one GitHub already had for the run's head),
+  `:noop` when the head branch has no commits beyond the base, or `{:error, reason}`
+  (`{:pr_lookup_mismatch, url, expected, actual}` names a PR of this repository whose head is
+  not the tip). `base_branch` must be the branch the run's work was cut from; it is not
+  defaulted.
   """
   @spec maybe_create_pr(context()) :: result()
   def maybe_create_pr(%{run_id: run_id, base_branch: base_branch} = context)
@@ -107,9 +160,8 @@ defmodule ForemanServer.Workflow.AutoPR do
     with {:ok, head_branch} <- resolve_head_branch(context),
          {:ok, ahead} <- commits_ahead(context, base_branch, head_branch, cwd) do
       if ahead > 0 do
-        with {:ok, pr_content} <- pr_content(context),
-             :ok <- push_head(context, run_id, head_branch, cwd) do
-          open_pr(context, run_id, base_branch, head_branch, pr_content, cwd)
+        with {:ok, pr_content} <- pr_content(context) do
+          propose(context, run_id, base_branch, head_branch, pr_content, cwd)
         end
       else
         Logger.info(
@@ -209,13 +261,144 @@ defmodule ForemanServer.Workflow.AutoPR do
     end
   end
 
+  # GitHub is asked before any effect is touched: the PR of this repository whose head is the
+  # local tip IS the run's PR, however the keys stand (TRD-004). The tip is read first, once, as
+  # the push's own intent (`BranchPush.intent/4`). Every other answer (no PR, another head, a
+  # failed lookup, an unreadable tip) goes on into the sequence, because creating the PR stays
+  # the loud authority and a failed lookup is never a success.
+  defp propose(context, run_id, base_branch, head_branch, pr_content, cwd) do
+    intent = BranchPush.intent(runner(context), run_id, head_branch, cwd)
+
+    case adopt_open_pr(context, run_id, base_branch, head_branch, cwd, intent) do
+      {:ok, _url} = adopted ->
+        adopted
+
+      :continue ->
+        with :ok <- preflight_open_pr(run_id, base_branch, head_branch),
+             {:ok, push_meta} <-
+               log_refusal(intent, run_id, head_branch, "autopr.git_push", "git push"),
+             :ok <- push_head(context, run_id, head_branch, cwd, push_meta) do
+          open_pr(
+            context,
+            run_id,
+            base_branch,
+            head_branch,
+            pr_content,
+            cwd,
+            push_meta.pushed_local_sha
+          )
+        end
+    end
+  end
+
+  # The unreadable-tip case has nothing to compare a PR's head with: the sequence reports it at
+  # the push, as it always did.
+  defp adopt_open_pr(_context, _run_id, _base_branch, _head_branch, _cwd, {:error, _reason}),
+    do: :continue
+
+  defp adopt_open_pr(
+         context,
+         run_id,
+         base_branch,
+         head_branch,
+         cwd,
+         {:ok, %{pushed_local_sha: tip}}
+       ) do
+    lookup =
+      PrLookup.find_open(head_branch, base_branch,
+        cwd: cwd,
+        command_runner: runner(context),
+        timeout_ms: lookup_timeout_ms(context),
+        expected_head: tip
+      )
+
+    case lookup do
+      {:ok, %PrLookup.Pr{url: url}} ->
+        settle_adopted_key(run_id, base_branch, head_branch)
+
+        Logger.info(
+          "AutoPR.run_id=#{run_id} adopted #{url}: GitHub already has this run's PR for #{head_branch} into #{base_branch}, so nothing is pushed or created",
+          run_id: run_id,
+          base_branch: base_branch,
+          head_branch: head_branch,
+          pr_url: url,
+          operation: "autopr.lookup",
+          outcome: "adopted"
+        )
+
+        {:ok, url}
+
+      :none ->
+        :continue
+
+      {:error, reason} ->
+        Logger.warning(
+          "AutoPR.run_id=#{run_id} no PR adopted for #{head_branch} into #{base_branch} (#{inspect(reason)}); going on to the push and gh pr create",
+          run_id: run_id,
+          base_branch: base_branch,
+          head_branch: head_branch,
+          operation: "autopr.lookup",
+          outcome: "not_adopted",
+          reason: inspect(reason)
+        )
+
+        :continue
+    end
+  end
+
+  # GitHub has answered for the run's PR create, so the key an earlier attempt left `started` or
+  # `ambiguous` is settled (`PrCreateEffect.settle_adopted/3`).
+  defp settle_adopted_key(run_id, base_branch, head_branch) do
+    case PrCreateEffect.settle_adopted(run_id, head_branch, base_branch) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.error(
+          "AutoPR.run_id=#{run_id} could not settle #{inspect(PrCreateEffect.key(run_id, head_branch, base_branch))} after adopting the PR: #{inspect(reason)}",
+          run_id: run_id,
+          key: PrCreateEffect.key(run_id, head_branch, base_branch),
+          operation: "autopr.lookup",
+          outcome: "key_not_settled",
+          reason: inspect(reason)
+        )
+    end
+  end
+
+  # A PR-create key recovery left unresolved refuses the whole sequence BEFORE
+  # the push: a push that ran anyway could publish commits the remote lacks.
+  defp preflight_open_pr(run_id, base_branch, head_branch) do
+    Effect.preflight(
+      :pr_create,
+      PrCreateEffect.key(run_id, head_branch, base_branch),
+      %{"run_id" => run_id}
+    )
+    |> log_refusal(run_id, head_branch, "autopr.preflight", "git push and gh pr create")
+  end
+
   # GitHub cannot open a PR from a branch it has never seen: `gh pr create`
   # fails with "Head ref must be a branch" / "No commits between ...". Foreman
   # creates the run branch locally in a worktree, so it must be published
   # first.
-  defp push_head(context, run_id, head_branch, cwd) do
-    opts = [stderr_to_stdout: true]
-    opts = if cwd, do: Keyword.put(opts, :cd, cwd), else: opts
+  #
+  # The push is a keyed effect: `BranchPush.intent/4` read the remote head and
+  # the local tip BEFORE the push (`propose/6`, once, ahead of the PR lookup) and
+  # `Effect.run/4` records them in the `started` key, so a crash around the push
+  # is reconciled against the remote at boot instead of the push being repeated
+  # blind. A push whose intent cannot be recorded (no `cwd`, an unreadable head,
+  # the key store down) does not run.
+  defp push_head(context, run_id, head_branch, cwd, meta) do
+    Effect.run(
+      :branch_push,
+      BranchPush.key(run_id, head_branch),
+      fn -> git_push(context, run_id, head_branch, cwd) end,
+      meta
+    )
+    |> log_refusal(run_id, head_branch, "autopr.git_push", "git push")
+  end
+
+  defp git_push(context, run_id, head_branch, cwd) do
+    opts = [stderr_to_stdout: true, cd: cwd]
 
     Logger.info("AutoPR.run_id=#{run_id} git push -u origin #{head_branch}",
       run_id: run_id,
@@ -242,17 +425,36 @@ defmodule ForemanServer.Workflow.AutoPR do
     end
   end
 
-  defp open_pr(context, run_id, base_branch, head_branch, %{title: title, body: body}, cwd) do
+  # `gh pr create` is a keyed effect too (`Reconcilers.PrCreate`): a crash after
+  # GitHub made the PR and before the run recorded it is found by asking GitHub
+  # at boot, never by creating a second PR.
+  defp open_pr(context, run_id, base_branch, head_branch, pr_content, cwd, tip) do
+    Effect.run(
+      :pr_create,
+      PrCreateEffect.key(run_id, head_branch, base_branch),
+      fn -> gh_pr_create(context, run_id, base_branch, head_branch, pr_content, cwd, tip) end,
+      PrCreateEffect.intent(run_id, head_branch, base_branch, cwd)
+    )
+    |> log_refusal(run_id, head_branch, "autopr.gh_create", "gh pr create")
+  end
+
+  defp gh_pr_create(
+         context,
+         run_id,
+         base_branch,
+         head_branch,
+         %{title: title, body: body},
+         cwd,
+         tip
+       ) do
     cmd =
       @gh_args ++
         ["--base", base_branch, "--head", head_branch, "--title", title, "--body", body]
 
-    opts = [stderr_to_stdout: true]
-    opts = if cwd, do: Keyword.put(opts, :cd, cwd), else: opts
+    opts = [stderr_to_stdout: true, cd: cwd]
 
     Logger.info(
-      "AutoPR.run_id=#{run_id} gh pr create --base=#{base_branch} --head=#{head_branch}" <>
-        if(cwd, do: " (cwd=#{cwd})", else: ""),
+      "AutoPR.run_id=#{run_id} gh pr create --base=#{base_branch} --head=#{head_branch} (cwd=#{cwd})",
       run_id: run_id,
       base_branch: base_branch,
       head_branch: head_branch,
@@ -286,9 +488,170 @@ defmodule ForemanServer.Workflow.AutoPR do
           reason: String.trim(output)
         )
 
-        {:error, {:gh_pr_create_failed, exit_code, String.trim(output)}}
+        failure = {:gh_pr_create_failed, exit_code, String.trim(output)}
+        after_failed_create(context, run_id, base_branch, head_branch, cwd, tip, failure)
     end
   end
+
+  # A non-zero exit does not say the PR does not exist: GitHub may have made it, or already had
+  # it (it refuses a duplicate open PR, but not a closed one). Ask again before the key settles
+  # `failed`: the PR with the tip is the run's (`{:ok, url}`, so the key settles `completed`); a
+  # PR of this repository with another head is the typed mismatch and nothing is adopted; none,
+  # or a failed lookup, keeps the create's own error.
+  defp after_failed_create(context, run_id, base_branch, head_branch, cwd, tip, failure) do
+    lookup =
+      PrLookup.find_open(head_branch, base_branch,
+        cwd: cwd,
+        command_runner: runner(context),
+        timeout_ms: lookup_timeout_ms(context),
+        expected_head: tip
+      )
+
+    case lookup do
+      {:ok, %PrLookup.Pr{url: url}} ->
+        Logger.info(
+          "AutoPR.run_id=#{run_id} adopted #{url} after gh pr create failed: it is this run's PR for #{head_branch} into #{base_branch}",
+          run_id: run_id,
+          base_branch: base_branch,
+          head_branch: head_branch,
+          pr_url: url,
+          operation: "autopr.lookup",
+          outcome: "adopted"
+        )
+
+        {:ok, url}
+
+      {:error, {:pr_lookup_mismatch, url, expected, actual}} = mismatch ->
+        Logger.error(
+          "AutoPR.run_id=#{run_id} #{url} already exists for #{head_branch} into #{base_branch} but its head is #{actual}, not the pushed tip #{expected}: not adopted; an operator closes or aligns it",
+          run_id: run_id,
+          base_branch: base_branch,
+          head_branch: head_branch,
+          pr_url: url,
+          operation: "autopr.lookup",
+          outcome: "mismatch"
+        )
+
+        mismatch
+
+      :none ->
+        {:error, failure}
+
+      {:error, reason} ->
+        Logger.warning(
+          "AutoPR.run_id=#{run_id} could not look the PR up after gh pr create failed (#{inspect(reason)}); the create's own error stands",
+          run_id: run_id,
+          base_branch: base_branch,
+          head_branch: head_branch,
+          operation: "autopr.lookup",
+          outcome: "lookup_failed",
+          reason: inspect(reason)
+        )
+
+        {:error, failure}
+    end
+  end
+
+  # An effect whose intent was not recorded did not run. Nothing downstream
+  # tells that from a failed call, so say it here.
+  defp log_refusal(
+         {:error, {:effect_unresolved, key}} = result,
+         run_id,
+         head_branch,
+         operation,
+         what
+       ) do
+    Logger.error(
+      "AutoPR.run_id=#{run_id} #{what} NOT run: #{inspect(key)} is unresolved (see foreman_doctor, Unresolved effect keys). " <>
+        "run.reset lifts this only for a failed, stuck, blocked or paused run, and only when the reset run resumes and reaches the effect again; for any other run check GitHub and the doctor list",
+      run_id: run_id,
+      head_branch: head_branch,
+      operation: operation,
+      outcome: "refused",
+      reason: "effect_unresolved"
+    )
+
+    result
+  end
+
+  defp log_refusal(
+         {:error, {:effect_undecided, key}} = result,
+         run_id,
+         head_branch,
+         operation,
+         what
+       ) do
+    Logger.error(
+      "AutoPR.run_id=#{run_id} #{what} NOT run: #{inspect(key)} is undecided: an earlier attempt may still be in flight or may already have happened, and nothing has said which, so it is not repeated. " <>
+        "The boot sweep is asked to decide it; check GitHub and foreman_doctor, Unresolved effect keys",
+      run_id: run_id,
+      head_branch: head_branch,
+      operation: operation,
+      outcome: "refused",
+      reason: "effect_undecided"
+    )
+
+    result
+  end
+
+  defp log_refusal(
+         {:error, {:effect_marker_malformed, key}} = result,
+         run_id,
+         head_branch,
+         operation,
+         what
+       ) do
+    Logger.error(
+      "AutoPR.run_id=#{run_id} #{what} NOT run: the unresolved marker of #{inspect(key)} is malformed; no reset clears it, the stored key needs an operator's repair (see foreman_doctor, Unresolved effect keys)",
+      run_id: run_id,
+      head_branch: head_branch,
+      operation: operation,
+      outcome: "refused",
+      reason: "effect_marker_malformed"
+    )
+
+    result
+  end
+
+  defp log_refusal(
+         {:error, {:effect_check_failed, reason}} = result,
+         run_id,
+         head_branch,
+         operation,
+         what
+       ) do
+    Logger.error(
+      "AutoPR.run_id=#{run_id} #{what} NOT run: could not check whether its key is unresolved: #{inspect(reason)}",
+      run_id: run_id,
+      head_branch: head_branch,
+      operation: operation,
+      outcome: "refused",
+      reason: inspect(reason)
+    )
+
+    result
+  end
+
+  defp log_refusal(
+         {:error, {:intent_not_recorded, reason}} = result,
+         run_id,
+         head_branch,
+         operation,
+         what
+       ) do
+    Logger.error(
+      "AutoPR.run_id=#{run_id} #{what} NOT run: its intent could not be recorded: #{inspect(reason)}",
+      run_id: run_id,
+      head_branch: head_branch,
+      operation: operation,
+      outcome: "refused",
+      reason: inspect(reason)
+    )
+
+    result
+  end
+
+  defp log_refusal(result, _run_id, _head_branch, _operation, _what), do: result
 
   @doc false
   def __pr_content_for_test__(context), do: pr_content(context)
@@ -362,10 +725,13 @@ defmodule ForemanServer.Workflow.AutoPR do
     %{title: legacy_pr_title(context), body: generated_body(context)}
   end
 
-  defp run(context, executable, args, opts) do
-    runner = Map.get(context, :command_runner) || (&System.cmd/3)
-    runner.(executable, args, opts)
-  end
+  defp run(context, executable, args, opts), do: runner(context).(executable, args, opts)
+
+  defp runner(context), do: Map.get(context, :command_runner) || (&System.cmd/3)
+
+  # The bound on a `gh pr list` lookup: a hung `gh` must not hold the executor.
+  defp lookup_timeout_ms(context),
+    do: Map.get(context, :lookup_timeout_ms) || Command.default_timeout_ms()
 
   defp pr_url_from_output(output) do
     case Regex.run(~r"https://github\.com/[^\s]+", output) do
@@ -374,19 +740,6 @@ defmodule ForemanServer.Workflow.AutoPR do
     end
   end
 
-  defp findings_section(artifact_path) do
-    case ForemanServer.Workflow.ReviewFindings.extract(artifact_path) do
-      {:ok, block} -> "\n## Unresolved review findings\n\n" <> block <> "\n"
-      :none -> ""
-      {:error, :unterminated_block} -> unterminated_findings_section(artifact_path)
-    end
-  end
-
-  defp unterminated_findings_section(artifact_path) do
-    Logger.warning(
-      "AutoPR could not read unresolved review findings: unterminated block in #{artifact_path}"
-    )
-
-    ForemanServer.Workflow.ReviewFindings.unterminated_section(artifact_path)
-  end
+  defp findings_section(artifact_path),
+    do: ForemanServer.Workflow.ReviewFindings.pr_section(artifact_path, "AutoPR")
 end

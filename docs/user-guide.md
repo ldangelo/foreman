@@ -316,9 +316,10 @@ merge. Each step names the detailed section that holds the exact rules, limits
 and endpoints. Two invariants run through every step:
 
 - **The merge gate is operator-only.** Only `foreman run approve-merge` and
-  `foreman run merge` (commands `merge_approve`, `run.pr.merge`) merge a PR. The
+  `foreman run merge` (commands `merge_approve`, `run.pr.merge`) merge a PR, and only
+  `foreman run waive-evidence` (`run.pr.waive_evidence`) waives PR evidence. The
   coordinator, the PR watcher, auto-fix, notifications and every MCP tool can
-  observe, propose and fix, but cannot approve or merge.
+  observe, propose and fix, but cannot approve, waive or merge.
 - **Everything is a command or a projection read.** The CLI, the LiveView
   workspace and MCP all use the same `POST /api/commands` allowlist and
   `GET /api/*` reads ([Operator API surface](#2-operator-api-surface)).
@@ -446,7 +447,7 @@ reviewed (`--head-sha`: the PR head as `foreman run prs <run-id>` or GitHub show
 then merge:
 
 ```bash
-foreman run approve-merge --id <run-id> --approver <name> --identity github:<login> --head-sha <sha>
+foreman run approve-merge --id <run-id> --approver <name> --identity github:<login> --head-sha <sha> --acknowledge-gate-off  # gate-off project (no required_checks); on a gated project drop the flag
 foreman run merge --id <run-id>
 ```
 
@@ -460,6 +461,10 @@ bounded fix threads: `foreman run prs|fix-ci|address-comments|resolve-conflicts|
 Auto-fix is opt-in per project (`--pr-auto-fix`), with at most one fix in flight
 per PR and a hard cap of 5 attempts per kind
 ([PR watching and auto-fix](#pr-watching-and-auto-fix)).
+
+To see where a run is in its workflow, `foreman run phases <run-id>` lists each phase with its
+status. The Herdr sidebar in `ops/herdr-sidebar/` shows this, the live transcript and the run's
+changes in a tab per run.
 
 ### Notifications
 
@@ -560,6 +565,12 @@ foreman project create \
   --task-provider-database-path /srv/foreman/project-123/.beads
 ```
 
+The database path is required for Beads only. A Kata-backed project needs none: `--path` (absolute) becomes the kata working directory (see "Task-provider (Beads) enablement", subsection "Kata task provider").
+
+```
+foreman project create --id project-123 --path /srv/foreman/project-123 --task-provider kata
+```
+
 ### Get one project
 
 ```
@@ -570,6 +581,12 @@ foreman project get project-123
 
 ```
 foreman project update --task-provider beads --task-provider-database-path /srv/foreman/project-123/.beads project-123
+```
+
+Switching to Kata takes no database path; the CLI sends the project's registered (absolute) path as `config.cwd`:
+
+```
+foreman project update --task-provider kata project-123
 ```
 
 ### Delete a project
@@ -702,6 +719,7 @@ foreman project settings project-123
 | `pr_auto_fix` | JSON object (`--pr-auto-fix`) | Opt-in PR auto-fix policy: `kinds` (`ci`, `comments`, `conflicts`), `max_attempts` 1..5, `cooldown_seconds` 0..86400 (see [PR watching and auto-fix](#pr-watching-and-auto-fix)) |
 | `repo_allowlist` | `--repo-allowlist <abs-path-prefix>` (repeatable) | Operator-only: absolute path prefixes under which a thread may attach repositories to its run (off while empty; `--clear repo_allowlist` turns it off; see [Repositories](#repositories)). Not settable over MCP |
 | `max_repos_per_run` | 1..1000 (`--max-repos-per-run`, default 4) | Operator-only: most repositories one run may hold, primary included. Not settable over MCP |
+| `required_checks` | `--required-checks <json>` (a JSON array of at most 20 entries `{"name", "kind": "check_run"\|"status_context", "workflow"?, "allow_skipped"?}`; `[]` = gate on with no checks; unset or `--clear required_checks` = off) | Operator-only: the checks a PR must show before the merge gate accepts it (see [PR watching and auto-fix](#pr-watching-and-auto-fix)). Not settable over MCP or by the coordinator. Setting it needs a durable idempotency store while `:require_durable_store_for_gating` is on. Since Phase 1 PR 8 a project with it set has `approve-merge` refused unless the PR's evidence for the approved head is eligible or waived (unset: no evidence refusal) |
 
 Text values are trimmed and `CRLF` is normalised to `LF`; a blank value clears the
 setting. Validation is done once, by the server, and its error is shown verbatim
@@ -873,9 +891,9 @@ foreman project network set --mode allowlist --allow pypi.org project-123
 |---|---|
 | Variables | names `^[A-Za-z][A-Za-z0-9_]*$`, values <= 8 KiB, <= 100 vars. `FOREMAN_*` is reserved: `project.environment.set` rejects it (`reserved_env_name`), and a project whose stored legacy `config.env`/`config.environment` already holds one fails every workflow phase and jobsite launch LOUDLY (`reserved_project_env_keys`, naming the keys) until the operator removes it. Secret-looking names (`*_TOKEN`, `*_PASSWORD`, `*_API_KEY`, ...) are rejected with `secret_in_vars`: use a secret. |
 | Secrets | Names `^[A-Z][A-Z0-9_]{0,63}$`, values <= 16 KiB. The value goes straight into the server's secret store (default: 0600 files under `~/.foreman/secrets`, dir 0700, outside any repo; `config :foreman_server, :secret_store, dir:`). **Events, projections, logs, API responses and MCP results carry only the name and a version, never the value.** The CLI reads the value from stdin or `--from-env`, never from a flag. Secrets are delivered to agents as environment variables and redacted from run logs, jobsite output and session archives (transcript, `diff.patch`, `changed-files.txt`, `request.md`, analysis files): only values present in the server environment are recognised, so a value an agent reads from a committed `.env` file or fetches at runtime is not caught (see [Session archive](#session-archive-and-automated-review)). A secret wins over a variable of the same name. If the store is unavailable at launch the run proceeds without stored secrets (warning logged). The same list (`ProjectEnvironment.secrets/1`: every secret-store value, whatever its name, plus the values of secret-named env variables) redacts project memory and the coordinator's conversation text by value, and so do the question text, tool-call input summaries, thread transcripts (at read time, so older events too), PR-fix prompts and the coordinator's recorded action parameters and turn-failure messages. A global/legacy run (no project) or a project whose environment cannot be resolved is redacted by the built-in name patterns only, with a warning in the server log (never a name or value). Values shorter than 8 characters are not matched by value unless their name looks secret. **Known limit:** where one secret is a substring of another the outcome depends on replacement order. **Known limit (observed live 2026-10-30, `foreman-mw5rz`, fixed by PR #775 and re-verified live 2026-10-31):** the server's debug request log (Phoenix `Parameters:` lines and LiveView `HANDLE EVENT` lines, in stdout, `~/.foreman/logs/foreman-server.log` and the SigNoz export) recorded the arguments of an MCP `tools/call` and the text of a chat request before redaction, so a stored value that an agent sent through an MCP tool (for example a memory write) or that an operator typed into a chat message was in the server log. `config :phoenix, :filter_parameters` now hides the free-text keys (`text`, `content`, `description`, `prompt`, `message`, `instructions`, `goal`, `body`), the MCP `params` envelope and `token` (the dashboard's `?token=`). Keys match by substring, so that layer alone would miss a free-text key added later; a `:logger` primary filter (`ForemanServer.Observability.SecretValueLogFilter`, `foreman-25sqf.1.1`) therefore also redacts every stored secret value of 8 or more characters from every log event, whatever key carries it (see the paragraph on the server's operational log under Observability). Re-verified live 2026-10-31 (`scripts/e2e/redaction_value_live.sh`, real pi agent and coordinator, two runs, before the value-based filter existed): the 22-character value had 0 hits in the server stdout log and the file log (11 occurrences before the fix). In the observed run the event store, a whole-database dump, project memory, the run archive and the webhook capture held no copy (`docs/acceptance/e2e-live-verify-2026-10-30.md`). **Accepted by policy (`foreman-4ohex`, owner decision 2026-10-31):** a stored secret the agent reads from its environment and uses is also in the agent's own event stream, which the jido_harness cache (`$HOME/Library/Caches/jido_harness/*`, `proc_*/` and `run_*/` directories) keeps on disk in plain text, outside the redacted event store, exactly like the agent's own session files (for example pi's `~/.pi` sessions); the byte-search in `scripts/e2e/redaction_value_live.sh` reports it as an INFO line, not a failure. Treat the host account that runs agents as trusted with every secret the project injects, and clear the cache directory if you rotate a secret. OS keychain backends were evaluated and rejected (docs/spikes/E4-SP1.md). |
-| Delivery | Workflow runs get the project env plus secrets (Foreman's own `FOREMAN_*` values cannot be overridden: no project key may use that namespace);  |
-| Setup script | Runs once, right after a fresh run worktree is created and before any agent starts, as `sh -c` in the worktree with the project env and secrets plus `FOREMAN_WORKTREE_PATH`, `FOREMAN_RUN_ID`, `FOREMAN_PROJECT_ID`. Non-zero exit or exceeding `config :foreman_server, :project_setup, timeout_ms:` (default 300000; the process group is killed) fails the phase (`setup_script_failed`, `setup_script_timeout`). Output is bounded (64 KiB tail), redacted and written to `<artifact dir>/<run_id>/setup.log` (workflow door). It is not re-run for later phases that reuse the worktree. The script only comes from this record. |
-| Network policy | `default` (unchanged), `none` (`docker run --network none`; the agent cannot reach its provider API, so this fits offline tasks) or `allowlist` (an internal docker network plus an egress proxy sidecar permitting your `--allow` hosts and the always-allowed provider/VCS hosts; spike docs/spikes/E4-SP2.md). **Enforced on docker runs only** (`sandbox: docker`, §11, and PR-fix follow-up runs): a docker run applies the policy and fails with the policy's typed error when it cannot; a workflow run without `sandbox: docker` (agents on the server host) cannot enforce it, the documented limitation. Under `allowlist` the sandbox container's own environment carries the proxy variables (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` and their lowercase twins), so sandbox hooks (`hooks.sandbox.*`) and every `docker exec` reach an allowed host through the sidecar too, not only the agent. The policy's network, sidecar and sandbox container are removed when the jobsite ends; whatever a crashed server left is swept at the next boot. Everything a policy creates or governs (`none` included) is labelled `foreman.owner=<digest of this server's event store host, port and database>` and `foreman.jobsite=<id>`, and cleanup and the sweep touch only labelled objects of that owner: a similarly named container or network, or another Foreman server on the same docker host, is left alone. Objects an older Foreman created before it labelled them are not swept: remove a leftover `foreman-jobsite-*` network and its containers by hand once. |
+| Delivery | Workflow runs get the project env plus secrets (Foreman's own `FOREMAN_*` values cannot be overridden: no project key may use that namespace); |
+| Setup script | Runs once, right after a fresh run worktree is created and before any agent starts, as `sh -c` in the worktree with the project env and secrets plus `FOREMAN_WORKTREE_PATH`, `FOREMAN_RUN_ID`, `FOREMAN_PROJECT_ID`. Non-zero exit or exceeding `config :foreman_server, :project_setup, timeout_ms:` (default 300000; the process group is killed) fails the phase / jobsite (`setup_script_failed`, `setup_script_timeout`; jobsites: `hook_failed`). Output is bounded (64 KiB tail), redacted and written to `<artifact dir>/<run_id>/setup.log` (workflow door). It is not re-run for later phases that reuse the worktree. Remote jobsite specs still cannot supply `hooks.host.*`; the script only comes from this record. |
+| Network policy | `default` (unchanged), `none` (`docker run --network none`; the agent cannot reach its provider API, so this fits offline tasks) or `allowlist` (an internal docker network plus an egress proxy sidecar permitting your `--allow` hosts and the always-allowed provider/VCS hosts; spike docs/spikes/E4-SP2.md). **Enforced on docker jobsites only**: the host sandbox with a non-default policy fails with `network_policy_unsupported`, a spec `sandbox.config.network` wider than the policy fails with `network_policy_violation`, and a workflow run (agents on the server host) cannot enforce it, so a workflow run of a project with a non-default policy is **refused** before it claims its task or creates a worktree, never run unenforced (see [Network and skill preflight](#network-and-skill-preflight)). Under `allowlist` the sandbox container's own environment carries the proxy variables (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` and their lowercase twins), so sandbox hooks (`hooks.sandbox.*`) and every `docker exec` reach an allowed host through the sidecar too, not only the agent. The policy's network, sidecar and sandbox container are removed when the jobsite ends; whatever a crashed server left is swept at the next boot. Everything a policy creates or governs (`none` included) is labelled `foreman.owner=<digest of this server's event store host, port and database>` and `foreman.jobsite=<id>`, and cleanup and the sweep touch only labelled objects of that owner: a similarly named container or network, or another Foreman server on the same docker host, is left alone. Objects an older Foreman created before it labelled them are not swept: remove a leftover `foreman-jobsite-*` network and its containers by hand once. |
 
 `GET /api/projects/<id>/environment` returns the record (variable values only for
 the record form; a project still on legacy flat `config.env` shows `[redacted]`
@@ -1047,12 +1065,28 @@ foreman run pause --id <run-id> --reason operator_pause
 foreman run resume --id <run-id>
 foreman run remove --id <run-id>
 foreman run reset --id <run-id>
-foreman run approve-merge --id <run-id> --approver <name> --identity <github:login> --head-sha <sha>
+foreman run approve-merge --id <run-id> --approver <name> --identity <github:login> --head-sha <sha> --acknowledge-gate-off  # gate-off project (no required_checks); on a gated project drop the flag
+foreman run waive-evidence --id <run-id> --approver <name> --identity <github:login> --head-sha <sha> --waive <codes> --reason <text>
 foreman run merge --id <run-id>
 ```
 
 - `run cancel` marks the run terminal (`cancelled`) and kills the
-  dispatched agent, including its OS-level process, via `RunControl`.
+  dispatched agent, including its OS-level process, via `RunControl`. The
+  run reads as cancelled as soon as the agent has been signalled with
+  `SIGINT`; the harness then escalates to `SIGTERM` and `SIGKILL` itself
+  (5 s per step by default), so the agent can still be exiting for a few
+  seconds after the run is terminal. Foreman waits for the agent to exit
+  (up to 15 s), then `OrphanReaper` terminates the tool processes it
+  left running in the run's worktree (`SIGTERM`, then `SIGKILL`; only
+  processes whose cwd is inside the worktree and whose parent is pid 1
+  are touched). A server shutdown does the same for live agents, and a
+  restarted server reaps what an agent left in a worktree before reusing it.
+  A run still waiting for a run slot (listed in `waiting` of `GET /api/queue`) has no run
+  record and no agent yet: `run cancel` removes it from the waiting list and acknowledges its
+  task (`task.run_terminated`, with the cancel's `reason`) instead of failing with
+  `run_not_found`. The run stops reading as `queued` and is not re-admitted when a slot frees;
+  the task stays `in_progress` until it is retried, like the task of any ended run. The run
+  holding the slot is untouched.
 - `run pause` interrupts the current phase the same way, but first commits
   the phase's partial work to the run branch and leaves the run resumable
   (`paused`) rather than terminal — it releases the run's slot and Beads
@@ -1064,9 +1098,11 @@ foreman run merge --id <run-id>
 - `run remove` terminates the run, releases its slot and any per-DB
   Beads lease, and best-effort cleans the worktree and local branch.
   Use it when a run is wedged and you want a clean slate.
-- `run reset` clears a **failed or stuck** run's projection state so it
-  can be resubmitted fresh; cancelled or completed runs are rejected
-  with `{:run_not_resettable, "<status>"}`.
+- `run reset` clears a **failed, stuck, blocked or paused** run's
+  projection state so it can be resubmitted fresh; cancelled or completed
+  runs are rejected with `{:run_not_resettable, "<status>"}`. A run
+  blocked on an unresolved external effect is the case that needs it
+  ([Restart recovery and external effects](#restart-recovery-and-external-effects)).
 - `run approve-merge` opens the run's merge gate once its PR is ready, for the exact
   commit you name with `--head-sha` (required: there is no "approve whatever the head
   is"). The server reads the PR head back from GitHub (`gh pr view`) and refuses the
@@ -1080,6 +1116,28 @@ foreman run merge --id <run-id>
   `unauthorized_approver`, before anything is read from GitHub. The identity is a claim
   made by whoever holds the API token — the token is the trust boundary — which is why
   there is deliberately no MCP tool for it.
+- With `required_checks` set (`[]` counts), `run approve-merge` also needs the PR's evidence to be eligible, or waived, for the head you named (Phase 1 PR 8). With it unset the gate is off and no evidence is read, but the approval is not silent: the server refuses it (HTTP 422 `:gate_off_not_acknowledged`) unless you pass `--acknowledge-gate-off`, and records that acknowledgement on the approval (`gate_off_acknowledged: true`). After the head check the server reads the PR again, records a fresh observation of its checks and risk, and decides on that. A refusal is HTTP 422 `{"error": "{:evidence_ineligible, \"<head>\", [\"<code>\", ...]}", "detail": {"status", "head_sha", "policy_version", "reasons": [{"code", "subject", "detail"}], "waived", "inputs", ...}}` and nothing is approved. Read the codes in "Approval evidence" under [PR watching and auto-fix](#pr-watching-and-auto-fix); fix the cause, or waive a waivable one with `run waive-evidence`. Other refusals: `{:head_sha_mismatch, ..}`, `{:policy_unavailable, _}` (the project's policy could not be read: never treated as "gate off"), `{:store_not_durable, _}` and `{:evidence_not_recorded, "<command>", reason}` (the fresh observation could not be recorded within its 5 s bound; retry). The decision is recorded on the approval (`MergeGateApproved.evidence`). Only the operator path can approve: a system caller is refused `{:operator_only, "merge_approve"}`.
+- `run waive-evidence` waives named evidence reasons of one PR's merge gate (command
+  `run.pr.waive_evidence`). `--waive` is a comma-separated list of reason codes, of which
+  only `no_checks_configured`, `missing`, `skipped`, `findings_absent`,
+  `findings_legacy_format`, `findings_other_sha` and `risk_high` (a recorded HIGH risk level for
+  the head) can be waived (any other code is
+  `{:reason_not_waivable, "<code>"}`); `--reason` is required, at most 500 characters.
+  A new waiver REPLACES the earlier one for that PR, so its `--waive` list must name every code
+  still to be waived (for example `risk_high` together with the check or findings reason). A
+  `risk_high` waiver is bound to the risk record it was given for (its digest): any change of the
+  risk record (base, findings, judgement text, check status) while the head stays uncovers
+  `risk_high` again and you waive it again.
+  Like `approve-merge` it needs an allowlisted approver identity (`unauthorized_approver`),
+  the full PR head GitHub names (`{:head_sha_mismatch, "<yours>", "<GitHub's>"}`) and a gate
+  that is still pending (`merge_gate_already_approved`); `--repo-id` addresses a
+  non-primary repository's PR. The server stamps the policy version itself: the project
+  must have `required_checks` set (`gate_off` otherwise; `{:policy_unavailable, _}` when it
+  cannot be read). A waiver covers one head and one policy version: a push voids it, and a
+  later waiver replaces it. There is deliberately no MCP tool, and a system caller is refused
+  `{:operator_only, "run.pr.waive_evidence"}`. Since Phase 1 PR 8 the approval reads it: a
+  waiver turns an otherwise-ineligible approval into a `waived` one when it covers every
+  reason (see "Approval evidence" below). Read from the source, not observed.
 - `run merge` squash-merges the approved PR on GitHub (`gh pr merge --squash
   --match-head-commit <approved sha>`). It refuses before approval (`pr_not_acceptable`)
   and if the PR head is no longer the approved commit
@@ -1132,6 +1190,46 @@ adapter accepts only `default` and `auto_approve`, so a phase that asks pi for `
 paths using `{task.projectReportsDir}` resolve under the run's worktree (or the
 task/project directory), not the server's working directory.
 
+### Restart recovery and external effects
+
+**Resuming after a restart.** At boot, reconciliation restarts an executor for each in-flight run and the run resumes (an operator `run resume` takes the same path). Every resume is recorded as the run's `recovery`: the latest record only, with `outcome` (`resumed`, `effect_retried` or `effect_blocked`), `elapsed_since_boot_ms`, an optional `reason`, and for the two effect outcomes `effect_class`, `effect_key` and `effect_verdict`. It is `run.recovery` in `foreman run get <run-id>` and `recovery` in `foreman_run_status`; `null` when nothing was recorded. It is the `RunRecoveryAttempted` event (command `run.recovery_attempt`); the executor also emits the telemetry event `[:foreman_server, :workflow, :run_executor, :resumed]` with `elapsed_since_boot_ms`. When the resumed phase was still `in_progress`, a `PhaseRetried` with reason `resumed` is appended: the phase stays `in_progress` and `attempt` advances by one per restart.
+
+If the resume had to re-provision the run's worktree, the first phase event afterwards (that `PhaseRetried`, or the next `PhaseStarted` when no phase was in flight) carries `prior_worktree_discarded` (`{name, path}`): uncommitted changes in that worktree were **not** carried over. It is recorded only when a worktree could have held work (worktrees enabled for the workflow and at least one phase had started), so a run with none does not claim a loss. It shows on `current_phase.prior_worktree_discarded` in `foreman_run_status`. A `git worktree prune` that fails during resume fails the run with `{:resume_worktree_prune_failed, repo_path, code, output}` (it used to be reported as `:resume_context_unresolvable`).
+
+**Orphaned slot entries.** A run-slot holder or waiter whose run is absent or terminal is released at boot. When that cleanup fails, the failure count is stored durably (`RunSlotRecoveryAttempted`, command `run_slots.recovery_attempt`, one budget per run across holders and waiters) and capped by the same 5-restart backoff as the agent crash-recovery loop: attempts 1 to 5 are retried at later boots, the sixth consecutive failure records the entry `exhausted` and boot skips it from then on. `GET /api/queue` and `foreman_queue_status` list these entries in `orphan_recovery`: `[{run_id, kind, attempt, outcome, reason, elapsed_since_boot_ms}]` with `kind` `slot_release` or `waiter_remove` and `outcome` `failed` or `exhausted`; `[]` when there are none. There is no operator verb to re-arm an exhausted entry. An entry leaves the list when a cleanup finally succeeds or its holder or waiter leaves the stream by another route, which also clears its count: so "recorded at 3 failures, fails again, is at 4" holds only while the entry stays in the slot stream.
+
+**External effects.** Four side effects outside the event store are recorded in the idempotency store under a key `effect:<class>:<run_id>:<identity>` (written `started` before the effect, settled after it): `branch_push` (a `git push` of the run branch; identity the head branch), `pr_create` (`gh pr create`; identity `<head>:<base>`), `task_provider` (a provider `claim`, `complete`, `fail` or `reopen`; identity `<op>:<issue_id>`, [Task-provider enablement](#10-task-provider-beads-enablement)) and `pr_comment` (the PR report comment, Phase 1 PR 7; identity `<head>:<digest>`; repeatable and never blocks or cancels a run: see "PR report comment" under Required checks below). A crash between the write and the settle leaves the key `ambiguous`. The boot sweep asks the class's reconciler what really happened (`git ls-remote` for a push, `gh pr list --state all` for a PR, a read of the issue for the provider, a list of the PR's comments for a report comment: done only for the token user's own comment carrying the matching marker) and acts on the verdict:
+
+| Verdict | Result |
+| --- | --- |
+| `not_done` | `recovery.outcome` `effect_retried`; the effect may run again when the resumed run reaches it |
+| `done` | the run is **blocked** with reason `effect_already_done` |
+| `unknown` (including a check that fails or times out) | blocked, `effect_outcome_ambiguous` (the boot sweep only: an on-demand scan leaves the key undecided and the run running, see the limits below) |
+| a class with no reconciler | blocked, `effect_class_unregistered` (fail closed) |
+
+Exception: a `pr_comment` key (the PR report comment) never blocks a run. For that class a `done` or `unknown` verdict marks nothing and the key is skipped, and the effect may be run again (a comment is repeatable); only `not_done` decides the key like any other.
+
+A blocked run has status `blocked`, the reason code as its `failure_reason`, and `recovery` `effect_blocked` naming the class, key and verdict (`done`, `unknown`, `unregistered`). Its key is marked unresolved, and the effect is refused (`... NOT run: ... is unresolved (see foreman_doctor, Unresolved effect keys)`) until an operator resets the run. Look at the real state first (the remote branch, the PR on GitHub, the issue in the tracker), fix it by hand if it needs it, then `foreman run reset --id <run-id>`: the marker is lifted when the restarted run next reaches that effect, and the effect then runs again. A task-provider `reopen` is the exception: repeating it is harmless, so its key is never marked.
+
+`foreman doctor` lists the keys nobody has resolved: its `effect_keys` check is titled `Unresolved effect keys: N`, with the store line and one `<class> run=<id> status=<run status> key=<key> key_status=<started|ambiguous> decision=<not_done|none> writer=<alive|dead|none>` line per key (`status` is `not_found` when the run has no projection, `unknown` when it cannot be read; the last three fields are explained below). While the keys can be listed the check is `ok` whatever the count, so the count never affects `foreman doctor --strict`. When the store does not answer the check is a `warn` titled `Unresolved effect keys could not be read`, and `--strict` fails on that warning (any `warn` does). The same lines appear in the `foreman_doctor` MCP output ([MCP tool integration](#9-mcp-tool-integration)). The list is by key, whatever its run's status: Phase 0 has no command that resolves or clears an ambiguous key of a completed, cancelled or deleted run.
+
+Since Phase 1 PR 2 each key line also carries `key_status=<started|ambiguous>` and `decision=<not_done|none>` (`started` keys are listed too), and the doctor output has a `✓/✗ Phase 1 gating: durable store ...` line next to the store line: a gating action refuses when the key store is not durable (`:require_durable_store_for_gating`, on in prod, off in dev and test; since Phase 1 PR 4 the gating action is a `project update` or `register` that sets `required_checks`, refused `{:store_not_durable, note}`, HTTP 422). A non-boolean value of that switch is read as on and shows as a `✗` line. Since Phase 1 PR 3 each line ends with `writer=<alive|dead|none>`: the state of the process that stamped the `started` key (`alive`: a scan will not orphan the key; `dead`: the next scan does; `none`: the key carries no stamp, because it was written before the stamp existed).
+
+**Durability and its switches.** Effect keys survive a restart only when the idempotency store is repo-backed. That needs `config :foreman_server, :jido_ecto, enabled: true` (read at server start, `application.ex`) and a database URL in `JIDO_CHECKPOINT_DATABASE_URL`; the default is off in dev, test and prod. Without them the store is ETS-only: the server logs an error at boot and emits `[:foreman_server, :idempotency, :key_store, :not_durable]`, the doctor store line reads `✗ idempotency store is not durable ...`, effect keys vanish at a restart and crash recovery cannot reconcile effects. The same line says `configured but unreachable` when the repo is set but does not answer. `FOREMAN_JIDO_ECTO_ENABLED` is not a switch: it appears only in a comment in `config/prod.exs` and no code reads it, so set the config key.
+
+Limits you should know about:
+
+- An **undecided** key (`started`, or ambiguous with no `decision`) is **refused**, not repeated, since Phase 1 PR 2: `Effect.run` and `Effect.preflight` return `{:error, {:effect_undecided, key}}` for every class except a task-provider `reopen`, and each refusal asks the sweep to scan again (an on-demand scan, as opposed to the boot sweep). The scan decides it: a `not_done` verdict writes `decision: "not_done"` first (the effect then runs once, consuming it), any other verdict blocks the run, except an `unknown` verdict (a `gh` or network call that failed or timed out) from an on-demand scan: that leaves the key undecided, so it stays refused, marks nothing unresolved and does not block the run; the next refusal or the boot sweep asks again, and only the boot sweep blocks a run on `unknown`. A `started` key records its writer (the server incarnation and the process that called `Effect.run`: `writer_incarnation`, `writer_pid`). The scan marks a stamped key `ambiguous` only when that writer is dead (it belongs to an earlier incarnation, or its process is gone), whatever executor its run has now, and never while the writer is alive; so after an executor is killed mid-effect and the run resumes, the successor's refusal triggers a scan that orphans the dead writer's key and decides it. A key with no stamp (written before the stamp existed) keeps the older rule: it is orphaned only when its run has no live executor, and its successor stays refused until that run ends or the server restarts. A writer that hangs forever keeps its key undecided. Read from the source and tests, not observed on a live run. Bead `foreman-ulg5y.3.14` (residual cleanups) stays deferred.
+- A verdict on a **terminal or absent run** cannot block it: it is logged and counted, the key stays ambiguous, and the doctor lists it. A key whose status changed between the listing and the read (re-marked `started`, completed or failed) is skipped, not blocked, and so is a key that settled before the sweep could mark it unresolved (since Phase 1 PR 4 all four key writers, marking a key completed, failed, ambiguous or unresolved, are compare-and-set and leave a settled key as it is: a jobsite's or crash recovery's own outcome write that finds the key already settled keeps the settled outcome).
+- **Keys of a terminal run.** The sweep decides such a key: `not_done` lets the next operator Create PR run the effect once. A `done` or `unknown` verdict leaves the key refused (`{:effect_undecided, key}` before the sweep decided it, `{:effect_unresolved, key}` after it); the operator's Create PR still works when GitHub already has the PR at the local tip (it is adopted through the lookup), but no command clears a `branch_push` key whose verdict is `done` or `unknown` on a terminal run. The `pr_create` reconciler asks `gh pr list --head <branch> --base <base> --state all --json url,number,state,isCrossRepository --limit 100` in the key's checkout: no PR, or only forks' PRs (a fork's PR of the same branch name is never the run's), is `not_done`; ANY PR of this repository in any state (a merged or closed one too, and one with another head: the key holds no tip to compare) is `done`; a full list of 100 with none of this repository's, or an answer that is unreadable or incomplete, is `unknown`. So a same-repository PR on another head reads `done` for the sweep, while the operator's Create PR (which looks up the expected head) refuses it `{:pr_lookup_mismatch, url, expected, actual}` and does not adopt it: close or align that PR. The decision is written before its audit event; if the audit event (`effect_retried`) is rejected or fails it is not retried, and the sweep counts it `audit_failed`, so the audit trail can miss one event while the decision stands. `branch_push` and `pr_create` keys stay keyed by branch and base; only the new `pr_comment` key carries the head SHA. See the exit record's gap G-02 and G-23.
+- A key holding a status the store never writes is never settled or marked: the boot sweep **blocks** its run without an unresolved marker (the reason is the verdict's), and `Effect.run` and `Effect.preflight` refuse the effect with `{:effect_check_failed, {:unexpected_status, status}}` and leave the key as it is. Read from the source, not observed.
+- After a reset of a run blocked `effect_already_done`, the effect runs again against a world that already moved. Since Phase 1 PR 2 `gh pr create` is preceded by a lookup: AutoPR, the operator's Create PR and PhasePR adopt an open PR whose head is the local tip instead of creating one (a PR on another head is the typed `:pr_lookup_mismatch`, a closed or merged PR in PhasePR is `:matching_pr_closed`, a lookup that fails is `:pr_lookup_failed`). A provider `claim` on an issue already `in_progress`, a `complete` on one already `closed` and a `fail` on one already `blocked` are expected to be rejected. This is read from the source, not observed.
+- A refused primary-repository PR (its key unresolved) is logged at error and the run completes with no record on the run; secondary repositories do record a failure.
+- A non-zero `gh pr create` exit marks the key `failed` unless a second lookup then finds an open PR at the local tip, which is adopted and settles the key `completed`; GitHub's refusal of a duplicate open PR covers the rest, not a closed one.
+- A timed-out `git ls-remote` or `gh` call is abandoned; an OS process stuck in connect may not be signalled.
+- A task-provider claim's assignee check does not work as intended (bead `foreman-6vlx6`). `br update --claim` takes no actor and assigns its own default assignee. With an `actor` configured, the reconciler compares the issue's assignee with that actor, so a genuine claim can read `unknown` and block the run. With no actor configured (the shipped `actor: nil`) the check is skipped and any `in_progress` assignee reads `done`, including a claim someone else made, which blocks a run that is not terminal with `effect_already_done`. Reopen is attributed to the newest run of the task by last event, not the one that claimed it.
+- The operator dashboard offers Reset only for failed, stuck and needs-recovery runs (a paused run has Resume), so a blocked run is reset with `foreman run reset` or `POST /api/commands`.
+
 ### Agent command assets
 
 `foreman commands` generates agent-native Foreman shortcuts for Claude Code plus copyable generate-only assets for Pi/OMP, Codex, and OpenCode. The assets were thin shell wrappers over `foreman task create`, `foreman run submit`, `foreman run list`, `foreman run get`, and `foreman task get`; the `task create`/`task get` wrappers are REMOVED (TRD-018, 2026-09-13) along with the CLI verbs they wrapped, so those two generated shortcuts now fail with an "unknown command" error until the generator is updated. The `run submit`/`run list`/`run get` wrappers are unaffected. Generated files inherit `FOREMAN_API_URL` and `FOREMAN_API_TOKEN` instead of embedding secrets.
@@ -1177,7 +1275,7 @@ route). The list is exactly:
 - Tasks: `task.create`, `task.approve`, `task.retry`, `task.update`
 - Runs: `run.cancel`, `run.pause`, `run.resume`, `run.remove`, `run.reset`,
   `run.steer`, `inbox.send` (MCP `foreman_inbox_send` only)
-- Merge gate (operator-only): `merge_approve`, `run.pr.merge`, `run.pr.retry`. (Voiding a
+- Merge gate (operator-only): `merge_approve`, `run.pr.merge`, `run.pr.retry`, `run.pr.waive_evidence`. (Voiding a
   stale approval, `run.pr.rehold`, is a system command sent by the server itself: it is on
   no allowlist, and it can only ever make the gate stricter.)
 - PR watching: `run.pr.fix_ci`, `run.pr.address_comments`,
@@ -1229,7 +1327,10 @@ Read endpoints are projection-only:
   when Foreman recorded none. `GET /api/runs` carries the same field on
   each listed run.
 - `GET /api/tasks/{id}`, `GET /api/projects`, `GET /api/projects/{id}`,
-  and `GET /api/queue` expose corresponding projections.
+  and `GET /api/queue` expose corresponding projections. `GET /api/queue`
+  returns `capacity`, `running`, `waiting` and `orphan_recovery` (the boot
+  cleanup budget of orphaned slot entries; `[]` when none, see
+  [Restart recovery and external effects](#restart-recovery-and-external-effects)).
 - Schedules: `GET /api/projects/{project_id}/schedules` returns
   `{ticker: "running"|"disabled", schedules: [...]}` (the Scheduled tab's data;
   MCP `foreman_schedule_list`; CLI `foreman project schedule list`). Schedules
@@ -1311,10 +1412,10 @@ config :foreman_server, :threads,
 default false; `resolved_limit` 0..200, default 20) answers "what needs me?".
 The body has `project_id`, `groups`, `counts`, `attention`, `truncated`, `tabs` and
 `generated_at`. `groups` has six string keys, each a list of thread cards
-(newest first): `ready_for_review` (PR open and merge gate pending, or a
+(newest first): `ready_for_review` (PR open and merge gate pending with evidence that does not block it, or a
 completed thread with a `met`/`partially_met` review and an open PR),
 `waiting_on_you` (pending approval or question, blocked/stuck, failed, PR
-conflict, plain pause, review `not_met` on an open PR, or failing CI on an open PR: reason `ci_failing`, from the E9 PR watch's `checks_state`, even while the merge gate is pending; or an outstanding CHANGES_REQUESTED review (reason `changes_requested`) or an unresolved review thread (reason `review_threads`) on an open PR, from the same watch's `review_decision` and `thread_ids`; conversation comments alone do not count because they have no resolved state; when CI is failing too the reason stays `ci_failing` and the review reason shows once CI clears; all of them clear on the next PR observation after the review is resolved), `working`, `landing`
+conflict, plain pause, review `not_met` on an open PR, or failing CI on an open PR: reason `ci_failing`, from the E9 PR watch's `checks_state`, even while the merge gate is pending; or an outstanding CHANGES_REQUESTED review (reason `changes_requested`) or an unresolved review thread (reason `review_threads`) on an open PR, from the same watch's `review_decision` and `thread_ids`; conversation comments alone do not count because they have no resolved state; when CI is failing too the reason stays `ci_failing` and the review reason shows once CI clears; all of them clear on the next PR observation after the review is resolved; or, since Phase 1 PR 8, reason `evidence_blocked`: an open PR whose merge gate is pending but whose approval evidence is `ineligible` or `unknown`, so an approval would be refused; it lists under `waiting_on_you` instead of `ready_for_review`), `working`, `landing`
 (merge approved, PR still open), `idle` and `resolved` (flag, PR merged or
 closed, cancelled). `attention` is `{needed, count, reasons}`: needed when
 `waiting_on_you` or `ready_for_review` is non-empty. An unknown project is
@@ -1346,6 +1447,8 @@ carry the text hint `operator: foreman run approve-merge/merge`.
 Open `/dashboard/runs` with the same bearer token accepted by the browser dashboard guard: `Authorization: Bearer <token>` or `?token=<token>`. The route fails closed with `401 unauthorized` when the token is missing, wrong, or `:api_bearer_token` is unset. `/dashboard` remains the separate Jido live dashboard.
 
 The run dashboard lists projection-backed runs (each row shows the run id, its task or `ad-hoc run` label, a status chip, workflow, current phase and PR marker), phase status, durable worker logs, and read-only change evidence. Status chips colour known statuses (for example `needs_recovery` and `failed` are red); a status the page has no colour for is shown in the warning colour so it is noticed rather than looking like `completed`. Logs are read from `ProjectionStore.run_logs/1`; server `Logger` output is not copied into run logs. Missing worktrees, branches, bases, or PR evidence show explicit unavailable states rather than shelling into private paths.
+
+Since Phase 1 PR 8 the Pull requests tab of the project Overview and the thread pane show, for each PR, an approval evidence block (hidden when the status is `off`): the status, the risk level (marked stale when it is for another head), the report status, whether a waiver applies, the reason codes that block approval, the waived codes, the findings and the risk rationale, and a report delivery failure. A thread whose pending gate is blocked says "Approval blocked: the PR's evidence is ineligible or unknown" (card reason `evidence_blocked`); if the read model cannot be read the pane says "PR evidence unknown", not "no evidence". The run dashboard's Reset action is enabled for failed, stuck, needs-recovery, blocked and paused runs. The dashboard cannot approve, waive or merge.
 
 Deep links: `/dashboard/runs?run_id=<run-id>[&tab=summary|logs|changes|actions][&file=<path>]`.
 
@@ -1774,6 +1877,30 @@ receives project variables. Start the server with the provider's key exported, t
 confirm with `env -i PATH="$PATH" HOME="$HOME" <KEY>=... pi --list-models
 "<provider>/<model>"` that a minimal environment lists it.
 
+### Network and skill preflight
+
+Two more checks run at kickoff, for a fresh and a resumed run alike, in this order: the network policy, the provider/model check above, then the skill check, all before the task is claimed, a worktree is created or a phase starts.
+
+**Network policy.** Every workflow run is a host run: the agent runs on the server host as the server user, which cannot enforce a project's `environment.network`. A project whose policy is anything but `default` (`none`, `allowlist`, or a stored mode Foreman does not recognise) is therefore refused, because a policy that silently does nothing is worse than an error. A project with no policy reads as `default` and proceeds. The run and its task fail with the terminal reason `{:isolation_unsupported, :network, :host_workflow}`, and `failure_reason` reads: `isolation_unsupported: this project requires a network policy (its environment.network is not default) that the host workflow door cannot enforce; run it on the docker jobsite door or set the project's network policy to default ({:isolation_unsupported, :network, :host_workflow})`. The server logs a warning with `operation: "run_executor.network_isolation_preflight"`. Either run the work on a docker jobsite, which enforces the policy, or `foreman project network set --mode default <project-id>`. **This is a breaking change**: a project that already had a `none` or `allowlist` policy, which workflow runs used to ignore silently, now has its workflow runs refused.
+
+**Skill preflight.** For each phase still to run whose `command:` names a skill (`/skill:<name> ...`), Foreman asks whether the harness that will launch it can load that skill. The verdict is one of three:
+
+| Verdict | Meaning | Effect |
+| --- | --- | --- |
+| `available` | found where the harness loads skills, in a user-scoped source no setting filters | none |
+| `missing` | absence proven across everything the harness loads for this launch | the run is refused |
+| `unverifiable` | anything else | the run proceeds; one warning per phase (`operation: "run_executor.skill_preflight"`) |
+
+The check is fail-safe, and so it rarely refuses. Only `pi` on the host door is examined; `claude`, any other provider and the docker backend are always `unverifiable`. For `pi` it reads what pi 1.5.0's loader reads: the user skills directory (`<agent dir>/skills`, where the agent dir is `PI_CODING_AGENT_DIR` or `~/.pi/agent`), the project's `.pi/skills`, `~/.agents/skills` and each ancestor `.agents/skills` up to the repository root, the `skills` arrays of the user and project `settings.json`, and every declared package's `pi.skills`. A skill's identity is the `name` in its `SKILL.md` frontmatter (else its directory name) and one without a non-empty `description` is not loaded. `~/.foreman/skills` is **not** searched (pi does not read it; [Bundled skills](#74-bundled-skills)). A find in a project-scoped source (pi decides whether to trust the project at run time, for a worktree that does not exist yet) or behind a filter is `unverifiable`, never `available`. `missing` additionally requires that nothing was left unresolved and that no pi extension could contribute skill paths at run time: an extension source (a package's `pi.extensions`, an `extensions` directory or settings entry), a package that cannot be resolved, an unreadable `settings.json`, an unparseable `SKILL.md` or a glob the resolver cannot expand each make the verdict `unverifiable`. So **on a host with pi extensions, or packages that cannot be resolved, `missing` is not reached and the refusal fires only on a provably complete lookup, such as a clean pi setup.** A declared package that resolves cleanly does not by itself prevent `missing`. Other limits: absence is proven against the project checkout's working copy, not the worktree's base-ref content; the resolver mirrors pi 1.5.0 and a different pi may load more places; an unresolvable project environment makes the verdict `unverifiable`.
+
+A refused run fails with the terminal reason `{:capability_preflight_failed, [%ForemanServer.Workflow.PreflightFailure{}]}`, one struct per phase with `class: :skill_not_found`, `phase`, `provider`, `backend` and `skill`. The `failure_reason` is that struct as text; the readable line (`phase "<name>": skill_not_found - the :pi harness cannot find skill "<skill>" in its skill directories on the :host_workflow backend`) is in the server log. It is a different tuple from `{:provider_model_preflight_failed, ...}`: a harness that is not installed on the default provider is reported by that one, not this. To recover, install the skill in a directory pi loads, or fix the name in the workflow, then re-dispatch as [below](#recovering-from-a-preflight-failure).
+
+`config :foreman_server, :skill_home` is an optional key, unset in production: it names a home directory to read instead of the server user's `HOME` (agent dir `<home>/.pi/agent`) for hosts where the service user's home is not the one pi will use. A project's own `HOME` or `PI_CODING_AGENT_DIR` (set with `foreman project env set`) wins over it.
+
+**What the launch enforces.** Each phase the host door starts records an `execution_profile`: `backend` (`host_workflow`) and, for `filesystem`, `network`, `credentials` and `cleanup`, a `{state, reason}` of `enforced` or `unenforced`, plus `skill` (`available` or `unverifiable`) when the phase names a skill. It is on the phase entry and `foreman_run_status`'s `current_phase.execution_profile`, and absent for a phase recorded before the field existed. It records, it does not enforce. On the host door all four properties are always `unenforced` with the reason: the agent runs on the server host (the `VfsIsolation` registry is not an enforcement point), the host cannot enforce `environment.network`, run-scoped credentials are not enforced, and `cleanup` is never a guarantee because the worktree is removed only on the executor's own finish paths (a crash leaves it; boot reclaims a worktree only for a terminal run with a clean checkout). The docker jobsite emits no phase events, so a jobsite has no recorded profile; its enforced boundary is the sandbox container's mounts.
+
+**Refused on a resume.** A resumed run that had already claimed its task and is then refused (network, provider/model or skill) fails only the task execution, not the provider's `fail` effect, and the refusal path creates no worktree cleanup for it: the provider issue is left `in_progress` and the worktree retained. The boot reopen sweep is expected to reopen the issue at the next boot; this was read from the source in review, not exercised by a test.
+
 ### Recovering from a preflight failure
 
 A refused run costs nothing to abandon: it dispatched no phase and created no worktree
@@ -1882,14 +2009,26 @@ collapsing into one if such a caller is added.
 
 Two boundaries worth stating plainly: `~/.foreman/skills` is computed by
 `ForemanServer.Skills.Installer.target_dir/1` and is NOT a directory the `pi`/`omp` CLIs scan
-for skills (`packages/foreman_cli/cmd/foreman/agent_commands.go` renders skill files under
-`.pi/agent/skills` instead), and `foreman init --force` refreshes workflows and prompts only,
+for skills. pi reads `<project>/.pi/skills` and `~/.pi/agent/skills`. The CLI
+(`packages/foreman_cli/cmd/foreman/agent_commands.go`) recommends `.pi/agent/skills` for a
+project, which pi does not read (a known defect, bead `foreman-kaa9w`; the global
+recommendation `~/.pi/agent/skills` is correct). `foreman init --force` refreshes workflows and prompts only,
 never skills. A skill placed anywhere other than `~/.foreman/skills` is invisible to
 `maybe_install/1`'s missing-skill check.
 
-The bundle ships no skill today: the one it had (`foreman-jobsite-template`, for authoring
-Jobsite scripts) went with the jobsite dispatch path, so `priv/defaults/skills` holds only a `.gitkeep`
-and an empty bundle installs nothing.
+The run-time skill preflight ([Network and skill preflight](#network-and-skill-preflight))
+relies on the first boundary: it never searches `~/.foreman/skills`, so a skill that exists
+only there is not a skill the `pi` harness loads. The installer's output does not satisfy
+the preflight.
+
+`foreman-jobsite-template` is the bundled skill for authoring Remote Jobsite
+scripts: it turns a natural-language description into a `Jobsite.Spec.from_json/2`
+whitelist-compliant spec plus its `.exs` runner, and its `scripts/validate_spec.py`
+checks the spec offline against the same key rules the server enforces.
+`foreman jobsite template` (see [Remote Jobsite API](#remote-jobsite-api)) is its
+deterministic counterpart: the server authors the script and prompt file from a
+prompt and validates the spec with `Jobsite.Spec.from_json/2` itself, not a copy
+of its rules.
 
 ## 8. Telemetry, OTel, LiteLLM, and Langfuse
 
@@ -2033,7 +2172,29 @@ The write-gated thread tools are `foreman_thread_stop` and
   `workflow_name`, `current_phase`, timestamps, `failure_reason`, and the
   provider's own `provider_session_id` / `provider_sessions` once a phase's
   agent has reported one, and cumulative `usage` tokens and provider-reported
-  `cost_usd`, `null` where unknown).
+  `cost_usd`, `null` where unknown), plus `recovery`: the run's latest
+  recovery record, or `null` ([Restart recovery and external effects](#restart-recovery-and-external-effects)).
+  `current_phase` is the phase in progress (else the latest) with `phase_id`,
+  `run_id`, `task_id`, `index`, `name`, `status`, `attempt`, timestamps,
+  `failure_reason`, `latest_stall` and four recorded facts about its launch:
+  `input_artifacts` (the artifact references the phase started from,
+  `[{index, source_phase, path, sha256}]`; `[]` for phase 1, `null` for a
+  phase recorded before the field existed), `context` (the standing context the
+  launch delivered, [Standing context](#13-standing-context)),
+  `execution_profile` (what the launch's backend enforces and does not,
+  [Network and skill preflight](#network-and-skill-preflight)) and
+  `prior_worktree_discarded` (`{name, path}` when a resume re-provisioned a
+  worktree that may have held uncommitted work, else `null`).
+- `foreman_queue_status` returns the run-slot queue (`capacity`, `running`,
+  `waiting`) and `orphan_recovery`, the boot cleanup budget entries of
+  orphaned slot holders and waiters (same shape as `GET /api/queue`).
+- `foreman_doctor` returns `output` (the provider readiness report, then the
+  `Idempotency store` line and the `Unresolved effect keys` section, one line per
+  ambiguous effect key: `<class> run=<id> status=<run status> key=<key> key_status=<started|ambiguous> decision=<not_done|none> writer=<alive|dead|none>`, plus, since Phase 1 PR 2, `started` keys and a `Phase 1 gating` line after the store line),
+  `strict` and the structured `providers` rows. `strict: true` fails with
+  `PROVIDER_MISSING` when a required provider is missing; the effect-key section
+  never changes that. `GET /api/doctor` carries the same information as its
+  `effect_keys` check ([Restart recovery and external effects](#restart-recovery-and-external-effects)).
 - `foreman_run_get_logs` reads durable worker stdout/stderr events from
   `worker:<run_id>:<worker_id>` streams. Known runs with no output return
   an empty result; unknown runs return `NOT_FOUND`.
@@ -2075,8 +2236,8 @@ Coordinator HTTP routes (bearer token): `POST /api/projects/:id/coordinator/mess
 `foreman_project_settings_get` returns the same typed payload as
 `GET /api/projects/<id>/settings` (`project_id`, `status`, `settings`, `limits`;
 no env values). Project reads over HTTP and MCP replace `config.env` /
-`config.environment` values with `"[redacted]"` (keys, `name`, `task_provider` and
-`database_path` stay visible). The write tools `foreman_project_settings_update`
+`config.environment` values with `"[redacted]"` (keys, `name`, `task_provider` (its
+`database_path` for Beads, its `cwd` for Kata) stay visible). The write tools `foreman_project_settings_update`
 (arguments: `project_id`, `goal`, `instructions`, `thread_model`, `thread_effort`,
 `coordinator_provider`, `coordinator_model`, `coordinator_effort`,
 `max_concurrent_runs`, `daily_thread_cap`, `coordinator_propose_before_start`,
@@ -2149,7 +2310,9 @@ The catch-all is a known limit: the typed code lives only in `data.code`.
   least one field to update.
 - `foreman_run_cancel` dispatches `run.cancel` with `run_id` and
   `reason`; the dispatched agent, including its OS-level process, is
-  killed via `RunControl`.
+  killed via `RunControl`. A run still waiting for a run slot has no agent
+  to kill: it is removed from the waiting list and its task acknowledged
+  (see `run cancel` above).
 - `foreman_run_pause` dispatches `run.pause` with `run_id` and `reason`,
   interrupting the current phase after committing its partial work and
   leaving the run resumable.
@@ -2160,10 +2323,14 @@ The catch-all is a known limit: the typed code lives only in `data.code`.
 ## 10. Task-provider (Beads) enablement
 
 A project links to a task tracker by setting a `task_provider` block in
-its project config (`provider:` + `config:`, including `database_path` for
-the Beads JSONL/db). `bv`/`br` remain the only writers of that store from
+its project config (`provider:` + `config:`). The binding key depends on the
+provider: `database_path` for the Beads JSONL/db (required for Beads only),
+`cwd` for Kata (see
+[Kata task provider](#kata-task-provider-setup-and-operation) at the end of this
+section). `bv`/`br` remain the only writers of the Beads store from
 outside Foreman; see the "Per-DB Beads lease" section of `docs/lessons/architecture-and-events.md` for the
 write-serialization guarantee Foreman itself provides once a run is admitted.
+Everything below this paragraph up to the Kata subsection describes Beads.
 
 - **Atomic `task.create`.** For a project with a configured `:create`
   provider, `task.create` mints the Bead and emits `TaskCreated`
@@ -2229,19 +2396,176 @@ write-serialization guarantee Foreman itself provides once a run is admitted.
   never closed; one that is never dispatched stays open until an operator acts.
 - **Health check.** `ForemanServer.CLI.DoctorTaskProvider.run/1`
   (dispatched via `ForemanServer.CLI.run(["doctor", "task_provider"])`)
-  reports per-project provider health and the janitor's cached
-  `orphan_backlog` counters. It is **not currently wired to the Go
-  CLI** — there is no `doctor` case in
+  reports per-project provider health as one JSON line per project: for Beads
+  projects the `br` probes and the janitor's cached `orphan_backlog` counters,
+  for Kata projects the Kata section described in
+  [Kata task provider](#kata-task-provider-setup-and-operation). It is **not
+  currently wired to the Go CLI**: `foreman doctor` (`GET /api/doctor`) is a
+  different, server-wide command that has no task-provider rows, and there is
+  no `doctor task_provider` case in
   `packages/foreman_cli/cmd/foreman/main.go`'s dispatch table, so
-  `foreman doctor task_provider` does not run today despite being
-  referenced elsewhere; invoke the Elixir module directly (e.g. from
-  an `iex -S mix` session) until that wiring exists.
+  `foreman doctor task_provider` does not report this. Invoke the Elixir module
+  directly (e.g. from an `iex -S mix` session in `packages/foreman_server`)
+  until that wiring exists.
+- **Effect keys of provider state changes.** A task-provider `claim`, `complete`,
+  `fail` and `reopen` is a keyed external effect (class `task_provider`, key
+  `effect:task_provider:<run_id>:<op>:<issue_id>`; the claim's key also records the
+  claiming `actor` when one is configured). If a restart interrupts one, boot
+  reads the issue back and compares its status with the two the call moves
+  between (claim: `open` to `in_progress`; complete: `in_progress` to `closed`;
+  fail: `in_progress` to `blocked`; reopen: `in_progress` to `open`); anything else,
+  including a provider that cannot answer in time, blocks the run
+  `effect_outcome_ambiguous`. A `reopen` key is never marked unresolved: repeating
+  it is harmless. See [Restart recovery and external effects](#restart-recovery-and-external-effects).
 - **Remediation.** `foreman task retry` is REMOVED (TRD-018,
   2026-09-13); see §4 for what's unchanged internally and what isn't.
   Never mutate the provider issue by hand while Foreman still owns
   it.
 
-## 11. Follow-up runs and the retired jobsite door
+### Kata task provider: setup and operation
+
+Kata (the `kata` CLI, <https://katatracker.com>) is a second task provider
+(provider id `kata`, contract version `kata.capabilities.v1`), validated against
+`kata` v0.23.0. Foreman runs `kata` as a subprocess in the project's directory;
+it never opens Kata's database or talks to its daemon directly. A project
+selects its provider with the `task_provider` block: Beads is bound by a
+database file (`config.database_path`, storage scheme `sqlite`), Kata by a working
+directory (`config.cwd`, storage scheme `cli_process`). The routing, the
+project-registration preflight and the run executor read whichever key the
+provider's declared `storage_scheme` names; none of them recognises a provider
+by name. The Beads watcher and orphan janitor are Beads-only: the server starts
+neither for a Kata project.
+
+**1. Install `kata`.**
+
+```bash
+brew install kata                                       # macOS
+curl -fsSL https://katatracker.com/install.sh | bash    # Linux
+kata --version                                          # confirm it is on PATH
+```
+
+**2. Bind the workspace.** In the repository the project will use:
+
+```bash
+cd /srv/foreman/project-123
+kata init        # writes .kata.toml; see `kata init --help` for --project and the agent-hook flags
+```
+
+**3. Register the project.**
+
+```bash
+foreman project create \
+  --id project-123 \
+  --path /srv/foreman/project-123 \
+  --task-provider kata
+```
+
+- `--path` must be absolute (the CLI refuses a relative one with
+  `--task-provider=kata`). It is sent as the project's `task_provider`:
+  `{"provider": "kata", "config": {"cwd": "<the absolute --path>"}}`. There is no
+  `database_path`, `KATA_HOME` or `kata_home` in the payload.
+- `--task-provider-database-path` is rejected for Kata. It remains required, and
+  must be absolute, only for `--task-provider=beads`.
+- On registration the server checks that `config.cwd` is an absolute, existing
+  directory; otherwise the project is left unrouted with reason `:cwd_missing`,
+  `:cwd_not_absolute` or `:cwd_not_found`.
+
+**Switching an existing project.**
+
+```bash
+foreman project update --task-provider kata project-123
+```
+
+The CLI reads the project's registered path from the server
+(`GET /api/projects/<id>`) and sends it as `config.cwd`; it refuses, and sends
+nothing, if the project cannot be fetched or the registered path is not
+absolute. On the server, `project.update` keeps a stored `config` when the
+provider is unchanged and the request carries no `config`; when the provider
+changes (or none was stored) the request's `config` must carry the new scheme's
+key, otherwise the update fails with `{:missing_or_invalid, :cwd}` (to Kata) or
+`{:missing_or_invalid, :database_path}` (to Beads). No value is derived or
+defaulted. A request that carries a `config` replaces the stored block
+atomically, so the Go CLI (which always sends `config` for Kata and for Beads)
+rewrites it.
+
+**Verify with the health check** (see "Health check" above for how to invoke
+it): each Kata project yields one JSON line, shaped like
+
+```json
+{"project_id":"project-123","healthy":true,"provider_id":"kata",
+ "contract_version":"kata.capabilities.v1",
+ "kata_version":{"exit_code":0,"stdout":"kata v0.23.0 ..."},
+ "warnings":[],
+ "sample_list":{"outcome":"ok","issue_count":1},
+ "schema_validation_failures":[]}
+```
+
+(Key order is not significant; `kata_version.stdout` is the trimmed
+`kata --version` banner.) It runs `kata --version`, then `kata list --limit 1
+--json` in the project's `cwd`, and requires the output to be an object whose
+`issues` is an array. An unhealthy report carries an `error` with `code`,
+`message`, `hint`, `exit_code`, `stderr_byte_count` and `redacted_fields`
+(stderr text is never reported). Failures: `CWD_MISSING` (the project has no
+`config.cwd`), `PROVIDER_MISSING` (`kata not installed`, or `kata --version
+failed`), a Kata or runner error from either probe, or a `sample_list` payload
+that is not shaped like a listing (reported under `schema_validation_failures`,
+with no `error`). Warnings never change `healthy`:
+
+| `warnings[].code` | Meaning |
+| --- | --- |
+| `KATA_VERSION_OUT_OF_RANGE` | the installed version satisfies none of `accepted_kata_versions` |
+| `KATA_VERSION_UNPARSEABLE` | the `kata --version` banner does not start `kata v<semver>` |
+| `KATA_VERSION_REQUIREMENT_INVALID` | an `accepted_kata_versions` entry (or the whole value) is not a valid requirement |
+
+`accepted_kata_versions` is a list of Elixir `Version.match?/2` requirement
+strings under `config :foreman_server, :task_provider` (shipped default
+`[">= 0.19.0"]`); absent or empty means no range is configured. It is read only
+by the doctor: the adapter itself accepts any `kata` that answers `--version`,
+and an out-of-range version is a warning, not an unavailable provider.
+
+**Operator semantics.**
+
+- **Kata owns claim state.** Foreman claims with one atomic `kata claim <ref>
+  --if-unowned`; a task another actor owns is `CLAIMED_BY_OTHER`, which is not
+  retryable. Kata errors reuse the existing task-provider error codes
+  (`CLAIMED_BY_OTHER`, `VALIDATION_FAILED`, `SCHEMA_VALIDATION_FAILED`,
+  `BR_TIMEOUT_QUEUE`, ...), so existing handling applies.
+- **No orphan scan.** Foreman never scans Kata for orphans or stranded claims. A
+  claim stranded by a crashed run is released by the operator: inspect with
+  `kata list --status all` (`--status` takes only `open`, `closed` or `all`) and
+  `kata status <ref>` (owner, your actor, claim hold), then clear it with
+  `kata unassign <ref>`. `kata reopen <ref>` alone does not clear the owner,
+  `kata claim <ref>` takes it over, and `kata audit closes` replays recent
+  closes. Boot reconciliation's orphan-reopen pass also skips Kata projects: it
+  needs a Beads `database_path` and the optional `coordination_status` callback,
+  which the Kata adapter does not implement.
+- **On failure** Foreman reopens the task, comments the failure reason, and
+  releases its own claim (`kata unassign --expect-owner <actor>`). If another
+  actor owns the task it writes nothing and reports `CLAIMED_BY_OTHER`. The
+  comment carries an idempotency key, so a retried failure does not repeat it.
+- **Closing needs typed evidence.** `kata close --done` is refused without it,
+  so Foreman attaches only evidence it can vouch for: a commit SHA or typed
+  evidence entries when the completion carries them, otherwise the run's
+  artifact path as `reviewed-paths:<path>` when that file exists. With none of
+  these the close is refused with a `VALIDATION_FAILED` error and `kata` is
+  not called. Foreman's default close message
+  (`foreman-run:<run_id>:<artifact_path>`) is padded to Kata's 40-character
+  minimum; a custom message must itself be at least 40 characters.
+- **Concurrency.** At most 4 `kata` subprocesses run at once per project working
+  directory; a call that gets no slot within 30 s never starts a process and
+  fails with the retryable `BR_TIMEOUT_QUEUE`. The limits are the
+  `max_in_flight` and `timeout_ms` keys under `config :foreman_server,
+  :task_provider`.
+
+Telemetry: `[:foreman_server, :task_provider, :kata, :subprocess, :spawned]`
+(one event per `kata` subprocess, carrying its OS pid only),
+`[:foreman_server, :task_provider, :registry, :invalid_capabilities]` (a provider
+whose capability map the registry refused) and
+`[:foreman_server, :task_provider, :claim, :lost]` (a claim the provider refused
+twice, which fails the run before any agent is dispatched; this applies to every
+provider, Beads included).
+
+## 11. Jobsite: scripted agent runs
 
 The separate "jobsite" dispatch path (`/api/jobsites`, `foreman jobsite template`, jobsite scripts, the
 `foreman-jobsite-template` skill) was retired; its worthwhile capabilities now live in runs
@@ -2424,6 +2748,8 @@ Empty parts are omitted entirely: a project with no instructions and no memory g
 
 **Inspecting what an agent received.** `foreman project context <project-id>` (or `GET /api/projects/:id/context`) shows what a launch would receive now. With session capture on, the text each run/jobsite actually launched with is archived as `project-context.md` beside `request.md` (workflow runs: first agent launch; jobsite: its single build) and the manifest carries a `project_context` block (`sha256`, `bytes`, `truncated`, `redactions`). There is no CLI write surface: edit instructions with `project update`, memory with `project memory`.
 
+**Recording what a phase received.** Each agent phase launch for a project that has standing context appends one `PhaseContextRecorded` event (command `phase.context`) before the agent starts; a launch with no context appends nothing. It is shown as `context` on the phase entry and on `foreman_run_status`'s `current_phase`: `sha256` and `bytes` (of the project-context text only, not the operator progress addendum, the steering block, or the separator and prompt a provider without `system_prompt` gets it prefixed to), `sections` (`[{id, bytes}]`), `truncated` (`[{section, omitted_bytes, omitted_lines}]`), `redactions` (how many secret spans were replaced) and `redaction_scope`, always `project_context_sections`: the count covers the context sections only, not the agent's prompt, files or tool output. "Recorded" means the launch built and recorded the context, not that the agent started. A record that cannot be appended **fails the launch** (`{:project_context_record_failed, reason}`): a phase does not run on context nobody can later inspect. A resumed phase clears `context` and records again at its next launch, so a phase can briefly show none. The docker jobsite builds its own bundle and emits no phase events, so a jobsite has no such record.
+
 ## 14. Project coordinator
 
 Every project has one durable **coordinator conversation**: paste a bug, a stack trace or a task list, ask a quick question, or say "go ahead". A coordinator agent triages it, answers in place, and asks Foreman to start, propose or steer **threads** (workers, each with its own session, branch and PR). It hears back when threads report (review verdicts, failures).
@@ -2434,7 +2760,7 @@ Every project has one durable **coordinator conversation**: paste a bug, a stack
 
 **Tuning is enforced, not advisory** (settings `coordinator_propose_before_start`, `coordinator_max_active_threads` 1..50, `coordinator_reuse_threads`; also set by `set_tuning`, which stores a memory note too): `propose_before_start` forces every thread the coordinator creates to stay a proposal; `max_active_threads` rejects a start beyond the cap (`cap_exceeded: active_threads N`) and "max N at a time" also tightens `max_concurrent_runs` (it never raises a project cap); `reuse_threads` turns a start into a follow-up when a live thread has the same `bead_id` or the model names one (otherwise advisory, because "same area" is semantic). Loosening a limit needs the operator's exact words (`quote`) to appear in their message.
 
-**Security model.** Capability, not prompt: the coordinator is a system actor that can dispatch only `task.create`, `task.approve` (for tasks it created or proposed), `project.update` (tuning keys only) and its own `coordinator.*` commands (`Coordinator.Dispatch.command_types/0`), plus `project.repo.add` and `schedule.create`, which it sends through the operator path (the validation of the CLI verbs, never the unvalidated system path) and only for an operator turn carrying the operator's own words; it cannot call `merge_approve`, `run.pr.merge`, `project.archive`, `task.retry` or any other operator gate, and no handler builds such a command. Turns triggered by reports, agent-authored text or MCP messages have `:machine` authority and may only answer, ask, propose, route a follow-up or remember; they cannot start or approve work, forget, change tuning, add repositories or schedule. Every thread/task/memory id is checked against the turn's project (`out_of_project`). Pasted text is rendered inside `<untrusted_input>` blocks whose delimiters are neutralised, and conversation text is redacted of the project's secret values (the same list as memory: every secret-store value plus secret-named env values) before it is stored. The coordinator's recorded action parameters (`coordinator.action.record`) and its turn-failure messages are redacted the same way before they are truncated. **Known limit of redaction by value:** where a secret is a substring of another secret the result depends on replacement order. Notes that read as merge/approve automation are refused. Prompt framing is best-effort; the boundary is the closed allowlist plus Policy, and the adversarial tests keep it honest even when the model obeys an injection.
+**Security model.** Capability, not prompt: the coordinator is a system actor that can dispatch only `task.create`, `task.approve` (for tasks it created or proposed), `project.update` (tuning keys only; one that sets or clears the operator-only `required_checks` is refused `{:forbidden_setting, :required_checks}`) and its own `coordinator.*` commands (`Coordinator.Dispatch.command_types/0`), plus `project.repo.add` and `schedule.create`, which it sends through the operator path (the validation of the CLI verbs, never the unvalidated system path) and only for an operator turn carrying the operator's own words; it cannot call `merge_approve`, `run.pr.merge`, `run.pr.waive_evidence`, `project.archive`, `task.retry` or any other operator gate, and no handler builds such a command. Turns triggered by reports, agent-authored text or MCP messages have `:machine` authority and may only answer, ask, propose, route a follow-up or remember; they cannot start or approve work, forget, change tuning, add repositories or schedule. Every thread/task/memory id is checked against the turn's project (`out_of_project`). Pasted text is rendered inside `<untrusted_input>` blocks whose delimiters are neutralised, and conversation text is redacted of the project's secret values (the same list as memory: every secret-store value plus secret-named env values) before it is stored. The coordinator's recorded action parameters (`coordinator.action.record`) and its turn-failure messages are redacted the same way before they are truncated. **Known limit of redaction by value:** where a secret is a substring of another secret the result depends on replacement order. Notes that read as merge/approve automation are refused. Prompt framing is best-effort; the boundary is the closed allowlist plus Policy, and the adversarial tests keep it honest even when the model obeys an injection.
 
 **Health and restart.** A failed turn (provider error, malformed output, timeout, interrupted by a server stop) is recorded and retried; three consecutive failures mark the coordinator `unhealthy`, post one visible system notice ("the coordinator has not responded - last error ...") and stop automatic turns until `foreman project chat <id> --restart` (`POST /api/projects/:id/coordinator/restart`, command `coordinator.restart`). A turn found open at startup is closed as `interrupted` and re-run; the reply id and every command id derive from the triggering message, so a restart never duplicates a reply or a thread and a message appended while the server was down is processed after startup.
 
@@ -2477,7 +2803,11 @@ points at the running server (`http://127.0.0.1:4766` in dev) and that
 ### 2. Register the project (once)
 
 ```bash
+# Beads-backed project: the Beads database path is required (beads only)
 foreman project create --id my-project --path /path/to/repo --task-provider beads --task-provider-database-path /path/to/repo/.beads
+
+# Kata-backed project: --path must be absolute and becomes the kata working directory; no database path
+foreman project create --id my-project --path /path/to/repo --task-provider kata
 ```
 
 ### 3. Create and approve a task
@@ -2526,12 +2856,17 @@ a preflight failure").
 
 ```bash
 foreman run get <run-id>                 # inspect status first
-foreman run reset --id <run-id>          # failed/stuck only; clears projection for resubmission
+foreman run reset --id <run-id>          # failed/stuck/blocked/paused; clears projection for resubmission
 foreman run remove --id <run-id>         # terminate + release slot/lease + best-effort cleanup
 ```
 
 There is no interactive "kill-switch" or phase-resume primitive; a
 stuck run is removed or reset, and the task is retried or recreated.
+
+A run `blocked` with `effect_already_done`, `effect_outcome_ambiguous` or
+`effect_class_unregistered` stopped on purpose: a push, PR create or tracker
+change may or may not have happened. Check the real state first, then reset it
+([Restart recovery and external effects](#restart-recovery-and-external-effects)).
 
 ### PR creation and merge reconciliation
 
@@ -2542,7 +2877,7 @@ option. `ForemanServer.Workflow.AutoPR.maybe_create_pr/1`, called from
 checks `git rev-list --count base..head > 0` against the branch
 recorded when the run's first phase started, publishes with `git push
 -u origin <head>`, and calls `gh pr create`. When that final PR is created the
-run signals `run.pr.ready`, which puts the PR into the merge gate: Foreman will
+run signals `run.pr.ready`, which puts the PR into the merge gate (the head it records is the one GitHub shows when the signal is sent, read with one `gh pr view`, not the local branch tip; when GitHub cannot be read the PR is not put in the gate, the failure is logged and recorded on the PR's watch record until a later signal clears it): Foreman will
 not merge it until an operator runs `foreman run approve-merge ... --head-sha <sha>`
 (the commit they reviewed) and then `foreman run merge` (see the run commands above). The server can also follow
 the PR's state on GitHub in two opt-in ways, each appending a `PrUpdated`
@@ -2579,18 +2914,53 @@ continues. Push/create failures and closed matching PRs fail the responsible
 phase with typed details. A created or reused phase PR record suppresses the
 final AutoPR; no-op records do not.
 
-**PR bodies carry unresolved review findings only when Foreman generates the body.**
-Phase PRs, and final AutoPRs for ad-hoc no-task runs, append a `## Unresolved
-review findings` section to the generated body when the PR-creating phase's
-artifact contains a `<!-- FOREMAN_REVIEW_FINDINGS_START -->` /
-`<!-- FOREMAN_REVIEW_FINDINGS_END -->` block — the format the bundled `review`
-workflow's phases write. Task-backed final AutoPR bodies are exact task
-descriptions and do not append artifact or review-finding sections. Absent or
-empty blocks add nothing to generated bodies. An unterminated block (a start
-marker with no matching end marker) is distinct: the phase found something and
-failed to close its markers, so a warning is logged and the generated body
-instead names the artifact for a human to check directly, rather than silently
-dropping the findings.
+**PR bodies carry the review agent's report only when Foreman generates the body.**
+Phase PRs, and final AutoPRs for ad-hoc no-task runs, append a `## Review findings
+(the review agent's report)` section to the generated body, read from the
+PR-creating phase's artifact (the `<!-- FOREMAN_REVIEW_FINDINGS_START -->` /
+`<!-- FOREMAN_REVIEW_FINDINGS_END -->` block the bundled `review` workflow's phases
+write). The block is now typed JSON (schema `foreman.review_findings/1`: `schema`,
+`reviewed` which must be `true`, and `findings`, each with `severity`
+`critical|major|minor|nitpick`, `path`, `line`, `description`, `disposition`
+`fixed|declined|open` and `source`); the bundled prompts `review-coderabbit.md` and
+`review-repo-rules.md` ask for it, and say that a review engine that could not run
+writes **no** block and explains why under `## Review engine`. They also ask for a
+second, last block, the risk judgement (between `<!-- FOREMAN_RISK_JUDGEMENT_START -->`
+and `<!-- FOREMAN_RISK_JUDGEMENT_END -->`: JSON of schema `foreman.risk_judgement/1`
+with a `level` of `LOW`, `MEDIUM` or `HIGH` and a `rationale`), which is the review
+agent's own claim: Foreman can only raise its computed risk level by it, never lower
+it, and an absent or malformed judgement makes the level `HIGH`. The section is worded
+per state: a block with findings lists the unresolved ones (every `open` finding, and
+every `declined` critical or major one; at most 20, each description inside an inline
+code span) and counts the fixed and declined ones (the section is labelled as written by the
+review agent and not verified by Foreman);
+an absent block, a malformed block (an unterminated block, more than one block, the
+old bullet format, invalid JSON or schema, an invalid field, a block over 32768 bytes
+or a file over 4 MiB, more than 100 findings) and an unreadable artifact are each
+named as **not a clean review**, and a warning is logged. The old bullet format is
+now malformed, not parsed. Task-backed final AutoPR bodies are exact task
+descriptions and do not append artifact or review-finding sections. The PR body is
+the agent's own report, written for a human to read, and refuses nothing. The
+findings RECORD the server writes from the same artifact does matter: for a
+project with `required_checks` set, an absent, legacy-format, other-head or
+malformed record refuses the approval (`findings_*`, see "Approval evidence" under
+PR watching and auto-fix), and so does a recorded `HIGH` risk level (`risk_high`, waivable with a
+recorded reason); unresolved critical or major findings refuse only through that level. Read from the source, not observed.
+
+**Marker lines.** Each block (the `FOREMAN_REVIEW_FINDINGS` block and the
+`FOREMAN_RISK_JUDGEMENT` block) is delimited by two marker lines, each the whole
+HTML comment, alone on its line and starting at column 0, outside any code fence. A
+marker line quoted inside a code fence (or indented, or prefixed with `> `) is not
+counted; a marker line outside a fence counts. If a review writes a second counted
+start or end marker, the block has the defect `multiple_blocks` (a lone marker, or a
+start with no end, is `unterminated_block`). In the findings block such a defect makes
+the findings record `malformed` (`findings_malformed`, which cannot be waived; only the
+old bullet format, defect `legacy_format`, reads `findings_legacy_format`, which can).
+In the risk judgement block the same defects only make the judgement `malformed`: no
+level is used from it and the risk level is computed as if the judgement were missing
+(HIGH); the findings record is not affected. An agent that quotes a findings marker
+line at column 0 without a fence therefore makes its own review malformed; the exit is
+a new run, because no command re-runs the review of a completed run.
 
 **Commits are Foreman's, not the agent's.** At each phase boundary Foreman
 stages and commits whatever the phase produced into the run's worktree, so an
@@ -2856,7 +3226,7 @@ Defaults: agent no-output = 900000 ms; messaging no-progress = 1800000 ms. Disab
 
 ## Outbound messaging delivery
 
-`ForemanServer.Notifier` (supervised, started by default; `config :foreman_server, :start_notifier?, false` stops it) is the production producer of `Messaging.notify/2`. It subscribes to projection events (no replay) and maps them through the table in `ForemanServer.Notifier.Mapping`: run/jobsite failure and CI failing -> `failure`; run stall (`RunStallReported`, `RunFlaggedStuck`) -> `stall`; a blocked run (`RunBlocked`, the crash-loop detector's verdict), a not-met review verdict, an agent question, an approval request/expiry, PR changes requested and exhausted PR fix attempts -> `action_needed`; run or jobsite completed, PR ready for review and any other review verdict -> `run_update`. Rows match by event name only (`RunFailed`, `JobsiteFailed`, `RunStallReported`, `RunFlaggedStuck`, `RunBlocked`, `RunCompleted`, `JobsiteCompleted`, `ReviewRecorded`, `QuestionOpened`, `QuestionExpired`, `ToolCallRequested`, `ToolCallExpired`, `PrReady`, `PrChecksChanged`, `PrReviewChanged`, `PrFixExhausted`); an event Foreman does not produce simply never matches. A PR is announced by `PrReady`, which every PR a run opens records (AutoPR, a stacked phase PR, another repository's PR, the Create PR button); `PrCreated` is only the button's audit fact and is deliberately unmapped, so one PR is announced once. Cancelling a run or jobsite (`RunCancelled`, `JobsiteCancelled`) is not announced back, and neither is the completion of the jobsite a PR fix thread runs in (the PR's own events report the fix). Extend or override rows with `config :foreman_server, :notifier, rules: [%{event_type:, class:, severity:, level: :blocked | :progress, subject:, key_fields: [...], body_fields: [...], match: %{field => [values]}, url_field:}]` (configured rules win; a malformed rule raises at startup). Per project, the `notification_preference` setting (`every_turn`, `blocked_only` (default) or `off`) filters by level: `blocked_only` delivers only failures, stalls, blocked runs, needs-input, approvals, CI failing and review not met; `every_turn` also delivers progress rows and enables the `run_update` class for that notification; `off` delivers nothing. `run_update_rate_limit_ms` is enforced by the Notifier: at most one `run_update` per run per window, so a run's "PR ready for review" and its "Run completed" share one window. Replays collapse through the `dedupe_window_ms` check because the correlation id is a digest of the event type and the rule's `key_fields`. Notification events never carry a secret: the recipient is the label `default` and Slack/webhook destinations are resolved from config by the dispatcher (a Slack or webhook recipient is never used as the URL). There is no desktop-push provider.
+`ForemanServer.Notifier` (supervised, started by default; `config :foreman_server, :start_notifier?, false` stops it) is the production producer of `Messaging.notify/2`. It subscribes to projection events (no replay) and maps them through the table in `ForemanServer.Notifier.Mapping`: run/jobsite failure and CI failing -> `failure`; run stall (`RunStallReported`, `RunFlaggedStuck`) -> `stall`; a blocked run (`RunBlocked`, the crash-loop detector's verdict), a not-met review verdict, an agent question, an approval request/expiry, PR changes requested and exhausted PR fix attempts -> `action_needed`; run or jobsite completed, PR ready for review and any other review verdict -> `run_update`. Rows match by event name (`RunFailed`, `JobsiteFailed`, `RunStallReported`, `RunFlaggedStuck`, `RunBlocked`, `RunCompleted`, `JobsiteCompleted`, `ReviewRecorded`, `QuestionOpened`, `QuestionExpired`, `ToolCallRequested`, `ToolCallExpired`, `PrReady`, `PrChecksChanged`, `PrReviewChanged`, `PrFixExhausted`) and, for some rows, a payload `match`: `ReviewRecorded` on `verdict`, `PrReviewChanged` on `review_decision` `changes_requested`, and `PrChecksChanged` only when `checks_state` is `failing` AND `source` is `watch` AND `change` is `digest` (an observation forced for the approval gate carries `source: "gate"`, and an evidence-only change such as a passing check added, removed or re-run carries `change: "evidence"`; neither notifies, so one failing set is announced once; an event with no `source` or `change`, written before they existed, no longer maps); an event Foreman does not produce simply never matches. A PR is announced by `PrReady`, which every PR a run opens records (AutoPR, a stacked phase PR, another repository's PR, the Create PR button); `PrCreated` is only the button's audit fact and is deliberately unmapped, so one PR is announced once. Cancelling a run or jobsite (`RunCancelled`, `JobsiteCancelled`) is not announced back, and neither is the completion of the jobsite a PR fix thread runs in (the PR's own events report the fix). Extend or override rows with `config :foreman_server, :notifier, rules: [%{event_type:, class:, severity:, level: :blocked | :progress, subject:, key_fields: [...], body_fields: [...], match: %{field => [values]}, url_field:}]` (configured rules win; a malformed rule raises at startup). Per project, the `notification_preference` setting (`every_turn`, `blocked_only` (default) or `off`) filters by level: `blocked_only` delivers only failures, stalls, blocked runs, needs-input, approvals, CI failing and review not met; `every_turn` also delivers progress rows and enables the `run_update` class for that notification; `off` delivers nothing. `run_update_rate_limit_ms` is enforced by the Notifier: at most one `run_update` per run per window, so a run's "PR ready for review" and its "Run completed" share one window. Replays collapse through the `dedupe_window_ms` check because the correlation id is a digest of the event type and the rule's `key_fields`. Notification events never carry a secret: the recipient is the label `default` and Slack/webhook destinations are resolved from config by the dispatcher (a Slack or webhook recipient is never used as the URL). There is no desktop-push provider.
 
 Enable outbound Telegram/Slack/webhook delivery with `config :foreman_server, :messaging`. Runtime config keys: `enabled`, `provider`, `event_classes`, `dedupe_window_ms`, `run_update_rate_limit_ms`, `telegram: [token:, chat_id:]`, `slack: [webhook_url:]` and `webhook: [url:, secret:, allow_insecure_http:, allow_private_hosts:]`. `ForemanServer.Messaging.notify/2` never calls provider HTTP directly; it persists notification lifecycle state. The supervised dispatcher starts after `CommandRouter`, performs restart catch-up from the event log, subscribes to projection events, redelivers notifications with no durable terminal outcome (an in-flight attempt or a retryable failure is retried; only a recorded success or a non-retryable failure is skipped), guarantees at most one delivery per notification within one dispatcher process lifetime even if both catch-up and a live projection event observe it, and records redacted success/failure state. A catch-up or subscribe failure crashes the dispatcher under supervision rather than silently dropping live/replay delivery. Delivery failure is notification state only; it must not turn a healthy run into failed.
 
@@ -2885,7 +3255,7 @@ fresh operator approval of the new head.
 (`config :foreman_server, :pr_watcher, enabled:`; `FOREMAN_PR_WATCHER_ENABLED=false`
 stops it). It reads each PR (checks, review decision, comments, unresolved
 threads, merge conflicts) and folds changes into the run's PR projection as
-`PrChecksChanged` / `PrReviewChanged` events. A conversation comment written by a
+`PrChecksChanged` / `PrReviewChanged` events. A checks event carries every check of the head GitHub reported (up to 100: name, kind, state, conclusion, workflow, start and completion time) and an evidence digest, so a passing check that is added, removed or re-run is recorded even though the failing set is unchanged; such an evidence-only change does not send a notification. This evidence is stored in the PR's watch record (an `evidence` sub-record, which also holds a recorded failure to signal the PR as ready); since Phase 1 PR 8 `foreman run prs` shows it (see "Reading" below). A conversation comment written by a
 bot (a GitHub Bot actor: a review bot's walkthrough, a coverage report) is not
 counted as a comment: it is not in the review event's `comment_ids`, does not enable
 Address comments and does not raise the comment count. `gh pr view` names an author by
@@ -2913,6 +3283,28 @@ interval below), and a failed one is a failed check. Two things trigger a read:
   `reopened` delivery, or any other action on a conflicted PR, appends `PrUpdated`
   itself. The signature is still mandatory and unknown PRs are ignored.
 
+`foreman doctor` (`GET /api/doctor`) has a `pr_observation` row that says what can show a head change, a new check result or a report without anyone approving: the watcher (`FOREMAN_PR_WATCHER_ENABLED`, on by default), the monitor (`FOREMAN_PR_MONITOR_ENABLED=true`) and whether `FOREMAN_GITHUB_WEBHOOK_SECRET` is set (never its value). It is `ok` while the watcher is on, whatever the monitor and webhook say, and a `warn` ("PR watcher is off: fix pushes and PR events are not observed") when the watcher is off, which `foreman doctor --strict` fails on. The merge gate does not depend on any of them: an approval re-reads GitHub. Since Phase 1 PR 4 the row also lists each non-archived project that has `required_checks` set (`gated project <name>: ...`, with a line when the idempotency store is not durable and one saying a PR with more than 100 checks is read from the newest 100 only), and it is a `warn` when such a project exists and neither the monitor nor the webhook is on (`Gated project(s) <names>: neither the monitor nor the webhook is on, so a head or check change is not observed`, taking precedence over the watcher states) or when the projects cannot be read (`Gated projects could not be read: <reason>`, taking precedence over everything).
+
+A PR read that GitHub answers with a shape Foreman does not understand fails with the typed `{:gh_unexpected_payload, _}` instead of recording a default: for example a check run with status `COMPLETED` but an absent or zero `completedAt`, a check with a blank name, or a status context with a blank context. Nothing is recorded from that read, and an approval whose own read of the PR fails this way is refused with that error (retry once GitHub answers normally). Read from the source, not observed against a live PR.
+
+**Required checks and the evidence waiver (Phase 1 PR 4).** `required_checks` is a project setting naming the checks a PR must show: `foreman project update --required-checks '[{"name":"build","kind":"check_run"}]' <project-id>`. It is a JSON array of at most 20 entries; each has a `name` (at most 200 characters), a `kind` (`check_run` or `status_context`) and, for a `check_run` only, an optional `workflow` and `allow_skipped` (`true`; the default is `false`). `'[]'` turns the gate on with no checks, and unset (the default) or `--clear required_checks` turns it off; `foreman project settings <project-id>` prints it. **Since Phase 1 PR 8 it decides approvals**: with it set (`[]` included) `approve-merge` is refused unless the PR's evidence is eligible or waived ("Approval evidence" below); unset, no evidence is read or refused, but `approve-merge` needs `--acknowledge-gate-off` and records it as `gate_off_acknowledged` on the approval (the other refusal such a project can still meet is `{:policy_unavailable, _}`, for a run or project the server's read model does not know). It also changes what the watcher records (every `run.pr.checks` carries the policy and its version, and a policy change records one evidence-only checks event even with no new check) and what the doctor row shows. It is operator-only: `foreman_project_settings_update` over MCP refuses it (`Unknown arguments: required_checks`; naming it in `clear` is `operator_only_setting`) and the coordinator cannot set or clear it. Setting it, `[]` included, through `project update` or `project register` is refused `{:store_not_durable, note}` (HTTP 422) while `:require_durable_store_for_gating` is on and the idempotency store is not durable ([Restart recovery and external effects](#restart-recovery-and-external-effects)); clearing it is never refused.
+
+The server has a pure evaluator, `PrEvidence.evaluate/2`, that turns the recorded checks into a status (`off`, `eligible`, `ineligible`, `waived` or `unknown`) and reasons (`no_checks_configured`, `missing`, `failing`, `pending`, `stale`, `skipped`, `other_sha`, `checks_truncated`, `findings_absent`, `findings_malformed`, `findings_legacy_format`, `findings_other_sha`, `risk_missing`, `risk_other_sha`, `risk_high`, `evidence_unreadable`). Since Phase 1 PR 8 the approval gate calls it and `foreman run prs` shows its answer. Since Phase 1 PR 6 the server also records a risk level per PR head (`LOW`, `MEDIUM` or `HIGH`, from the size and paths of the diff read from GitHub, the checks, the review findings and the review agent's judgement, by rubric version `1`) in the PR's watch record (`evidence.risk`; since Phase 1 PR 7 it is posted on the PR as a comment for a gated project, below), and the evaluator adds `risk_missing` (no record) and `risk_other_sha` (a record for another head), neither waivable. **A recorded `HIGH` risk level refuses the approval:** the evaluator adds `risk_high` for a risk record on the decided head whose level is `HIGH`, and an operator can waive it with a recorded reason (`foreman run waive-evidence --waive risk_high`); `MEDIUM` and `LOW` refuse nothing. The rubric reads `HIGH` for required checks that are not passing, waived or unreadable, a missing or unusable findings block, no risk judgement from the review, unresolved critical or major findings, no recorded base branch, a sensitive path and a PR above the size thresholds, so a PR refused for a check or findings reason also carries `risk_high`, and a waiver for that reason makes it approvable only when the same waiver names `risk_high` too; a review that left no judgement block is `HIGH`. The PR comment and the report are advisory. The review findings of the reviewed head are recorded in the PR's watch record (`evidence.findings`) by the finalising executor, and the evaluator adds `findings_absent` (no block, or the engine could not run), `findings_legacy_format` or `findings_malformed` (the block is unusable) or `findings_other_sha` (recorded for another head than the one decided); a recorded block on the decided head adds no reason, and unresolved critical or major findings add none of their own either: they are shown and raise the risk level, which refuses (waivably) only when it reads `HIGH`. An operator waives the waivable reasons with `foreman run waive-evidence` (see `run waive-evidence` under "Runs"); the waiver is kept in the PR's watch record (`evidence.waiver`, shown by `foreman run prs`) and applies only to the head it was given for and while the policy is the version it was stamped with. Read from the source, not observed.
+
+**PR report comment (Phase 1 PR 7).** For a project whose `required_checks` gate is on (`[]` counts: the gate on with no checks), the server posts the PR's risk report as ONE comment on the PR, written as the user whose GitHub token Foreman uses. It shows the risk level and what led to it, and its first line is a marker (`<!-- foreman:pr-report v1 run=... head=... digest=... -->`) that Foreman uses to find its own comment. It is posted when the risk is recorded (after the review, and again when the PR head moves); when the head moves the run's earlier comment is edited rather than a second one added, and a comment Foreman already wrote (for instance before a restart) is reused, not posted twice. A project with the gate off gets no comment. The comment is **advisory**: no approval or merge is refused because of the report or whether it was posted (an approval is refused when the risk RECORD for the head is missing, and when the recorded risk level is `HIGH` unless the operator waived `risk_high`, but never on the report itself), and since PR 8 `foreman run prs` and the dashboard show the report's status. The server redacts the project's secrets from the report and neutralises mentions, HTML, links and code fences. Redaction matches each secret's exact text, also with invisible characters (zero-width, combining marks) removed, in free text (finding descriptions, paths). A secret found in a closed field (a reason code, a check name, a rule name), in any form the scan knows (raw, escaped, invisible-stripped), makes the server refuse the report (`redaction_failed`) rather than post it, so a missing comment can mean a refusal, not a delay. A secret that appears in free text only split or encoded (base64, spaced, reversed) is NOT recognised and would be posted. A refused post (`redaction_failed`, `effect_refused`, `gh_failed` or `publisher_error`) is recorded in the PR's `evidence.report` and is never retried automatically; retry it with `foreman run publish-report <run-id>` (see `docs/cli-reference.md`), which republishes the report of the PR's current head and posts nothing for an ungated project. Foreman's own report comment does not count as new review activity on the PR. The publisher can be switched off with `config :foreman_server, :pr_report_publisher, enabled: false`. Read from the source and tests, not observed against a live PR.
+
+**Approval evidence (Phase 1 PR 8).** For a project with `required_checks` set (`[]` counts), `foreman run approve-merge` is refused unless the PR's evidence for the head you named is `eligible` (every required check passed on that head, a findings record and a risk record exist for it, and the recorded risk level is `LOW` or `MEDIUM`) or `waived` (every reason that remained is waivable and covered by a waiver for that head under the current policy). Before it decides, the server reads the PR from GitHub again and records a fresh observation, so the decision is on what GitHub shows now, not on a stale poll; if that cannot be recorded the approval is refused `{:evidence_not_recorded, ...}` (retry) and the server counts it (telemetry `[:foreman_server, :merge_gate, :evidence_refused]`). A project with `required_checks` unset gets no evidence refusal, but it does not get a silent approval either: with the gate off nothing was checked, so `approve-merge` is refused (HTTP 422 `:gate_off_not_acknowledged`, "this project has no required_checks, so its merge gate is off and no PR evidence was checked; to approve anyway, acknowledge it: foreman run approve-merge --acknowledge-gate-off ...") unless you pass `--acknowledge-gate-off`; the acknowledgement is per approval and is recorded on the approval event as `gate_off_acknowledged: true`. The other refusal such a project can meet is `{:policy_unavailable, _}` for a run or project the server does not know. The refusal is HTTP 422, `{:evidence_ineligible, "<head>", ["<code>", ...]}`, with the reasons in `detail`. The codes: `no_checks_configured` (the gate is on with an empty list), `missing` (a required check was not reported), `failing`, `pending`, `stale` (a check's conclusion is stale, or the observation is not the one made for this approval: retry), `skipped` (a required check was skipped and `allow_skipped` is not set), `other_sha` (checks recorded for another head), `checks_truncated` (more than 100 checks, so the list is incomplete), `findings_absent` (no review findings block, or the engine could not run), `findings_legacy_format`, `findings_malformed`, `findings_other_sha`, `risk_missing` (no risk record), `risk_other_sha` (a risk record for another head), `risk_high` (the recorded risk level for this head is `HIGH`; waivable) and `evidence_unreadable` (the evidence record cannot be read, or the recorded risk level is not `LOW`, `MEDIUM` or `HIGH`; never waivable; an unreadable project policy is the separate refusal `{:policy_unavailable, _}`).
+
+**What is NOT enforced.** The PR report comment is advisory, and the findings and the review agent's judgement are claims by the coding agent. The risk LEVEL passes at `LOW` or `MEDIUM`, refuses `HIGH` as the reason `risk_high` (waivable with a recorded reason) and refuses a level the server does not recognise as the never-waivable `evidence_unreadable`; unresolved critical or major review findings refuse only through that level (they are shown and raise it). Judge the rest yourself from the status below. `run merge` is unchanged: the evidence is decided at approval and the approval pins the head. The gate is per project and OFF unless `required_checks` is set (an approval on a gate-off project needs `--acknowledge-gate-off`). A waiver covers only the waivable reasons. The findings and the review agent's risk judgement are claims written by the coding agent, bounded below by what the server reads from GitHub (checks, changed paths and size, base branch): an agent that controls the review artifact can understate both, so the gate does not protect against it, and your approval is the control. A skipped or neutral required check does not pass unless its entry sets `allow_skipped`. An approval is a point-in-time decision: `run merge` re-checks only that the PR is open and that its head is still the approved one, not the checks, findings or risk again, so a check that turns red on the same head after approval still merges. Without the PR monitor or the webhook nothing observes a head change or a new check result until someone approves. Other known gaps (no command re-runs a review, evidence tested against a scripted GitHub, a status-context check has no creator) are listed in [`docs/decisions/phase-1-trustworthy-pr-delivery-exit.md`](./decisions/phase-1-trustworthy-pr-delivery-exit.md) ("Remaining gaps").
+
+**Enabling the gate for a project (operator steps, in this order).** (1) `foreman init --force`, so the installed review prompts ask for the JSON findings and risk-judgement blocks (it overwrites the installed workflow manifests and prompts with the bundled ones, a locally edited installed prompt included); a run that completed before the refresh carries the older bullet format and reads `findings_legacy_format` (waivable, nothing re-runs it). (2) Switch the idempotency store to durable (`config :foreman_server, :jido_ecto, enabled: true` and `JIDO_CHECKPOINT_DATABASE_URL`, see [Restart recovery and external effects](#restart-recovery-and-external-effects)); otherwise setting `required_checks` is refused `{:store_not_durable, note}` and later approvals are refused too. (3) Turn the PR monitor on (`FOREMAN_PR_MONITOR_ENABLED=true`) or set up the webhook, if the status should show changes without an approval. (4) `foreman doctor`: read the `pr_observation` row and the `Phase 1 gating` line. (5) `foreman project update <project-id> --required-checks '<json>'`, then confirm with `foreman run prs <run-id>` that the first PR shows its `eligibility`. To turn it off again, `--clear required_checks`: the next approval reads the setting as unset, reads no evidence and is refused `:gate_off_not_acknowledged` unless you pass `--acknowledge-gate-off`. Read from the source, TRD section 13 and the exit record; the exit record has no evidence that these steps were taken in any deployment.
+
+**What you can do about a refusal.** `failing`, `pending`, `stale`, `other_sha`, `checks_truncated`: fix CI, push or re-run the checks and approve again (the head must be the one you name; a push voids an approval anyway). `findings_*`: the review did not leave a usable findings record for this head; rerun the review outside Foreman's commands (no command re-runs the review of a completed run: `next_actions` says so with `command: null`) or start a new run, or waive a waivable one. `risk_missing` and `risk_other_sha`: the server has no risk record for this head; approve again, which observes the PR afresh, and if it persists the review recorded none; it cannot be waived. `risk_high`: the recorded risk level for this head is `HIGH`; read the risk rationale and the reasons in `foreman run prs`, fix the cause (a failing check, a missing or unusable findings block or judgement, unresolved critical or major findings, a sensitive path or a large diff each read as `HIGH`) and let the review record again, or waive it with a recorded reason. A PR refused for a check or findings reason is also `HIGH`, so waiving that reason alone leaves `risk_high` blocking: name `risk_high` in the same waiver. `evidence_unreadable`: the server cannot read the PR's evidence record; `{:policy_unavailable, _}`: it cannot read the project's policy (or does not know the run or project); see `unknown` below and do not waive. A project with no `required_checks` is refused `:gate_off_not_acknowledged` until you pass `--acknowledge-gate-off`. A failed, stuck, blocked or paused run can be reset (`foreman run reset`, also from the dashboard); `next_actions` offers `reset` only for such a run that also has a `findings_*` reason. **Waiving:** `foreman run waive-evidence --id <run> --approver <name> --identity <github:login> --head-sha <sha> --waive missing,skipped,risk_high --reason "<why>"` can waive only `no_checks_configured`, `missing`, `skipped`, `findings_absent`, `findings_legacy_format`, `findings_other_sha` and `risk_high`, only while the gate is still pending, only for one head and one policy version (a push or a change of `required_checks` voids it), and needs an allowlisted approver. NEVER waivable: `failing`, `pending`, `stale`, `other_sha`, `checks_truncated`, `findings_malformed`, `risk_missing`, `risk_other_sha`, `evidence_unreadable`.
+
+**A new waiver replaces the old one.** Each `foreman run waive-evidence` REPLACES the PR's earlier waiver, so list every code still to be waived in one `--waive` (for a blocking check or findings reason, name `risk_high` in the same list). A `risk_high` waiver is bound to the risk record it was given for (its digest): any change of the risk record (base, findings, judgement text, check status) while the head stays uncovers `risk_high` again and you waive it again.
+
+**`unknown`, and the server not starting.** A status of `unknown` means the server could not read what it needs, never that the PR is clean or that nothing is watched. In the status (`eligibility.status`) it is a policy or a checks record that cannot be read (reason `evidence_unreadable`); a recorded risk LEVEL that is not `LOW`, `MEDIUM` or `HIGH` is not `unknown`: it is `ineligible` with the never-waivable reason `evidence_unreadable`. At approval an unreadable policy is the separate refusal `{:policy_unavailable, _}` and an unreadable record is `evidence_unreadable`, and either way the approval is refused. When the read model itself does not answer, `GET /api/runs/<id>/prs` is HTTP 503 `{"error": "projection_unavailable", "status": "unknown", "run_id": "...", "cause": "timeout" | "noproc" | "crashed"}`, the MCP tool `foreman_pr_status` answers a tool error `projection_unavailable`, and the dashboard thread pane says "PR evidence unknown", instead of an empty PR list. At start-up the read model reads the whole event log ONCE; if that read fails it stops at once (`{:event_log_read_failed, reason}`, no retry) rather than serving an empty model that shows every run as absent, and its supervisor restarts it, at most 50 times in 10 seconds, after which the whole server stops. What you see: an error line `ProjectionStore: the event log could not be read: ...` in the server log for each failed start, 503/`unknown` answers while the read model is down, and, if the log stays unreadable, a server that exits; fix the event store and start it again. A log that reads fine but is empty (a new install) starts empty as before.
+
 **Multi-repository runs.** A run that touched several repositories has one PR per
 repository, and every PR is watched, polled and fixed on its own, addressed as
 `{run_id, repo_id}` (`repo_id` is carried on the PR's events only for a
@@ -2925,9 +3317,10 @@ worktree, never another repository's.
 `foreman_pr_status`) returns one record per PR: URL, status, head SHA (as the watch last
 recorded it: the commit you review and name in `approve-merge --head-sha`; the server
 checks it against GitHub, which is the authority), checks state, failing
-checks, review decision, comment count (conversation comments written by people),
+checks (at most 100; `failing_truncated` says when cut), review decision, comment count (conversation comments written by people),
 whether it is still watched, fix counters
-(`ci`, `comments`, `conflicts` attempts and what is in flight) and the merge gate.
+(`ci`, `comments`, `conflicts` attempts and what is in flight) and the merge gate. Since Phase 1 PR 8 each record also has
+`eligibility` (`status` `off|eligible|ineligible|waived|unknown`, `reasons` and `waived`, each `{code, subject, detail}`, `policy_version`: what an approval would be decided on, before the fresh observation the approval makes), `checks`, `findings`, `risk` (`level` `LOW|MEDIUM|HIGH`, `rubric_version`, `rationale`, `instructions`), `waiver` (`codes`, `reason`, `waived_by`, `applies` and, when it does not, `ignored_because` `other_head|policy_changed`), `report` (`status`, `comment_url`, `superseded`), `delivery_issue` and `next_actions`. Each evidence block has its own `head_sha`; `current` says it is for the PR's head and `stale` that it is for another head (a stale block never counts for the current head); `checks.old` marks an observation older than 15 minutes (display only: age is not a reason). `next_actions` lists what you can do, from a closed set: `fix_ci`, `rerun_review` (no command), `waive` (only for a waivable reason not already covered, while the gate is pending), `publish` (the report was not published) and `reset` (only when the run is failed, stuck, blocked or paused AND a `findings_*` reason is present); it is advice and decides nothing. Text that came from an agent or GitHub (finding descriptions, check names, waiver reasons) is untrusted: it is cleaned of control and bidirectional characters and cut, and still must not be pasted into markdown or HTML unescaped. A PR of a gate-off project shows `eligibility.status` `off`. If the read model does not answer the request is HTTP 503 `projection_unavailable` (see `unknown` above).
 
 **Fix threads.** `foreman run fix-ci|address-comments|resolve-conflicts <run-id>
 [--pr <url>] [--note <text>]` starts a follow-up run that checks out the PR head
@@ -2947,7 +3340,7 @@ run with no recorded provider session uses `config :foreman_server, :pr_fix, age
 mode). Verified live with a real claude on a real PR: `docs/acceptance/live-claude-prfix-resume.md`.
 The `--note` text is redacted of the project's secret values (every secret-store value of 8 or more characters, whatever its name, plus secret-named environment variable values) before it is stored and before the agent sees it, like the coordinator's conversation text. Redaction lengthens the text, so a note close to the 2000-character cap that contains a secret can be refused as `invalid_note`; notes stored before this change are not rewritten.
 `foreman run create-pr <run-id>` (or the workspace Create PR button) opens the PR when the run has none and puts it
-in the merge gate like a run's own PR (`run.pr.ready`): approve it with `approve-merge` and merge it with `merge`;
+in the merge gate like a run's own PR (`run.pr.ready`, with the head GitHub shows): approve it with `approve-merge` and merge it with `merge`; if GitHub cannot be read for that head the command fails with `pr_ready_signal_failed` and a retry resumes the open PR;
 `foreman run watch-stop|watch-start <run-id> [--pr <url>]` pauses or resumes
 watching one PR (a merged or closed PR is dropped automatically).
 

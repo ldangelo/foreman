@@ -4,6 +4,7 @@ defmodule ForemanServer.TaskProvider.ProjectProviderProjectorTest do
   alias ForemanServer.TaskProvider.ProjectProviderProjector
   alias ForemanServer.TaskProvider.Registry
   alias ForemanServer.TaskProviders.ProviderError
+  alias ForemanServer.Test.Support.CapabilityStubProvider
 
   @unregister_event [:foreman_server, :task_provider, :registry, :unregister_for_project]
 
@@ -18,7 +19,8 @@ defmodule ForemanServer.TaskProvider.ProjectProviderProjectorTest do
       %{
         provider_id: :configured_provider,
         contract_version: "br.capabilities.v1",
-        supports: [:claim]
+        supports: [:claim],
+        storage_scheme: :sqlite
       }
     end
 
@@ -71,7 +73,8 @@ defmodule ForemanServer.TaskProvider.ProjectProviderProjectorTest do
       %{
         provider_id: :updated_provider,
         contract_version: "br.capabilities.v1",
-        supports: [:claim]
+        supports: [:claim],
+        storage_scheme: :sqlite
       }
     end
 
@@ -124,7 +127,8 @@ defmodule ForemanServer.TaskProvider.ProjectProviderProjectorTest do
       %{
         provider_id: :missing_database_provider,
         contract_version: "br.capabilities.v1",
-        supports: [:claim]
+        supports: [:claim],
+        storage_scheme: :sqlite
       }
     end
 
@@ -458,5 +462,125 @@ defmodule ForemanServer.TaskProvider.ProjectProviderProjectorTest do
 
     assert {:ok, ConfiguredProvider} =
              Registry.route(:claim, {"project-existing", "/tmp/project-existing.db"})
+  end
+
+  describe "preflight is keyed on the provider's storage scheme (TRD-KATA-T053, AC-003-2)" do
+    setup do
+      handler_id = attach_handler(@unregister_event)
+      on_exit(fn -> :telemetry.detach(handler_id) end)
+
+      cwd = Path.join(System.tmp_dir!(), "projector_cwd_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(cwd)
+      on_exit(fn -> File.rm_rf!(cwd) end)
+
+      {:ok, cwd: cwd, cli: cli_stub()}
+    end
+
+    test "a :cli_process project is registered by its cwd with no database_path anywhere", %{
+      cwd: cwd,
+      cli: cli
+    } do
+      register_via_projector("cli-project", cli, %{cwd: cwd})
+
+      assert {:ok, ^cli} = Registry.route(:claim, {"cli-project", cwd})
+      assert {:ok, %{config: config}} = Registry.project_config("cli-project")
+      assert config == %{cwd: cwd}
+    end
+
+    test "a JSON-ingress string-keyed cwd is preflighted and routed the same way", %{
+      cwd: cwd,
+      cli: cli
+    } do
+      register_via_projector("cli-json", cli, %{"cwd" => cwd})
+
+      assert {:ok, ^cli} = Registry.route(:claim, {"cli-json", cwd})
+    end
+
+    test "database preflight is a :sqlite concern: a :cli_process provider is never asked for one",
+         %{cwd: cwd} do
+      refusing = cli_stub(preflight: {:error, "DATABASE_NOT_FOUND"})
+
+      register_via_projector("cli-no-database", refusing, %{cwd: cwd})
+
+      assert {:ok, ^refusing} = Registry.route(:claim, {"cli-no-database", cwd})
+    end
+
+    test "a cwd that is absent, blank, relative, missing on disk or not a directory is refused, naming why",
+         %{cwd: cwd, cli: cli} do
+      file = Path.join(cwd, "a-file")
+      File.write!(file, "not a directory")
+
+      cases = [
+        {%{}, :cwd_missing},
+        {%{cwd: ""}, :cwd_missing},
+        {%{cwd: 42}, :cwd_missing},
+        {%{cwd: "relative/dir"}, :cwd_not_absolute},
+        {%{cwd: Path.join(cwd, "does-not-exist")}, :cwd_not_found},
+        {%{cwd: file}, :cwd_not_found}
+      ]
+
+      for {{config, reason}, index} <- Enum.with_index(cases) do
+        project_id = "cli-refused-#{index}"
+        register_via_projector(project_id, cli, config)
+
+        assert {:unavailable, ^reason} = :sys.get_state(Registry).per_project[project_id]
+
+        assert_receive {:telemetry, @unregister_event, %{count: 1},
+                        %{project_id: ^project_id, reason: ^reason}},
+                       1_000
+      end
+    end
+
+    test "a :sqlite project still needs its database_path; a cwd is no substitute", %{cwd: cwd} do
+      register_via_projector("sqlite-cwd-only", ConfiguredProvider, %{cwd: cwd})
+
+      assert {:unavailable, :preflight_failed} =
+               :sys.get_state(Registry).per_project["sqlite-cwd-only"]
+    end
+
+    test "an update that moves a project from :sqlite to :cli_process rebinds it by cwd", %{
+      cwd: cwd,
+      cli: cli
+    } do
+      register_via_projector("moving", ConfiguredProvider, %{"database_path" => "/tmp/old.db"})
+      assert {:ok, ConfiguredProvider} = Registry.route(:claim, {"moving", "/tmp/old.db"})
+
+      assert :ok =
+               ProjectProviderProjector.process_event(%{
+                 event_type: "ProjectUpdated",
+                 payload: %{
+                   project_id: "moving",
+                   task_provider: %{provider: cli, config: %{cwd: cwd}}
+                 }
+               })
+
+      assert {:ok, ^cli} = Registry.route(:claim, {"moving", cwd})
+      assert {:error, :cwd_mismatch} = Registry.route(:claim, {"moving", "/tmp/old.db"})
+    end
+  end
+
+  defp register_via_projector(project_id, provider, config) do
+    assert :ok =
+             ProjectProviderProjector.process_event(%{
+               event_type: "ProjectRegistered",
+               payload: %{
+                 project_id: project_id,
+                 path: "/tmp/#{project_id}",
+                 task_provider: %{provider: provider, config: config}
+               }
+             })
+  end
+
+  defp cli_stub(opts \\ []) do
+    CapabilityStubProvider.define!(
+      name: :cli_stub,
+      preflight: opts[:preflight],
+      capabilities: %{
+        provider_id: :cli_stub,
+        contract_version: "br.capabilities.v1",
+        supports: [:claim],
+        storage_scheme: :cli_process
+      }
+    )
   end
 end

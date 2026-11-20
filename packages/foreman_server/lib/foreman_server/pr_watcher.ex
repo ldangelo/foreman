@@ -66,7 +66,7 @@ defmodule ForemanServer.PrWatcher do
   require Logger
 
   @refresh_timeout 120_000
-  @observe_events ~w(PrAssociated PrReady PrWatchStarted)
+  @observe_events ~w(PrAssociated PrReady PrWatchStarted ReviewFindingsRecorded)
   @jobsite_terminal ~w(JobsiteCompleted JobsiteFailed)
   # A fix that runs as a follow-up run ends with its run.
   @run_terminal ~w(RunCompleted RunFailed RunCancelled RunFlaggedStuck RunBlocked RunDeleted)

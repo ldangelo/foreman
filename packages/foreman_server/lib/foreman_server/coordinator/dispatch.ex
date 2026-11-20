@@ -50,6 +50,9 @@ defmodule ForemanServer.Coordinator.Dispatch do
       type == "task.approve" ->
         gateway.dispatch_system_approval(command)
 
+      forbidden_setting?(command) ->
+        {:error, {:forbidden_setting, :required_checks}}
+
       type in @operator_grade ->
         gateway.dispatch_operator(command)
 
@@ -57,4 +60,15 @@ defmodule ForemanServer.Coordinator.Dispatch do
         gateway.dispatch_system(command)
     end
   end
+
+  # `required_checks` turns the merge gate on or off: operator-only, so a coordinator
+  # `project.update` that sets or clears it is refused before anything is dispatched.
+  defp forbidden_setting?(%{type: "project.update", payload: payload}) when is_map(payload),
+    do:
+      Map.has_key?(
+        ForemanServer.Aggregates.Project.Settings.changed_keys(payload),
+        :required_checks
+      )
+
+  defp forbidden_setting?(_command), do: false
 end

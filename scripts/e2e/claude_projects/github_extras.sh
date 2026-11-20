@@ -159,7 +159,7 @@ gh_approve_merge() {
     printf '%s\n' "$GH_OUT" > "$EVID/$1.out"
     return 1
   fi
-  gh_fm "$1" run approve-merge --id "$GH_RUN" --approver e2e-operator --identity "github:${GH_REPO%%/*}" --head-sha "$gam_head"
+  gh_fm "$1" run approve-merge --id "$GH_RUN" --approver e2e-operator --identity "github:${GH_REPO%%/*}" --head-sha "$gam_head" --acknowledge-gate-off
 }
 
 # gh_ui <thread> [driver flags]: the Playwright driver; one JSON object in GH_UI. Non-zero exit = the driver failed.
@@ -486,7 +486,7 @@ gh_x_postapproval() {
   gh_events_note "$GH_RUN" "$mark"
   assert_eq "no second PrReady was recorded by the push" "$(gh_events_count "$GH_RUN" "$mark" PrReady)" "0"
   assert_eq "the push voided the approval: the merge gate is pending again" "$(gh_pr_field .merge_gate)" "pending"
-  gh_fm pa-stale run approve-merge --id "$GH_RUN" --approver e2e-operator --identity "github:${GH_REPO%%/*}" --head-sha "$approved_head"
+  gh_fm pa-stale run approve-merge --id "$GH_RUN" --approver e2e-operator --identity "github:${GH_REPO%%/*}" --head-sha "$approved_head" --acknowledge-gate-off
   note "approve-merge naming the OLD head ${approved_head:0:8}: rc=$GH_RC: $(printf '%s' "$GH_OUT" | tr '\n' ' ' | cut -c1-400)"
   [ "$GH_RC" != 0 ] && pass "approving the old head is refused after the push" || fail "the old head was approved after a push moved the PR"
   gh_fm pa-merge run merge --id "$GH_RUN"

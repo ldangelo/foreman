@@ -80,13 +80,19 @@ defmodule ForemanServer.GitHub.PrStatusChecksTest do
   end
 
   describe "checks_state derivation" do
-    defp run(conclusion, status \\ "COMPLETED"),
-      do: %{
+    defp run(conclusion, status \\ "COMPLETED") do
+      item = %{
         "__typename" => "CheckRun",
         "name" => "n",
         "status" => status,
         "conclusion" => conclusion
       }
+
+      # GitHub reports when a completed run completed.
+      if status == "COMPLETED",
+        do: Map.put(item, "completedAt", "2026-11-12T13:58:49Z"),
+        else: item
+    end
 
     test "no checks is :none" do
       assert {:ok, %{checks_state: :none, checks: []}} =
@@ -124,6 +130,111 @@ defmodule ForemanServer.GitHub.PrStatusChecksTest do
 
       assert {:ok, %{checks_state: :failing}} =
                fetch_payload(base(%{"statusCheckRollup" => [ctx]}))
+    end
+  end
+
+  # Items copied from `gh pr view/list --json statusCheckRollup` (gh 2.103.3, 2026-11-12):
+  # PR #862 and #869 of this repository, ldangelo/foreman #842 and an in-flight run of
+  # nodejs/node #67446.
+  @completed_run %{
+    "__typename" => "CheckRun",
+    "completedAt" => "2026-11-12T13:58:49Z",
+    "conclusion" => "SUCCESS",
+    "detailsUrl" =>
+      "https://github.com/ldangelo/foreman/actions/runs/43232468738/job/131231100405",
+    "name" => "changes",
+    "startedAt" => "2026-11-12T13:58:43Z",
+    "status" => "COMPLETED",
+    "workflowName" => "ci"
+  }
+  @skipped_run %{
+    "__typename" => "CheckRun",
+    "completedAt" => "2026-11-12T13:58:53Z",
+    "conclusion" => "SKIPPED",
+    "detailsUrl" =>
+      "https://github.com/ldangelo/foreman/actions/runs/43232468738/job/131231221488",
+    "name" => "foreman_server_p${{ matrix.partition }}",
+    "startedAt" => "2026-11-12T13:58:54Z",
+    "status" => "COMPLETED",
+    "workflowName" => "ci"
+  }
+  @status_context %{
+    "__typename" => "StatusContext",
+    "context" => "ensemble/local-ci",
+    "startedAt" => "2026-11-06T21:50:17Z",
+    "state" => "SUCCESS",
+    "targetUrl" => ""
+  }
+  @in_progress_run %{
+    "__typename" => "CheckRun",
+    "completedAt" => "0001-01-01T00:00:00Z",
+    "conclusion" => "",
+    "detailsUrl" => "https://github.com/nodejs/node/actions/runs/43318502824/job/131532739152",
+    "name" => "coverage-linux",
+    "startedAt" => "2026-11-12T22:17:41Z",
+    "status" => "IN_PROGRESS",
+    "workflowName" => "Coverage Linux"
+  }
+
+  defp checks_of(items) do
+    assert {:ok, status} = fetch_payload(base(%{"statusCheckRollup" => items}))
+    status.checks
+  end
+
+  describe "per-check timing from recorded gh 2.103.3 rollups" do
+    test "a completed check run carries startedAt and completedAt exactly as GitHub reported them" do
+      assert [check] = checks_of([@completed_run])
+      assert check.started_at == "2026-11-12T13:58:43Z"
+      assert check.completed_at == "2026-11-12T13:58:49Z"
+      assert check.kind == :check_run
+    end
+
+    test "a status context has its startedAt, no completed_at, and its own kind" do
+      assert [check] = checks_of([@status_context])
+      assert check.kind == :status_context
+      assert check.started_at == "2026-11-06T21:50:17Z"
+      assert check.completed_at == nil
+    end
+
+    test "an IN_PROGRESS run reports the zero completedAt, which is stored as nil, never a time" do
+      assert [check] = checks_of([@in_progress_run])
+      assert check.state == :pending
+      assert check.started_at == "2026-11-12T22:17:41Z"
+      assert check.completed_at == nil
+    end
+
+    test "skipped jobs whose completedAt precedes startedAt keep both times as reported" do
+      assert [check] = checks_of([@skipped_run])
+      assert check.started_at == "2026-11-12T13:58:54Z"
+      assert check.completed_at == "2026-11-12T13:58:53Z"
+    end
+
+    test "a check without a name is a typed payload error, not a placeholder" do
+      for item <- [
+            Map.put(@completed_run, "name", ""),
+            Map.put(@status_context, "context", "")
+          ] do
+        assert {:error, {:gh_unexpected_payload, ^item}} =
+                 fetch_payload(base(%{"statusCheckRollup" => [@completed_run, item]}))
+      end
+    end
+
+    for {label, value} <- [
+          missing: :missing,
+          empty: "",
+          zero_date: "0001-01-01T00:00:00Z",
+          not_iso: "yesterday"
+        ] do
+      test "a COMPLETED run whose completedAt is #{label} is a typed payload error, never defaulted" do
+        item =
+          case unquote(value) do
+            :missing -> Map.delete(@completed_run, "completedAt")
+            value -> Map.put(@completed_run, "completedAt", value)
+          end
+
+        assert {:error, {:gh_unexpected_payload, ^item}} =
+                 fetch_payload(base(%{"statusCheckRollup" => [@completed_run, item]}))
+      end
     end
   end
 

@@ -1492,7 +1492,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
   test "runner source resolves providers through Registry.route/2 and never directly invokes reopen or BeadsAdapter transitions" do
     source = File.read!(@run_executor_source)
 
-    assert source =~ "TaskProviderRegistry.route(transition, {project_id, database_path})"
+    assert source =~ "TaskProviderRegistry.route(transition, {project_id, binding})"
     refute source =~ "BeadsAdapter.claim("
     refute source =~ "BeadsAdapter.complete("
     refute source =~ "BeadsAdapter.fail("
@@ -4166,7 +4166,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
     test "no input block — both keys return empty string" do
       snapshot = %{"workflow_name" => "test", "workflow_digest" => "abc"}
       state = make_state(snapshot)
-      assigns = RunExecutor.prompt_template_assigns(state, phase_spec(), 1, %{})
+      assigns = RunExecutor.prompt_template_assigns(state, phase_spec(), 1, %{}, nil)
 
       assert assigns["input.prompt"] == ""
       assert assigns["input.prompt_argument"] == ""
@@ -4180,7 +4180,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
       }
 
       state = make_state(snapshot)
-      assigns = RunExecutor.prompt_template_assigns(state, phase_spec(), 1, %{})
+      assigns = RunExecutor.prompt_template_assigns(state, phase_spec(), 1, %{}, nil)
 
       assert assigns["input.prompt"] == "hello"
       assert assigns["input.prompt_argument"] == "\"hello\""
@@ -4194,7 +4194,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
       }
 
       state = make_state(snapshot)
-      assigns = RunExecutor.prompt_template_assigns(state, phase_spec(), 1, %{})
+      assigns = RunExecutor.prompt_template_assigns(state, phase_spec(), 1, %{}, nil)
 
       assert assigns["input.prompt"] == "multi\nline"
       assert assigns["input.prompt_argument"] == "\"multi\\nline\""

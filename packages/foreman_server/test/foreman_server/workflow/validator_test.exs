@@ -192,4 +192,18 @@ defmodule ForemanServer.Workflow.ValidatorTest do
                Validator.validate(wf)
     end
   end
+
+  describe "skill_from_command/1" do
+    test "extracts the name after a /skill: prefix, ignoring the arguments" do
+      assert Validator.skill_from_command("/skill:fix-issue --foreman") == "fix-issue"
+      assert Validator.skill_from_command("/skill:fix-issue") == "fix-issue"
+    end
+
+    test "a command without the prefix, or not a string, names no skill" do
+      assert Validator.skill_from_command("mix test") == nil
+      assert Validator.skill_from_command("run /skill:fix-issue") == nil
+      assert Validator.skill_from_command(nil) == nil
+      assert Validator.skill_from_command(%{"command" => "/skill:x"}) == nil
+    end
+  end
 end

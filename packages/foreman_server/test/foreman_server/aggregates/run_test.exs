@@ -47,6 +47,167 @@ defmodule ForemanServer.Aggregates.RunTest do
     assert state.terminal? == false
   end
 
+  test "PhaseRetried folds to in_progress for a resumed retry and retrying for any other reason" do
+    started =
+      Run.apply_event(Run.initial_state(), %{
+        event_type: "PhaseStarted",
+        payload: %{run_id: "run-r", phase_id: "p1", index: 1, attempt: 1}
+      })
+
+    retried = fn reason ->
+      Run.apply_event(started, %{
+        event_type: "PhaseRetried",
+        payload: %{run_id: "run-r", phase_id: "p1", index: 1, attempt: 2, reason: reason}
+      })
+    end
+
+    resumed = retried.("resumed").phase_status["p1"]
+    assert resumed.status == "in_progress"
+    assert Aggregate.get(resumed.metadata, :attempt) == 2
+
+    assert retried.("failed").phase_status["p1"].status == "retrying"
+
+    # A retry recorded before the typed event existed has no reason at all.
+    legacy =
+      Run.apply_event(started, %{
+        event_type: "PhaseRetried",
+        payload: %{run_id: "run-r", phase_id: "p1"}
+      })
+
+    assert legacy.phase_status["p1"].status == "retrying"
+  end
+
+  describe "run.recovery_attempt" do
+    defp started_run(run_id) do
+      Run.apply_event(Run.initial_state(), %{
+        event_type: "RunStarted",
+        payload: %{run_id: run_id, task_id: "t", project_id: "p", workflow_snapshot: %{}}
+      })
+    end
+
+    defp recovery_command(run_id, fields) do
+      %{
+        type: "run.recovery_attempt",
+        payload: Map.merge(%{run_id: run_id, elapsed_since_boot_ms: 1_200}, fields)
+      }
+    end
+
+    test "records `resumed` for a run that exists and is not terminal" do
+      state = started_run("run-rec")
+
+      assert {:ok, spec} =
+               Run.handle_command(state, recovery_command("run-rec", %{outcome: "resumed"}))
+
+      assert spec.stream_id == "run:run-rec"
+      assert spec.event_type == "RunRecoveryAttempted"
+      assert %{outcome: "resumed", elapsed_since_boot_ms: 1_200} = spec.payload
+
+      # The fold changes no aggregate state: the run stays resumable and blockable.
+      assert Run.apply_event(state, %{event_type: spec.event_type, payload: spec.payload}) ==
+               state
+    end
+
+    test "the event payload carries only the declared RunRecoveryAttempted fields" do
+      state = started_run("run-rec")
+
+      assert {:ok, spec} =
+               Run.handle_command(
+                 state,
+                 recovery_command("run-rec", %{outcome: "resumed", surprise: "x", command_id: "c"})
+               )
+
+      assert spec.payload == %{
+               run_id: "run-rec",
+               outcome: "resumed",
+               elapsed_since_boot_ms: 1_200
+             }
+
+      assert %ForemanServer.Events.RunRecoveryAttempted{run_id: "run-rec"} =
+               ForemanServer.EventCodec.decode!("RunRecoveryAttempted", spec.payload)
+
+      assert {:ok, with_reason} =
+               Run.handle_command(
+                 state,
+                 recovery_command("run-rec", %{"outcome" => "resumed", "reason" => "why"})
+               )
+
+      assert with_reason.payload.reason == "why"
+    end
+
+    test "records the two effect outcomes with their effect fields" do
+      state = started_run("run-rec")
+
+      effect = %{effect_class: "push", effect_key: "effect:push:abc", effect_verdict: "unknown"}
+
+      for outcome <- ["effect_retried", "effect_blocked"] do
+        assert {:ok, %{payload: %{outcome: ^outcome, effect_key: "effect:push:abc"}}} =
+                 Run.handle_command(
+                   state,
+                   recovery_command("run-rec", Map.put(effect, :outcome, outcome))
+                 )
+      end
+
+      assert {:error, {:missing_or_invalid, :effect_key, nil}} =
+               Run.handle_command(
+                 state,
+                 recovery_command(
+                   "run-rec",
+                   %{outcome: "effect_blocked", effect_class: "push", effect_verdict: "unknown"}
+                 )
+               )
+
+      assert {:error, {:unexpected_field, :effect_class}} =
+               Run.handle_command(
+                 state,
+                 recovery_command("run-rec", %{outcome: "resumed", effect_class: "push"})
+               )
+    end
+
+    test "rejects an outcome outside the three and a bad or missing elapsed time" do
+      state = started_run("run-rec")
+
+      assert {:error, {:invalid_recovery_outcome, "dispatched"}} =
+               Run.handle_command(state, recovery_command("run-rec", %{outcome: "dispatched"}))
+
+      assert {:error, {:invalid_recovery_outcome, nil}} =
+               Run.handle_command(state, recovery_command("run-rec", %{}))
+
+      for bad <- [nil, -1, "5"] do
+        assert {:error, {:invalid_integer, :elapsed_since_boot_ms, ^bad}} =
+                 Run.handle_command(
+                   state,
+                   recovery_command("run-rec", %{outcome: "resumed", elapsed_since_boot_ms: bad})
+                 )
+      end
+    end
+
+    test "rejects a run that does not exist" do
+      assert {:error, {:not_found, :run, "run-none"}} =
+               Run.handle_command(
+                 Run.initial_state(),
+                 recovery_command("run-none", %{outcome: "resumed"})
+               )
+    end
+
+    test "rejects every terminal run and appends nothing" do
+      for {event_type, status} <- [
+            {"RunCompleted", "completed"},
+            {"RunFailed", "failed"},
+            {"RunBlocked", "blocked"},
+            {"RunFlaggedStuck", "stuck"}
+          ] do
+        terminal =
+          Run.apply_event(started_run("run-term"), %{
+            event_type: event_type,
+            payload: %{run_id: "run-term"}
+          })
+
+        assert {:error, {:run_terminal, ^status}} =
+                 Run.handle_command(terminal, recovery_command("run-term", %{outcome: "resumed"}))
+      end
+    end
+  end
+
   test "WorkerStarted transitions awaiting_worker → in_progress" do
     run_id = "run-worker-started-#{uuid()}"
 

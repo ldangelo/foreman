@@ -17,6 +17,7 @@ defmodule ForemanServer.Aggregates.Project do
   alias ForemanServer.Aggregates.Project.{Environment, Settings}
   alias ForemanServer.Projects.RepoValidation
   alias ForemanServer.ProjectEnvironment
+  alias ForemanServer.TaskProvider.StorageBinding
 
   alias ForemanServer.Events.{
     ProjectAdmissionDeferred,
@@ -186,6 +187,7 @@ defmodule ForemanServer.Aggregates.Project do
            payload
            |> Map.put(:project_id, project_id)
            |> normalize_settings_payload(),
+         {:ok, payload} <- resolve_task_provider_update(state, payload),
          {:ok, payload} <- normalize_task_provider_payload(payload) do
       {:ok,
        %{
@@ -996,6 +998,23 @@ defmodule ForemanServer.Aggregates.Project do
 
       {:error, :database_path_must_be_absolute} = error ->
         error
+    end
+  end
+
+  # A `project.update` that carries a `task_provider` is resolved against the stored one BEFORE it
+  # is emitted, so the event is self-contained for every consumer (this fold, the projection, the
+  # routing projector): the same provider without a `config` keeps the stored binding, and a
+  # different provider must bring the key its storage scheme needs, or the update is refused
+  # naming that key (`StorageBinding.resolve_update/2`). The CLI sends no `config` on update.
+  defp resolve_task_provider_update(%State{task_provider: stored}, payload) do
+    case task_provider_from(payload) do
+      nil ->
+        {:ok, payload}
+
+      requested ->
+        with {:ok, resolved} <- StorageBinding.resolve_update(stored, requested) do
+          {:ok, Map.put(payload, :task_provider, resolved)}
+        end
     end
   end
 

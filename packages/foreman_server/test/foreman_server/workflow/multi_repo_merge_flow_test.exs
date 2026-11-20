@@ -30,6 +30,12 @@ defmodule ForemanServer.Workflow.MultiRepoMergeFlowTest do
     :ok =
       ForemanServer.ProjectionStore.apply_events([%{event_type: "RunStarted", payload: started}])
 
+    # The gate reads the run's project policy: the project must be known to the projection.
+    :ok =
+      ForemanServer.ProjectionStore.apply_events([
+        %{event_type: "ProjectRegistered", payload: %{project_id: "project-mm", path: nil}}
+      ])
+
     # a first, b last: a merge that resolved "the last PrReady" would pick b's.
     ready(run_id, nil, @url_a, @sha_a)
     ready(run_id, "b", @url_b, @sha_b)
@@ -89,7 +95,8 @@ defmodule ForemanServer.Workflow.MultiRepoMergeFlowTest do
   defp put_repo(payload, repo_id), do: Map.put(payload, :repo_id, repo_id)
 
   # Names the head each repository's PR is at (`@sha_a` / `@sha_b`) unless told otherwise, the way
-  # an operator passes `--head-sha`.
+  # an operator passes `--head-sha`. The project has no `required_checks` (the gate is off), so
+  # every approval is acknowledged (`--acknowledge-gate-off`, AC-001-3).
   defp approve(run_id, repo_id, identity \\ @approver, head_sha \\ nil) do
     CommandGateway.dispatch_operator(%{
       command_id: "approve-#{System.unique_integer([:positive])}",
@@ -101,6 +108,7 @@ defmodule ForemanServer.Workflow.MultiRepoMergeFlowTest do
             run_id: run_id,
             approver: "leo",
             approver_identity: identity,
+            acknowledge_gate_off: true,
             head_sha: head_sha || if(repo_id == "b", do: @sha_b, else: @sha_a)
           },
           repo_id

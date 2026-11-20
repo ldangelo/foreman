@@ -6,7 +6,9 @@ defmodule ForemanServer.Exec.NetworkPolicyDockerTest do
   # selects exactly the labelled objects.
   use ExUnit.Case, async: false
 
-  alias ForemanServer.Exec.NetworkPolicy
+  alias ForemanServer.Exec.{NetworkPolicy, Worktree}
+  alias ForemanServer.Exec.Sandboxes.Docker
+  alias ForemanServer.TestSupport.DockerJobsite
 
   @moduletag :docker
   @image "alpine:3.20"
@@ -91,5 +93,78 @@ defmodule ForemanServer.Exec.NetworkPolicyDockerTest do
 
     assert bystander in names(["network", "ls", "--format", "{{.Name}}"])
     assert bystander_container in names(["ps", "-aq"])
+  end
+
+  # -- the docker jobsite's enforced properties and cleanup (PRD AC-006-3, AC-006-4) ----------------
+  #
+  # Real daemon, real jobsite on an allowlist project: the sandbox container, the proxy sidecar and
+  # the internal network all exist while the agent runs. Every assertion is on the ids captured from
+  # the jobsite's own `foreman.jobsite=<id>` label while it was live (ids are unique per jobsite), so
+  # nothing else on the host is looked at, let alone removed.
+
+  describe "filesystem: a negative read, not an event" do
+    test "a command in the sandbox cannot read a host path outside the bind-mounted worktree" do
+      repo = DockerJobsite.tmp_repo!()
+      image = DockerJobsite.ensure_image!()
+
+      assert {:ok, worktree} = Worktree.create(repo_path: repo, strategy: :merge_to_head)
+      on_exit(fn -> Worktree.close(worktree) end)
+
+      # Outside every mount: in the repo root (the worktree is a linked checkout elsewhere) and in
+      # the host temp dir. Neither path is mounted into the sandbox.
+      repo_marker = Path.join(repo, "outside-marker-#{System.unique_integer([:positive])}.txt")
+
+      tmp_marker =
+        Path.join(System.tmp_dir!(), "outside-marker-#{System.unique_integer([:positive])}.txt")
+
+      File.write!(repo_marker, "secret-in-repo\n")
+      File.write!(tmp_marker, "secret-in-tmp\n")
+      on_exit(fn -> File.rm(tmp_marker) end)
+      refute String.starts_with?(repo_marker, worktree.path <> "/")
+
+      assert {:ok, state, sandbox_path, _container} =
+               Docker.create(
+                 %{image: image, labels: %{"netpolicy-docker-test" => "fs"}},
+                 worktree
+               )
+
+      on_exit(fn -> Docker.close(state) end)
+
+      # A file next to the worktree, in its parent directory: a mount wider by one level shows it
+      # at `<sandbox_path>/<name>` (Docker Desktop on macOS does not expose the host's `/` itself,
+      # so a widening that stops short of the root is the one it can show).
+      parent_marker =
+        Path.join(
+          Path.dirname(worktree.path),
+          "outside-marker-#{System.unique_integer([:positive])}.txt"
+        )
+
+      File.write!(parent_marker, "secret-in-parent\n")
+      on_exit(fn -> File.rm(parent_marker) end)
+
+      # The host path itself, the same path under the sandbox mount (what a host-root mount would
+      # expose), a climb out of the mount, and the marker's bare name under the mount (what a wider
+      # mount shows): each read fails and shows nothing.
+      for marker <- [repo_marker, tmp_marker, parent_marker],
+          path <- [
+            marker,
+            sandbox_path <> marker,
+            "#{sandbox_path}/../.." <> marker,
+            "#{sandbox_path}/#{Path.basename(marker)}"
+          ] do
+        assert {:ok, %{exit_code: code, stdout: out}} = Docker.exec(state, "cat #{path}", [])
+        assert code != 0, "read of #{path} succeeded"
+        refute out =~ "secret-in"
+      end
+
+      # Positive control (so the failures above are not a broken sandbox): a file inside the
+      # worktree is readable at the sandbox path.
+      File.write!(Path.join(worktree.path, "inside.txt"), "inside\n")
+
+      assert {:ok, %{exit_code: 0, stdout: inside}} =
+               Docker.exec(state, "cat #{sandbox_path}/inside.txt", [])
+
+      assert inside =~ "inside"
+    end
   end
 end

@@ -65,6 +65,9 @@ config :foreman_server, :secret_log_filter, enabled: false
 # foreman_server: br_runner test override (TRD-030)
 config :foreman_server, :br_runner, ForemanServer.TaskProviders.BrRunnerMock
 
+# foreman_server: kata_runner test override (TRD-KATA-T005)
+config :foreman_server, :kata_runner, ForemanServer.TaskProviders.KataRunnerMock
+
 config :foreman_server, :start_project_provider_projector?, false
 config :foreman_server, :start_messaging_dispatcher?, false
 config :foreman_server, :start_notifier?, false
@@ -88,6 +91,9 @@ config :foreman_server, :pr_watcher,
   enabled: false,
   no_change_rechecks: 1,
   no_change_recheck_ms: 0
+
+# TRD-021: tests start the PR report publisher explicitly with start_supervised!.
+config :foreman_server, :pr_report_publisher, enabled: false
 # Tests start the ticker explicitly with start_supervised!.
 config :foreman_server, :schedule, ticker_enabled: false
 config :foreman_server, :trigger_poll_enabled, false
@@ -104,6 +110,10 @@ config :phoenix, Phoenix.Diagnostics, enabled: false
 # opt in per-test via Application.put_env(:foreman_server, :jido_ecto,
 # enabled: true).
 config :foreman_server, :jido_ecto, enabled: false
+
+# Phase 1 (P-3): tests run the ETS-only store; config.exs turns the requirement on. The guard
+# tests opt in per test via Application.put_env/3.
+config :foreman_server, :require_durable_store_for_gating, false
 
 config :foreman_server, ForemanServer.Agents.JidoCheckpointStore.Repo,
   url:

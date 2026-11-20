@@ -8,7 +8,8 @@ defmodule ForemanServer.Aggregates.Run do
   alias ForemanServer.PrGate
 
   @pr_watch_types PrWatch.command_types()
-  @pr_watch_events PrWatch.event_types()
+  # The events `PrWatch` emits plus the evidence events its fold (`PrEvidence`) also applies.
+  @pr_watch_events Enum.uniq(PrWatch.event_types() ++ ForemanServer.PrEvidence.events())
 
   defmodule PhaseStatus do
     @moduledoc "Phase status keyed by phase_id."
@@ -319,7 +320,12 @@ defmodule ForemanServer.Aggregates.Run do
         put_phase(state, payload, "timed_out")
 
       "PhaseRetried" ->
-        put_phase(state, payload, "retrying")
+        # A resumed retry keeps the phase running; any other reason is a retry in waiting.
+        put_phase(
+          state,
+          payload,
+          if(Aggregate.get(payload, :reason) == "resumed", do: "in_progress", else: "retrying")
+        )
 
       "WorkerStarted" ->
         state = put_worker(state, payload, "running")
@@ -414,6 +420,11 @@ defmodule ForemanServer.Aggregates.Run do
           | base_branch: base_branch,
             run_id: Aggregate.get(payload, :run_id) || state.run_id
         }
+
+      # Recovery records are read-model facts (`run.recovery`); they change no
+      # aggregate state, and the command guards against a terminal run itself.
+      "RunRecoveryAttempted" ->
+        state
 
       # E9 PR-watch events fold into `pr_watch` / `pr_fixes`.
       type when type in @pr_watch_events ->
@@ -740,6 +751,29 @@ defmodule ForemanServer.Aggregates.Run do
     end
   end
 
+  # run.recovery_attempt — emits `RunRecoveryAttempted`, the recovery record of
+  # a run that exists and is not terminal. A terminal run cannot be resumed or
+  # blocked by recovery, so its stream takes no such record. Dispatched through
+  # `CommandGateway.dispatch_system/1` by `RunExecutor` (outcome `resumed`). The
+  # two effect outcomes are accepted here for the effect recovery step (TRD-012);
+  # no lib code produces them yet.
+  def handle_command(state, %{type: "run.recovery_attempt", payload: payload}) do
+    with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
+         {:ok, outcome} <- require_recovery_outcome(Aggregate.get(payload, :outcome)),
+         {:ok, elapsed} <- require_non_negative_integer(payload, :elapsed_since_boot_ms, false),
+         :ok <- require_optional_binary(payload, :reason),
+         :ok <- require_effect_fields(outcome, payload),
+         :ok <- require_exists(state, run_id),
+         :ok <- reject_terminal_mutation(state) do
+      {:ok,
+       %{
+         stream_id: "run:#{run_id}",
+         event_type: "RunRecoveryAttempted",
+         payload: recovery_attempt_payload(payload, run_id, outcome, elapsed)
+       }}
+    end
+  end
+
   # run.record_base_branch — emits `RunBaseBranchRecorded`, persisting
   # the run's PR base branch so a resumed executor reads it back instead
   # of re-deriving it from whatever branch the checkout is on at resume
@@ -900,12 +934,21 @@ defmodule ForemanServer.Aggregates.Run do
   # operator reviewed (`head_sha`, required): `CommandGateway` has already read it back from GitHub,
   # so what is recorded is a commit that was the PR's head when it was approved. A later push voids
   # the approval (`run.pr.rehold`); the pin is never moved to the new head.
+  #
+  # TRD-036: the approval is also decided on evidence. `CommandGateway` stamps `evidence`
+  # (`policy`, `checks_ref`, `now_ms`) after it has observed the PR for THIS approval (TRD-022);
+  # `decide_evidence/4` validates it, runs `PrEvidence.evaluate/2` over the record of the PR the gate
+  # holds and either refuses (nothing is appended, `PrGate` is not touched) or returns the decision
+  # that `MergeGateApproved` records. The decision reads no clock and no network: the time is the
+  # stamped `now_ms`. Only the approval's own `approved_at` is stamped here, as before.
   def handle_command(state, %{type: "merge_approve", payload: payload}) do
     with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
          :ok <- require_exists(state, run_id),
          {:ok, repo_key} <- repo_key(payload),
          :ok <- ensure_merge_gate_pending(state, repo_key),
-         {:ok, %Approval{} = approval} <- validate_approval(payload) do
+         {:ok, %Approval{} = approval} <- validate_approval(payload),
+         {:ok, decision} <-
+           decide_evidence(state, repo_key, approval, Aggregate.get(payload, :evidence)) do
       :ok =
         PrGate.record_approved(
           run_id,
@@ -920,13 +963,65 @@ defmodule ForemanServer.Aggregates.Run do
          event_type: "MergeGateApproved",
          payload:
            put_repo_id(
-             %{
-               run_id: run_id,
-               approver: approval.approver,
-               approver_identity: approval.approver_identity,
-               head_sha: approval.head_sha,
-               approved_at: System.system_time(:millisecond)
-             },
+             put_gate_off_acknowledged(
+               %{
+                 run_id: run_id,
+                 approver: approval.approver,
+                 approver_identity: approval.approver_identity,
+                 head_sha: approval.head_sha,
+                 approved_at: System.system_time(:millisecond),
+                 evidence: decision
+               },
+               payload,
+               decision
+             ),
+             repo_key
+           )
+       }}
+    end
+  end
+
+  # run.pr.waive_evidence (TRD-012) - an operator waives missing or skipped evidence of the PR the
+  # addressed repository's gate holds, for one head and one policy version. Modelled on
+  # `merge_approve`: the gate must be :pending, the approver is checked by `validate_approval/1`,
+  # and the PR is the gate's pin, never the payload's `pr_url`. `policy_version` is stamped by
+  # `CommandGateway` (the operator cannot name one). Like `merge_approve` it does not call
+  # `allow_pr_lifecycle_on_terminal_runs/2`: a gate is normally still pending on a completed run.
+  def handle_command(state, %{type: "run.pr.waive_evidence", payload: payload}) do
+    with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
+         :ok <- require_exists(state, run_id),
+         {:ok, repo_key} <- repo_key(payload),
+         :ok <- ensure_merge_gate_pending(state, repo_key),
+         {:ok, %Approval{} = approval} <- validate_approval(payload),
+         {:ok, policy_version} <-
+           Aggregate.required_binary(Aggregate.get(payload, :policy_version), :policy_version),
+         {:ok, codes} <- waivable_codes(Aggregate.get(payload, :reasons)),
+         {:ok, reason} <- waiver_reason(Aggregate.get(payload, :reason)) do
+      %MergePin{pr_url: pr_url} = merge_pin(state, repo_key)
+
+      {:ok,
+       %{
+         stream_id: "run:#{run_id}",
+         event_type: "PrEvidenceWaived",
+         payload:
+           put_repo_id(
+             put_waived_risk_digest(
+               %{
+                 run_id: run_id,
+                 pr_url: pr_url,
+                 head_sha: approval.head_sha,
+                 approver: approval.approver,
+                 approver_identity: approval.approver_identity,
+                 reasons: codes,
+                 reason: reason,
+                 policy_version: policy_version,
+                 waived_at: System.system_time(:millisecond)
+               },
+               state,
+               pr_url,
+               approval.head_sha,
+               codes
+             ),
              repo_key
            )
        }}
@@ -1248,6 +1343,170 @@ defmodule ForemanServer.Aggregates.Run do
     end
   end
 
+  # AC-001-3: `CommandGateway` keeps `acknowledge_gate_off: true` on an approval of a gate-off
+  # project the operator acknowledged (and drops it everywhere else). The aggregate decides
+  # nothing new: it records the flag, and only when it is `true` (read from the atom key only)
+  # AND the decision it just made is the gate off, so no gated approval can carry the key.
+  defp put_gate_off_acknowledged(event_payload, command_payload, %{status: "off"}) do
+    if Map.get(command_payload, :acknowledge_gate_off) == true,
+      do: Map.put(event_payload, :gate_off_acknowledged, true),
+      else: event_payload
+  end
+
+  defp put_gate_off_acknowledged(event_payload, _command_payload, _decision), do: event_payload
+
+  # A `risk_high` waiver is bound to the risk record it was given for: its digest is stamped on
+  # the event (`nil` when the PR holds no risk record of the waived head). Every other waiver
+  # carries no `risk_digest` key.
+  defp put_waived_risk_digest(event_payload, state, pr_url, head_sha, codes) do
+    if "risk_high" in codes do
+      digest = ForemanServer.PrEvidence.risk_digest(Map.get(state.pr_watch, pr_url), head_sha)
+      Map.put(event_payload, :risk_digest, digest)
+    else
+      event_payload
+    end
+  end
+
+  # TRD-036. The decision of `merge_approve` on the evidence `CommandGateway` stamped.
+  #
+  # `raw` is the payload's `evidence`: `%{policy: nil | %{required, version}, checks_ref, now_ms}`.
+  # It is validated first (`stamped_evidence/1`), then `PrEvidence.evaluate/2` runs over the record
+  # of the PR the gate holds (`merge_pin/2` names it, `state.pr_watch` holds it) with the head the
+  # operator approved. Whether the gate is on is the stamped policy's: never a policy read from the
+  # record, because the record's policy is whatever the last observation saw.
+  #
+  # Who can reach this: `CommandGateway.dispatch_operator/2` (the HTTP/CLI operator path) always
+  # replaces `evidence` with its own stamp (`CommandGateway.gate_evidence/2`), and the gateway
+  # drops a caller's `evidence` when it stamps none. Any other in-process caller of
+  # `CommandGateway.dispatch_system/2` or `CommandRouter.dispatch/2` can send a payload of its own:
+  # the aggregate cannot tell, it reads neither the settings nor the network, so such a caller is
+  # trusted exactly as it is for every other system command. A payload without `evidence` is
+  # refused, a forged non-nil policy still needs a `checks_ref` that is the `observation_ref` of the
+  # recorded checks for the approved head, and the stamped nil policy is the one thing it cannot
+  # check.
+  #
+  # A refusal is the three-tuple `{:error, {:evidence_ineligible, head_sha, codes}, detail}`; every
+  # value of `detail` encodes as JSON. A proceeding decision is returned as the map that
+  # `MergeGateApproved` records: the evaluator's output for this decision, not a reference to the
+  # live record.
+  defp decide_evidence(state, repo_key, %Approval{head_sha: head_sha}, raw) do
+    with {:ok, stamped} <- stamped_evidence(raw) do
+      record =
+        case merge_pin(state, repo_key) do
+          %MergePin{pr_url: pr_url} when is_binary(pr_url) -> Map.get(state.pr_watch, pr_url)
+          _no_pin -> nil
+        end
+
+      result =
+        ForemanServer.PrEvidence.evaluate(record, %{
+          head_sha: head_sha,
+          policy: stamped.policy,
+          now_ms: stamped.now_ms,
+          checks_ref: stamped.checks_ref
+        })
+
+      if result.status in [:off, :eligible, :waived] do
+        {:ok,
+         %{
+           status: Atom.to_string(result.status),
+           policy_version: result.policy_version,
+           required: stamped.policy && stamped.policy.required,
+           checks_ref: stamped.checks_ref,
+           now_ms: stamped.now_ms,
+           waived: reason_codes(result.waived),
+           inputs: result.inputs
+         }}
+      else
+        codes = reason_codes(result.reasons)
+
+        {:error, {:evidence_ineligible, head_sha, codes},
+         %{
+           status: result.status,
+           head_sha: head_sha,
+           policy_version: result.policy_version,
+           checks_ref: stamped.checks_ref,
+           now_ms: stamped.now_ms,
+           waived: reason_codes(result.waived),
+           waiver: result.waiver,
+           reasons: result.reasons,
+           inputs: result.inputs
+         }}
+      end
+    end
+  end
+
+  defp reason_codes(reasons), do: Enum.map(reasons, &Atom.to_string(&1.code))
+
+  # `evidence` must be a map holding a `policy` key (nil is the gate off) and an integer `now_ms`;
+  # a non-nil policy is a map whose `required` list validates and whose `version` is the version of
+  # that list, and needs a non-blank `checks_ref` (a nil would equal an observer batch's
+  # `observation_ref`). The gate-off `checks_ref` is not read: it is recorded as nil.
+  defp stamped_evidence(%{} = raw) do
+    with {:ok, policy} <- stamped_policy(Aggregate.get(raw, :policy, :absent)),
+         {:ok, now_ms} <- stamped_now_ms(Aggregate.get(raw, :now_ms)),
+         {:ok, checks_ref} <- stamped_checks_ref(policy, Aggregate.get(raw, :checks_ref)) do
+      {:ok, %{policy: policy, now_ms: now_ms, checks_ref: checks_ref}}
+    end
+  end
+
+  defp stamped_evidence(_absent_or_malformed),
+    do: {:error, {:missing_or_invalid, :evidence}}
+
+  defp stamped_policy(nil), do: {:ok, nil}
+
+  defp stamped_policy(%{} = policy) do
+    version = Aggregate.get(policy, :version)
+
+    with {:ok, required} when is_list(required) <-
+           ForemanServer.PrEvidence.validate_policy_required(Aggregate.get(policy, :required)),
+         true <- is_binary(version),
+         true <- version == ForemanServer.PrEvidence.policy_version(required) do
+      {:ok, %{required: required, version: version}}
+    else
+      _malformed -> {:error, {:missing_or_invalid, :evidence}}
+    end
+  end
+
+  defp stamped_policy(_absent_or_malformed), do: {:error, {:missing_or_invalid, :evidence}}
+
+  defp stamped_now_ms(now_ms) when is_integer(now_ms), do: {:ok, now_ms}
+  defp stamped_now_ms(_other), do: {:error, {:missing_or_invalid, :evidence}}
+
+  defp stamped_checks_ref(nil, _checks_ref), do: {:ok, nil}
+
+  defp stamped_checks_ref(_policy, checks_ref) when is_binary(checks_ref) do
+    if String.trim(checks_ref) == "",
+      do: {:error, {:missing_or_invalid, :checks_ref}},
+      else: {:ok, checks_ref}
+  end
+
+  defp stamped_checks_ref(_policy, _other), do: {:error, {:missing_or_invalid, :checks_ref}}
+
+  @max_waiver_reason 500
+
+  # `reasons` of a waiver: a non-empty list of waivable codes. A code outside the set is the typed
+  # `{:reason_not_waivable, code}`; the stored list is sorted and de-duplicated.
+  defp waivable_codes([_ | _] = reasons) do
+    waivable = ForemanServer.PrEvidence.waivable_codes()
+
+    case Enum.reject(reasons, &(is_binary(&1) and &1 in waivable)) do
+      [] -> {:ok, reasons |> Enum.uniq() |> Enum.sort()}
+      [code | _] -> {:error, {:reason_not_waivable, code}}
+    end
+  end
+
+  defp waivable_codes(_other), do: {:error, {:missing_or_invalid, :reasons}}
+
+  defp waiver_reason(reason) when is_binary(reason) do
+    text = String.trim(reason)
+
+    if text != "" and String.length(text) <= @max_waiver_reason,
+      do: {:ok, text},
+      else: {:error, {:missing_or_invalid, :reason}}
+  end
+
+  defp waiver_reason(_other), do: {:error, {:missing_or_invalid, :reason}}
+
   defp required_integer(payload, key) do
     case Aggregate.get(payload, key) do
       value when is_integer(value) -> {:ok, value}
@@ -1255,7 +1514,7 @@ defmodule ForemanServer.Aggregates.Run do
     end
   end
 
-  @repo_pr_operator_types ~w(run.pr.retry)
+  @repo_pr_operator_types ~w(run.pr.retry run.pr.waive_evidence)
 
   @doc """
   Operator-only PR commands added by E12-S6 (`run.pr.retry`), declared here so
@@ -1299,6 +1558,52 @@ defmodule ForemanServer.Aggregates.Run do
 
   defp require_workflow_snapshot(_snapshot),
     do: {:error, {:missing_or_invalid, :workflow_snapshot}}
+
+  @recovery_outcomes ["resumed", "effect_retried", "effect_blocked"]
+  @effect_recovery_fields [:effect_class, :effect_key, :effect_verdict]
+
+  defp require_recovery_outcome(outcome) when outcome in @recovery_outcomes, do: {:ok, outcome}
+  defp require_recovery_outcome(outcome), do: {:error, {:invalid_recovery_outcome, outcome}}
+
+  defp require_optional_binary(payload, key) do
+    case Aggregate.get(payload, key) do
+      nil -> :ok
+      value when is_binary(value) -> :ok
+      value -> {:error, {:missing_or_invalid, key, value}}
+    end
+  end
+
+  # Only the declared `RunRecoveryAttempted` fields reach the stream (AGENTS.md
+  # 5.4b): an undeclared key would make `EventCodec.decode!` raise on replay.
+  # An absent optional field stays absent.
+  defp recovery_attempt_payload(payload, run_id, outcome, elapsed) do
+    optional =
+      for key <- [:reason | @effect_recovery_fields],
+          value = Aggregate.get(payload, key),
+          value != nil,
+          into: %{},
+          do: {key, value}
+
+    Map.merge(optional, %{run_id: run_id, outcome: outcome, elapsed_since_boot_ms: elapsed})
+  end
+
+  # The effect fields name the effect a verdict was reached for, so the two
+  # effect outcomes require all three and `resumed` carries none.
+  defp require_effect_fields("resumed", payload) do
+    case Enum.find(@effect_recovery_fields, &(Aggregate.get(payload, &1) != nil)) do
+      nil -> :ok
+      key -> {:error, {:unexpected_field, key}}
+    end
+  end
+
+  defp require_effect_fields(_effect_outcome, payload) do
+    Enum.reduce_while(@effect_recovery_fields, :ok, fn key, :ok ->
+      case Aggregate.get(payload, key) do
+        value when is_binary(value) and value != "" -> {:cont, :ok}
+        value -> {:halt, {:error, {:missing_or_invalid, key, value}}}
+      end
+    end)
+  end
 
   defp require_exists(%State{exists?: true, run_id: run_id}, run_id), do: :ok
   defp require_exists(%State{}, run_id), do: {:error, {:not_found, :run, run_id}}

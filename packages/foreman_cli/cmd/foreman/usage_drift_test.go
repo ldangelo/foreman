@@ -274,3 +274,48 @@ func TestNotImplementedCheckCanFail(t *testing.T) {
 		t.Fatalf("stale claim not detected: %v", got)
 	}
 }
+
+// The waiver verb must be routed, advertised in usage and documented; a verb
+// dispatched without its usage line or cli-reference entry fails the drift tests
+// above, and this pins that the waiver verb is one the parsers actually see.
+func TestWaiveEvidenceVerbIsDispatchedAdvertisedAndDocumented(t *testing.T) {
+	_, subs := dispatchedVerbs(t)
+	found := false
+	for _, s := range subs["run"] {
+		found = found || s == "waive-evidence"
+	}
+	if !found {
+		t.Error("run waive-evidence is not dispatched")
+	}
+	if !advertisedVerbs()["run waive-evidence"] {
+		t.Error("usage does not advertise run waive-evidence")
+	}
+	if !strings.Contains(readCLIReference(t), "foreman run waive-evidence --id") {
+		t.Error("docs/cli-reference.md has no waive-evidence entry")
+	}
+}
+
+// TRD-030: the publish-report verb must be routed by `runRun`, advertised in the top-level usage
+// and in `run`'s own usage text, and documented; each omission is a drift test failure above, and
+// this pins that the parsers actually see the verb.
+func TestPublishReportVerbIsDispatchedAdvertisedAndDocumented(t *testing.T) {
+	_, subs := dispatchedVerbs(t)
+	found := false
+	for _, s := range subs["run"] {
+		found = found || s == "publish-report"
+	}
+	if !found {
+		t.Error("run publish-report is not dispatched")
+	}
+	if !advertisedVerbs()["run publish-report"] {
+		t.Error("main.go usage does not advertise run publish-report")
+	}
+	if !strings.Contains(readCLIReference(t), "foreman run publish-report <run-id>") {
+		t.Error("docs/cli-reference.md has no publish-report entry")
+	}
+
+	err := runRun(nil, []string{"no-such-subcommand"})
+	if err == nil || !strings.Contains(err.Error(), "foreman run publish-report <id>") {
+		t.Errorf("run's own usage text does not list publish-report: %v", err)
+	}
+}
