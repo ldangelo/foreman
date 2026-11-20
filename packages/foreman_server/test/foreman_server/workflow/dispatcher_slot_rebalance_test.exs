@@ -20,7 +20,14 @@ defmodule ForemanServer.Workflow.DispatcherSlotRebalanceTest do
     :meck.new(ForemanServer.Workflow.RunSupervisor, [:no_link])
     test = self()
 
-    :meck.expect(ForemanServer.Workflow.RunSupervisor, :start_run, fn run_id, _task, _opts ->
+    # Fresh starts only: a duplicate promotion of a run already started resumes
+    # it (`resume_from`), which the real supervisor refuses.
+    :meck.expect(ForemanServer.Workflow.RunSupervisor, :start_run, fn run_id, _task, opts ->
+      if opts == [], do: send(test, {:run_supervisor_start, run_id})
+      {:ok, :child}
+    end)
+
+    :meck.expect(ForemanServer.Workflow.RunSupervisor, :start_run, fn run_id, _task ->
       send(test, {:run_supervisor_start, run_id})
       {:ok, :child}
     end)
@@ -239,6 +246,13 @@ defmodule ForemanServer.Workflow.DispatcherSlotRebalanceTest do
                        2_000
 
         assert cb.payload.run_id == run_b
+
+        # A queued (waiter) run that ends is dropped from its own project's queue too.
+        assert_receive {:dispatch_system,
+                        %{type: "run_slots.remove_waiter", aggregate_id: "run_slots:proj-a"} = ra},
+                       2_000
+
+        assert ra.payload.run_id == run_a
         refute_received {:dispatch_system, %{aggregate_id: "run_slots:global"}}
       end
     end
@@ -381,12 +395,25 @@ defmodule ForemanServer.Workflow.DispatcherSlotRebalanceTest do
       assert_receive {:admission_start, "proj-x", ^run}, 2_000
     end
 
-    test "a promoted run that is already terminal is not started" do
+    test "a promoted run that is already terminal is not started and its slot is released" do
       run = "run-promoted-dead-#{System.unique_integer([:positive])}"
       with_task(run, "proj-x")
+      test = self()
 
       :meck.expect(ProjectionStore, :run, fn ^run ->
         %{run_id: run, terminal?: true, status: "cancelled", project_id: "proj-x"}
+      end)
+
+      :meck.new(ForemanServer.CommandGateway, [:passthrough, :no_link])
+
+      :meck.expect(ForemanServer.CommandGateway, :dispatch_system, fn command ->
+        send(test, {:dispatch_system, command})
+        {:ok, nil}
+      end)
+
+      on_exit(fn ->
+        if :meck.validate(ForemanServer.CommandGateway),
+          do: :meck.unload(ForemanServer.CommandGateway)
       end)
 
       {:noreply, _} =
@@ -400,6 +427,10 @@ defmodule ForemanServer.Workflow.DispatcherSlotRebalanceTest do
         )
 
       refute_receive {:admission_start, _, ^run}, 200
+
+      assert_receive {:dispatch_system,
+                      %{type: "run_slots.release", aggregate_id: "run_slots:proj-x"}},
+                     2_000
     end
   end
 

@@ -162,6 +162,10 @@ defmodule ForemanServer.Workflow.DispatcherProjectResumeTest do
       {:error, :run_limit_exceeded}
     end)
 
+    # The rebalance reads the limit through RunAdmission (mocked without passthrough here);
+    # 0 makes it a no-op so this test stays about the deferred re-admission.
+    :meck.expect(ForemanServer.RunAdmission, :project_capacity, fn _ -> 0 end)
+
     envelope = %{event_type: "ProjectUpdated", data: %{project_id: "proj-resume"}}
     assert {:noreply, _} = Dispatcher.handle_info({:projection_event, envelope}, %{})
     assert_received {:admitted, ^run1}

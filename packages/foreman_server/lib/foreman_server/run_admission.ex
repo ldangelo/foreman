@@ -323,7 +323,10 @@ defmodule ForemanServer.RunAdmission do
   end
 
   # Capacity of a project's slot stream: the loaded Project's effective run limit.
-  defp project_capacity(project_id) do
+  # Public for `Workflow.Dispatcher.rebalance/1`, which promotes against the same number.
+  @doc false
+  @spec project_capacity(String.t()) :: non_neg_integer()
+  def project_capacity(project_id) do
     {state, _version} = Aggregate.load(ForemanServer.Aggregates.Project, "project:#{project_id}")
     ForemanServer.Aggregates.Project.effective_run_limit(state)
   end

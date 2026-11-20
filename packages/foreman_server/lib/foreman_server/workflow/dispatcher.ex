@@ -36,6 +36,12 @@ defmodule ForemanServer.Workflow.Dispatcher do
       clock) re-admits every project's deferred tasks: the daily thread cap clears then, and
       no event announces it. `ProjectResumed`, `ProjectUpdated` and a capacity-freeing
       `ProjectRunReservationReleased` re-admit them per project for the other refusals.
+    * Run slots are per project (`run_slots:<project_id>`). Every terminal or pause event
+      releases the run's slot on ITS project's stream (project from the run projection, else the
+      task; an unresolvable project is warned about and left to the backstop sweep).
+      `RunSlotTransferred` and `RunSlotAcquired` with `promoted: true` re-enter admission for the
+      promoted run, and `ProjectUpdated` / `ProjectReactivated` rebalance that project's queue
+      (`run_slots.promote` until the aggregate answers `{:ok, nil}`).
   The dispatcher is the bridge between the operator-facing task
   lifecycle and the supervised executor. Subscriptions are
   per-process and unlink automatically when the subscriber exits.
@@ -129,7 +135,8 @@ defmodule ForemanServer.Workflow.Dispatcher do
   # RunFlaggedStuck can be reset and resumed, so they keep their queue.)
   @steer_losing_terminal_event_types ~w(RunCancelled RunCompleted RunFailed RunDeleted)
   @lease_promotion_event_types ~w(BeadsDbLeaseTransferred)
-  @slot_promotion_event_types ~w(RunSlotTransferred)
+  @slot_promotion_event_types ~w(RunSlotTransferred RunSlotAcquired)
+  @project_rebalance_event_types ~w(ProjectUpdated ProjectReactivated)
   @run_stop_event_types ~w(RunPaused)
   @run_resume_event_types ~w(RunResumed)
   @run_steer_event_types ~w(RunSteerQueued)
@@ -219,7 +226,22 @@ defmodule ForemanServer.Workflow.Dispatcher do
   # its reservation (`ProjectRunReservationReleased` for a terminal run; the
   # reconciler releases it AFTER the terminal event, so that is the point at
   # which the capacity is really free) re-admits them.
-  for event_type <- ~w(ProjectResumed ProjectUpdated ProjectRunReservationReleased) do
+  #
+  # A changed limit (`ProjectUpdated`) or a reactivated project also rebalances its slot queue
+  # (TRD-007): waiting runs of THAT project are promoted FIFO up to its limit. The rebalance runs
+  # first so a task re-admitted afterwards can never take capacity ahead of an older waiter.
+  for event_type <- @project_rebalance_event_types do
+    @impl true
+    def handle_info({:projection_event, %{"event_type" => unquote(event_type)} = envelope}, state) do
+      handle_project_changed(unquote(event_type), envelope, state)
+    end
+
+    def handle_info({:projection_event, %{event_type: unquote(event_type)} = envelope}, state) do
+      handle_project_changed(unquote(event_type), envelope, state)
+    end
+  end
+
+  for event_type <- ~w(ProjectResumed ProjectRunReservationReleased) do
     @impl true
     def handle_info({:projection_event, %{"event_type" => unquote(event_type)} = envelope}, state) do
       readmit_deferred(unquote(event_type), envelope, state)
@@ -267,6 +289,71 @@ defmodule ForemanServer.Workflow.Dispatcher do
   # definitive retry rejection must NOT re-admit: the same task would be
   # refused again and release again, an unbounded loop.
   @capacity_freeing_release_reasons ~w(terminal_event terminal_run)
+
+  defp handle_project_changed(event_type, envelope, state) do
+    project_id = event_project_id(envelope)
+
+    if is_binary(project_id) and project_id != "", do: rebalance(project_id)
+
+    readmit_deferred(event_type, envelope, state)
+  end
+
+  defp event_project_id(envelope) do
+    payload =
+      case unwrap_data(envelope) do
+        %_{} = struct -> Map.from_struct(struct)
+        map -> map
+      end
+
+    payload["project_id"] || payload[:project_id]
+  end
+
+  # Promotes the project's waiting runs, head first, for as long as its stream says capacity is
+  # free (`run_slots.promote` answers `{:ok, nil}` once it is not or the queue is empty). The
+  # promotion events come back through `handle_slot_promoted/2`, which is what starts each run;
+  # this only moves the queue. Bounded by the limit (a project can never need more promotions than
+  # that) and by the first error, so a wedged aggregate cannot spin the Dispatcher.
+  defp rebalance(project_id) do
+    capacity = RunAdmission.project_capacity(project_id)
+    promote_waiters(project_id, capacity, max(capacity, 0))
+  catch
+    :exit, exit_reason ->
+      Logger.warning(
+        "ForemanServer.Workflow.Dispatcher: rebalance of #{project_id} exited: #{inspect(exit_reason)}"
+      )
+
+      :ok
+  end
+
+  defp promote_waiters(_project_id, _capacity, 0), do: :ok
+
+  defp promote_waiters(project_id, capacity, remaining) do
+    # Not idempotent by id on purpose: `run_slots.promote` is state-based (it emits only while a
+    # waiter and free capacity exist), so a repeat is a no-op, never a double promotion.
+    command = %{
+      type: "run_slots.promote",
+      command_id:
+        "run_slots:rebalance:#{project_id}:#{System.system_time(:millisecond)}:" <>
+          Integer.to_string(System.unique_integer([:positive, :monotonic])),
+      aggregate_id: ForemanServer.Aggregates.RunSlots.stream_id(project_id),
+      payload: %{project_id: project_id, capacity: capacity}
+    }
+
+    case CommandGateway.dispatch_system(command) do
+      {:ok, nil} ->
+        :ok
+
+      {:ok, _promoted} ->
+        promote_waiters(project_id, capacity, remaining - 1)
+
+      {:error, reason} ->
+        Logger.warning(
+          "ForemanServer.Workflow.Dispatcher: rebalance of #{project_id} stopped: #{inspect(reason)}"
+        )
+
+        :ok
+    end
+  end
 
   defp readmit_deferred(event_type, envelope, state) do
     # The recorded event's data is a typed struct (no Access behaviour).
@@ -532,11 +619,64 @@ defmodule ForemanServer.Workflow.Dispatcher do
       :ok
   end
 
-  # TRD-009: Release the global slot on terminal run events.
+  # Releases the run's slot on ITS project's stream (`run_slots:<project_id>`). The project comes
+  # from the run projection, else the task that owns the run (a deleted run's projection can be
+  # gone). A run whose project cannot be resolved (legacy run, nil project) is warned about and
+  # left alone: nothing here may guess a stream, and the backstop sweep over every project stream
+  # (`RunLifecycleReconciler`) releases the slot later.
   defp terminate_slot(run_id, reason) do
-    # Legacy global stream until the project is resolved here (TRD-007).
-    safe_dispatch_system(ForemanServer.Aggregates.RunSlots.release_command(nil, run_id, reason))
+    case resolve_run_project(run_id) do
+      nil ->
+        Logger.warning(
+          "ForemanServer.Workflow.Dispatcher: cannot resolve the project of run #{run_id}; " <>
+            "run_slots release (#{reason}) skipped, the backstop sweep will release it"
+        )
+
+        :ok
+
+      project_id ->
+        safe_dispatch_system(
+          ForemanServer.Aggregates.RunSlots.release_command(project_id, run_id, reason)
+        )
+
+        # A run that ended while still queued (a resumed run) is a waiter, not a holder, so the
+        # release above is a no-op for it: drop it so it is never promoted. No-op otherwise.
+        safe_dispatch_system(%{
+          type: "run_slots.remove_waiter",
+          command_id:
+            "run_slots:remove_waiter:#{run_id}:#{System.system_time(:millisecond)}:" <>
+              Integer.to_string(System.unique_integer([:positive, :monotonic])),
+          aggregate_id: ForemanServer.Aggregates.RunSlots.stream_id(project_id),
+          payload: %{run_id: run_id, project_id: project_id}
+        })
+    end
   end
+
+  defp resolve_run_project(run_id) do
+    run_project_id(run_id) || task_project_id(run_id)
+  end
+
+  defp run_project_id(run_id) do
+    case ProjectionStore.run(run_id) do
+      %{} = run -> present_id(Map.get(run, :project_id) || Map.get(run, "project_id"))
+      _ -> nil
+    end
+  catch
+    :exit, _ -> nil
+  end
+
+  defp task_project_id(run_id) do
+    run_id
+    |> ProjectionStore.tasks_by_run_id()
+    |> Enum.find_value(fn task ->
+      present_id(Map.get(task, :project_id) || Map.get(task, "project_id"))
+    end)
+  catch
+    :exit, _ -> nil
+  end
+
+  defp present_id(id) when is_binary(id) and id != "", do: id
+  defp present_id(_), do: nil
 
   defp terminate_lease(run_id, reason) do
     with {:ok, db_path} <- db_path_for_run(run_id) do
@@ -925,11 +1065,20 @@ defmodule ForemanServer.Workflow.Dispatcher do
 
   # Handle slot promotion:
 
-  # Handle slot promotion: when a waiter is promoted to holder via RunSlotTransferred,
-  # re-enter admission for the promoted run so it can acquire the slot and proceed.
+  # Handle slot promotion: a waiter promoted to holder (`RunSlotTransferred`, or
+  # `RunSlotAcquired` with `promoted: true` from `run_slots.promote`) re-enters admission so it can
+  # proceed. An ordinary `RunSlotAcquired` is a run that took a free slot itself and is already on
+  # its way, so it is ignored. Recorded event data is a typed struct (no Access behaviour).
   defp handle_slot_promoted(envelope, state) do
-    payload = unwrap_data(envelope)
-    acquired_run_id = payload["acquired_run_id"] || payload[:acquired_run_id]
+    payload =
+      case unwrap_data(envelope) do
+        %_{} = struct -> Map.from_struct(struct)
+        map -> map
+      end
+
+    acquired_run_id =
+      payload["acquired_run_id"] || payload[:acquired_run_id] ||
+        promoted_acquire_run_id(payload)
 
     if is_binary(acquired_run_id) and acquired_run_id != "" do
       reenter_slot_admission(acquired_run_id, state)
@@ -938,7 +1087,42 @@ defmodule ForemanServer.Workflow.Dispatcher do
     end
   end
 
+  defp promoted_acquire_run_id(payload) do
+    if (payload["promoted"] || payload[:promoted]) == true,
+      do: payload["run_id"] || payload[:run_id]
+  end
+
   defp reenter_slot_admission(run_id, state) do
+    case safe_run_projection(run_id) do
+      # A run that already ended must not be started by a stale or replayed promotion, and the
+      # promotion made it a holder: release that slot or the queue behind it stays blocked.
+      %{terminal?: true} ->
+        terminate_slot(run_id, "terminal_run")
+        {:noreply, state}
+
+      %{status: "paused"} ->
+        terminate_slot(run_id, "run_paused")
+        {:noreply, state}
+
+      # A run that exists (a resumed run that queued) is resumed, not started: `run.start` would
+      # be rejected for a run that already exists, and that rejection releases the slot.
+      %{} ->
+        if Registry.lookup(ForemanServer.RunExecutorRegistry, run_id) == [],
+          do: resume_run(run_id, state),
+          else: {:noreply, state}
+
+      _no_run_yet ->
+        start_promoted_run(run_id, state)
+    end
+  end
+
+  defp safe_run_projection(run_id) do
+    ProjectionStore.run(run_id)
+  catch
+    :exit, _ -> nil
+  end
+
+  defp start_promoted_run(run_id, state) do
     # Find the task associated with this run to build the admission payload.
     # A run is associated with exactly one task during dispatch.
     case ProjectionStore.tasks_by_run_id(run_id) do
@@ -1033,6 +1217,16 @@ defmodule ForemanServer.Workflow.Dispatcher do
 
           {:ok, _} ->
             RunSupervisor.start_run(run_id, task, resume_from: resume_from)
+            {:noreply, state}
+
+          {:error, {:missing_or_invalid, :project_id, _}} ->
+            # A legacy run whose task names no project cannot be admitted to any project's queue.
+            # Nothing is dispatched; the backstop sweep owns any slot it holds.
+            Logger.warning(
+              "handle_run_resumed: run #{run_id} has no resolvable project; not resumed " <>
+                "(no slot acquired, the backstop sweep releases any it holds)"
+            )
+
             {:noreply, state}
 
           {:error, reason} ->

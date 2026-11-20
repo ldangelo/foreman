@@ -24,10 +24,16 @@ defmodule ForemanServer.Workflow.DispatcherRunLimitReadmissionTest do
     :meck.new(ForemanServer.Workflow.RunSupervisor, [:no_link])
     test = self()
 
+    # A queued run was never started, so promotion must start it FRESH (no
+    # `resume_from`; a resume would skip phases it never ran). A later duplicate
+    # promotion of a run already started resumes it instead; the real supervisor
+    # refuses that second start, so only the fresh one is reported here.
     :meck.expect(ForemanServer.Workflow.RunSupervisor, :start_run, fn run_id, _task, opts ->
-      # A queued run was never started, so promotion must start it FRESH
-      # (no `resume_from`); a resume here would skip phases it never ran.
-      [] = opts
+      if opts == [], do: send(test, {:run_supervisor_start, run_id})
+      {:ok, :child}
+    end)
+
+    :meck.expect(ForemanServer.Workflow.RunSupervisor, :start_run, fn run_id, _task ->
       send(test, {:run_supervisor_start, run_id})
       {:ok, :child}
     end)
