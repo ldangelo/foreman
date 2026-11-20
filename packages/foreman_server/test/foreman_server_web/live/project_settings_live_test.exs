@@ -192,6 +192,25 @@ defmodule ForemanServerWeb.ProjectSettingsLiveTest do
     assert settings(id).instructions == nil
   end
 
+  test "AC-016-1: 0, a negative and an over-range limit are refused naming 1..1000; old value kept",
+       %{id: id} do
+    {view, _} = mount_view(id)
+
+    view |> form("#settings-form", settings: %{max_concurrent_runs: "2"}) |> render_submit()
+    assert settings(id).max_concurrent_runs == 2
+
+    for bad <- ["0", "-1", "1001"] do
+      html =
+        view
+        |> form("#settings-form", settings: %{max_concurrent_runs: bad})
+        |> render_submit()
+
+      assert html =~ ~s(id="max_concurrent_runs-error")
+      assert html =~ "1..1000"
+      assert settings(id).max_concurrent_runs == 2
+    end
+  end
+
   test "save sends only the fields the operator changed: a concurrent change survives", %{id: id} do
     {view, _} = mount_view(id)
 
