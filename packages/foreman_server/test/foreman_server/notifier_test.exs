@@ -433,6 +433,39 @@ defmodule ForemanServer.NotifierTest do
                })
     end
 
+    test "a follow-up run that is a PR fix's execution is not announced when it completes, only when it fails",
+         %{project_id: project_id} do
+      set_preference(project_id, "every_turn")
+      state = Notifier.new_state()
+      fix_run_id = uid("run")
+      completed = %{run_id: fix_run_id, project_id: project_id}
+
+      :ok =
+        ProjectionStore.apply_events([
+          %{
+            event_type: "PrFixStarted",
+            payload: %{
+              run_id: uid("run"),
+              project_id: project_id,
+              pr_url: "https://github.com/acme/repo/pull/8",
+              kind: "ci",
+              attempt: 1,
+              fix_run_id: fix_run_id
+            }
+          }
+        ])
+
+      assert {state, {:skipped, :pr_fix_jobsite}} =
+               Notifier.process(state, "RunCompleted", completed)
+
+      assert {_, {:notified, _}} =
+               Notifier.process(state, "RunFailed", %{
+                 run_id: fix_run_id,
+                 project_id: project_id,
+                 reason: "the fix agent exited 1"
+               })
+    end
+
     test "an explicit cancel is skipped as unmapped", %{project_id: project_id} do
       state = Notifier.new_state()
 

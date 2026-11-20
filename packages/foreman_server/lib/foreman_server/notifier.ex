@@ -19,8 +19,8 @@ defmodule ForemanServer.Notifier do
     2. **Messaging config**: no enabled provider or an event class the config
        does not enable means nothing is enqueued (and no suppression event is
        written for every ignored event).
-    3. **Subject**: the completion of a PR fix thread's jobsite is never
-       notified (`JobsiteCompleted` of the jobsite a watched PR has in flight):
+    3. **Subject**: the completion of a PR fix thread's jobsite or follow-up run is never
+       notified (`JobsiteCompleted` / `RunCompleted` of the execution a watched PR has in flight):
        its outcome reaches the operator through the PR's own events, and a row
        for it would announce every fix attempt. Its failure still is.
     4. **`run_update` rate limit**: at most one `:run_update` notification per
@@ -297,6 +297,14 @@ defmodule ForemanServer.Notifier do
   # `PrFixStarted` lands) is announced, never silently dropped.
   defp check_subject("JobsiteCompleted", payload) do
     if pr_fix_jobsite?(string_field(payload, "jobsite_id")),
+      do: {:skip, :pr_fix_jobsite},
+      else: :ok
+  end
+
+  # The same rule for a fix that runs as a follow-up run (`PrFixStarted.fix_run_id`): its `RunCompleted`
+  # is the fix finishing, reported through the PR's events. `RunFailed` is still announced.
+  defp check_subject("RunCompleted", payload) do
+    if pr_fix_jobsite?(string_field(payload, "run_id")),
       do: {:skip, :pr_fix_jobsite},
       else: :ok
   end

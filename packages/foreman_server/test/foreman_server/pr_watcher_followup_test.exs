@@ -110,6 +110,10 @@ defmodule ForemanServer.PrWatcherFollowUpTest do
 
     started = await_event("PrFixStarted", ctx.run_id)
     assert started.fix_run_id == request.run_id
+
+    # the projection records the run as the one fix in flight for the PR (no jobsite id to read it from)
+    assert [%{fix: %{in_flight: in_flight}}] = ProjectionStore.pr_watch(ctx.run_id)
+    assert in_flight == request.run_id
     refute Map.has_key?(started, :jobsite_id)
     assert started.kind == "ci"
   end

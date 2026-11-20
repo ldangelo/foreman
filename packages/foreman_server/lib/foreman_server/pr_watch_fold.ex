@@ -165,7 +165,9 @@ defmodule ForemanServer.PrWatchFold do
   end
 
   defp apply_event(record, "PrFixStarted", payload) do
-    update_fix(record, fn fix -> %{fix | in_flight: get(payload, :jobsite_id)} end)
+    update_fix(record, fn fix ->
+      %{fix | in_flight: get(payload, :fix_run_id) || get(payload, :jobsite_id)}
+    end)
   end
 
   defp apply_event(record, "PrFixFinished", payload) do

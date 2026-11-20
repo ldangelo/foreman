@@ -1722,7 +1722,8 @@ defmodule ForemanServer.ProjectionStore do
       worktrees: state.worktrees |> Map.values() |> Enum.sort_by(&get(&1, :operation_id, "")),
       pr_associations: state.pr_associations,
       reviews: state.reviews,
-      thread_flags: state.thread_flags
+      thread_flags: state.thread_flags,
+      followup_requests: state.followup_requests
     }
 
     {:reply, inputs, state}
