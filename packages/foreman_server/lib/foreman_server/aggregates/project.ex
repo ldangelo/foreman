@@ -607,10 +607,13 @@ defmodule ForemanServer.Aggregates.Project do
   end
 
   @doc """
-  The non-terminal refusals that apply to starting a NEW run: paused project,
-  exhausted daily thread cap. `:ok` for a run that already holds a reservation.
-  Pure over aggregate state; `project.reserve_run` uses it authoritatively and
-  `RunAdmission` consults it before touching the global run slot.
+  The refusals that apply to starting a NEW run: archived project, paused
+  project, exhausted daily thread cap. `:ok` for a run that already holds a
+  reservation. Pure over aggregate state; `project.reserve_run` uses it
+  authoritatively and `RunAdmission` consults it before touching the project's
+  run-slot stream (so a refused run holds no slot and no queue position).
+  The project's run ceiling is NOT a refusal: it is the capacity of the slot
+  stream, and a run over it waits in the queue.
   """
   @spec admission_refusal(%State{}, String.t() | nil) :: :ok | {:error, term()}
   def admission_refusal(%State{} = state, run_id) do
@@ -619,7 +622,8 @@ defmodule ForemanServer.Aggregates.Project do
         :ok
 
       true ->
-        with :ok <- reject_paused(state, state.project_id) do
+        with :ok <- reject_archived(state, state.project_id),
+             :ok <- reject_paused(state, state.project_id) do
           reject_at_daily_cap(state, today(), "run", run_id)
         end
     end
