@@ -6,8 +6,9 @@ defmodule ForemanServer.Events.RunSlotWaiterRemoved do
   """
   @enforce_keys [:run_id]
   @type t :: %__MODULE__{
-          run_id: String.t()
+          run_id: String.t(),
+          project_id: String.t() | nil
         }
   @derive Jason.Encoder
-  defstruct [:run_id]
+  defstruct [:run_id, :project_id]
 end

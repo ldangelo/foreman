@@ -9,8 +9,10 @@ defmodule ForemanServer.Events.RunSlotAcquired do
   @type t :: %__MODULE__{
           run_id: String.t(),
           capacity: non_neg_integer(),
-          acquired_at_ms: integer()
+          acquired_at_ms: integer(),
+          project_id: String.t() | nil,
+          promoted: boolean() | nil
         }
   @derive Jason.Encoder
-  defstruct [:run_id, :capacity, :acquired_at_ms]
+  defstruct [:run_id, :capacity, :acquired_at_ms, :project_id, :promoted]
 end

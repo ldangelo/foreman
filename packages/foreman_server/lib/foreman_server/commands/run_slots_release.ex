@@ -1,4 +1,4 @@
 defmodule ForemanServer.Commands.RunSlotsRelease do
   @enforce_keys [:run_id]
-  defstruct [:run_id, :capacity]
+  defstruct [:run_id, :capacity, :project_id]
 end

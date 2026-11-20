@@ -10,8 +10,9 @@ defmodule ForemanServer.Events.RunSlotQueued do
   @type t :: %__MODULE__{
           run_id: String.t(),
           position: pos_integer(),
-          enqueued_at_ms: integer()
+          enqueued_at_ms: integer(),
+          project_id: String.t() | nil
         }
   @derive Jason.Encoder
-  defstruct [:run_id, :position, :enqueued_at_ms]
+  defstruct [:run_id, :position, :enqueued_at_ms, :project_id]
 end

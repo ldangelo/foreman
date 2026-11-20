@@ -75,6 +75,10 @@ defmodule ForemanServer.Aggregates.RunSlots do
     ]
   end
 
+  @doc "Stream id of a project's run-slot aggregate."
+  @spec stream_id(String.t()) :: String.t()
+  def stream_id(project_id) when is_binary(project_id), do: "run_slots:" <> project_id
+
   @impl true
   def initial_state, do: %State{capacity: nil, holders: %{}, waiters: []}
 
@@ -238,12 +242,12 @@ defmodule ForemanServer.Aggregates.RunSlots do
 
   @impl true
   def handle_command(%State{} = state, %RunSlotsAcquire{} = cmd) do
-    do_acquire(state, cmd.run_id, cmd.capacity)
+    do_acquire(state, cmd.run_id, cmd.capacity, cmd.project_id)
   end
 
   @impl true
   def handle_command(%State{} = state, %RunSlotsRelease{} = cmd) do
-    do_release(state, cmd.run_id, cmd.capacity)
+    do_release(state, cmd.run_id, cmd.capacity, cmd.project_id)
   end
 
   @impl true
@@ -255,7 +259,7 @@ defmodule ForemanServer.Aggregates.RunSlots do
         :aggregate
       )
 
-      {:ok, %RunSlotWaiterRemoved{run_id: cmd.run_id}}
+      {:ok, %RunSlotWaiterRemoved{run_id: cmd.run_id, project_id: cmd.project_id}}
     else
       {:ok, nil}
     end
@@ -270,10 +274,11 @@ defmodule ForemanServer.Aggregates.RunSlots do
     payload = Map.get(command, :payload) || %{}
     run_id = Aggregate.get(payload, :run_id)
     capacity = Aggregate.get(payload, :capacity)
+    project_id = optional_project_id(payload)
 
     with {:ok, run_id} <- Aggregate.required_binary(run_id, :run_id),
          {:ok, capacity} <- required_non_neg_integer(capacity, :capacity) do
-      do_acquire(state, run_id, capacity)
+      do_acquire(state, run_id, capacity, project_id)
     else
       {:error, _} = err -> err
     end
@@ -287,7 +292,7 @@ defmodule ForemanServer.Aggregates.RunSlots do
 
     with {:ok, run_id} <- Aggregate.required_binary(run_id, :run_id) do
       capacity = if is_integer(capacity) and capacity >= 0, do: capacity, else: nil
-      do_release(state, run_id, capacity)
+      do_release(state, run_id, capacity, optional_project_id(payload))
     else
       {:error, _} = err -> err
     end
@@ -297,11 +302,12 @@ defmodule ForemanServer.Aggregates.RunSlots do
   def handle_command(%State{} = state, %{type: "run_slots.remove_waiter"} = command) do
     payload = Map.get(command, :payload) || %{}
     run_id = Aggregate.get(payload, :run_id)
+    project_id = optional_project_id(payload)
 
     with {:ok, run_id} <- Aggregate.required_binary(run_id, :run_id) do
       if Enum.any?(state.waiters, &(&1.run_id == run_id)) do
         Telemetry.run_slots_waiter_removed(run_id, max(length(state.waiters) - 1, 0), :aggregate)
-        {:ok, %RunSlotWaiterRemoved{run_id: run_id}}
+        {:ok, %RunSlotWaiterRemoved{run_id: run_id, project_id: project_id}}
       else
         {:ok, nil}
       end
@@ -314,8 +320,8 @@ defmodule ForemanServer.Aggregates.RunSlots do
   # Internal command helpers
   # -------------------------------------------------------------------------
 
-  defp do_acquire(state, run_id, capacity) do
-    now_ms = System.monotonic_time(:millisecond)
+  defp do_acquire(state, run_id, capacity, project_id) do
+    now_ms = System.system_time(:millisecond)
 
     cond do
       Map.has_key?(state.holders, run_id) ->
@@ -323,25 +329,31 @@ defmodule ForemanServer.Aggregates.RunSlots do
 
       map_size(state.holders) < capacity ->
         Telemetry.run_slots_acquired(run_id, map_size(state.holders) + 1, capacity)
-        {:ok, %RunSlotAcquired{run_id: run_id, capacity: capacity, acquired_at_ms: now_ms}}
+        {:ok, %RunSlotAcquired{run_id: run_id, capacity: capacity,
+           acquired_at_ms: now_ms,
+           project_id: project_id
+         }}
 
       true ->
         position = length(state.waiters) + 1
         Telemetry.run_slots_queued(run_id, position, position)
-        {:ok, %RunSlotQueued{run_id: run_id, position: position, enqueued_at_ms: now_ms}}
+        {:ok, %RunSlotQueued{run_id: run_id, position: position,
+           enqueued_at_ms: now_ms,
+           project_id: project_id
+         }}
     end
   end
 
-  defp do_release(state, run_id, capacity) do
+  defp do_release(state, run_id, capacity, project_id) do
     if Map.has_key?(state.holders, run_id) do
-      now_ms = System.monotonic_time(:millisecond)
+      now_ms = System.system_time(:millisecond)
 
       effective_capacity =
         if is_integer(capacity) and capacity >= 0, do: capacity, else: state.capacity
 
       if Enum.empty?(state.waiters) do
         Telemetry.run_slots_released(run_id, max(map_size(state.holders) - 1, 0), :aggregate)
-        {:ok, %RunSlotReleased{run_id: run_id, capacity: effective_capacity}}
+        {:ok, %RunSlotReleased{run_id: run_id, capacity: effective_capacity, project_id: project_id}}
       else
         {promoted, remaining} = List.pop_at(state.waiters, 0)
         Telemetry.run_slots_transferred(run_id, promoted.run_id, length(remaining))
@@ -351,11 +363,19 @@ defmodule ForemanServer.Aggregates.RunSlots do
            released_run_id: run_id,
            acquired_run_id: promoted.run_id,
            capacity: effective_capacity,
-           acquired_at_ms: now_ms
+           acquired_at_ms: now_ms,
+           project_id: project_id
          }}
       end
     else
       {:ok, nil}
+    end
+  end
+
+  defp optional_project_id(payload) do
+    case Aggregate.get(payload, :project_id) do
+      id when is_binary(id) and id != "" -> id
+      _ -> nil
     end
   end
 

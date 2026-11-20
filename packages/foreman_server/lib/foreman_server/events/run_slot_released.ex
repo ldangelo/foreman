@@ -6,8 +6,9 @@ defmodule ForemanServer.Events.RunSlotReleased do
   @enforce_keys [:run_id]
   @type t :: %__MODULE__{
           run_id: String.t(),
-          capacity: non_neg_integer() | nil
+          capacity: non_neg_integer() | nil,
+          project_id: String.t() | nil
         }
   @derive Jason.Encoder
-  defstruct [:run_id, :capacity]
+  defstruct [:run_id, :capacity, :project_id]
 end

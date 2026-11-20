@@ -13,8 +13,9 @@ defmodule ForemanServer.Events.RunSlotTransferred do
           released_run_id: String.t(),
           acquired_run_id: String.t(),
           capacity: non_neg_integer() | nil,
-          acquired_at_ms: integer()
+          acquired_at_ms: integer(),
+          project_id: String.t() | nil
         }
   @derive Jason.Encoder
-  defstruct [:released_run_id, :acquired_run_id, :capacity, :acquired_at_ms]
+  defstruct [:released_run_id, :acquired_run_id, :capacity, :acquired_at_ms, :project_id]
 end
