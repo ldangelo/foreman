@@ -55,7 +55,9 @@ defmodule ForemanServer.RunAdmissionSlotGateTest do
       results = Enum.map(run_ids, &RunAdmission.start(project_id, plain_payload(&1)))
       {running, [waiting]} = Enum.split(run_ids, 3)
 
-      assert Enum.take(results, 3) |> Enum.all?(&match?({:ok, %{"event_type" => "RunStarted"}}, &1))
+      assert Enum.take(results, 3)
+             |> Enum.all?(&match?({:ok, %{"event_type" => "RunStarted"}}, &1))
+
       assert List.last(results) == {:ok, :slot_queued}
 
       assert holder_ids(project_id) == Enum.sort(running)
@@ -75,7 +77,9 @@ defmodule ForemanServer.RunAdmissionSlotGateTest do
 
       results = Enum.map(run_ids, &RunAdmission.start(project_id, plain_payload(&1)))
 
-      assert Enum.take(results, 5) |> Enum.all?(&match?({:ok, %{"event_type" => "RunStarted"}}, &1))
+      assert Enum.take(results, 5)
+             |> Enum.all?(&match?({:ok, %{"event_type" => "RunStarted"}}, &1))
+
       assert List.last(results) == {:ok, :slot_queued}
       assert length(holder_ids(project_id)) == 5
       assert waiter_ids(project_id) == [List.last(run_ids)]
@@ -177,7 +181,8 @@ defmodule ForemanServer.RunAdmissionSlotGateTest do
       refute ProjectionStore.run(waiting)
     end
 
-    @tag skip: "AC-007-1 backstop sweep over project streams is TRD-008 (RunLifecycleReconciler); covered by TRD-008-TEST"
+    @tag skip:
+           "AC-007-1 backstop sweep over project streams is TRD-008 (RunLifecycleReconciler); covered by TRD-008-TEST"
     test "abnormal death frees the slot: the backstop sweep releases it (AC-007-1)" do
       flunk("pending TRD-008")
     end
