@@ -361,11 +361,11 @@ defmodule ForemanServer.MCP.ToolsTest do
   end
 
   describe "foreman_queue_status" do
-    test "returns queue status" do
+    test "returns one project's queue status" do
       replace_state(%{})
 
-      assert Tools.call_tool("foreman_queue_status", %{}) ==
-               {:ok, ProjectionStore.queue_status()}
+      assert Tools.call_tool("foreman_queue_status", %{project_id: "p"}) ==
+               {:ok, ProjectionStore.queue_status("p")}
     end
   end
 

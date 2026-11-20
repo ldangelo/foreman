@@ -1106,7 +1106,9 @@ defmodule ForemanServer.ProjectionStore do
           running_runs: non_neg_integer(),
           waiting_runs: non_neg_integer(),
           running: [String.t()],
-          waiting: [%{run_id: String.t(), position: integer() | nil, waited_ms: non_neg_integer()}]
+          waiting: [
+            %{run_id: String.t(), position: integer() | nil, waited_ms: non_neg_integer()}
+          ]
         }
 
   @doc """
@@ -1117,21 +1119,6 @@ defmodule ForemanServer.ProjectionStore do
   @spec queue_status(String.t()) :: queue_status()
   def queue_status(project_id) when is_binary(project_id) do
     GenServer.call(__MODULE__, {:queue_status, project_id})
-  end
-
-  @doc """
-  Legacy combined view across every project.
-
-  Retained only until the un-scoped queue endpoint is removed (TRD-012); new code
-  must use `queue_status/1`.
-  """
-  @spec queue_status() :: %{
-          capacity: non_neg_integer(),
-          running: [String.t()],
-          waiting: [String.t()]
-        }
-  def queue_status do
-    GenServer.call(__MODULE__, :queue_status)
   end
 
   @doc "Return the inbox thread for a run_id, or nil if not found."
@@ -1714,19 +1701,6 @@ defmodule ForemanServer.ProjectionStore do
   @impl true
   def handle_call({:queue_status, project_id}, _from, state) do
     {:reply, build_queue_status(state, project_id), state}
-  end
-
-  @impl true
-  def handle_call(:queue_status, _from, state) do
-    slots = Map.values(state.run_slots)
-
-    reply = %{
-      capacity: slots |> Enum.map(&(&1.capacity || 0)) |> Enum.sum(),
-      running: Enum.flat_map(slots, &Map.keys(&1.holders)),
-      waiting: Enum.flat_map(slots, fn s -> Enum.map(s.waiters, & &1.run_id) end)
-    }
-
-    {:reply, reply, state}
   end
 
   @impl true

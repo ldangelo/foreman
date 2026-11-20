@@ -1236,7 +1236,7 @@ Read endpoints are projection-only:
   when Foreman recorded none. `GET /api/runs` carries the same field on
   each listed run.
 - `GET /api/tasks/{id}`, `GET /api/projects`, `GET /api/projects/{id}`,
-  and `GET /api/queue` expose corresponding projections.
+  and `GET /api/queue?project_id=<id>` (one project; 422 `project_required` without it) expose corresponding projections.
 - Schedules: `GET /api/projects/{project_id}/schedules` returns
   `{ticker: "running"|"disabled", schedules: [...]}` (the Scheduled tab's data;
   MCP `foreman_schedule_list`; CLI `foreman project schedule list`). Schedules
@@ -2030,7 +2030,7 @@ release); it does not depend on `PHX_SERVER` (`foreman-cnn1l`). Agents reach it 
 [the live run](acceptance/multi-repo-agent-live-run.md)).
 
 **Read tools** are always advertised: `foreman_doctor`,
-`foreman_queue_status`, `foreman_project_list`, `foreman_project_get`,
+`foreman_queue_status` (takes a required `project_id`), `foreman_project_list`, `foreman_project_get`,
 `foreman_workflow_list`, `foreman_workflow_get`,
 `foreman_workflow_validate`, `foreman_prompt_get`,
 `foreman_run_get`, `foreman_run_status`, `foreman_run_get_logs`,

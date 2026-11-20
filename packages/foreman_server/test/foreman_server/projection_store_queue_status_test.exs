@@ -29,7 +29,7 @@ defmodule ForemanServer.ProjectionStoreQueueStatusTest do
 
   defp apply!(events), do: :ok = ProjectionStore.apply_events(events)
 
-  defp register(id, config \\ %{}),
+  defp register(id, config),
     do: %{
       event_type: "ProjectRegistered",
       payload: %{project_id: id, path: "/tmp/#{id}", config: config}

@@ -378,10 +378,14 @@ defmodule ForemanServer.MCP.Tools do
 
   @schema_foreman_queue_status %{
     name: "foreman_queue_status",
-    description: "Get the current run slot queue status",
+    description:
+      "Get one project's run slot queue: limit, running and waiting counts, and the waiting runs in order",
     inputSchema: %{
       type: "object",
-      properties: %{}
+      properties: %{
+        project_id: %{type: "string", description: "The project ID"}
+      },
+      required: ["project_id"]
     }
   }
 
@@ -2234,12 +2238,24 @@ defmodule ForemanServer.MCP.Tools do
     result
   end
 
-  defp tool_foreman_queue_status(%{}) do
+  defp tool_foreman_queue_status(%{project_id: project_id}) do
     start_us = System.monotonic_time(:microsecond)
-    result = ProjectionStore.queue_status()
+
+    result =
+      if is_binary(project_id) and String.trim(project_id) != "",
+        do: ProjectionStore.queue_status(String.trim(project_id)),
+        else: nil
+
     duration_us = System.monotonic_time(:microsecond) - start_us
-    Telemetry.mcp_tool_call(duration_us, "foreman_queue_status", :ok)
-    {:ok, result}
+    outcome = if result, do: :ok, else: :invalid
+
+    Telemetry.mcp_tool_call(duration_us, "foreman_queue_status", outcome)
+
+    if result,
+      do: {:ok, result},
+      else:
+        {:error,
+         %ToolError{code: "INVALID_PARAMS", message: "name a project: project_id is required"}}
   end
 
   defp tool_foreman_overview(args) do
