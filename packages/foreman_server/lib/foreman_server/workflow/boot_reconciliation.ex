@@ -843,21 +843,12 @@ defmodule ForemanServer.Workflow.BootReconciliation do
   defp waiter_run_absent_or_terminal?(run_id), do: run_absent_or_terminal?(run_id)
 
   defp release_run_slot(run_id, reason) when is_binary(run_id) and run_id != "" do
-    ms = System.system_time(:millisecond)
-
     result =
       try do
         _ =
-          CommandGateway.dispatch_system(%{
-            type: "run_slots.release",
-            command_id: "foreman:boot-slot-release:#{run_id}:#{ms}",
-            aggregate_id: "run_slots:global",
-            payload: %{
-              run_id: run_id,
-              released_at_ms: ms,
-              reason: reason
-            }
-          })
+          CommandGateway.dispatch_system(
+            ForemanServer.Aggregates.RunSlots.release_command(nil, run_id, reason)
+          )
 
         :ok
       catch

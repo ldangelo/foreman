@@ -101,6 +101,64 @@ defmodule ForemanServer.Aggregates.RunSlots do
   @spec stream_id(String.t()) :: String.t()
   def stream_id(project_id) when is_binary(project_id), do: "run_slots:" <> project_id
 
+  @legacy_stream "run_slots:global"
+
+  @doc """
+  The ONE builder of a `run_slots.release` command envelope (TRD-002).
+
+  `RunAdmission`, `Dispatcher`, `RunLifecycleReconciler` and `BootReconciliation`
+  all release through it. It reads the project's effective run limit once, here
+  (never inside an aggregate decision) and carries it as `payload.capacity`, so
+  `do_release` can hold the queue when the limit was lowered below the running
+  count. The command id is unique per call.
+
+  A `nil`/blank `project_id` targets the legacy `run_slots:global` stream with no
+  capacity (the aggregate falls back to the capacity its stream recorded). That
+  interim branch exists only until acquire moves to project streams
+  (TRD-005..TRD-010).
+  """
+  @spec release_command(String.t() | nil, String.t(), String.t() | atom()) :: map()
+  def release_command(project_id, run_id, reason) when is_binary(run_id) do
+    command_id =
+      "run_slots:release:#{run_id}:#{System.system_time(:millisecond)}:" <>
+        Integer.to_string(System.unique_integer([:positive, :monotonic]))
+
+    base = %{type: "run_slots.release", command_id: command_id}
+
+    if is_binary(project_id) and project_id != "" do
+      Map.merge(base, %{
+        aggregate_id: stream_id(project_id),
+        payload: %{
+          run_id: run_id,
+          project_id: project_id,
+          capacity: project_run_limit(project_id),
+          reason: reason
+        }
+      })
+    else
+      Map.merge(base, %{
+        aggregate_id: @legacy_stream,
+        payload: %{run_id: run_id, reason: reason}
+      })
+    end
+  end
+
+  # Effective limit: the project's setting, else the per-project default.
+  defp project_run_limit(project_id) do
+    settings =
+      try do
+        ForemanServer.ProjectionStore.project_settings(project_id)
+      catch
+        :exit, _ -> nil
+      end
+
+    limit = settings && Map.get(settings, :max_concurrent_runs)
+
+    if is_integer(limit) and limit >= 1,
+      do: limit,
+      else: ForemanServer.RunSlots.Config.max_concurrent_runs_per_project()
+  end
+
   @impl true
   def initial_state, do: %State{capacity: nil, holders: %{}, waiters: []}
 
@@ -419,7 +477,14 @@ defmodule ForemanServer.Aggregates.RunSlots do
       effective_capacity =
         if is_integer(capacity) and capacity >= 0, do: capacity, else: state.capacity
 
-      if Enum.empty?(state.waiters) do
+      # Promote only while the holders left after this release are below the
+      # capacity: a limit lowered under the running count keeps the queue held
+      # (AC-003-4). A nil capacity (legacy stream) keeps the old always-promote.
+      promote? =
+        state.waiters != [] and
+          (not is_integer(effective_capacity) or map_size(state.holders) - 1 < effective_capacity)
+
+      if not promote? do
         Telemetry.run_slots_released(run_id, max(map_size(state.holders) - 1, 0), :aggregate)
         {:ok, %RunSlotReleased{run_id: run_id, capacity: effective_capacity, project_id: project_id}}
       else

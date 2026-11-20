@@ -534,17 +534,8 @@ defmodule ForemanServer.Workflow.Dispatcher do
 
   # TRD-009: Release the global slot on terminal run events.
   defp terminate_slot(run_id, reason) do
-    ms = System.monotonic_time(:millisecond)
-
-    safe_dispatch_system(%{
-      type: "run_slots.release",
-      command_id: "workflow:dispatcher:slot-release:#{run_id}:#{ms}",
-      aggregate_id: "run_slots:global",
-      payload: %{
-        run_id: run_id,
-        reason: reason
-      }
-    })
+    # Legacy global stream until the project is resolved here (TRD-007).
+    safe_dispatch_system(ForemanServer.Aggregates.RunSlots.release_command(nil, run_id, reason))
   end
 
   defp terminate_lease(run_id, reason) do

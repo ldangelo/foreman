@@ -352,14 +352,8 @@ defmodule ForemanServer.RunLifecycleReconciler do
   end
 
   defp dispatch_slot_release(run_id, reason, state) do
-    ms = System.monotonic_time(:millisecond)
-
-    command = %{
-      aggregate_id: "run_slots:global",
-      command_id: "reconciler:slot-release:#{run_id}:#{ms}",
-      type: "run_slots.release",
-      payload: %{run_id: run_id, reason: reason}
-    }
+    # Legacy global stream until the sweep walks project streams (TRD-008).
+    command = ForemanServer.Aggregates.RunSlots.release_command(nil, run_id, reason)
 
     # Best-effort: the run_slots:global actor can legitimately be mid-restart
     # (e.g. a crash, or a test's deliberate reset) when this fires. This is a

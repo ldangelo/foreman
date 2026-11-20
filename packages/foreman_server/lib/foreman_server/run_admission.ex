@@ -282,17 +282,11 @@ defmodule ForemanServer.RunAdmission do
     run_id = Map.get(payload, :run_id)
 
     if is_binary(run_id) and run_id != "" do
-      ms = System.system_time(:millisecond)
-
+      # Legacy global stream until acquire moves to project streams (TRD-005).
       _ =
-        CommandGateway.dispatch_system(%{
-          type: "run_slots.release",
-          command_id: "workflow:run-admission:slot-release:#{run_id}:#{ms}",
-          aggregate_id: "run_slots:global",
-          payload: %{
-            run_id: run_id
-          }
-        })
+        CommandGateway.dispatch_system(
+          ForemanServer.Aggregates.RunSlots.release_command(nil, run_id, "admission_failed")
+        )
 
       :ok
     else
