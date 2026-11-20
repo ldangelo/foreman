@@ -419,12 +419,25 @@ defmodule ForemanServer.Workflow.Dispatcher do
 
     case CommandGateway.dispatch_system(enqueue) do
       {:ok, _} ->
-        safe_dispatch_system(%{
+        removal = %{
           type: "run_slots.remove_waiter",
           command_id: "run-slots:adopt-waiter-remove:#{run_id}:#{event_id}",
           aggregate_id: RunSlots.stream_id(source),
           payload: %{run_id: run_id, project_id: source}
-        })
+        }
+
+        # Until this lands the run waits in both queues; the boot replay of the adoption event
+        # finishes the move if it does not.
+        case CommandGateway.dispatch_system(removal) do
+          {:ok, _} ->
+            :ok
+
+          {:error, reason} ->
+            Logger.warning(
+              "ForemanServer.Workflow.Dispatcher: run #{run_id} adopted into #{destination} could " <>
+                "not leave the #{source} queue (#{inspect(reason)}); the replay will retry"
+            )
+        end
 
       {:error, reason} ->
         Logger.warning(

@@ -211,7 +211,10 @@ defmodule ForemanServer.Workflow.DispatcherAdoptionRequeueTest do
 
       send(Dispatcher, {:projection_event, adopted_event(ctx, [a_waiter])})
 
-      eventually(fn -> waiters(ctx.b) == ctx.b_waiters ++ [a_waiter] end)
+      eventually(fn ->
+        waiters(ctx.b) == ctx.b_waiters ++ [a_waiter] and waiters(ctx.a) == []
+      end)
+
       assert waiters(ctx.a) == []
       assert holders(ctx.a) == [ctx.a_holder]
       refute_receive {:run_supervisor_start, ^a_waiter}, 300
@@ -224,7 +227,10 @@ defmodule ForemanServer.Workflow.DispatcherAdoptionRequeueTest do
       # Event lists them out of order; the source queue decides.
       send(Dispatcher, {:projection_event, adopted_event(ctx, [w3, w1, w2])})
 
-      eventually(fn -> waiters(ctx.b) == ctx.b_waiters ++ [w1, w2, w3] end)
+      eventually(fn ->
+        waiters(ctx.b) == ctx.b_waiters ++ [w1, w2, w3] and waiters(ctx.a) == []
+      end)
+
       assert waiters(ctx.a) == []
     end
 
@@ -234,7 +240,10 @@ defmodule ForemanServer.Workflow.DispatcherAdoptionRequeueTest do
 
       send(Dispatcher, {:projection_event, adopted_event(ctx, [])})
 
-      eventually(fn -> waiters(ctx.b) == ctx.b_waiters ++ [a_waiter] end)
+      eventually(fn ->
+        waiters(ctx.b) == ctx.b_waiters ++ [a_waiter] and waiters(ctx.a) == []
+      end)
+
       assert waiters(ctx.a) == []
     end
 
@@ -278,7 +287,10 @@ defmodule ForemanServer.Workflow.DispatcherAdoptionRequeueTest do
       event = adopted_event(ctx, [a_waiter])
 
       send(Dispatcher, {:projection_event, event})
-      eventually(fn -> waiters(ctx.b) == ctx.b_waiters ++ [a_waiter] end)
+
+      eventually(fn ->
+        waiters(ctx.b) == ctx.b_waiters ++ [a_waiter] and waiters(ctx.a) == []
+      end)
 
       send(Dispatcher, {:projection_event, event})
       _ = :sys.get_state(Dispatcher)
