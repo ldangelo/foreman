@@ -15,6 +15,12 @@ defmodule ForemanServer.Workflow.Lowering do
       the program has no `:worktree` step and runs against the project checkout
     * `:start_index` — the 0-based list index of the first phase to run
       (`RunExecutor`'s `resume_from`); earlier phases are not lowered
+    * `:sandbox` — `%{provider: module, config: map}` or `nil` (default). When
+      set, a `:sandbox` step follows the program's `:worktree` step and a final
+      `:release` step (`sandbox?: true, worktree?: false`) closes it, so every
+      phase's agent runs through the sandbox's `cli_path` shim
+      (`Jobsite.Runners.Overwatch`). A sandbox needs a worktree to mount, so
+      `sandbox` with `worktree_spec.enabled: false` is refused
 
   Each phase lowers to this step sequence:
 
@@ -42,8 +48,9 @@ defmodule ForemanServer.Workflow.Lowering do
   agent's death and is handled by the observer's `step_failed/4`, which
   commits the partial work.
 
-  No `:sandbox` and no `:release` step is emitted. Manifest runs execute on
-  the host in the Foreman worktree, and worktree reclamation stays with
+  Without a `:sandbox` ctx no `:sandbox` and no `:release` step is emitted:
+  manifest runs execute on the host in the Foreman worktree. Worktree
+  reclamation stays with
   `RunExecutor.cleanup_run_worktree/2` because its
   `cleanup: always | never | on_success` policy is run-level, not
   program-level.
@@ -66,19 +73,68 @@ defmodule ForemanServer.Workflow.Lowering do
     start_index = Map.get(ctx, :start_index, 0)
     worktree? = worktree_enabled?(Map.get(ctx, :worktree_spec))
 
-    phase_specs
-    |> Enum.with_index()
-    |> Enum.drop(start_index)
-    |> Enum.reduce_while({:ok, []}, fn {phase_spec, index}, {:ok, acc} ->
-      case lower_phase(phase_spec, index, run_id, worktree? and index == start_index) do
-        {:ok, steps} -> {:cont, {:ok, acc ++ steps}}
-        {:error, %Error{}} = error -> {:halt, error}
+    sandbox = Map.get(ctx, :sandbox)
+
+    with :ok <- check_sandbox(sandbox, worktree?, start_index) do
+      phase_specs
+      |> Enum.with_index()
+      |> Enum.drop(start_index)
+      |> Enum.reduce_while({:ok, []}, fn {phase_spec, index}, {:ok, acc} ->
+        case lower_phase(phase_spec, index, run_id, worktree? and index == start_index) do
+          {:ok, steps} -> {:cont, {:ok, acc ++ steps}}
+          {:error, %Error{}} = error -> {:halt, error}
+        end
+      end)
+      |> case do
+        {:ok, steps} ->
+          {:ok, %Program{steps: wrap_sandbox(steps, sandbox, start_index), name: run_id}}
+
+        {:error, %Error{}} = error ->
+          error
       end
-    end)
-    |> case do
-      {:ok, steps} -> {:ok, %Program{steps: steps, name: run_id}}
-      {:error, %Error{}} = error -> error
     end
+  end
+
+  defp check_sandbox(nil, _worktree?, _start_index), do: :ok
+  defp check_sandbox(%{provider: provider}, true, _start_index) when is_atom(provider), do: :ok
+
+  defp check_sandbox(%{}, false, start_index) do
+    {:error,
+     Error.new(:unsupported_phase_action, "a sandbox needs a worktree to mount", %{
+       index: start_index,
+       phase: nil,
+       reason: :sandbox_requires_worktree
+     })}
+  end
+
+  # The sandbox is created right after the program's one `:worktree` step and
+  # closed after the last step; it carries the first phase's index so the
+  # observer enters that phase before it runs.
+  defp wrap_sandbox(steps, nil, _start_index), do: steps
+  defp wrap_sandbox([], _sandbox, _start_index), do: []
+
+  defp wrap_sandbox([%Step{kind: :worktree} = worktree | rest], sandbox, start_index) do
+    sandbox_step = %Step{
+      kind: :sandbox,
+      id: "run:sandbox",
+      opts: %{
+        phase_idx: start_index,
+        provider: sandbox.provider,
+        config: Map.get(sandbox, :config, %{})
+      }
+    }
+
+    last_index = rest |> List.last() |> then(& &1.opts.phase_idx)
+
+    [worktree, sandbox_step | rest] ++ [release_step(last_index)]
+  end
+
+  defp release_step(phase_idx) do
+    %Step{
+      kind: :release,
+      id: "run:release",
+      opts: %{phase_idx: phase_idx, sandbox?: true, worktree?: false, uninterruptible: true}
+    }
   end
 
   # The commit message `RunExecutor` has always used for a phase's commit —

@@ -70,7 +70,7 @@ defmodule ForemanServer.Jobsite.Runners.Overwatch do
   @behaviour ForemanServer.Jobsite.Runner
 
   alias ForemanServer.Idempotency.{HeartbeatLease, KeyStore}
-  alias ForemanServer.Jobsite.{Error, IterationResult}
+  alias ForemanServer.Jobsite.{Error, IterationResult, Sandbox}
   alias ForemanServer.Overwatch
   alias ForemanServer.RunExecutorLiveness
 
@@ -89,12 +89,74 @@ defmodule ForemanServer.Jobsite.Runners.Overwatch do
 
     case Keyword.fetch(opts, :launch) do
       {:ok, %{} = launch} ->
-        run_launch(launch, index)
+        with {:ok, launch} <- put_sandbox_cli(launch, sandbox) do
+          run_launch(launch, index)
+        end
 
       :error ->
         with {:ok, launch} <- scripted_launch(agent, prompt, sandbox, opts) do
           run_launch(launch, index)
         end
+    end
+  end
+
+  # ---------------------------------------------------------------------
+  # Sandbox
+  # ---------------------------------------------------------------------
+
+  # A sandboxed phase runs its agent through the provider's `cli_path` shim (the
+  # Docker shim `docker exec`s into the container), exactly as `AgentRunner` does for
+  # a script. The host provider has no shim (`{:ok, nil}`) and leaves the launch alone.
+  #
+  # `cli_path` is also the harness slot of Claude's in-flight approval wrapper
+  # (`Approvals.Inflight`). The two cannot share it, and dropping either silently
+  # would run the agent unsandboxed or without approvals, so a launch that already
+  # carries a different one raises (a contract violation: the run start refuses the
+  # combination before any launch), never a quiet override.
+  defp put_sandbox_cli(launch, nil), do: {:ok, launch}
+
+  defp put_sandbox_cli(%{launch_opts: launch_opts} = launch, %Sandbox{} = sandbox) do
+    provider = Keyword.fetch!(launch_opts, :provider)
+    env = Keyword.get(launch_opts, :env_map) || %{}
+
+    case sandbox.provider.agent_cli_path(sandbox.state, to_string(provider), env) do
+      {:ok, nil} ->
+        {:ok, launch}
+
+      {:ok, cli_path} when is_binary(cli_path) ->
+        driver_opts = launch.driver_opts
+
+        {:ok,
+         %{
+           launch
+           | driver_opts: fn remaining_ms ->
+               with_cli_path(driver_opts.(remaining_ms), cli_path)
+             end
+         }}
+
+      {:error, %Error{} = error} ->
+        {:error, error}
+    end
+  end
+
+  defp with_cli_path(driver_opts, cli_path) do
+    provider_options = Keyword.get(driver_opts, :provider_options) || %{}
+
+    case Map.get(provider_options, :cli_path) do
+      nil ->
+        Keyword.put(
+          driver_opts,
+          :provider_options,
+          Map.put(provider_options, :cli_path, cli_path)
+        )
+
+      ^cli_path ->
+        driver_opts
+
+      other ->
+        raise ArgumentError,
+              "a sandboxed launch cannot also set provider_options cli_path (#{inspect(other)}); " <>
+                "the sandbox shim owns it"
     end
   end
 

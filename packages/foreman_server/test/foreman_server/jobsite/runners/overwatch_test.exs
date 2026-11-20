@@ -246,4 +246,112 @@ defmodule ForemanServer.Jobsite.Runners.OverwatchTest do
     assert reason =~ "driver exploded"
     assert :not_found = ForemanServer.Idempotency.HeartbeatLease.status(key)
   end
+
+  defmodule CapturingWorkerAdapter do
+    # Reports the driver options its worker would launch the agent with, then finishes.
+    use GenServer
+
+    def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
+
+    @impl true
+    def init(opts), do: {:ok, opts}
+
+    @impl true
+    def handle_info({:overwatch_activate, _worker_id, _run_id, _parent}, opts) do
+      driver_opts = Keyword.fetch!(opts, :driver_opts)
+      send(Process.whereis(:overwatch_cli_path_test), {:driver_opts, driver_opts})
+      send(Keyword.fetch!(opts, :result_recipient), {:worker_result, {:ok, "done"}})
+      {:noreply, opts}
+    end
+
+    def handle_info(_msg, opts), do: {:noreply, opts}
+  end
+
+  defmodule ShimProvider do
+    def agent_cli_path(_state, binary, env), do: {:ok, "/shim/#{binary}/#{map_size(env)}"}
+  end
+
+  defmodule HostLikeProvider do
+    def agent_cli_path(_state, _binary, _env), do: {:ok, nil}
+  end
+
+  describe "sandboxed launch" do
+    setup do
+      Application.put_env(:foreman_server, :worker_adapter, CapturingWorkerAdapter)
+      Process.register(self(), :overwatch_cli_path_test)
+      :ok
+    end
+
+    defp launch(run_id, provider_options) do
+      %{
+        run_id: run_id,
+        phase: "phase-1",
+        phase_index: 1,
+        deadline_ms: Runners.Overwatch.deadline_from(5_000),
+        timeout_ms: 5_000,
+        activation_timeout_ms: 5_000,
+        lease: nil,
+        driver_opts: fn remaining_ms ->
+          [timeout: remaining_ms, cwd: "/tmp"] ++
+            if(provider_options, do: [provider_options: provider_options], else: [])
+        end,
+        launch_opts: [
+          prompt_path: "/tmp/p.md",
+          provider: :pi,
+          prompt: "hi",
+          env_map: %{"A" => "1", "B" => "2"},
+          secrets: []
+        ]
+      }
+    end
+
+    defp sandbox(provider) do
+      %ForemanServer.Jobsite.Sandbox{
+        jobsite_id: "j",
+        provider: provider,
+        state: :s,
+        worktree: %{path: "/tmp"},
+        sandbox_repo_path: "/workspace"
+      }
+    end
+
+    defp unique_run, do: "run-overwatch-sbx-#{System.unique_integer([:positive])}"
+
+    test "the sandbox shim becomes the harness cli_path, built from the phase's provider and env" do
+      agent = %Agent{provider: :pi}
+
+      assert {:ok, _} =
+               Runners.Overwatch.run(agent, "hi", sandbox(ShimProvider),
+                 launch: launch(unique_run(), nil)
+               )
+
+      assert_receive {:driver_opts, opts}
+      assert opts[:provider_options] == %{cli_path: "/shim/pi/2"}
+      assert opts[:cwd] == "/tmp"
+    end
+
+    test "existing provider options are kept next to the shim" do
+      agent = %Agent{provider: :pi}
+
+      assert {:ok, _} =
+               Runners.Overwatch.run(agent, "hi", sandbox(ShimProvider),
+                 launch: launch(unique_run(), %{live_input: true})
+               )
+
+      assert_receive {:driver_opts, opts}
+      assert opts[:provider_options] == %{live_input: true, cli_path: "/shim/pi/2"}
+    end
+
+    test "a sandbox with no shim (host) and no sandbox leave the launch untouched" do
+      agent = %Agent{provider: :pi}
+
+      for sbx <- [sandbox(HostLikeProvider), nil] do
+        assert {:ok, _} =
+                 Runners.Overwatch.run(agent, "hi", sbx, launch: launch(unique_run(), nil))
+
+        assert_receive {:driver_opts, opts}
+        refute Keyword.has_key?(opts, :provider_options)
+      end
+    end
+  end
 end
