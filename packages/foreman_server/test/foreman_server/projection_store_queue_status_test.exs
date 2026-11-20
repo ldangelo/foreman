@@ -58,6 +58,22 @@ defmodule ForemanServer.ProjectionStoreQueueStatusTest do
     ]
   end
 
+  describe "positions are renumbered" do
+    test "after the head waiter leaves, the rest report positions 1 and 2" do
+      apply!([
+        register("pq", %{max_concurrent_runs: 1}),
+        acquired("pq", "pq-r1", 1, 100),
+        queued("pq", "pq-w1", 1, @now_ms - 3_000),
+        queued("pq", "pq-w2", 2, @now_ms - 2_000),
+        queued("pq", "pq-w3", 3, @now_ms - 1_000),
+        %{event_type: "RunSlotWaiterRemoved", payload: %{project_id: "pq", run_id: "pq-w1"}}
+      ])
+
+      waiting = ProjectionStore.queue_status("pq").waiting
+      assert Enum.map(waiting, &{&1.run_id, &1.position}) == [{"pq-w2", 1}, {"pq-w3", 2}]
+    end
+  end
+
   describe "counts, limit and order (AC-010-1)" do
     test "three running and two waiting report running 3, waiting 2, limit 3, waiters in order" do
       apply!(three_running_two_waiting("p1"))

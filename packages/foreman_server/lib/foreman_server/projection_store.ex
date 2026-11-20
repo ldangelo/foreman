@@ -4274,10 +4274,13 @@ defmodule ForemanServer.ProjectionStore do
     now_ms = resolve_now_ms_fun().()
 
     waiting =
-      Enum.map(slots.waiters, fn w ->
+      slots.waiters
+      |> Enum.with_index(1)
+      |> Enum.map(fn {w, index} ->
         stamp = w.enqueued_at_ms
         waited = if is_integer(stamp), do: max(now_ms - stamp, 0), else: 0
-        %{run_id: w.run_id, position: w.position, waited_ms: waited}
+        # 1-based index in the current waiter list, not the enqueue-time value.
+        %{run_id: w.run_id, position: index, waited_ms: waited}
       end)
 
     %{
