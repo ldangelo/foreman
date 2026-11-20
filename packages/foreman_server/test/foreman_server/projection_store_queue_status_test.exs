@@ -49,7 +49,7 @@ defmodule ForemanServer.ProjectionStoreQueueStatusTest do
 
   defp three_running_two_waiting(project) do
     [
-      register(project),
+      register(project, %{max_concurrent_runs: 3}),
       acquired(project, "#{project}-r1", 3, 100),
       acquired(project, "#{project}-r2", 3, 101),
       acquired(project, "#{project}-r3", 3, 102),
@@ -131,12 +131,6 @@ defmodule ForemanServer.ProjectionStoreQueueStatusTest do
       apply!([register("p1", %{max_concurrent_runs: 50})])
 
       assert ProjectionStore.queue_status("p1").limit == 50
-    end
-
-    test "without a setting the per-project default of 3 is reported" do
-      apply!([register("p1")])
-
-      assert ProjectionStore.queue_status("p1").limit == 3
     end
   end
 

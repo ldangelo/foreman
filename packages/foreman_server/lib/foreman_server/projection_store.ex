@@ -1099,7 +1099,32 @@ defmodule ForemanServer.ProjectionStore do
     GenServer.call(__MODULE__, :list_scheduler_intents)
   end
 
-  @doc "Return the current run-slot queue status: capacity, running run ids, and waiting run ids in FIFO order."
+  @typedoc "One project's run-slot queue: counts, limit, running ids and waiters in FIFO order."
+  @type queue_status :: %{
+          project_id: String.t(),
+          limit: non_neg_integer(),
+          running_runs: non_neg_integer(),
+          waiting_runs: non_neg_integer(),
+          running: [String.t()],
+          waiting: [%{run_id: String.t(), position: integer() | nil, waited_ms: non_neg_integer()}]
+        }
+
+  @doc """
+  One project's run-slot queue. `limit` is the project's own setting (else the
+  per-project default, else the capacity last recorded on its slot events); it is
+  never clamped. Each waiter carries `waited_ms`, measured from its enqueue stamp.
+  """
+  @spec queue_status(String.t()) :: queue_status()
+  def queue_status(project_id) when is_binary(project_id) do
+    GenServer.call(__MODULE__, {:queue_status, project_id})
+  end
+
+  @doc """
+  Legacy combined view across every project.
+
+  Retained only until the un-scoped queue endpoint is removed (TRD-012); new code
+  must use `queue_status/1`.
+  """
   @spec queue_status() :: %{
           capacity: non_neg_integer(),
           running: [String.t()],
@@ -1687,13 +1712,18 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   @impl true
+  def handle_call({:queue_status, project_id}, _from, state) do
+    {:reply, build_queue_status(state, project_id), state}
+  end
+
+  @impl true
   def handle_call(:queue_status, _from, state) do
-    %{capacity: capacity, holders: holders, waiters: waiters} = state.run_slots
+    slots = Map.values(state.run_slots)
 
     reply = %{
-      capacity: capacity,
-      running: Map.keys(holders),
-      waiting: Enum.map(waiters, & &1.run_id)
+      capacity: slots |> Enum.map(&(&1.capacity || 0)) |> Enum.sum(),
+      running: Enum.flat_map(slots, &Map.keys(&1.holders)),
+      waiting: Enum.flat_map(slots, fn s -> Enum.map(s.waiters, & &1.run_id) end)
     }
 
     {:reply, reply, state}
@@ -1878,6 +1908,7 @@ defmodule ForemanServer.ProjectionStore do
             |> MapSet.size()
 
           deferred = state |> deferred_task_ids(project_id) |> length()
+          slots_counts = build_queue_status(state, project_id)
 
           deferred_by_reason =
             state
@@ -1891,6 +1922,8 @@ defmodule ForemanServer.ProjectionStore do
             %{
               active_runs:
                 state |> Map.get(:project_active_runs, %{}) |> Map.get(project_id, []) |> length(),
+              running_runs: slots_counts.running_runs,
+              waiting_runs: slots_counts.waiting_runs,
               threads_started_today: threads_today,
               deferred_tasks: deferred,
               deferred_by_reason: deferred_by_reason
@@ -2224,7 +2257,7 @@ defmodule ForemanServer.ProjectionStore do
       usage: %{},
       worktrees: %{},
       worktree_create_orphans: %{},
-      run_slots: %{capacity: 0, holders: %{}, waiters: []},
+      run_slots: %{},
       inbox_threads: %{},
       jobsites: %{},
       adoptions: %{},
@@ -3665,77 +3698,65 @@ defmodule ForemanServer.ProjectionStore do
   # RunSlot events — folded into state.run_slots
   # -------------------------------------------------------------------------
 
+  # Folded per `project_id` into `state.run_slots[project_id]`. An event with no
+  # `project_id` (the retired global stream) is ignored. The capacity on each event
+  # is the limit in force when the decision was made; it is read from the event and
+  # never recomputed, so a replay reproduces every decision (REQ-013).
   defp apply_event_by_type(state, "RunSlotAcquired", payload) do
     run_id = get(payload, :run_id)
-    capacity = get(payload, :capacity)
 
-    if valid_id?(run_id) do
-      Map.update!(state, :run_slots, fn slots ->
-        %{slots | capacity: capacity, holders: Map.put(slots.holders, run_id, :held)}
-      end)
-    else
-      state
-    end
+    update_run_slots(state, payload, valid_id?(run_id), fn slots ->
+      %{
+        slots
+        | capacity: slot_capacity(slots, get(payload, :capacity)),
+          holders: Map.put(slots.holders, run_id, :held),
+          waiters: Enum.reject(slots.waiters, &(&1.run_id == run_id))
+      }
+    end)
   end
 
   defp apply_event_by_type(state, "RunSlotQueued", payload) do
     run_id = get(payload, :run_id)
-    position = get(payload, :position)
-    enqueued_at_ms = get(payload, :enqueued_at_ms)
 
-    if valid_id?(run_id) do
-      Map.update!(state, :run_slots, fn slots ->
-        waiter = %{run_id: run_id, position: position, enqueued_at_ms: enqueued_at_ms}
-        %{slots | waiters: slots.waiters ++ [waiter]}
-      end)
-    else
-      state
-    end
+    update_run_slots(state, payload, valid_id?(run_id), fn slots ->
+      waiter = %{
+        run_id: run_id,
+        position: get(payload, :position),
+        enqueued_at_ms: get(payload, :enqueued_at_ms)
+      }
+
+      %{slots | waiters: Enum.reject(slots.waiters, &(&1.run_id == run_id)) ++ [waiter]}
+    end)
   end
 
   defp apply_event_by_type(state, "RunSlotReleased", payload) do
     run_id = get(payload, :run_id)
 
-    if valid_id?(run_id) do
-      Map.update!(state, :run_slots, fn slots ->
-        %{slots | holders: Map.delete(slots.holders, run_id)}
-      end)
-    else
-      state
-    end
+    update_run_slots(state, payload, valid_id?(run_id), fn slots ->
+      %{slots | holders: Map.delete(slots.holders, run_id)}
+    end)
   end
 
   defp apply_event_by_type(state, "RunSlotTransferred", payload) do
-    released_run_id = get(payload, :released_run_id)
-    acquired_run_id = get(payload, :acquired_run_id)
+    released = get(payload, :released_run_id)
+    acquired = get(payload, :acquired_run_id)
 
-    if valid_id?(released_run_id) and valid_id?(acquired_run_id) do
-      Map.update!(state, :run_slots, fn slots ->
-        new_holders =
-          slots.holders
-          |> Map.delete(released_run_id)
-          |> Map.put(acquired_run_id, :held)
-
-        # Remove the promoted waiter
-        new_waiters = Enum.reject(slots.waiters, &(&1.run_id == acquired_run_id))
-
-        %{slots | holders: new_holders, waiters: new_waiters}
-      end)
-    else
-      state
-    end
+    update_run_slots(state, payload, valid_id?(released) and valid_id?(acquired), fn slots ->
+      %{
+        slots
+        | capacity: slot_capacity(slots, get(payload, :capacity)),
+          holders: slots.holders |> Map.delete(released) |> Map.put(acquired, :held),
+          waiters: Enum.reject(slots.waiters, &(&1.run_id == acquired))
+      }
+    end)
   end
 
   defp apply_event_by_type(state, "RunSlotWaiterRemoved", payload) do
     run_id = get(payload, :run_id)
 
-    if valid_id?(run_id) do
-      Map.update!(state, :run_slots, fn slots ->
-        %{slots | waiters: Enum.reject(slots.waiters, &(&1.run_id == run_id))}
-      end)
-    else
-      state
-    end
+    update_run_slots(state, payload, valid_id?(run_id), fn slots ->
+      %{slots | waiters: Enum.reject(slots.waiters, &(&1.run_id == run_id))}
+    end)
   end
 
   defp apply_event_by_type(state, "ProjectSecretSet", payload),
@@ -4273,6 +4294,57 @@ defmodule ForemanServer.ProjectionStore do
       _ -> ForemanServer.Projects.RepoValidation.primary_id()
     end
   end
+
+  defp build_queue_status(state, project_id) do
+    slots = Map.get(state.run_slots, project_id, empty_run_slots())
+    now_ms = resolve_now_ms_fun().()
+
+    waiting =
+      Enum.map(slots.waiters, fn w ->
+        stamp = w.enqueued_at_ms
+        waited = if is_integer(stamp), do: max(now_ms - stamp, 0), else: 0
+        %{run_id: w.run_id, position: w.position, waited_ms: waited}
+      end)
+
+    %{
+      project_id: project_id,
+      limit: queue_limit(state, project_id, slots),
+      running_runs: map_size(slots.holders),
+      waiting_runs: length(waiting),
+      running: Map.keys(slots.holders),
+      waiting: waiting
+    }
+  end
+
+  # The project's own setting wins; no clamp by any global value.
+  defp queue_limit(state, project_id, slots) do
+    case Map.get(state.projects, project_id) do
+      %{config: config} ->
+        ForemanServer.ProjectSettings.from_config(config).max_concurrent_runs ||
+          ForemanServer.RunSlots.Config.max_concurrent_runs_per_project()
+
+      _ ->
+        slots.capacity || ForemanServer.RunSlots.Config.max_concurrent_runs_per_project()
+    end
+  end
+
+  defp update_run_slots(state, payload, true, fun) do
+    case get(payload, :project_id) do
+      project_id when is_binary(project_id) and project_id != "" ->
+        slots = Map.get(state.run_slots, project_id, empty_run_slots())
+        %{state | run_slots: Map.put(state.run_slots, project_id, fun.(slots))}
+
+      _ ->
+        state
+    end
+  end
+
+  defp update_run_slots(state, _payload, false, _fun), do: state
+
+  defp empty_run_slots, do: %{capacity: nil, holders: %{}, waiters: []}
+
+  defp slot_capacity(_slots, capacity) when is_integer(capacity) and capacity >= 0, do: capacity
+  defp slot_capacity(slots, _capacity), do: slots.capacity
 
   defp build_run_repositories(state, run_id) do
     run = Map.get(state.runs, run_id)

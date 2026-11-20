@@ -4,11 +4,10 @@ defmodule ForemanServer.ProjectLimits do
   usage, and when a daily cap resets. Pure over the numbers
   `ForemanServer.ProjectionStore.project_limits/2` gathers.
 
-  `max_concurrent_runs` is the EFFECTIVE limit: the project's
-  `max_concurrent_runs` setting (or the global per-project default) capped by the
-  global RunSlots `max_concurrent_runs`, because `RunAdmission` admits a run
-  into a slot before the project reservation is attempted, so a project value
-  above the global one cannot raise it.
+  `max_concurrent_runs` is the project's own limit: its `max_concurrent_runs`
+  setting, else the per-project default. No global value clamps it. `running_runs`
+  and `waiting_runs` count the project's slot holders and queued waiters;
+  `active_runs` keeps counting project reservations (which include paused runs).
 
   `deferred_tasks` counts the project's tasks that were dispatched
   (`TaskDispatched`: status `"in_progress"`, run id assigned) but whose run
@@ -24,6 +23,8 @@ defmodule ForemanServer.ProjectLimits do
   @type t :: %{
           max_concurrent_runs: pos_integer(),
           active_runs: non_neg_integer(),
+          running_runs: non_neg_integer(),
+          waiting_runs: non_neg_integer(),
           daily_thread_cap: pos_integer() | nil,
           threads_started_today: non_neg_integer(),
           remaining_today: non_neg_integer() | nil,
@@ -36,6 +37,8 @@ defmodule ForemanServer.ProjectLimits do
 
   @type usage :: %{
           active_runs: non_neg_integer(),
+          running_runs: non_neg_integer(),
+          waiting_runs: non_neg_integer(),
           threads_started_today: non_neg_integer(),
           deferred_tasks: non_neg_integer(),
           deferred_by_reason: %{String.t() => pos_integer()}
@@ -49,12 +52,10 @@ defmodule ForemanServer.ProjectLimits do
     started = usage.threads_started_today
 
     %{
-      max_concurrent_runs:
-        min(
-          settings.max_concurrent_runs || Config.max_concurrent_runs_per_project(),
-          Config.max_concurrent_runs()
-        ),
+      max_concurrent_runs: settings.max_concurrent_runs || Config.max_concurrent_runs_per_project(),
       active_runs: usage.active_runs,
+      running_runs: usage.running_runs,
+      waiting_runs: usage.waiting_runs,
       daily_thread_cap: cap,
       threads_started_today: started,
       remaining_today: cap && max(cap - started, 0),

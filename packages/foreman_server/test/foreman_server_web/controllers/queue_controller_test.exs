@@ -35,9 +35,11 @@ defmodule ForemanServerWeb.QueueControllerTest do
       %{
         state
         | run_slots: %{
-            capacity: expected.capacity,
-            holders: Map.new(expected.running, &{&1, %{}}),
-            waiters: Enum.map(expected.waiting, &%{run_id: &1})
+            "p1" => %{
+              capacity: expected.capacity,
+              holders: Map.new(expected.running, &{&1, %{}}),
+              waiters: Enum.map(expected.waiting, &%{run_id: &1})
+            }
           }
       }
     end)

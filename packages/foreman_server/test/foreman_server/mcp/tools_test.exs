@@ -31,7 +31,7 @@ defmodule ForemanServer.MCP.ToolsTest do
       project_active_runs: %{},
       worktrees: %{},
       worktree_create_orphans: %{},
-      run_slots: %{capacity: 0, holders: %{}, waiters: []},
+      run_slots: %{},
       works: %{},
       inbox_threads: %{},
       jobsites: %{},
