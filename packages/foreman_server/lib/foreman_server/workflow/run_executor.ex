@@ -337,6 +337,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
       phase_specs: phase_specs,
       worktree_spec: extract_worktree_spec(task_projection),
       sandbox: extract_sandbox(task_projection),
+      resume_session: Keyword.get(opts, :resume_session),
       current_phase: nil,
       completed: if(resume_from > 0, do: Enum.to_list(0..(resume_from - 1)), else: []),
       phase_statuses: %{},
@@ -1513,7 +1514,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
     # Decided before anything is recorded or written for the launch: a fork that cannot be honoured
     # fails the phase here, it never starts a blank agent (`fork_for_launch/3`).
-    with {:ok, fork} <- fork_for_launch(state, index, JidoHarness.request_provider(request)) do
+    with {:ok, fork} <- session_for_launch(state, index, JidoHarness.request_provider(request)) do
       build_agent_launch(
         state,
         phase_spec,
@@ -1650,6 +1651,41 @@ defmodule ForemanServer.Workflow.RunExecutor do
   end
 
   defp fork_for_launch(_state, _index, _provider), do: {:ok, nil}
+
+  # Which provider session the phase starts from, if any: a FORK of the task's session
+  # (`fork_for_launch/3`) or an explicit RESUME (`resume_for_launch/3`). Both are only for
+  # the run's first phase and both refuse to launch rather than start a blank agent, so
+  # asking for both is refused too: one phase has one session.
+  defp session_for_launch(state, index, provider) do
+    with {:ok, fork} <- fork_for_launch(state, index, provider),
+         {:ok, resume} <- resume_for_launch(state, index, provider) do
+      case {fork, resume} do
+        {nil, resume} -> {:ok, resume}
+        {fork, nil} -> {:ok, fork}
+        {_fork, _resume} -> {:error, :fork_and_resume_session}
+      end
+    end
+  end
+
+  # A run started to CONTINUE a provider session (`state.resume_session`, `{provider, id}`,
+  # handed over by whoever starts the run; the PR fix follow-up run is its user): the first
+  # phase launches with that session's id as a plain harness resume, in place, which for pi
+  # needs the same working directory (`ForkSession` moduledoc). Unlike a fork, a resume
+  # writes to the source session, so it is only valid when nothing else runs it.
+  #
+  # The session is checked like a fork's (`ForkSession.validate/2`: closed provider list,
+  # id safe to become a CLI argument) and must be the phase's own provider: a mismatch is a
+  # failed launch, never a blank agent for a run that claims to continue a thread.
+  defp resume_for_launch(%{resume_session: {provider, session_id}}, 0, phase_provider)
+       when is_binary(provider) and is_binary(session_id) do
+    with :ok <- ForkSession.validate(provider, session_id) do
+      if to_string(phase_provider) == provider,
+        do: {:ok, {session_id, %{}}},
+        else: {:error, {:resume_provider_mismatch, provider, to_string(phase_provider)}}
+    end
+  end
+
+  defp resume_for_launch(_state, _index, _provider), do: {:ok, nil}
 
   defp put_fork(driver_opts, nil), do: driver_opts
 
