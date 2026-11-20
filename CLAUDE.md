@@ -829,6 +829,23 @@ register separate lease streams.
   verifies the admission contract; cross-process discipline against
   external writers is a separate, operator-owned concern.
 
+## 18. Per-project run slots (per-project dispatch queues)
+
+Run concurrency is enforced per project; there is no global run-slot queue and no machine-wide ceiling. Total concurrency is the sum of per-project limits (TRD-2026-b9e27ab5).
+
+- **Stream key.** `run_slots:<project_id>`, built by the one function `ForemanServer.Aggregates.RunSlots.stream_id/1`; `CommandRouter.aggregate_module_for/1` routes the `run_slots:` prefix. The literal `run_slots:global` appears in no production code except `Workflow.RunSlotsMigration`, which reads it once at boot.
+- **Capacity source.** The project's `max_concurrent_runs` setting, else `config :foreman_server, :max_concurrent_runs_per_project` (default 3), read at dispatch time through `Project.effective_run_limit/1` (`RunAdmission.project_capacity/1`) and recorded on the event, never read during replay.
+- **Release promotes only below capacity.** A release transfers to the head waiter only while `holders - 1 < capacity`; otherwise it plain-releases and the waiter stays queued, so lowering a limit below the running count never starts a run. A raised limit or `ProjectUpdated`/`ProjectReactivated` rebalances through `run_slots.promote` (`Workflow.Dispatcher`).
+- **Migration of the legacy stream.** At boot `RunSlotsMigration.run/0` reads `run_slots:global` without appending to it: live holders are adopted by their run's project (`run_slots.acquire` `force: true`, command id `run-slots:adopt:<run_id>`, counted even above the limit; nothing running is stopped), live waiters are queued in legacy order (`enqueue_only: true`), then `run_slots.promote` fills free capacity. Command ids are deterministic, so a second pass is a no-op.
+- **System-only commands.** `run_slots.acquire|release|remove_waiter|promote` stay out of every operator allowlist (`CommandGateway`), like the other slot and lease commands.
+- **Retired global setting.** `config :foreman_server, :max_concurrent_runs` is ignored; `RunSlotsMigration.warn_retired_config/0` logs one warning at boot when it is still set.
+- **Read side.** `GET /api/queue` requires `project_id` (422 `project_required`) and `ProjectLimits` carries `running_runs` / `waiting_runs`.
+
+Known limits (documented, not fixed in this slice):
+
+- **In-flight admission slot-leak window.** If dispatch fails transiently after a slot was acquired and the task stays `in_progress`, the slot is held without a live run until a reconciler (`RunLifecycleReconciler`, `BootReconciliation`) releases it; until then it counts against the project's limit.
+- **AC-017-3 is unreachable.** Adopting a queued run into another project is refused by the Project aggregate (it treats the subject as active), so a waiting run never moves queues by `project.adopt`; see the TRD's Known Gaps.
+
 ## 19. Durable worker run logs and MCP run status
 
 `foreman_run_status` is a bounded DTO built from `ProjectionStore.run/1` and

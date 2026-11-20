@@ -53,8 +53,8 @@ config :foreman_server, :task_provider,
 config :foreman_server, :start_beads_watcher?, false
 # RunSlots: per-project concurrent run cap (TRD-005, TRD-010). A project with no
 # `max_concurrent_runs` setting of its own runs at most this many runs at once; the rest wait
-# in its own FIFO queue. There is no global cap (the retired `:max_concurrent_runs` key is
-# ignored with a boot warning).
+# in its own FIFO queue. There is no global cap: total concurrency is the sum of per-project
+# limits (the retired `:max_concurrent_runs` key is ignored with a boot warning).
 config :foreman_server, :max_concurrent_runs_per_project, 3
 # Multi-repository runs (E12). Open since E12-S12 (`scripts/e2e/multi_repo.sh`, 110
 # assertions against a real agent, see docs/lessons/multi-repo-e2e-2026-10-21.md).

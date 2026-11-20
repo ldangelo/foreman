@@ -366,7 +366,7 @@ foreman project update --task-provider beads --task-provider-database-path /srv/
 | `--instructions-file <path>` | Read the instructions from a file |
 | `--thread-model <model>`, `--thread-effort <low\|medium\|high>` | Default model/effort for threads |
 | `--coordinator-provider <pi\|claude>`, `--coordinator-model <model>`, `--coordinator-effort <low\|medium\|high>` | Coordinator settings |
-| `--max-concurrent-runs <n>` | Concurrent runs limit (1..1000) |
+| `--max-concurrent-runs <n>` | This project's concurrent runs limit (1..1000; default 3 when unset). Total concurrency is the sum of per-project limits; there is no machine-wide ceiling |
 | `--daily-thread-cap <n>` | Threads started per UTC day (1..10000) |
 | `--library-collect-produced[=false]` | Register each run's artifacts and session-archive files in the project library (opt-in, default off) |
 | `--coordinator-propose-before-start=<true\|false>`, `--coordinator-max-active-threads <n>` (1..50), `--coordinator-reuse-threads=<true\|false>` | Coordinator tuning, enforced by the server |
@@ -408,7 +408,7 @@ foreman project adopt --kind run --id RUN --new-project --project-id my-app --pa
 
 ### `foreman project settings <id>`
 
-Print a project's status, settings and live limits (`GET /api/projects/<id>/settings`): effective `max_concurrent_runs`, `active_runs`, `daily_thread_cap`, `threads_started_today`, `remaining_today`, `cap_reached?`, `resets_at`, `deferred_tasks`, `deferred_today` (tasks refused today by the cap, run limit or pause; `deferred_by_reason` in `--format json`) and the containment settings `repo_allowlist` and `max_repos_per_run`. `--format json` prints the raw response. `config.env` values are never shown.
+Print a project's status, settings and live limits (`GET /api/projects/<id>/settings`): effective `max_concurrent_runs`, `active_runs`, `running_runs` (runs holding one of the project's run slots), `waiting_runs` (runs queued in the project's own FIFO queue), `daily_thread_cap`, `threads_started_today`, `remaining_today`, `cap_reached?`, `resets_at`, `deferred_tasks`, `deferred_today` (tasks refused today by the cap, run limit or pause; `deferred_by_reason` in `--format json`) and the containment settings `repo_allowlist` and `max_repos_per_run`. `--format json` prints the raw response. `config.env` values are never shown. The run queue is per project: `GET /api/queue` requires `project_id` (422 `project_required` without it) and returns only that project's own run-slot queue.
 
 ### `foreman usage --project <id>`
 

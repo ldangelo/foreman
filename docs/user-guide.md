@@ -722,7 +722,8 @@ spec with only `agent.provider` records the project's model/effort in
 
 **Limits.** `max_concurrent_runs` (default 3 when the project sets none) is enforced
 by the project's own run-slot queue, which holds the runs above it in FIFO order. There
-is no global cap: one project's queue never delays another's, and the old server-wide
+is no global cap: one project's queue never delays another's, total concurrency is the
+sum of per-project limits (there is no machine-wide ceiling), and the old server-wide
 `config :foreman_server, :max_concurrent_runs` is retired (a leftover value is ignored
 and logs one warning at boot). The daily thread cap counts a workflow run at
 reservation and a jobsite at start; the (N+1)th thread of the UTC day is refused
@@ -730,7 +731,8 @@ reservation and a jobsite at start; the (N+1)th thread of the UTC day is refused
 jobsite). Refused admissions are not terminal: the task stays approved and is
 retried when the project resumes or its settings change. `project settings` (and
 `GET /api/projects/<id>/settings`) shows the effective limits, usage today,
-`resets_at` and the count of deferred tasks.
+`resets_at`, the count of deferred tasks, and the slot usage `running_runs` (runs
+holding one of the project's slots) and `waiting_runs` (runs queued behind them).
 
 ### Repositories
 
@@ -1238,7 +1240,7 @@ Read endpoints are projection-only:
   when Foreman recorded none. `GET /api/runs` carries the same field on
   each listed run.
 - `GET /api/tasks/{id}`, `GET /api/projects`, `GET /api/projects/{id}`,
-  and `GET /api/queue?project_id=<id>` (one project; 422 `project_required` without it) expose corresponding projections.
+  and `GET /api/queue?project_id=<id>` (the one project's own run-slot queue; 422 `project_required` without `project_id`, there is no machine-wide queue view) expose corresponding projections.
 - Schedules: `GET /api/projects/{project_id}/schedules` returns
   `{ticker: "running"|"disabled", schedules: [...]}` (the Scheduled tab's data;
   MCP `foreman_schedule_list`; CLI `foreman project schedule list`). Schedules
