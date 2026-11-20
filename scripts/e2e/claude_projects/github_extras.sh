@@ -524,9 +524,6 @@ gh_pr_head_recorded() { [ "$(gh_pr_field '.head_sha')" = "$1" ]; }
 # at the same working-directory path as the run (a claude session is found by its id, yet its transcript is appended to wherever
 # the original lives). Everything here is real: a bead of type claude-e2e makes the `claudeedit` workflow (one claude phase, haiku)
 # do the run through the private HOME of claude_home.sh, AutoPR opens the PR, a regression pushed to the PR branch fails the real
-# NOTE (docs/plans/retire-jobsites.md): a fix now runs as a follow-up run (PrFixStarted.fix_run_id, streams
-# run_followup:<id> and run:<id>); the assertions below still read the retired jobsite events and need a live
-# rewrite before this stage can pass again.
 # check, Fix CI starts the fix jobsite. The assertions read the event store (PrFixStarted, the fix jobsite's own stream) and
 # claude's own transcript of the session, never Foreman's log.
 
@@ -589,7 +586,7 @@ gh_trigger_fix_ci() {
 
 gh_x_claude_fix_ci() {
   say "9k. the PR fix thread of a REAL claude run resumes THAT run's claude session (foreman-nufr9)"
-  note "EXPECTED: (a) the run bound a claude provider session; (b) PrFixStarted.resumed_session is true; (c) the fix jobsite's first JobsiteIterationStarted.resumed_session_id is that session; (d) the PR head moved with the fix commit and CI is green; (e) claude's transcript of THAT session grew (same id, more lines) and no new session appeared"
+  note "EXPECTED: (a) the run bound a claude provider session; (b) PrFixStarted.resumed_session is true; (c) the follow-up request names that session to resume; (d) the PR head moved with the fix commit and CI is green; (e) claude's transcript of THAT session grew (same id, more lines) and no new session appeared"
   if ! claude_private_home || ! claude_ready; then
     unverified "the PR fix thread of a real claude run resumes its claude session" "${CLAUDE_UNAVAILABLE:-claude is not usable}"
     return 0
@@ -631,19 +628,22 @@ gh_x_claude_fix_ci() {
   gc_started=$(gh_prfix_field PrFixStarted .data)
   note "PrFixStarted data: $gc_started"
   assert_eq "(b) PrFixStarted.resumed_session" "$(printf '%s' "$gc_started" | jq -r '.resumed_session')" "true"
-  gc_jobsite=$(printf '%s' "$gc_started" | jq -r '.jobsite_id')
+  gc_fixrun=$(printf '%s' "$gc_started" | jq -r '.fix_run_id')
+  assert_has "the fix is a follow-up RUN (PrFixStarted.fix_run_id), not a jobsite" "$gc_fixrun" "run-"
   gc_orig_path=$(gh_prfix_field WorktreeCreated .data.worktree_path)
   note "the run's worktree (WorktreeCreated): $gc_orig_path; WorktreeCleaned: $(gh_prfix_field WorktreeCleaned .at | grep . || echo never)"
 
-  # the fix jobsite's own events: the session it was started on
-  if gh_wait 300 "fix jobsite iteration" gh_prfix_has JobsiteIterationStarted; then pass "the fix jobsite $gc_jobsite started its first iteration"; else fail "the fix jobsite $gc_jobsite never started an iteration within 300s"; gh_events_note "$GH_RUN" "$gc_mark"; return 1; fi
-  note "fix jobsite agent: $(gh_prfix_field JobsiteStarted '.data.agent | tojson')"
-  assert_eq "the fix jobsite runs claude" "$(gh_prfix_field JobsiteStarted '.data.agent.provider')" "claude"
-  gc_fix_path=$(gh_prfix_field JobsiteWorktreeProvisioned .data.path)
-  note "the fix jobsite's worktree (JobsiteWorktreeProvisioned): $gc_fix_path (reused: $(gh_prfix_field JobsiteWorktreeProvisioned '.data["reused?"]'))"
-  assert_eq "the fix jobsite works at the SAME path the run did (the working directory a claude session is tied to)" "$gc_fix_path" "$gc_orig_path"
-  gc_resumed=$(gh_prfix_field JobsiteIterationStarted 'select(.data.index == 1) | .data.resumed_session_id')
-  assert_eq "(c) the fix jobsite's first JobsiteIterationStarted.resumed_session_id is the run's claude session" "$gc_resumed" "$gc_sid"
+  # the follow-up run's own events: the request, the session it resumes, the worktree it works in
+  if gh_wait 300 "follow-up request" gh_prfix_has RunFollowUpRequested; then pass "the follow-up run $gc_fixrun was requested (RunFollowUpRequested)"; else fail "no RunFollowUpRequested for $gc_fixrun within 300s"; gh_events_note "$GH_RUN" "$gc_mark"; return 1; fi
+  note "follow-up request: $(gh_prfix_field RunFollowUpRequested '.data | del(.prompt) | tojson')"
+  assert_eq "the follow-up is attached to the PR head branch" "$(gh_prfix_field RunFollowUpRequested .data.attach_branch)" "$GH_BRANCH"
+  assert_eq "the follow-up pushes" "$(gh_prfix_field RunFollowUpRequested .data.push)" "true"
+  assert_eq "the follow-up runs claude" "$(gh_prfix_field RunFollowUpRequested .data.provider)" "claude"
+  assert_eq "(c) the follow-up request names the run's claude session to resume" "$(gh_prfix_field RunFollowUpRequested .data.resume_session_id)" "$gc_sid"
+  if gh_wait 300 "follow-up worktree" gh_prfix_has WorktreeCreated; then :; fi
+  gc_fix_path=$(gh_prfix_field WorktreeCreated "select(.stream == \"vcs:wt-$gc_fixrun\") | .data.worktree_path")
+  note "the follow-up run's worktree: ${gc_fix_path:-none}"
+  assert_eq "the follow-up works at the SAME path the run did (the working directory a claude session is tied to)" "$gc_fix_path" "$gc_orig_path"
 
   # the fix lands
   if gh_wait 900 "fix commit" gh_head_moved_from "$BROKEN"; then pass "(d) the fix thread pushed a commit: $BROKEN -> $(gh_head)"; else fail "(d) no fix commit within 900s of the click"; gh_events_note "$GH_RUN" "$gc_mark"; gh_prfix_evidence "$GH_RUN"; note "PR record: $(gh_pr_record)"; return 1; fi
@@ -656,8 +656,7 @@ gh_x_claude_fix_ci() {
   if gh_wait 300 "PrFixFinished" gh_prfix_has PrFixFinished; then pass "the fix was recorded as finished"; else fail "no PrFixFinished within 300s"; fi
   assert_eq "the fix finished as pushed" "$(gh_prfix_field PrFixFinished .data.outcome)" "pushed"
   if gh_wait_card "$GH_THREAD" '.group == "ready_for_review"' 420; then pass "Overview: back in Ready for review: $(gh_card_line "$GH_CARD")"; else fail "not back in Ready for review: $(gh_card_line "$GH_CARD")"; fi
-  gh_wait 300 "jobsite iteration completed" gh_prfix_has JobsiteIterationCompleted || true
-  assert_eq "(c) the fix iteration ended on the SAME claude session id" "$(gh_prfix_field JobsiteIterationCompleted .data.session_id)" "$gc_sid"
+  if gh_wait 300 "follow-up run completed" gh_prfix_has RunCompleted; then pass "the follow-up run $gc_fixrun completed (RunCompleted)"; else fail "the follow-up run never completed within 300s"; fi
 
   # claude's own record: the transcript of that session grew, no other session appeared
   gc_lines_after=$(wc -l < "$gc_file" | tr -d ' ')
