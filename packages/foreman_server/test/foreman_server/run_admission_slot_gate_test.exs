@@ -22,22 +22,11 @@ defmodule ForemanServer.RunAdmissionSlotGateTest do
   end
 
   setup do
-    # The shipped default flips from 100 to 3 in TRD-010; the "no setting" scenarios
-    # pin it here so they state the PRD's default regardless of that task's order.
-    previous_default = Application.get_env(:foreman_server, :max_concurrent_runs_per_project)
-    Application.put_env(:foreman_server, :max_concurrent_runs_per_project, 3)
-
     cleanup_run_slots_stream()
     cleanup_lease_stream()
     reset_projection_store()
 
     on_exit(fn ->
-      if previous_default == nil do
-        Application.delete_env(:foreman_server, :max_concurrent_runs_per_project)
-      else
-        Application.put_env(:foreman_server, :max_concurrent_runs_per_project, previous_default)
-      end
-
       cleanup_run_slots_stream()
       cleanup_lease_stream()
       reset_projection_store()

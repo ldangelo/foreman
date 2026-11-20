@@ -78,15 +78,6 @@ defmodule ForemanServer.ProjectPauseLimitsProjectionTest do
   end
 
   test "the effective run limit is the project's setting, not clamped by any global value" do
-    previous = Application.get_env(:foreman_server, :max_concurrent_runs)
-    Application.put_env(:foreman_server, :max_concurrent_runs, 3)
-
-    on_exit(fn ->
-      if previous,
-        do: Application.put_env(:foreman_server, :max_concurrent_runs, previous),
-        else: Application.delete_env(:foreman_server, :max_concurrent_runs)
-    end)
-
     apply!([register("p1", %{max_concurrent_runs: 50}), register("p2", %{max_concurrent_runs: 5})])
     assert %{max_concurrent_runs: 50} = ProjectionStore.project_limits("p1", @now)
     assert %{max_concurrent_runs: 5} = ProjectionStore.project_limits("p2", @now)

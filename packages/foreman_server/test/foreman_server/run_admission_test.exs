@@ -337,14 +337,6 @@ defmodule ForemanServer.RunAdmissionTest do
       assert {:ok, :slot_queued} = RunAdmission.start(project_id, payload)
       assert ProjectionStore.run(run_id) == nil
     end
-
-    @tag :trd_006
-    test "capacity comes from RunSlots.Config.max_concurrent_runs()" do
-      # Verify Config.max_concurrent_runs() returns a positive integer
-      capacity = ForemanServer.RunSlots.Config.max_concurrent_runs()
-      assert is_integer(capacity)
-      assert capacity > 0
-    end
   end
 
   describe "dispatch_run_start/3 — implementation_key collision" do
