@@ -324,6 +324,50 @@ export default class ForemanRun extends View {
           .child(open ? "show less" : `… ${lines.length - MAX_LINES} more lines`)));
   }
 
+  // A marker where a phase started, between the turns it falls between. state is the phase's current
+  // state (the same one the strip shows), so a finished phase reads "done" and a failed one says why.
+  renderPhaseMarker(p, startedAt, i, th) {
+    const [glyph, color] = PHASE_GLYPH[p.state];
+    return v_flex().id(`phase-marker-${i}`).mx(12).mt(8).pt(4).pb(2).gap(1).border_t(1).border_color(th.border)
+      .child(h_flex().gap(8).items_center()
+        .child(div().w(54).text_size(10.5).text_color(th.dim).child(clock(startedAt)))
+        .child(div().w(40).text_size(10.5).font_semibold().text_color(th.accent).child("phase"))
+        .child(div().text_size(12).text_color(th[color] ?? th.dim).child(glyph))
+        .child(div().text_size(12).font_semibold().text_color(th.foreground).child(p.name))
+        .when(p.attempt > 1, (el) => el.child(div().text_size(11).text_color(th.idle).child(`attempt ${p.attempt}`)))
+        .child(div().text_size(11).text_color(th.dim).child(p.state)))
+      .when(p.reason, (el) => el.child(div().pl(102).text_size(11).text_color(th.blocked).child(oneLine(p.reason))));
+  }
+
+  // The Activity rows: transcript turns in order, with a marker at the point each started phase began
+  // (GET /api/runs/:id/phases gives only start times, so there are no end markers). A turn without a
+  // timestamp never moves a marker; markers that start after the last turn follow it.
+  activityRows(r, th) {
+    const started = phaseStrip(r, this.phases).slice(0, this.phases.length)
+      .map((p, i) => ({ p, at: this.phases[i].started_at_ms, i }))
+      .filter((m) => Number.isFinite(m.at))
+      .sort((a, b) => a.at - b.at);
+    const rows = [];
+    let next = 0;
+    const flush = (until) => {
+      while (next < started.length && started[next].at <= until) {
+        const m = started[next++];
+        rows.push(this.renderPhaseMarker(m.p, m.at, m.i, th));
+      }
+    };
+    for (const t of this.turns) {
+      const at = t.at ? Date.parse(t.at) : NaN;
+      if (Number.isFinite(at)) flush(at);
+      rows.push(this.renderTurn(t, th));
+    }
+    flush(Infinity);
+    if (this.turns.length === 0) {
+      rows.push(div().px(12).py(8).text_size(12).text_color(th.dim)
+        .child(isActive(r) ? "No output yet. The agent has not written anything." : "This run produced no output."));
+    }
+    return rows;
+  }
+
   renderFile(f, th) {
     const c = this.changes;
     const canDiff = c.source === "worktree" && c.base && !f.untracked;
@@ -414,9 +458,7 @@ export default class ForemanRun extends View {
     if (!this.loaded) rows = [note("Loading…", th.dim)];
     else if (!r) rows = [note(this.error ?? "Run not found", th.blocked)];
     else if (this.tab === "activity") {
-      rows = this.turns.length === 0
-        ? [note(isActive(r) ? "No output yet. The agent has not written anything." : "This run produced no output.", th.dim)]
-        : this.turns.map((t) => this.renderTurn(t, th));
+      rows = this.activityRows(r, th);
       if (this.dropped > 0) rows.unshift(note(`${this.dropped} earlier turns are not shown.`, th.dim));
     } else {
       const c = this.changes;

@@ -131,6 +131,10 @@ Activity (31)   Changes (3)                                              followi
   verdict. Long turns fold to 8 lines (`… N more lines`). Scrolling up stops
   the auto-follow; `follow` turns it on again. The server's log window is
   bounded, so a very long run shows `N earlier turns are not shown`.
+  A ruled `phase` marker (`▶ name`, its current state, `attempt N` after a retry, and the failure
+  reason when it failed) sits between the turns at the point each started phase began. The server
+  gives only start times, so there are no end markers; a phase's outcome is its state on the marker
+  and in the strip. Markers need `GET /api/runs/:id/phases`; without it the feed has none.
 - **Changes.** For a run with a worktree: the commits since it branched, every
   changed file with `+added −removed` (uncommitted work and new files
   included), and a click on a file shows its patch. Once the worktree is gone,
