@@ -94,6 +94,11 @@ defmodule ForemanServer.Workflow.RunSlotsMigration do
 
   defp carry(run_id, kind, acc, bad) do
     cond do
+      # After a failed carry-over for a project, its later waiters wait for the next pass, so a
+      # retry keeps the legacy order (AC-009-2) instead of queueing the failed one last.
+      kind == :waiter and skip_for_failed_project?(run_id, bad) ->
+        {bump(acc, :skipped), bad}
+
       BootReconciliation.slot_entry_orphan?(run_id) ->
         {bump(acc, :skipped), bad}
 
@@ -116,6 +121,10 @@ defmodule ForemanServer.Workflow.RunSlotsMigration do
 
         {bump(acc, :skipped), bad}
     end
+  end
+
+  defp skip_for_failed_project?(run_id, bad) do
+    MapSet.size(bad) > 0 and MapSet.member?(bad, resolve_project(run_id))
   end
 
   defp command(:holder, run_id, project_id, capacity) do
