@@ -124,6 +124,7 @@ defmodule ForemanServer.Workflow.AttachBranchTest do
 
   test "publishing pushes the attached branch only, and a rejected push fails", ctx do
     path = ctx.default_path
+
     assert {:ok, %{tip: tip}} =
              AttachBranch.prepare(ctx.repo, @branch, "origin", default_path: path)
 
@@ -140,6 +141,7 @@ defmodule ForemanServer.Workflow.AttachBranchTest do
 
     assert :ok = RunExecutor.__publish_followup_for_test__(state)
     refute remote_tip(ctx.repo) == tip
+
     assert git!(ctx.origin, ["rev-parse", @branch]) |> String.trim() ==
              git!(path, ["rev-parse", "HEAD"]) |> String.trim()
 
@@ -158,6 +160,11 @@ defmodule ForemanServer.Workflow.AttachBranchTest do
 
   test "a run that is not a follow-up publishes nothing" do
     assert :ok = RunExecutor.__publish_followup_for_test__(%{run_id: "r", task: %{}})
-    assert :ok = RunExecutor.__publish_followup_for_test__(%{run_id: "r", task: %{followup: %{push: false, attach_branch: "x"}}})
+
+    assert :ok =
+             RunExecutor.__publish_followup_for_test__(%{
+               run_id: "r",
+               task: %{followup: %{push: false, attach_branch: "x"}}
+             })
   end
 end

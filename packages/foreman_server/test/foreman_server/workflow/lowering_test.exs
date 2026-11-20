@@ -4,8 +4,8 @@ defmodule ForemanServer.Workflow.LoweringTest do
   # these assert its structural output against every bundled manifest.
   use ExUnit.Case, async: true
 
-  alias ForemanServer.Jobsite.{Agent, Error, Program, Step}
-  alias ForemanServer.Jobsite.Runners.Overwatch
+  alias ForemanServer.Exec.{Agent, Error, Program, Step}
+  alias ForemanServer.Exec.Runners.Overwatch
   alias ForemanServer.Workflow.{Interpreter, Lowering, PhaseSpec}
 
   @manifests_dir Path.join([:code.priv_dir(:foreman_server), "defaults", "workflows"])
@@ -214,7 +214,7 @@ defmodule ForemanServer.Workflow.LoweringTest do
 
   describe "sandbox" do
     @phases [%{"name" => "build", "prompt" => "x"}, %{"name" => "check", "prompt" => "y"}]
-    @sandbox %{provider: ForemanServer.Jobsite.Sandboxes.Docker, config: %{}}
+    @sandbox %{provider: ForemanServer.Exec.Sandboxes.Docker, config: %{}}
 
     test "no :sandbox ctx emits no sandbox or release step" do
       steps = lower!(@phases)

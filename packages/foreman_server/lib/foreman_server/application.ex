@@ -760,12 +760,12 @@ defmodule ForemanServer.Application do
   # Gated on :start_jobsite_boot_recovery? config so the test suite can opt out
   # of the boot-time scan (it would otherwise pause jobsites that other tests
   # seed in non-terminal states in the shared event store). Its own tests call
-  # `Jobsite.BootRecovery.scan/1` directly. Listed after CommandRouter,
+  # `Exec.BootRecovery.scan/1` directly. Listed after CommandRouter,
   # ProjectionStore, Jobsite.Registry and Jobsite.Supervisor, which the scan
   # reads and dispatches through.
   def maybe_jobsite_boot_recovery_child do
     if Application.get_env(:foreman_server, :start_jobsite_boot_recovery?, true) do
-      [ForemanServer.Jobsite.BootRecovery]
+      [ForemanServer.Exec.BootRecovery]
     else
       []
     end

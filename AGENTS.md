@@ -39,7 +39,7 @@ Make the compiler catch it; if it can't, fail loudly. Never degrade to a plausib
 
 ## Invariants (do not relax)
 
-- **Phase execution runs on the execution engine** (`Workflow.Lowering` → `Jobsite.Engine`; the module name is historical, the jobsite dispatch door is retired). Do not reintroduce a second phase loop in `RunExecutor`.
+- **Phase execution runs on the execution engine** (`Workflow.Lowering` → `Exec.Engine`; the module name is historical, the jobsite dispatch door is retired). Do not reintroduce a second phase loop in `RunExecutor`.
 - **Workflow vocabulary is closed.** Phase fields: `PhaseSpec.@fields` + `commit`, `stack_pr`, `timeout_minutes`, `approval_mode`; plus the workflow `worktree:` block. Never author `builtin`, `checkpointPr`, `create-pr`, `pr-wait` or `merge` phases; don't dispatch stale workflows from `~/.foreman/workflows/` (supported set: `packages/foreman_server/priv/defaults/workflows/`).
 - **Refuse what cannot be honoured; warn where the consequence is merely invisible.** No load-time veto on a manifest a retained worktree makes satisfiable.
 - **The PR base is the branch the run was cut from; there is no default.** Undeterminable base → typed error and no PR, never a guess to `main`.

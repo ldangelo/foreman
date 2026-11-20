@@ -3,7 +3,7 @@ defmodule ForemanServer.Workflow.RunExecutorSandboxTest do
   # which runs refuse it. Pure over the executor state; no docker is started.
   use ExUnit.Case, async: true
 
-  alias ForemanServer.Jobsite.Sandboxes.Docker
+  alias ForemanServer.Exec.Sandboxes.Docker
   alias ForemanServer.Workflow.RunExecutor
 
   defp state(overrides), do: Map.merge(%{run_id: "run-sbx-1", task: %{}}, overrides)

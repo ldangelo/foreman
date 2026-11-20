@@ -158,3 +158,26 @@ Resolved: (1) drop `merge_into` and the iteration loop; (2) fixes queue behind g
 - Pre-existing test failures on the base branch (not caused by this work): 3 tests on the bundled `fix.yaml` (`prompt_inbox_progress_test`, `catalog_test` fix workflow, `full_workflow_lifecycle_test`), from commit `dd0c239b`.
 - **PR2 scope (corrects §2/§5)**: the `executor_lost` parity rule is unnecessary for runs. A jobsite's resume prompt ("Continue.") only makes sense with its session, but a run phase's prompt is complete, so a crash-resumed run restarts the interrupted phase fresh, as it always did; the PrFix prompt is likewise complete (`resumed_session: false` already means "the prompt carries the context"). PR2 therefore adds the explicit mechanism PR3/PR4 need: `RunExecutor` start option `resume_session: {provider, id}` makes the run's first phase a plain in-place harness resume (validated by `ForkSession.validate/2`, provider must match the phase, never a blank agent, mutually exclusive with a fork). It adds no event key (rollback-neutral). **Deferred, not built**: resuming the interrupted phase's own session on an ordinary pause/steer resume; it needs a phase-to-session attribution (the projection can derive it from the in-progress phase at `WorkerSessionBound`) and a decision on prompt duplication, and nothing in the retirement depends on it.
 - **PR3 as built (corrects §3)**: the request is its own stream, `run_followup:<run_id>` (`Aggregates.RunFollowUp`), not an event on the run's stream: the run stream must not exist before `run.start` (`require_absent`). The Dispatcher reads the request back from the projection by run id (`ProjectionStore.followup_request/1`), builds a task-less payload and task map (`Workflow.FollowUp`: one `fix` phase, `provider_tracked: false`, no `task.execution_*` dispatch because there is no `task:` stream) and admits it through `RunAdmission.start/2`; a slot promotion and a boot replay find it by run id too, and a terminal run is never restarted. The worktree is `Workflow.AttachBranch`: fetch, create or fast-forward the local branch to the remote tip (never discarding a commit; refuses a branch holding unpushed commits, a dirty holder and the main worktree), reuse the linked worktree already holding the branch (so a cwd-keyed provider session can resume) or create one at the original path. `Worktree.create(reuse_existing: true)` records a reused worktree without touching git. The run publishes with a plain `git push` of the attached branch (the remote refuses a non-fast-forward) and opens no PR. **Limits to close in PR4/5**: a non-primary-repo PR is supported only for a registered `repo_path`; a follow-up refused by admission (cap, pause) is not re-admitted automatically on resume or a raised limit (only slot promotion and boot replay re-admit); the request prompt is stored in the event (already redacted by `PrFix`), so redaction must happen before `run.followup.request`.
+
+## 10. Outcome (Phase 2 as shipped)
+
+Branch stack (local, not pushed): `remove-jobsite` (PR0 characterization) -> `retire-jobsites/pr1-run-sandbox` -> `pr2-session-resume` ->
+`pr3-followup-run` -> `pr4-prfix-on-runs` -> `pr5-threads` -> `pr6-cutover` -> `pr7-delete-door` -> `pr8-docs` -> `pr9-rename-exec`.
+
+Deviations from the plan above, all deliberate:
+
+- **No aggregate-level `jobsite.start` rejection** (PR6 text): with the door deleted nothing produces jobsite commands and none is on an
+  operator allowlist, so the rejection became dead code that would only have broken the legacy aggregate tests. The boot closer
+  (`Exec.BootRecovery`) fails every open jobsite with `jobsite_retired`.
+- **PR6 and PR7 were effectively one cutover**: PrWatcher always starts a follow-up run (the `followup_runs` gate is now a kill switch, default on).
+- **The bundled skills directory is empty** (`.gitkeep`): the only skill was the jobsite one.
+- **Dropped coverage**: the door-driven unit tests (`Jobsite.run` based: project context, environment, secret redaction, session archive, network
+  argv, cancel reaping) were deleted with the door; their subject on the run path is covered by the run executor's own suites.
+- **Live e2e scripts** that drove `/api/jobsites` (`network_policy_flow.sh`, `project_archive_flow.sh`, the `jobsite-resume` failure scenario,
+  the multi-repo jobsite stage) are retired with a banner or removed; `github_extras.sh`'s PR-fix assertions still read jobsite events and need a
+  live rewrite.
+
+**Not verified (needs a real environment before relying on it):** a follow-up run executing a real agent end to end (admission, attach, agent,
+commit, push, completion) and the live PR-fix acceptance (`docs/acceptance/live-claude-prfix-resume.md`) on runs; a sandboxed run against real Docker
+with network policy; the 3 pre-existing `fix.yaml` test failures (commit dd0c239b) are unrelated and still fail.
+

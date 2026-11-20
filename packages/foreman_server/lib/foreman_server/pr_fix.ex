@@ -38,7 +38,7 @@ defmodule ForemanServer.PrFix do
 
   alias ForemanServer.Coordinator.Redact
   alias ForemanServer.GitHub.PrStatus
-  alias ForemanServer.Jobsite.{Error, Git}
+  alias ForemanServer.Exec.{Error, Git}
   alias ForemanServer.PrFix.Prompt
   alias ForemanServer.ProjectionStore
 
@@ -423,5 +423,4 @@ defmodule ForemanServer.PrFix do
 
   defp put_if(map, _key, nil), do: map
   defp put_if(map, key, value), do: Map.put(map, key, value)
-
 end

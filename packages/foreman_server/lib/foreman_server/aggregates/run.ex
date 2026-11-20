@@ -1382,12 +1382,12 @@ defmodule ForemanServer.Aggregates.Run do
   defp steer_resume_flag(_flag), do: {:error, {:missing_or_invalid, :resume}}
 
   # E8 resume-with-override: the one-phase `approval_mode` an approved tool call
-  # needs. Only names `Jobsite.Agent` knows are accepted, so the executor's total
+  # needs. Only names `Exec.Agent` knows are accepted, so the executor's total
   # match on the resumed phase can never see an unknown mode.
   defp steer_override(nil), do: {:ok, nil}
 
   defp steer_override(name) when is_binary(name) do
-    case ForemanServer.Jobsite.Agent.parse_approval_mode(name) do
+    case ForemanServer.Exec.Agent.parse_approval_mode(name) do
       {:ok, _mode} -> {:ok, name}
       :error -> {:error, {:invalid_approval_mode_override, name}}
     end

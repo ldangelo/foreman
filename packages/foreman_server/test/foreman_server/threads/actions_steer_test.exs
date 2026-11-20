@@ -9,7 +9,6 @@ defmodule ForemanServer.Threads.ActionsSteerTest do
   alias ForemanServer.ProjectionStore
   alias ForemanServer.Threads.Actions
 
-
   setup do
     :ok = ProjectionStore.subscribe(replay_existing: false)
     slot_init = "thread-steer-slot-#{System.unique_integer([:positive])}"

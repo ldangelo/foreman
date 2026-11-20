@@ -7,14 +7,14 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
     1. Claim the task through the configured task provider when the project
        has `task_provider` config.
-    2. Compile the manifest's phases into one `ForemanServer.Jobsite.Program`
+    2. Compile the manifest's phases into one `ForemanServer.Exec.Program`
        (`ForemanServer.Workflow.Lowering`) and run it on
-       `ForemanServer.Jobsite.Engine`, the same engine Jobsite scripts use.
+       `ForemanServer.Exec.Engine`, the same engine Jobsite scripts use.
        `ForemanServer.Workflow.JobsiteObserver` threads this executor's own
        state through the engine and calls the phase hooks below —
        `phase_begin/3` (`PhaseStarted` + the run's worktree),
        `phase_launch/4` (the agent dispatch the
-       `ForemanServer.Jobsite.Runners.Overwatch` runner performs),
+       `ForemanServer.Exec.Runners.Overwatch` runner performs),
        `ArtifactTemplate.write/4`, `enforce_required_file/4`, the commit and
        `phase_finish/5` (`PhaseCompleted`) — or `emit_phase_failure/4`
        (`PhaseFailed` + `TaskExecutionFailed`) when a phase fails.
@@ -55,11 +55,11 @@ defmodule ForemanServer.Workflow.RunExecutor do
   alias ForemanServer.Workflow.PlanContext
   alias ForemanServer.Workflow.PreflightFailure
   alias ForemanServer.Workflow.ModelResolution
-  alias ForemanServer.Jobsite.Context, as: JobsiteContext
-  alias ForemanServer.Jobsite.Engine, as: JobsiteEngine
-  alias ForemanServer.Jobsite.Git, as: JobsiteGit
-  alias ForemanServer.Jobsite.Error, as: JobsiteError
-  alias ForemanServer.Jobsite.Runners.Overwatch, as: OverwatchRunner
+  alias ForemanServer.Exec.Context, as: JobsiteContext
+  alias ForemanServer.Exec.Engine, as: JobsiteEngine
+  alias ForemanServer.Exec.Git, as: JobsiteGit
+  alias ForemanServer.Exec.Error, as: JobsiteError
+  alias ForemanServer.Exec.Runners.Overwatch, as: OverwatchRunner
   alias ForemanServer.Workflow.JobsiteObserver
   alias ForemanServer.Workflow.Lowering
   alias ForemanServer.AgentRuntime.JidoHarness.FailureCause
@@ -503,7 +503,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   end
 
   # Runs every phase from `state.resume_from` to the end as ONE engine
-  # program: `Workflow.Lowering` compiles the manifest, `Jobsite.Engine`
+  # program: `Workflow.Lowering` compiles the manifest, `Exec.Engine`
   # executes it, and `Workflow.JobsiteObserver` carries this executor's run
   # state through it and performs every Foreman-specific step.
   #
@@ -586,7 +586,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
     do: {:error, {:sandbox_unsupported, :multi_repo}}
 
   defp run_sandbox(%{sandbox: "docker"} = state) do
-    {provider, config} = ForemanServer.Jobsite.Sandboxes.docker()
+    {provider, config} = ForemanServer.Exec.Sandboxes.docker()
 
     with {:ok, config, network_cleanup} <- apply_run_network_policy(state, provider, config) do
       {:ok, %{provider: provider, config: config}, network_cleanup}
@@ -598,7 +598,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   defp apply_run_network_policy(state, provider, config) do
     with id when is_binary(id) and id != "" <- project_id(state),
          %{"network" => policy} <- ForemanServer.ProjectEnvironment.environment(id) do
-      case ForemanServer.Jobsite.NetworkPolicy.apply(policy, provider, config, state.run_id) do
+      case ForemanServer.Exec.NetworkPolicy.apply(policy, provider, config, state.run_id) do
         {:ok, config, cleanup} -> {:ok, config, cleanup}
         {:error, %JobsiteError{code: code}} -> {:error, {:network_policy, code}}
       end
@@ -1090,7 +1090,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   defp dispatch_run_base_branch(_run_id, {:error, _reason}), do: :ok
 
-  # `Jobsite.Git.current_branch/1` is `git symbolic-ref --quiet --short HEAD`,
+  # `Exec.Git.current_branch/1` is `git symbolic-ref --quiet --short HEAD`,
   # which names the checked-out branch and exits non-zero on a detached HEAD.
   # `rev-parse --abbrev-ref HEAD` would instead print the literal `HEAD`
   # there, which `gh pr create --base` accepts as a ref name — a wrong PR
@@ -1405,7 +1405,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   end
 
   # Everything `dispatch_agent` used to compute before it launched a worker, as
-  # the `launch` map `Jobsite.Runners.Overwatch` dispatches from (its moduledoc
+  # the `launch` map `Exec.Runners.Overwatch` dispatches from (its moduledoc
   # lists the keys). It stays here because every value derives from run state:
   # the request and rendered prompt, the 13-variable env, the FailurePolicy
   # deadline, and the heartbeat lease's identity.
@@ -1717,7 +1717,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
         driver_opts
 
       name ->
-        {:ok, mode} = ForemanServer.Jobsite.Agent.parse_approval_mode(name)
+        {:ok, mode} = ForemanServer.Exec.Agent.parse_approval_mode(name)
         Keyword.put(driver_opts, :approval_mode, mode)
     end
   end
@@ -2056,26 +2056,25 @@ defmodule ForemanServer.Workflow.RunExecutor do
          :ok <- publish_followup(state) do
       Logger.info("RunExecutor #{state.run_id} finalize_run: attempting auto-pr")
 
-        # After AutoPR, never before: the worktree is the checkout AutoPR pushes
-        # from. Reclaiming it earlier is what the old per-phase `after` clause
-        # did, and it deleted the work before anything could propose it.
-        _ = finalize_repo_prs_and_cleanup(state)
+      # After AutoPR, never before: the worktree is the checkout AutoPR pushes
+      # from. Reclaiming it earlier is what the old per-phase `after` clause
+      # did, and it deleted the work before anything could propose it.
+      _ = finalize_repo_prs_and_cleanup(state)
 
-        Logger.info("RunExecutor #{state.run_id} finalize_run: dispatch_run_complete")
+      Logger.info("RunExecutor #{state.run_id} finalize_run: dispatch_run_complete")
 
-        case dispatch_run_complete(state) do
-          {:ok, _} ->
-            Logger.info("RunExecutor #{state.run_id} finalize_run: dispatched run.complete")
-            {:ok, %{state | status: :completed}}
+      case dispatch_run_complete(state) do
+        {:ok, _} ->
+          Logger.info("RunExecutor #{state.run_id} finalize_run: dispatched run.complete")
+          {:ok, %{state | status: :completed}}
 
-          {:error, reason} = err ->
-            Logger.error(
-              "RunExecutor #{state.run_id} finalize_run: dispatch_run_complete returned: #{inspect(reason)}"
-            )
+        {:error, reason} = err ->
+          Logger.error(
+            "RunExecutor #{state.run_id} finalize_run: dispatch_run_complete returned: #{inspect(reason)}"
+          )
 
-            err
-        end
-
+          err
+      end
     else
       {:error, reason} = err ->
         Logger.error(
@@ -2093,7 +2092,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
     with branch when is_binary(branch) <- followup_attach_branch(state),
          %{push: true} <- Map.get(state.task, :followup),
          %{worktree_path: path, branch: ^branch} <- Map.get(state, :run_worktree) do
-      case ForemanServer.Jobsite.Git.push(path, "origin", branch) do
+      case ForemanServer.Exec.Git.push(path, "origin", branch) do
         :ok -> :ok
         {:error, error} -> {:error, {:followup_push_failed, branch, error.message}}
       end
@@ -4094,7 +4093,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
     )
   end
 
-  # Delegates to `Jobsite.Git.commit_all/3`, the one implementation of
+  # Delegates to `Exec.Git.commit_all/3`, the one implementation of
   # status → add → commit shared with the engine's `:commit` step. Its typed
   # error names the failing git step (`:stage`), which this maps back onto
   # the `{:phase_commit_status_failed | :phase_commit_failed, path, reason}`

@@ -515,7 +515,7 @@ defmodule ForemanServer.Workflow.Interpreter do
   # unattended run cannot write files and reports itself blocked. The allowed
   # values are exactly `Jido.Harness.Run.Request`'s normalized set, and
   # `RunExecutor.maybe_put_approval_mode/2` is the one place that maps them to atoms.
-  @approval_modes ForemanServer.Jobsite.Agent.approval_mode_names()
+  @approval_modes ForemanServer.Exec.Agent.approval_mode_names()
 
   defp validate_phase_approval_modes!(workflow, path) do
     workflow

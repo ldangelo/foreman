@@ -9,7 +9,7 @@ defmodule ForemanServer.Review.Capture do
 
   require Logger
 
-  alias ForemanServer.Jobsite.Git
+  alias ForemanServer.Exec.Git
   alias ForemanServer.ProjectionStore
   alias ForemanServer.Review.Archive
   alias ForemanServer.Review.Error

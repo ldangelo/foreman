@@ -50,8 +50,8 @@ defmodule ForemanServer.Workflow.Worktree do
 
   alias ForemanServer.{CommandGateway, ProjectionStore, VcsAdapter}
   alias ForemanServer.VcsAdapter.Default, as: DefaultAdapter
-  alias ForemanServer.Jobsite.Error, as: JobsiteError
-  alias ForemanServer.Jobsite.Git, as: JobsiteGit
+  alias ForemanServer.Exec.Error, as: JobsiteError
+  alias ForemanServer.Exec.Git, as: JobsiteGit
 
   @doc """
   Deterministic correlation id of a run's worktree for one repository.

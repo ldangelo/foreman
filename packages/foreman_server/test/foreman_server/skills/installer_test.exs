@@ -110,9 +110,7 @@ defmodule ForemanServer.Skills.InstallerTest do
 
     # The returned paths alone are not proof: a bug that reports paths without
     # writing them would still satisfy the assertions above.
-    assert File.regular?(
-             Path.join([home_dir, ".foreman", "skills", "fixture-skill", "SKILL.md"])
-           )
+    assert File.regular?(Path.join([home_dir, ".foreman", "skills", "fixture-skill", "SKILL.md"]))
   end
 
   test "maybe_install/1 does not overwrite an existing skill" do
@@ -280,7 +278,9 @@ defmodule ForemanServer.Skills.InstallerTest do
   test "Catalog boot hook reports a successful skills install" do
     skills_dir = make_temp_dir!("skills-catalog-hook-target")
 
-    assert %{installed: installed, errors: 0} = boot_catalog(skills_source_dir: fixture_source!(), skills_target_dir: skills_dir)
+    assert %{installed: installed, errors: 0} =
+             boot_catalog(skills_source_dir: fixture_source!(), skills_target_dir: skills_dir)
+
     assert installed > 0
     assert File.regular?(Path.join([skills_dir, "fixture-skill", "SKILL.md"]))
 
@@ -299,7 +299,9 @@ defmodule ForemanServer.Skills.InstallerTest do
 
     log =
       ExUnit.CaptureLog.capture_log(fn ->
-        assert %{installed: 0, errors: errors} = boot_catalog(skills_source_dir: fixture_source!(), skills_target_dir: blocked)
+        assert %{installed: 0, errors: errors} =
+                 boot_catalog(skills_source_dir: fixture_source!(), skills_target_dir: blocked)
+
         assert errors > 0
       end)
 
@@ -319,12 +321,12 @@ defmodule ForemanServer.Skills.InstallerTest do
   test "Catalog boot hook defaults the skills target to the user home" do
     home_dir = make_temp_dir!("skills-catalog-hook-default-home")
 
-    assert %{installed: installed, errors: 0} = boot_catalog(skills_source_dir: fixture_source!(), skills_home_dir: home_dir)
+    assert %{installed: installed, errors: 0} =
+             boot_catalog(skills_source_dir: fixture_source!(), skills_home_dir: home_dir)
+
     assert installed > 0
 
-    assert File.regular?(
-             Path.join([home_dir, ".foreman", "skills", "fixture-skill", "SKILL.md"])
-           )
+    assert File.regular?(Path.join([home_dir, ".foreman", "skills", "fixture-skill", "SKILL.md"]))
   end
 
   # `Installer.maybe_install/1` no longer calls `File.ls/1` on the destination at all — it asks

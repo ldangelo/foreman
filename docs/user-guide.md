@@ -276,7 +276,7 @@ branch protection (verified live 2026-10-26: the repository is public for about 
 waits out, `E2E_GH_LOCK_SECS`, default 240; the scan's identity allowlist ran live, while its later rules, binary-blob rejection, fetching tags and every other ref class, annotated tag messages and taggers, and refs that are not commits, have only a local mutation proof, `scripts/e2e/claude_projects/github_scan_proof.sh`, and were not part of a live scan). The fixture carries `.coderabbit.yaml` and bead titles start with `e2e-skip` so an account-wide CodeRabbit stays silent.
 Stage `claude_fix_ci` is the one stage that runs a REAL claude (haiku, workflow `claudeedit`, bead type `claude-e2e`, through a private
 `HOME` that keeps only the operator's login): a failing check on the run's real PR, the Fix CI button, and then the fix thread must resume
-THAT run's claude session (`PrFixStarted.resumed_session`, `JobsiteIterationStarted.resumed_session_id`, claude's own transcript grows,
+THAT run's claude session (`PrFixStarted.resumed_session`, the follow-up run's `resume_session`, claude's own transcript grows,
 the head moves and CI turns green); without a logged-in claude it is `UNVERIFIED`.
 In a multi-repository run only a fix for the primary repository's PR resumes the run's agent session (it is bound to the primary's working directory); a fix for another repository's PR starts a fresh agent with the context in its prompt.
 Evidence: `docs/acceptance/live-github-protection-ui-autofix.md`, `docs/acceptance/live-github-branch-protection.md`, `docs/acceptance/live-claude-prfix-resume.md`.
@@ -541,8 +541,7 @@ through. Values of secret-named keys
 (names containing `API_KEY`, `TOKEN`, `PASSWORD`, `SECRET`, `CREDENTIAL`, ... as
 underscore-delimited words) are redacted from
 worker logs, but `config.env` itself is still stored in project event payloads;
-a real secret store is a separate, later feature. Jobsite `agent.env` is a
-different mechanism (an operator-allowlisted per-request map) and is unchanged.
+a real secret store is a separate, later feature.
 
 **Context window for gateway models.** The claude CLI assumes a 200k window for a model name it does not recognise (e.g. a LiteLLM alias such as `Minimax-M3`) and may compact or refuse near 200k. Declare the real window in the project environment, e.g. `CLAUDE_CODE_MAX_CONTEXT_TOKENS=512000` (the LiteLLM entry's `max_input_tokens`). Foreman never infers it from the model name. The agent images pin the CLI via the `CLAUDE_CODE_VERSION` build arg (>= 2.1.308). Measured 2026-10-31 against a stand-in gateway with no provider (`docs/acceptance/context-window-probe.md`): CLI 2.1.308 auto-compacts at about 176k claimed tokens for such a name and at about 488k with the variable set to 512000. Verified live 2026-11-01 (`docs/acceptance/context-window-live-run.md`, foreman-gppjx): a real claude 2.1.309 run through a LiteLLM proxy for `Minimax-M3`, with the variable in the project environment and the key as a project secret, made 16 requests up to 252,542 tokens, 5 of them above 200k, with no compaction, and the CLI's own record named a 512000 window (200000 without the variable). Not verified: a docker jobsite, and a per-model window declared once in configuration (not built: the project environment is the only channel).
 
@@ -613,9 +612,8 @@ FOREMAN_API_TOKEN, not printed)`); the token is never printed.
 **rejected** while the project has active runs; pass `--force` to print the
 blocking run IDs. Archived projects are hidden from the default list, refuse new
 work, stay readable by id and with `--include-archived`, and come back with
-`foreman project reactivate <id>`. A running jobsite does not block the archive:
-it keeps running and completes inside the archived project, and new jobsites are
-refused (`spec_project_unavailable`) until `reactivate`. The event history, runs, tasks and any
+`foreman project reactivate <id>`. In-flight runs (a PR fix included) are not stopped by the archive: they keep running and complete inside the archived project;
+new work is refused until `reactivate`. The event history, runs, tasks and any
 `.foreman/` artifacts are kept (see `docs/decisions/project-delete.md`); there is
 no operator command that hard-deletes a project.
 
@@ -711,21 +709,17 @@ setting. Validation is done once, by the server, and its error is shown verbatim
 through `project update`: use `pause` / `resume` / `reactivate`. Unknown config keys
 are rejected (`{:unknown_setting, key}`).
 
-**Model and effort precedence.** An explicit phase `models.default` or jobsite
-`agent.model` / `agent.effort` wins over the project's `thread_model` /
+**Model and effort precedence.** An explicit phase `models.default` wins over the project's `thread_model` /
 `thread_effort`, which win over the provider default. The project value is read
 once when a run's executor starts (a resumed run reads the project's current
 value). `thread_effort` is delivered as `reasoning_effort` only to providers whose
-adapter declares it (logged and ignored otherwise, never an error); a jobsite
-spec with only `agent.provider` records the project's model/effort in
-`JobsiteStarted`.
+adapter declares it (logged and ignored otherwise, never an error).
 
 **Limits.** `max_concurrent_runs` is enforced inside the project aggregate at run
 reservation, and is further capped by the global run-slot capacity (a project value
-above the global one cannot raise it). The daily thread cap counts a workflow run at
-reservation and a jobsite at start; the (N+1)th thread of the UTC day is refused
-(`{:daily_thread_cap_exceeded, N, day}`; HTTP `429 thread_cap_reached` for a
-jobsite). Refused admissions are not terminal: the task stays approved and is
+above the global one cannot raise it). The daily thread cap counts a workflow run (a PR-fix follow-up run included) at
+reservation; the (N+1)th thread of the UTC day is refused
+(`{:daily_thread_cap_exceeded, N, day}`). Refused admissions are not terminal: the task stays approved and is
 retried when the project resumes or its settings change. `project settings` (and
 `GET /api/projects/<id>/settings`) shows the effective limits, usage today,
 `resets_at` and the count of deferred tasks.
@@ -879,9 +873,9 @@ foreman project network set --mode allowlist --allow pypi.org project-123
 |---|---|
 | Variables | names `^[A-Za-z][A-Za-z0-9_]*$`, values <= 8 KiB, <= 100 vars. `FOREMAN_*` is reserved: `project.environment.set` rejects it (`reserved_env_name`), and a project whose stored legacy `config.env`/`config.environment` already holds one fails every workflow phase and jobsite launch LOUDLY (`reserved_project_env_keys`, naming the keys) until the operator removes it. Secret-looking names (`*_TOKEN`, `*_PASSWORD`, `*_API_KEY`, ...) are rejected with `secret_in_vars`: use a secret. |
 | Secrets | Names `^[A-Z][A-Z0-9_]{0,63}$`, values <= 16 KiB. The value goes straight into the server's secret store (default: 0600 files under `~/.foreman/secrets`, dir 0700, outside any repo; `config :foreman_server, :secret_store, dir:`). **Events, projections, logs, API responses and MCP results carry only the name and a version, never the value.** The CLI reads the value from stdin or `--from-env`, never from a flag. Secrets are delivered to agents as environment variables and redacted from run logs, jobsite output and session archives (transcript, `diff.patch`, `changed-files.txt`, `request.md`, analysis files): only values present in the server environment are recognised, so a value an agent reads from a committed `.env` file or fetches at runtime is not caught (see [Session archive](#session-archive-and-automated-review)). A secret wins over a variable of the same name. If the store is unavailable at launch the run proceeds without stored secrets (warning logged). The same list (`ProjectEnvironment.secrets/1`: every secret-store value, whatever its name, plus the values of secret-named env variables) redacts project memory and the coordinator's conversation text by value, and so do the question text, tool-call input summaries, thread transcripts (at read time, so older events too), PR-fix prompts and the coordinator's recorded action parameters and turn-failure messages. A global/legacy run (no project) or a project whose environment cannot be resolved is redacted by the built-in name patterns only, with a warning in the server log (never a name or value). Values shorter than 8 characters are not matched by value unless their name looks secret. **Known limit:** where one secret is a substring of another the outcome depends on replacement order. **Known limit (observed live 2026-10-30, `foreman-mw5rz`, fixed by PR #775 and re-verified live 2026-10-31):** the server's debug request log (Phoenix `Parameters:` lines and LiveView `HANDLE EVENT` lines, in stdout, `~/.foreman/logs/foreman-server.log` and the SigNoz export) recorded the arguments of an MCP `tools/call` and the text of a chat request before redaction, so a stored value that an agent sent through an MCP tool (for example a memory write) or that an operator typed into a chat message was in the server log. `config :phoenix, :filter_parameters` now hides the free-text keys (`text`, `content`, `description`, `prompt`, `message`, `instructions`, `goal`, `body`), the MCP `params` envelope and `token` (the dashboard's `?token=`). Keys match by substring, so that layer alone would miss a free-text key added later; a `:logger` primary filter (`ForemanServer.Observability.SecretValueLogFilter`, `foreman-25sqf.1.1`) therefore also redacts every stored secret value of 8 or more characters from every log event, whatever key carries it (see the paragraph on the server's operational log under Observability). Re-verified live 2026-10-31 (`scripts/e2e/redaction_value_live.sh`, real pi agent and coordinator, two runs, before the value-based filter existed): the 22-character value had 0 hits in the server stdout log and the file log (11 occurrences before the fix). In the observed run the event store, a whole-database dump, project memory, the run archive and the webhook capture held no copy (`docs/acceptance/e2e-live-verify-2026-10-30.md`). **Accepted by policy (`foreman-4ohex`, owner decision 2026-10-31):** a stored secret the agent reads from its environment and uses is also in the agent's own event stream, which the jido_harness cache (`$HOME/Library/Caches/jido_harness/*`, `proc_*/` and `run_*/` directories) keeps on disk in plain text, outside the redacted event store, exactly like the agent's own session files (for example pi's `~/.pi` sessions); the byte-search in `scripts/e2e/redaction_value_live.sh` reports it as an INFO line, not a failure. Treat the host account that runs agents as trusted with every secret the project injects, and clear the cache directory if you rotate a secret. OS keychain backends were evaluated and rejected (docs/spikes/E4-SP1.md). |
-| Delivery | Both doors: workflow runs get the project env plus secrets (Foreman's own `FOREMAN_*` values cannot be overridden: no project key may use that namespace); jobsites get the same as a base that the spec's own allowlisted `agent.env` overrides. |
-| Setup script | Runs once, right after a fresh run worktree (or jobsite worktree) is created and before any agent starts, as `sh -c` in the worktree with the project env and secrets plus `FOREMAN_WORKTREE_PATH`, `FOREMAN_RUN_ID`, `FOREMAN_PROJECT_ID`. Non-zero exit or exceeding `config :foreman_server, :project_setup, timeout_ms:` (default 300000; the process group is killed) fails the phase / jobsite (`setup_script_failed`, `setup_script_timeout`; jobsites: `hook_failed`). Output is bounded (64 KiB tail), redacted and written to `<artifact dir>/<run_id>/setup.log` (workflow door). It is not re-run for later phases that reuse the worktree. Remote jobsite specs still cannot supply `hooks.host.*`; the script only comes from this record. |
-| Network policy | `default` (unchanged), `none` (`docker run --network none`; the agent cannot reach its provider API, so this fits offline tasks) or `allowlist` (an internal docker network plus an egress proxy sidecar permitting your `--allow` hosts and the always-allowed provider/VCS hosts; spike docs/spikes/E4-SP2.md). **Enforced on docker jobsites only**: the host sandbox with a non-default policy fails with `network_policy_unsupported`, a spec `sandbox.config.network` wider than the policy fails with `network_policy_violation`, and workflow runs (agents on the server host) do not enforce it. Under `allowlist` the sandbox container's own environment carries the proxy variables (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` and their lowercase twins), so sandbox hooks (`hooks.sandbox.*`) and every `docker exec` reach an allowed host through the sidecar too, not only the agent. The policy's network, sidecar and sandbox container are removed when the jobsite ends; whatever a crashed server left is swept at the next boot. Everything a policy creates or governs (`none` included) is labelled `foreman.owner=<digest of this server's event store host, port and database>` and `foreman.jobsite=<id>`, and cleanup and the sweep touch only labelled objects of that owner: a similarly named container or network, or another Foreman server on the same docker host, is left alone. Objects an older Foreman created before it labelled them are not swept: remove a leftover `foreman-jobsite-*` network and its containers by hand once. |
+| Delivery | Workflow runs get the project env plus secrets (Foreman's own `FOREMAN_*` values cannot be overridden: no project key may use that namespace);  |
+| Setup script | Runs once, right after a fresh run worktree is created and before any agent starts, as `sh -c` in the worktree with the project env and secrets plus `FOREMAN_WORKTREE_PATH`, `FOREMAN_RUN_ID`, `FOREMAN_PROJECT_ID`. Non-zero exit or exceeding `config :foreman_server, :project_setup, timeout_ms:` (default 300000; the process group is killed) fails the phase (`setup_script_failed`, `setup_script_timeout`). Output is bounded (64 KiB tail), redacted and written to `<artifact dir>/<run_id>/setup.log` (workflow door). It is not re-run for later phases that reuse the worktree. The script only comes from this record. |
+| Network policy | `default` (unchanged), `none` (`docker run --network none`; the agent cannot reach its provider API, so this fits offline tasks) or `allowlist` (an internal docker network plus an egress proxy sidecar permitting your `--allow` hosts and the always-allowed provider/VCS hosts; spike docs/spikes/E4-SP2.md). **Enforced on docker runs only** (`sandbox: docker`, §11, and PR-fix follow-up runs): a docker run applies the policy and fails with the policy's typed error when it cannot; a workflow run without `sandbox: docker` (agents on the server host) cannot enforce it, the documented limitation. Under `allowlist` the sandbox container's own environment carries the proxy variables (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` and their lowercase twins), so sandbox hooks (`hooks.sandbox.*`) and every `docker exec` reach an allowed host through the sidecar too, not only the agent. The policy's network, sidecar and sandbox container are removed when the jobsite ends; whatever a crashed server left is swept at the next boot. Everything a policy creates or governs (`none` included) is labelled `foreman.owner=<digest of this server's event store host, port and database>` and `foreman.jobsite=<id>`, and cleanup and the sweep touch only labelled objects of that owner: a similarly named container or network, or another Foreman server on the same docker host, is left alone. Objects an older Foreman created before it labelled them are not swept: remove a leftover `foreman-jobsite-*` network and its containers by hand once. |
 
 `GET /api/projects/<id>/environment` returns the record (variable values only for
 the record form; a project still on legacy flat `config.env` shows `[redacted]`
@@ -905,7 +899,7 @@ foreman project reactivate project-123
 ```
 
 `pause` is reversible and **enforced**: while paused, `task.create`, run
-reservation, jobsite start (`spec_project_unavailable`) and BeadsWatcher imports
+reservation (a PR-fix follow-up run included) and BeadsWatcher imports
 are refused with `{:project_paused, project_id}`. In-flight runs and jobsites keep
 running (cancel them with `run.cancel`). Held beads are not skipped: the watcher
 holds their line and imports it after `resume`, and tasks refused at admission are
@@ -2714,11 +2708,9 @@ id is validated, so it cannot escape `diffs/`). The manifest (still
 first, with `pr_url` taken from the repository's PR association (`null` when it
 opened none). Single-repository archives have no `repositories` key and no
 `diffs/` directory. The automated reviewer is told to read every
-`diffs/*.patch` only when the manifest lists more than one repository. Jobsites
-stay single-repository: a `repositories` key in a jobsite spec is rejected with
-`spec_forbidden_key` (multi-repo jobsites unsupported).
+`diffs/*.patch` only when the manifest lists more than one repository. A follow-up (PR fix) run attaches to one repository's PR branch.
 
-A cancelled run or jobsite is archived and reviewed like any other, with
+A cancelled run (or legacy jobsite) is archived and reviewed like any other, with
 manifest `status: "cancelled"`. Cancelled work is never committed, so its
 `diff.patch` is the working-tree diff against the base: uncommitted changes to
 tracked files and new untracked files are included (gitignored files are not;
@@ -2747,14 +2739,12 @@ the diff against the request, not the branch outcome: whether the work was
 pushed, merged or opened as a PR is never counted as a gap. Verdicts are `met`,
 `partially_met`, `not_met`, or `undetermined` (the review itself failed; the
 `error_code` says why). When the work came from a bead (workflow runs whose
-task id is `beads:<project>:<bead>`, or a jobsite started with `bead_id`) the
+task id is `beads:<project>:<bead>`, or a legacy jobsite started with `bead_id`) the
 verdict is posted as a bead comment and each gap becomes a new bead labelled
 `foreman-exec` + `foreman-gap`, which Foreman then dispatches. A bead that
 an earlier recorded review filed as a gap bead gets the comment but spawns no
 further gap beads (depth cap of 1); the guards are the review event log and the
-bead's own `foreman-gap` label. The same rule applies at the remote jobsite
-door: `POST /api/jobsites` refuses a `bead_id` that is a gap bead
-(`422 spec_bead_ineligible`) or absent from the project. The bead step needs both `bead_id` and `project_id`: a
+bead's own `foreman-gap` label. The bead step needs both `bead_id` and `project_id`: a
 jobsite without a `project_id` is still reviewed and the review is recorded,
 only the bead step (comment and gap beads) is skipped. A cancelled run or
 jobsite gets the verdict comment but no gap beads: unfinished work the operator
@@ -2779,7 +2769,7 @@ Known limits: the Analyzer does not replay history on boot, so runs that finish
 while it is down are not reviewed. A second terminal event for a subject whose
 review is running or queued is ignored. With `:pi` the harness surfaced zero text
 events in a smoke test, and with `:claude` the authentication must be valid;
-verify the reviewer provider by running a jobsite end to end before relying on
+verify the reviewer provider by running a workflow run end to end before relying on
 verdicts.
 
 ### When a review is `undetermined`
@@ -2995,7 +2985,7 @@ Agents can need an operator decision. Both show up as `waiting_on_you` in the pr
 - **Timeouts.** Unanswered requests expire durably (`ToolCallExpired`, `QuestionExpired`) via `Approvals.Sweeper` (`:approvals` config: `tool_call_timeout_ms` default 30 min, `sweep_interval_ms`, `on_timeout: :surface | :deny`). Expired items show as `approval_expired` / `question_expired`. An in-flight request whose agent is gone does not wait for the sweeper: it expires at once with reason `run_ended`, `client_gone` or `server_restart`. There is no MCP tool to approve, deny or answer.
 - **Undelivered answers.** An answer that was recorded but can never reach the agent (an answer saved before the delivery length cap existed and over it) is marked `QuestionAnswerUndelivered` and shows in the Overview as `answer_undelivered` while the thread is paused. Steer the run with a shorter message (`foreman thread steer`) to clear it.
 
-**Approval scope.** An approval resumes the run with an `approval_mode_override` on the `run.steer` message (`auto_edit` for edit tools such as Write/Edit, `auto_approve` otherwise). The override applies to the next phase only (including command phases), but within that phase it is phase-wide: pi and claude have no per-tool grant, so approving one tool relaxes the approval mode for that whole phase. The post-hoc claude path was exercised live only for `approval_mode: prompt` (see the in-flight bullet above for the per-call path); the harness does declare `allowed_tools` for claude, which Foreman does not pass yet. Only the names `Jobsite.Agent` knows (`default`, `prompt`, `auto_edit`, `auto_approve`) are accepted as an override.
+**Approval scope.** An approval resumes the run with an `approval_mode_override` on the `run.steer` message (`auto_edit` for edit tools such as Write/Edit, `auto_approve` otherwise). The override applies to the next phase only (including command phases), but within that phase it is phase-wide: pi and claude have no per-tool grant, so approving one tool relaxes the approval mode for that whole phase. The post-hoc claude path was exercised live only for `approval_mode: prompt` (see the in-flight bullet above for the per-call path); the harness does declare `allowed_tools` for claude, which Foreman does not pass yet. Only the names `Exec.Agent` knows (`default`, `prompt`, `auto_edit`, `auto_approve`) are accepted as an override.
 
 **Why the post-hoc grant is phase-wide.** This is a decision, not an omission. Approving always decides ONE request, but on the post-hoc path (`approval_delivery: resume_with_override`) Foreman maps the approval to an approval MODE, so the next phase may use every tool that mode allows. A per-tool grant is not available there: the override is shared by every provider, Claude's `bypassPermissions` skips all permission checks so an `allowed_tools` list cannot narrow it (pinned in `test/foreman_server/approvals/capability_test.exs`), and a per-tool field would have to travel through `run.steer`, `RunSteerQueued`, the pending-steering projection, `RunExecutor` and the jobsite launch and be proven against a live Claude. The per-call control for Claude is the in-flight path (`approval_mode: prompt`), which answers the one blocked call. The override is the optional `approval_mode_override` field of the `run.steer` payload: only `Approvals.Deliverer` sets it, the Run aggregate refuses any name outside `default`, `prompt`, `auto_edit` and `auto_approve` with `{:invalid_approval_mode_override, name}`, it is stored on `RunSteerQueued`, and the next launch applies it and consumes the message.
 

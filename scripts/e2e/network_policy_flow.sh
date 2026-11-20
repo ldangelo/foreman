@@ -457,7 +457,7 @@ scenario_scope() {
   s_sandbox=$SANDBOX; s_id=$JOBSITE_ID
   s_before=$(leftovers "$s_id" "$s_sandbox" | sed 's/ ([^)]*)//' | tr '\n' ';')
   note "in flight: $s_before"
-  s_out=$(rpc 'ForemanServer.Jobsite.NetworkPolicy.sweep_orphans(owner: "another-server"); IO.puts("SWEPT")' | tail -n 1)
+  s_out=$(rpc 'ForemanServer.Exec.NetworkPolicy.sweep_orphans(owner: "another-server"); IO.puts("SWEPT")' | tail -n 1)
   assert_eq "scope: the sweep for another owner ran on the server" "$s_out" SWEPT
   assert_eq "scope: the in-flight jobsite's sidecar, network and sandbox are all still there" "$(leftovers "$s_id" "$s_sandbox" | sed 's/ ([^)]*)//' | tr '\n' ';')" "$s_before"
   assert_true "scope: the sandbox is still running its probe" docker exec "$s_sandbox" test -e /workspace/.probe-holding

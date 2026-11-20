@@ -265,6 +265,7 @@ defmodule ForemanServer.PrWatcher do
       starters = %{
         followup: state.followup_starter
       }
+
       plan_opts = state.plan_opts
 
       task =

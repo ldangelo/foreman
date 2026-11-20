@@ -121,7 +121,10 @@ defmodule ForemanServer.PrWatcherFollowUpTest do
     await_event("PrFixStarted", ctx.run_id)
     await_registered(fix_run_id)
 
-    Agent.update(github, fn _ -> %{ctx.status | head_sha: "sha-2", checks_state: :passing, checks: []} end)
+    Agent.update(github, fn _ ->
+      %{ctx.status | head_sha: "sha-2", checks_state: :passing, checks: []}
+    end)
+
     end_run!("RunCompleted", fix_run_id)
 
     finished = await_event("PrFixFinished", ctx.run_id)

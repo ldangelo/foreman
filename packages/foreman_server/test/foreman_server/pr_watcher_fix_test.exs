@@ -9,7 +9,7 @@ defmodule ForemanServer.PrWatcherFixTest do
   """
   use ExUnit.Case, async: false
 
-  alias ForemanServer.Jobsite.Error
+  alias ForemanServer.Exec.Error
   alias ForemanServer.{CommandGateway, PrWatcher, ProjectionStore}
   alias ForemanServer.PrWatcher.Observer
   alias ForemanServer.TestSupport.PrFixSupport, as: Fix
@@ -81,7 +81,12 @@ defmodule ForemanServer.PrWatcherFixTest do
     :ok =
       ProjectionStore.apply_events(
         started ++
-          [%{event_type: type, payload: Map.merge(%{run_id: run_id}, Map.drop(extra, [:code, :message]))}]
+          [
+            %{
+              event_type: type,
+              payload: Map.merge(%{run_id: run_id}, Map.drop(extra, [:code, :message]))
+            }
+          ]
       )
   end
 
@@ -249,7 +254,11 @@ defmodule ForemanServer.PrWatcherFixTest do
     end
 
     test "a start task that is killed finishes the fix as failed too", tc do
-      assert_start_crash_finishes_fix!(tc, fn _request -> Process.exit(self(), :kill) end, ":killed")
+      assert_start_crash_finishes_fix!(
+        tc,
+        fn _request -> Process.exit(self(), :kill) end,
+        ":killed"
+      )
     end
   end
 

@@ -427,9 +427,9 @@ must never enter an event, command payload, log, projection or API response:
 `project.secret.set` carrying name+version. `config.environment` (vars,
 `setup_script`, network) is written only by the operator command
 `project.environment.set`; `project.update`/`register` reject the key. The setup
-script (`ProjectSetup`, run via `Jobsite.HostCommand` in its own process group)
+script (`ProjectSetup`, run via `Exec.HostCommand` in its own process group)
 runs once after worktree creation; network policy
-(`Jobsite.NetworkPolicy`) is enforced on docker runs only (`sandbox: docker`, see "Retired jobsite door" below).
+(`Exec.NetworkPolicy`) is enforced on docker runs only (`sandbox: docker`, see "Retired jobsite door" below).
 
 **Project repositories (E12, design `docs/spikes/S3.md`).** A project's `path` is
 its PRIMARY repository; further repositories are the `ProjectRepositoryAdded` /
@@ -1047,11 +1047,17 @@ The separate "jobsite" dispatch path (`/api/jobsites`, `foreman jobsite`, `Jobsi
   runs in Docker by default (`config :pr_fix, sandbox:`), `host` needs `allow_host_sandbox`
   (`FOREMAN_PR_FIX_ALLOW_HOST_SANDBOX`, formerly `FOREMAN_JOBSITES_ALLOW_HOST_SANDBOX`).
 - **Kept for history**: the `jobsite:<id>` streams, `Events.Jobsite*`, `Aggregates.Jobsite` fold and projections
-  stay readable forever (no event is rewritten); `Jobsite.BootRecovery` fails every open jobsite at boot with code
+  stay readable forever (no event is rewritten); `Exec.BootRecovery` fails every open jobsite at boot with code
   `jobsite_retired` (worktrees and branches stay on disk). Threads of that door answer `:jobsite_retired` (HTTP 410).
-  The execution substrate (`Jobsite.Engine`, `Program`, `Runners.*`, `Sandboxes.*`, `Git`, `Worktree`,
+  The execution substrate (`Exec.Engine`, `Program`, `Runners.*`, `Sandboxes.*`, `Git`, `Worktree`,
   `NetworkPolicy`, `HostCommand`) is what workflow runs execute on and stays.
 - **Dropped on purpose**: remote spec API and templates, prompt-to-template, `merge_into`, the iteration loop
   (`completion_signal`), `foreman_client`, the jobsite skill, `FOREMAN_JOBSITES_*`.
 - **Not verified live**: a follow-up run executing a real agent and pushing, and the sandboxed-run paths against
   real Docker; the live PR-fix acceptance (`docs/acceptance/live-claude-prfix-resume.md`) must be re-run on runs.
+
+**Namespace note (PR 9).** The execution substrate formerly named `ForemanServer.Jobsite.*` is now
+`ForemanServer.Exec.*` (`Exec.Engine`, `Program`, `Step`, `Runners.*`, `Sandboxes.*`, `Git`, `Worktree`,
+`NetworkPolicy`, `HostCommand`, `BootRecovery`). Persisted strings (`agent.provider`, sandbox provider names such as
+`"docker"`) and telemetry event names were NOT renamed, and neither were the legacy `Events.Jobsite*` structs,
+`Aggregates.Jobsite` and the `jobsite:` streams: they are the history the retirement keeps.

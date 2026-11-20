@@ -104,7 +104,7 @@ defmodule ForemanServer.LibraryDeliveryTest do
       worktree = %{path: ctx.repo, repo_path: ctx.repo}
 
       assert {:ok, _state, _sandbox_path, _container} =
-               ForemanServer.Jobsite.Sandboxes.Docker.create(
+               ForemanServer.Exec.Sandboxes.Docker.create(
                  %{binary: fake, image: "img", mounts: mounts, uid: "1", gid: "1"},
                  worktree
                )

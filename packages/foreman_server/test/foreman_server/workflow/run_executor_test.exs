@@ -17,7 +17,7 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
   alias ForemanServer.TaskProvider.Issue
   alias ForemanServer.TaskProvider.Registry, as: TaskProviderRegistry
   alias ForemanServer.TaskProviders.{BeadsAdapter, BrRunnerMock, JsonSchemaCache, SystemBrRunner}
-  alias ForemanServer.Jobsite.Runners.Overwatch, as: OverwatchRunner
+  alias ForemanServer.Exec.Runners.Overwatch, as: OverwatchRunner
   alias ForemanServer.Workflow.RunExecutor
   alias ForemanServer.Workflow.{AssetCatalog, Catalog}
 

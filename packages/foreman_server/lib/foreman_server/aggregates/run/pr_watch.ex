@@ -462,10 +462,17 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
   # door was retired, a jobsite (`jobsite_id`). Exactly one.
   defp fix_execution(payload) do
     case {Aggregate.get(payload, :fix_run_id), Aggregate.get(payload, :jobsite_id)} do
-      {run_id, nil} when is_binary(run_id) and run_id != "" -> {:ok, %{fix_run_id: run_id}}
-      {nil, jobsite_id} when is_binary(jobsite_id) and jobsite_id != "" -> {:ok, %{jobsite_id: jobsite_id}}
-      {nil, nil} -> {:error, {:missing_or_invalid, :jobsite_id}}
-      _both_or_malformed -> {:error, {:missing_or_invalid, :fix_run_id}}
+      {run_id, nil} when is_binary(run_id) and run_id != "" ->
+        {:ok, %{fix_run_id: run_id}}
+
+      {nil, jobsite_id} when is_binary(jobsite_id) and jobsite_id != "" ->
+        {:ok, %{jobsite_id: jobsite_id}}
+
+      {nil, nil} ->
+        {:error, {:missing_or_invalid, :jobsite_id}}
+
+      _both_or_malformed ->
+        {:error, {:missing_or_invalid, :fix_run_id}}
     end
   end
 
@@ -591,7 +598,10 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
 
   defp fold(state, "PrFixStarted", url, payload) do
     fixes(state, url, fn fx ->
-      %{fx | in_flight: Aggregate.get(payload, :fix_run_id) || Aggregate.get(payload, :jobsite_id)}
+      %{
+        fx
+        | in_flight: Aggregate.get(payload, :fix_run_id) || Aggregate.get(payload, :jobsite_id)
+      }
     end)
   end
 

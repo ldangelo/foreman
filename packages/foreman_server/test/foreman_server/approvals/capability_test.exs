@@ -2,7 +2,7 @@ defmodule ForemanServer.Approvals.CapabilityTest do
   use ExUnit.Case, async: true
 
   alias ForemanServer.Approvals.Capability
-  alias ForemanServer.Jobsite.Agent
+  alias ForemanServer.Exec.Agent
   alias Jido.Harness.Adapters.Claude
   alias Jido.Harness.RunRequest
 

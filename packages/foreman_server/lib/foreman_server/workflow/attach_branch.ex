@@ -18,8 +18,8 @@ defmodule ForemanServer.Workflow.AttachBranch do
   Pure git; the executor does the recording. Never forces anything.
   """
 
-  alias ForemanServer.Jobsite.{Error, Git}
-  alias ForemanServer.Jobsite.Worktree, as: GitWorktree
+  alias ForemanServer.Exec.{Error, Git}
+  alias ForemanServer.Exec.Worktree, as: GitWorktree
 
   @type plan :: %{mode: :reuse | :create, path: String.t(), tip: String.t()}
 

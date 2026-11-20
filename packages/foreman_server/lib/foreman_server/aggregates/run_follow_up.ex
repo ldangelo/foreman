@@ -108,7 +108,10 @@ defmodule ForemanServer.Aggregates.RunFollowUp do
   defp require_new(%State{}, _run_id), do: :ok
 
   defp validate_kind(kind) when kind in @kinds, do: {:ok, kind}
-  defp validate_kind(kind) when is_binary(kind) and kind != "", do: {:error, {:invalid_kind, kind}}
+
+  defp validate_kind(kind) when is_binary(kind) and kind != "",
+    do: {:error, {:invalid_kind, kind}}
+
   defp validate_kind(_), do: {:error, {:missing_or_invalid, :kind}}
 
   defp optional(payload, key) do

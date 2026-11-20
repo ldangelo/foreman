@@ -1,9 +1,9 @@
 defmodule ForemanServer.Workflow.Lowering do
   @moduledoc """
   Compiles a parsed workflow manifest's phase list into a
-  `ForemanServer.Jobsite.Program` that `ForemanServer.Jobsite.Engine.run_program/3`
+  `ForemanServer.Exec.Program` that `ForemanServer.Exec.Engine.run_program/3`
   executes — the manifest front-end to the one engine
-  `ForemanServer.Jobsite.Executor` also uses for scripts.
+  `ForemanServer.Exec.Executor` also uses for scripts.
 
   `phase_specs` is the list `PhaseSpec.normalize_all/1` already produces: one
   plain map per phase, atom-keyed, absent keys omitted rather than `nil`
@@ -19,7 +19,7 @@ defmodule ForemanServer.Workflow.Lowering do
       set, a `:sandbox` step follows the program's `:worktree` step and a final
       `:release` step (`sandbox?: true, worktree?: false`) closes it, so every
       phase's agent runs through the sandbox's `cli_path` shim
-      (`Jobsite.Runners.Overwatch`). A sandbox needs a worktree to mount, so
+      (`Exec.Runners.Overwatch`). A sandbox needs a worktree to mount, so
       `sandbox` with `worktree_spec.enabled: false` is refused
 
   Each phase lowers to this step sequence:
@@ -30,7 +30,7 @@ defmodule ForemanServer.Workflow.Lowering do
        ImplementationContext base pinning and `.beads/` exclusion), which the
        observer performs and hands the engine as `provided`. Duplicating that
        computation here would be a second, unchecked copy of it.
-    2. `:agent` — `Jobsite.Runners.Overwatch`, one iteration, no completion
+    2. `:agent` — `Exec.Runners.Overwatch`, one iteration, no completion
        signal (the runner supports neither). Everything the dispatch needs —
        request, 13-variable env, deadline, heartbeat-lease identity — derives
        from run state and is built by the observer at the moment the step
@@ -63,8 +63,8 @@ defmodule ForemanServer.Workflow.Lowering do
   reports for it.
   """
 
-  alias ForemanServer.Jobsite.{Agent, Error, Program, Step}
-  alias ForemanServer.Jobsite.Runners.Overwatch
+  alias ForemanServer.Exec.{Agent, Error, Program, Step}
+  alias ForemanServer.Exec.Runners.Overwatch
   alias ForemanServer.Workflow.PhaseSpec
 
   @spec lower([map()], map()) :: {:ok, Program.t()} | {:error, Error.t()}

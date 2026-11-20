@@ -14,7 +14,7 @@ defmodule ForemanServer.Workflow.ImplementTrdBeadsManifestTest do
   import ExUnit.CaptureLog
 
   alias ForemanServer.CommandGateway
-  alias ForemanServer.Jobsite.Runners.Overwatch, as: OverwatchRunner
+  alias ForemanServer.Exec.Runners.Overwatch, as: OverwatchRunner
   alias ForemanServer.Workflow.{ImplementationContext, Interpreter, PhaseSpec, RunExecutor}
 
   @manifest_path Application.app_dir(
