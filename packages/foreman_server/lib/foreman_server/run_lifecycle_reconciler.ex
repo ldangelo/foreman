@@ -48,6 +48,8 @@ defmodule ForemanServer.RunLifecycleReconciler do
           ack_fun: (term(), [RecordedEvent.t()] -> :ok | term()),
           list_active_runs_fun: (-> [{String.t(), [String.t()]}]),
           project_loader_fun: (String.t() -> struct()),
+          list_projects_fun: (-> [map()]),
+          slot_state_loader_fun: (String.t() -> map()),
           run_loader_fun: (String.t() -> struct()),
           run_admission_fun: (String.t(), map(), pos_integer() ->
                                 {:ok, term()} | {:error, term()}),
@@ -93,6 +95,8 @@ defmodule ForemanServer.RunLifecycleReconciler do
         ),
       project_loader_fun: Keyword.get(opts, :project_loader_fun, &load_project_state/1),
       run_loader_fun: Keyword.get(opts, :run_loader_fun, &load_run_state/1),
+      list_projects_fun: Keyword.get(opts, :list_projects_fun, &ProjectionStore.list_projects/0),
+      slot_state_loader_fun: Keyword.get(opts, :slot_state_loader_fun, &load_run_slots_state/1),
       run_admission_fun: Keyword.get(opts, :run_admission_fun, &RunAdmission.start/3),
       dispatch_fun: Keyword.get(opts, :dispatch_fun, &CommandGateway.dispatch_system/2),
       telemetry_module: Keyword.get(opts, :telemetry_module, Telemetry),
@@ -167,7 +171,7 @@ defmodule ForemanServer.RunLifecycleReconciler do
         if valid_id?(project_id) do
           started_at_ms = System.monotonic_time(:millisecond)
           release_reservation(project_id, run_id, "terminal_event", state)
-          dispatch_slot_release(run_id, "terminal_event", state)
+          dispatch_slot_release(project_id, run_id, "terminal_event", state)
 
           state.telemetry_module.reconciler_terminal_release(
             elapsed_ms(started_at_ms),
@@ -329,33 +333,49 @@ defmodule ForemanServer.RunLifecycleReconciler do
 
   defp valid_id?(value), do: is_binary(value) and value != ""
 
-  # TRD-011: Backstop sweep — periodically release stale slot holders whose
-  # runs are terminal or absent. This is a safety net for cases where the
-  # terminal-event path in the Dispatcher did not fire (e.g. process crash
-  # before handle_run_terminated completed).
+  # TRD-011 / TRD-008: Backstop sweep. Periodically release stale slot holders whose
+  # runs are terminal or absent, on every project's own `run_slots:<project_id>`
+  # stream. This is a safety net for cases where the terminal-event path did not
+  # fire (e.g. process crash before handle_run_terminated completed). A run holds
+  # exactly one slot however many repositories it touches, so nothing here is
+  # repo-aware.
   defp run_slots_backstop_sweep(state) do
-    {run_slots_state, _version} = Aggregate.load(RunSlots, "run_slots:global")
+    state.list_projects_fun.()
+    |> Enum.map(&project_id_of/1)
+    |> Enum.filter(&valid_id?/1)
+    |> Enum.uniq()
+    |> Enum.each(&sweep_project_slots(&1, state))
 
-    holders = Map.get(run_slots_state, :holders, %{}) || %{}
+    :ok
+  end
+
+  defp sweep_project_slots(project_id, state) do
+    holders = Map.get(state.slot_state_loader_fun.(project_id), :holders, %{}) || %{}
 
     Enum.each(holders, fn {run_id, _holder_data} ->
       if valid_id?(run_id) do
         run_state = state.run_loader_fun.(run_id)
 
         if run_terminal?(run_state) or run_absent?(run_state) do
-          dispatch_slot_release(run_id, "backstop_sweep", state)
+          dispatch_slot_release(project_id, run_id, "backstop_sweep", state)
         end
       end
     end)
-
-    :ok
   end
 
-  defp dispatch_slot_release(run_id, reason, state) do
-    # Legacy global stream until the sweep walks project streams (TRD-008).
-    command = ForemanServer.Aggregates.RunSlots.release_command(nil, run_id, reason)
+  defp project_id_of(%{project_id: project_id}), do: project_id
+  defp project_id_of(%{"project_id" => project_id}), do: project_id
+  defp project_id_of(_project), do: nil
 
-    # Best-effort: the run_slots:global actor can legitimately be mid-restart
+  defp load_run_slots_state(project_id) do
+    {slots_state, _version} = Aggregate.load(RunSlots, RunSlots.stream_id(project_id))
+    slots_state
+  end
+
+  defp dispatch_slot_release(project_id, run_id, reason, state) do
+    command = RunSlots.release_command(project_id, run_id, reason)
+
+    # Best-effort: the run_slots actor can legitimately be mid-restart
     # (e.g. a crash, or a test's deliberate reset) when this fires. This is a
     # reconciliation sweep, not a user-facing command — losing one attempt is
     # safe, since the next terminal event or backstop sweep will retry it. A
