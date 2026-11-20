@@ -37,17 +37,6 @@ config :foreman_server,
 # leak a process under the same registered name earlier in the run.
 config :foreman_server, :operator_timeout, enabled: true
 
-# The production default (3, config.exs) is realistic for a single node
-# but far too tight for a 2300+ test suite: a single un-released holder
-# anywhere in the run (residual cleanup gaps in test files that don't
-# own the `run_slots:global` singleton) permanently starves every other
-# test's RunAdmission.start/2 for the rest of the process, which is
-# indistinguishable from a real capacity-gating bug until you dig in.
-# Tests that specifically exercise the capacity-gating behavior already
-# override this locally via `Application.put_env/3` (see
-# run_admission_slot_gate_test.exs) and are unaffected by this default.
-config :foreman_server, :max_concurrent_runs, 50
-
 # Overwatch stays off in test env. The infrastructure is exercised by
 # dedicated overwatch_test.exs; flipping it on here would require every
 # test that appends events to also stand up the WorkerSupervisor tree.

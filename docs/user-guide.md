@@ -696,7 +696,7 @@ foreman project settings project-123
 | `instructions` | 16000 characters (`String.length`, like Claude Projects) | Standing instructions for every thread |
 | `thread_model`, `thread_effort` (`low`/`medium`/`high`) | | Default model/effort for the project's threads |
 | `coordinator_provider` (`pi`/`claude`), `coordinator_model`, `coordinator_effort` | | Provider, model and effort of the project's coordinator agent (see [Project coordinator](#14-project-coordinator)) |
-| `max_concurrent_runs` | 1..1000 | Runs the project may have active at once |
+| `max_concurrent_runs` | 1..1000 | Runs the project may have active at once; unset means 3 (server default `:max_concurrent_runs_per_project`). Further runs wait in the project's own queue |
 | `daily_thread_cap` | 1..10000 | Threads (workflow runs plus jobsites) the project may start per UTC day |
 | `library_collect_produced` | `true`/`false` | Register each run's artifacts and session-archive files in the project library (default off; see [Project library](#121-project-library)) |
 | `coordinator_propose_before_start` (bool), `coordinator_max_active_threads` (1..50), `coordinator_reuse_threads` (bool) | | Coordinator tuning enforced by the server; clearable with `--clear` |
@@ -720,9 +720,11 @@ adapter declares it (logged and ignored otherwise, never an error); a jobsite
 spec with only `agent.provider` records the project's model/effort in
 `JobsiteStarted`.
 
-**Limits.** `max_concurrent_runs` is enforced inside the project aggregate at run
-reservation, and is further capped by the global run-slot capacity (a project value
-above the global one cannot raise it). The daily thread cap counts a workflow run at
+**Limits.** `max_concurrent_runs` (default 3 when the project sets none) is enforced
+by the project's own run-slot queue, which holds the runs above it in FIFO order. There
+is no global cap: one project's queue never delays another's, and the old server-wide
+`config :foreman_server, :max_concurrent_runs` is retired (a leftover value is ignored
+and logs one warning at boot). The daily thread cap counts a workflow run at
 reservation and a jobsite at start; the (N+1)th thread of the UTC day is refused
 (`{:daily_thread_cap_exceeded, N, day}`; HTTP `429 thread_cap_reached` for a
 jobsite). Refused admissions are not terminal: the task stays approved and is
@@ -920,7 +922,7 @@ pending), never a 404. It is re-admitted when the project is resumed, when a
 `project update` changes its settings (a raised limit), when a finished run
 frees its reservation, and when the UTC day rolls over (a task the daily thread
 cap refused is retried as soon as the cap resets, with no operator action; a
-timer in the Dispatcher fires at the next UTC midnight). The global run slot is
+timer in the Dispatcher fires at the next UTC midnight). A run slot is
 only taken once the project's own limits admit the run, so a deferred run never
 starves other projects.
 

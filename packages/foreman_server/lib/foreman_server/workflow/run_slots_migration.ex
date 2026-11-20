@@ -35,6 +35,29 @@ defmodule ForemanServer.Workflow.RunSlotsMigration do
 
   @legacy_stream "run_slots:global"
 
+  @doc """
+  Logs one warning when the retired global cap `config :foreman_server, :max_concurrent_runs`
+  is still set (TRD-010, AC-008-3). Nothing reads the value; boot continues. Called once from
+  `Application.start/2`. Lives here because this module is the only code that may name the
+  retired global slot setting and stream.
+  """
+  @spec warn_retired_config() :: :ok
+  def warn_retired_config do
+    case Application.fetch_env(:foreman_server, :max_concurrent_runs) do
+      {:ok, _value} ->
+        Logger.warning(
+          "config :foreman_server, :max_concurrent_runs is retired and ignored: runs are " <>
+            "limited per project (the project's max_concurrent_runs setting, default " <>
+            "#{ForemanServer.RunSlots.Config.max_concurrent_runs_per_project()}); remove it from your configuration"
+        )
+
+      :error ->
+        :ok
+    end
+
+    :ok
+  end
+
   @type summary :: %{
           adopted: non_neg_integer(),
           queued: non_neg_integer(),

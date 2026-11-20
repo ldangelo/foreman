@@ -1,19 +1,20 @@
 defmodule ForemanServer.Aggregates.RunSlots do
   @moduledoc """
   Run-slot admission gate. One aggregate per project, on stream
-  `run_slots:<project_id>` (`stream_id/1`); the legacy `run_slots:global`
-  stream is still folded for history written before per-project queues.
+  `run_slots:<project_id>` (`stream_id/1`). History written before per-project queues
+  (one shared global stream) is folded by the same `apply_event/2` and carried over by
+  `Workflow.RunSlotsMigration`, the only module that still reads it.
 
   State is `RunSlots.State` (`defstruct [:capacity, holders: %{}, waiters: []]`).
 
-  Serializes all concurrent-run admission decisions globally. Capacity is
+  Serializes the concurrent-run admission decisions of one project. Capacity is
   carried on the acquire command and recorded on the emitted event — never
   read from `Application.get_env` during replay — so that history is
   self-describing and replay is deterministic.
 
   ## Stream id
 
-      run_slots:<project_id>      (legacy: run_slots:global)
+      run_slots:<project_id>
 
   ## Events folded
 
@@ -101,8 +102,6 @@ defmodule ForemanServer.Aggregates.RunSlots do
   @spec stream_id(String.t()) :: String.t()
   def stream_id(project_id) when is_binary(project_id), do: "run_slots:" <> project_id
 
-  @legacy_stream "run_slots:global"
-
   @doc """
   The ONE builder of a `run_slots.release` command envelope (TRD-002).
 
@@ -112,35 +111,26 @@ defmodule ForemanServer.Aggregates.RunSlots do
   `do_release` can hold the queue when the limit was lowered below the running
   count. The command id is unique per call.
 
-  A `nil`/blank `project_id` targets the legacy `run_slots:global` stream with no
-  capacity (the aggregate falls back to the capacity its stream recorded). That
-  interim branch exists only until acquire moves to project streams
-  (TRD-005..TRD-010).
+  `project_id` must be a project id: there is no global stream to release on.
   """
-  @spec release_command(String.t() | nil, String.t(), String.t() | atom()) :: map()
-  def release_command(project_id, run_id, reason) when is_binary(run_id) do
+  @spec release_command(String.t(), String.t(), String.t() | atom()) :: map()
+  def release_command(project_id, run_id, reason)
+      when is_binary(project_id) and project_id != "" and is_binary(run_id) do
     command_id =
       "run_slots:release:#{run_id}:#{System.system_time(:millisecond)}:" <>
         Integer.to_string(System.unique_integer([:positive, :monotonic]))
 
-    base = %{type: "run_slots.release", command_id: command_id}
-
-    if is_binary(project_id) and project_id != "" do
-      Map.merge(base, %{
-        aggregate_id: stream_id(project_id),
-        payload: %{
-          run_id: run_id,
-          project_id: project_id,
-          capacity: project_run_limit(project_id),
-          reason: reason
-        }
-      })
-    else
-      Map.merge(base, %{
-        aggregate_id: @legacy_stream,
-        payload: %{run_id: run_id, reason: reason}
-      })
-    end
+    %{
+      type: "run_slots.release",
+      command_id: command_id,
+      aggregate_id: stream_id(project_id),
+      payload: %{
+        run_id: run_id,
+        project_id: project_id,
+        capacity: project_run_limit(project_id),
+        reason: reason
+      }
+    }
   end
 
   # Effective limit: the project's setting, else the per-project default.

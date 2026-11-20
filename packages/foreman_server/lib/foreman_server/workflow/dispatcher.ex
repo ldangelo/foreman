@@ -881,7 +881,7 @@ defmodule ForemanServer.Workflow.Dispatcher do
   end
 
   # Same rationale as safe_dispatch_system, for the multi-actor admission
-  # path (run_slots:global, the Beads lease, the run aggregate). Any of
+  # path (the project's run-slot stream, the Beads lease, the run aggregate). Any of
   # those actors can be mid-restart when RunAdmission.start/2 calls into
   # them; an uncaught exit here must not crash this always-on Dispatcher.
   defp safe_run_admission_start(project_id, payload) do
@@ -1046,7 +1046,7 @@ defmodule ForemanServer.Workflow.Dispatcher do
 
   defp admit_and_start_run(run_payload, task_proj, task_id, state, resume_opts) do
     # RunAdmission.start dispatches through several aggregate actors
-    # (run_slots:global, the Beads lease, the run aggregate). Any of
+    # (the project's run-slot stream, the Beads lease, the run aggregate). Any of
     # them can legitimately be mid-restart (crash, or a test's
     # deliberate reset) when this fires; an uncaught exit here would
     # crash this always-on Dispatcher, dropping its ProjectionStore

@@ -12,7 +12,7 @@ no GitHub (stage 8 prints `SKIP`, counted as UNVERIFIED).
    intervals, find a real overlap, report the right peak and ignore an unfinished run. It is stack-free
    (`bash scripts/e2e/claude_projects/overlap.sh`) and also runs at the start of the step. Writing it caught a real defect in the first
    draft of the helper (an uninitialised awk counter dropped the first interval, so a real overlap read as none).
-2. Waits until the project has no active run, so the project cap and the global slots are free.
+2. Waits until the project has no active run, so the project cap and its slots are free.
 3. Pastes (`foreman project chat -m`): "start one thread for each of the three items ... titled `e2e-<pid> todo A|B|C`", then items A, B and
    C, each "create a file `alpha|bravo|charlie-<pid>.txt` containing exactly the single word ...". `project chat` can return on the
    coordinator's answer to an earlier system report (a finished review), before the turn for this message, so the step polls the project's
@@ -27,8 +27,8 @@ no GitHub (stage 8 prints `SKIP`, counted as UNVERIFIED).
    intervals, and asserts `start_i < finish_j and start_j < finish_i` for at least one pair, and that the peak number of simultaneous runs
    does not exceed the project cap.
 
-How parallelism is allowed: the flow sets the project's `max_concurrent_runs` to 3 in step 1, the global RunSlots `max_concurrent_runs`
-default is 3 (`config/config.exs`), and `coordinator_max_active_threads` is unset (no coordinator cap). `max_threads_per_turn` is 5.
+How parallelism is allowed: the flow sets the project's `max_concurrent_runs` to 3 in step 1, the per-project run-slot default
+is 3 (`config/config.exs`, `:max_concurrent_runs_per_project`; there is no global cap), and `coordinator_max_active_threads` is unset (no coordinator cap). `max_threads_per_turn` is 5.
 No server configuration beyond the harness's existing one was needed.
 
 ## Result of the complete flow (stages 1-7, no GitHub stage)
