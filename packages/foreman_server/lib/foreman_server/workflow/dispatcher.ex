@@ -42,6 +42,11 @@ defmodule ForemanServer.Workflow.Dispatcher do
       `RunSlotTransferred` and `RunSlotAcquired` with `promoted: true` re-enter admission for the
       promoted run, and `ProjectUpdated` / `ProjectReactivated` rebalance that project's queue
       (`run_slots.promote` until the aggregate answers `{:ok, nil}`).
+    * `ProjectSubjectAdopted` (mode `"move"`, TRD-017): each moved run that is still a WAITER on
+      the source project's stream joins the back of the destination's queue (`run_slots.acquire`
+      with `enqueue_only: true`), keeps its relative order among the moved runs, then leaves the
+      source queue (`run_slots.remove_waiter`); the destination is rebalanced. A moved run that
+      is not a waiter (running, finished) dispatches no slot command.
   The dispatcher is the bridge between the operator-facing task
   lifecycle and the supervised executor. Subscriptions are
   per-process and unlink automatically when the subscriber exits.
@@ -241,6 +246,19 @@ defmodule ForemanServer.Workflow.Dispatcher do
     end
   end
 
+  # A thread adopted into another project takes its waiting runs with it (TRD-017).
+  @impl true
+  def handle_info(
+        {:projection_event, %{"event_type" => "ProjectSubjectAdopted"} = envelope},
+        state
+      ) do
+    handle_subject_adopted(envelope, state)
+  end
+
+  def handle_info({:projection_event, %{event_type: "ProjectSubjectAdopted"} = envelope}, state) do
+    handle_subject_adopted(envelope, state)
+  end
+
   for event_type <- ~w(ProjectResumed ProjectRunReservationReleased) do
     @impl true
     def handle_info({:projection_event, %{"event_type" => unquote(event_type)} = envelope}, state) do
@@ -296,6 +314,124 @@ defmodule ForemanServer.Workflow.Dispatcher do
     if is_binary(project_id) and project_id != "", do: rebalance(project_id)
 
     readmit_deferred(event_type, envelope, state)
+  end
+
+  # `ProjectSubjectAdopted` with `mode: "move"` re-homes a subject's runs on the read side; this
+  # moves the ones that are WAITING in the source project's slot stream to the destination's.
+  # Candidates are `moved.run_ids` plus the runs of `moved.task_ids`; only runs the source stream
+  # still lists as waiters are touched, taken in source queue order so their relative order is kept.
+  #
+  # Order of effects: enqueue in the destination FIRST, then drop from the source. Both commands
+  # are idempotent (a run already queued is a no-op; removing a non-waiter is a no-op) and the
+  # event is replayed on boot, so a crash between the two leaves the run in both queues until the
+  # replay finishes the move, never in neither (which would lose it). A failed enqueue skips the
+  # removal so the run stays where it was.
+  defp handle_subject_adopted(envelope, state) do
+    payload = adoption_payload(envelope)
+    destination = payload["project_id"]
+    source = payload["from_project_id"]
+
+    if payload["mode"] == "move" and present_id(destination) != nil and present_id(source) != nil and
+         destination != source do
+      candidates = adopted_run_candidates(payload)
+      event_id = adoption_event_id(envelope, payload)
+
+      moved =
+        source
+        |> source_waiter_ids()
+        |> Enum.filter(&MapSet.member?(candidates, &1))
+
+      Enum.each(moved, &move_waiter(&1, source, destination, event_id))
+      if moved != [], do: rebalance(destination)
+    end
+
+    {:noreply, state}
+  catch
+    :exit, exit_reason ->
+      Logger.warning(
+        "ForemanServer.Workflow.Dispatcher: ProjectSubjectAdopted handling exited: #{inspect(exit_reason)}"
+      )
+
+      {:noreply, state}
+  end
+
+  defp adoption_payload(envelope) do
+    case unwrap_data(envelope) do
+      %_{} = struct -> struct |> Map.from_struct() |> stringify_keys()
+      map -> stringify_keys(map)
+    end
+  end
+
+  defp stringify_keys(map), do: Map.new(map, fn {k, v} -> {to_string(k), v} end)
+
+  defp adopted_run_candidates(payload) do
+    moved =
+      case payload["moved"] do
+        %{} = moved -> stringify_keys(moved)
+        _ -> %{}
+      end
+
+    task_ids = List.wrap(moved["task_ids"])
+
+    task_runs =
+      if task_ids == [] do
+        []
+      else
+        for task <- ProjectionStore.list_tasks(),
+            (Map.get(task, :task_id) || Map.get(task, "task_id")) in task_ids,
+            run_id = Map.get(task, :run_id) || Map.get(task, "run_id"),
+            is_binary(run_id),
+            do: run_id
+      end
+
+    MapSet.new(List.wrap(moved["run_ids"]) ++ task_runs)
+  end
+
+  defp adoption_event_id(envelope, payload) do
+    Map.get(envelope, :event_id) || Map.get(envelope, "event_id") ||
+      "#{payload["subject_id"]}:#{payload["adopted_at"]}"
+  end
+
+  defp source_waiter_ids(project_id) do
+    {state, _version} =
+      ForemanServer.Aggregate.load(
+        ForemanServer.Aggregates.RunSlots,
+        ForemanServer.Aggregates.RunSlots.stream_id(project_id)
+      )
+
+    Enum.map(state.waiters, & &1.run_id)
+  end
+
+  defp move_waiter(run_id, source, destination, event_id) do
+    alias ForemanServer.Aggregates.RunSlots
+
+    enqueue = %{
+      type: "run_slots.acquire",
+      command_id: "run-slots:adopt-waiter:#{run_id}:#{event_id}",
+      aggregate_id: RunSlots.stream_id(destination),
+      payload: %{
+        run_id: run_id,
+        project_id: destination,
+        capacity: RunAdmission.project_capacity(destination),
+        enqueue_only: true
+      }
+    }
+
+    case CommandGateway.dispatch_system(enqueue) do
+      {:ok, _} ->
+        safe_dispatch_system(%{
+          type: "run_slots.remove_waiter",
+          command_id: "run-slots:adopt-waiter-remove:#{run_id}:#{event_id}",
+          aggregate_id: RunSlots.stream_id(source),
+          payload: %{run_id: run_id, project_id: source}
+        })
+
+      {:error, reason} ->
+        Logger.warning(
+          "ForemanServer.Workflow.Dispatcher: adopting waiting run #{run_id} into #{destination} " <>
+            "failed to enqueue (#{inspect(reason)}); it stays queued on #{source}"
+        )
+    end
   end
 
   defp event_project_id(envelope) do
