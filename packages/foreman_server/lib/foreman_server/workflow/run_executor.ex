@@ -36,8 +36,16 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   alias ForemanServer.AgentRuntime
   alias ForemanServer.AgentRuntime.JidoHarness
-  alias ForemanServer.AgentRuntime.JidoHarness.{ForkSession, ModelCatalog, ReadinessCheck}
+
+  alias ForemanServer.AgentRuntime.JidoHarness.{
+    ForkSession,
+    ModelCatalog,
+    ReadinessCheck,
+    SkillResolver
+  }
+
   alias ForemanServer.CommandGateway
+  alias ForemanServer.Workflow.Validator
   alias ForemanServer.Workflow.BeadsTreeCompletion
   alias ForemanServer.Workflow.CheckoutGuard
   alias ForemanServer.Workflow.Catalog
@@ -45,6 +53,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   alias ForemanServer.RunControl
   alias ForemanServer.Identity
   alias ForemanServer.PrAssociate
+  alias ForemanServer.PrReadySignal
   alias ForemanServer.ProjectContext
   alias ForemanServer.ProjectionStore
   alias ForemanServer.Workflow.CommitDeferral
@@ -55,6 +64,9 @@ defmodule ForemanServer.Workflow.RunExecutor do
   alias ForemanServer.Workflow.PreflightFailure
   alias ForemanServer.Workflow.ModelResolution
   alias ForemanServer.Jobsite.Context, as: JobsiteContext
+  alias ForemanServer.Jobsite.ExecutionProfile
+  alias ForemanServer.Jobsite.NetworkPolicy
+  alias ForemanServer.ProjectEnvironment
   alias ForemanServer.Jobsite.Engine, as: JobsiteEngine
   alias ForemanServer.Jobsite.Git, as: JobsiteGit
   alias ForemanServer.Jobsite.Error, as: JobsiteError
@@ -67,10 +79,16 @@ defmodule ForemanServer.Workflow.RunExecutor do
   alias ForemanServer.Workflow.WorktreeSpec
   alias ForemanServer.Agents.VfsIsolation
   alias ForemanServer.TaskProvider.Telemetry, as: TaskProviderTelemetry
+  alias ForemanServer.Idempotency.Reconcilers.TaskProvider, as: TaskProviderEffect
   alias ForemanServer.TaskProvider.Registry, as: TaskProviderRegistry
+  alias ForemanServer.Aggregate.Actor
+  alias ForemanServer.Incarnation
+  alias ForemanServer.PrRisk
+  alias ForemanServer.TaskProvider.StorageBinding
   alias ForemanServer.Workflow.OrphanReaper
   alias ForemanServer.Workflow.Worktree
   alias ForemanServer.Workflow.RepoPr
+  alias ForemanServer.Workflow.ReviewFindings
   alias ForemanServer.Workflow.RunRepoSet
   alias ForemanServer.Workflow.RunWorktreeLayout
   require Logger
@@ -84,6 +102,10 @@ defmodule ForemanServer.Workflow.RunExecutor do
     "fix" => MapSet.new(~w(fix))
   }
   @claim_lost_event [:foreman_server, :task_provider, :claim, :lost]
+  @resumed_event [:foreman_server, :workflow, :run_executor, :resumed]
+  # The codes a provider refuses a claim with when another actor holds the task: Beads'
+  # `NOT_CLAIMABLE` and `CLAIMED_BY_OTHER`, and Kata's `CLAIMED_BY_OTHER`.
+  @claim_refusal_codes ["NOT_CLAIMABLE", "CLAIMED_BY_OTHER"]
   @type state :: %{
           task: map(),
           phase_specs: [map()],
@@ -97,7 +119,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
           plan_context: map() | nil,
           resume_from: non_neg_integer(),
           resuming?: boolean(),
-          project_settings: ForemanServer.ProjectSettings.t() | nil
+          project_settings: ForemanServer.ProjectSettings.t() | nil,
+          skill_verdicts: %{pos_integer() => SkillResolver.verdict()}
         }
   @spec start_link(String.t(), map(), keyword()) :: GenServer.on_start()
   def start_link(run_id, task_projection, opts \\ []) do
@@ -122,28 +145,45 @@ defmodule ForemanServer.Workflow.RunExecutor do
       when is_binary(project_id) and project_id != "" and is_binary(task_id) and task_id != "" and
              is_binary(run_id) and run_id != "" do
     with {:ok, provider_module, project_config} <- resolve_provider(project_id, :claim, run_id),
-         result <- provider_module.claim(task_id, actor, project_config) do
-      maybe_retry_lost_claim(result, provider_module, project_config, task_id)
+         result <-
+           TaskProviderEffect.run(
+             run_id,
+             project_id,
+             :claim,
+             task_id,
+             fn -> provider_module.claim(task_id, actor, project_config) end,
+             %{actor: if(is_binary(actor), do: actor)}
+           ) do
+      maybe_retry_lost_claim(result, provider_module, project_config, task_id, actor)
     end
   end
 
   def claim(_project_id, _task_id, _actor, _run_id), do: {:error, :invalid_claim}
 
-  @spec complete(String.t(), String.t(), String.t(), String.t() | nil) ::
+  # `commit_sha` is the newest commit the run itself made (`completion_commit_sha/1`), or `nil` when
+  # it made none. It rides in the completion token only when there is one: a provider that needs
+  # proof of the work (Kata refuses a `--done` close without any) finds the key absent, never
+  # empty, and falls back to the artifact path.
+  @spec complete(String.t(), String.t(), String.t(), String.t() | nil, String.t() | nil) ::
           {:ok, term()} | {:error, term()}
-  def complete(project_id, task_id, run_id, artifact_path)
+  def complete(project_id, task_id, run_id, artifact_path, commit_sha \\ nil)
+
+  def complete(project_id, task_id, run_id, artifact_path, commit_sha)
       when is_binary(project_id) and project_id != "" and is_binary(task_id) and task_id != "" and
-             is_binary(run_id) and run_id != "" do
+             is_binary(run_id) and run_id != "" and
+             (is_nil(commit_sha) or (is_binary(commit_sha) and commit_sha != "")) do
     with {:ok, provider_module, project_config} <- resolve_provider(project_id, :close, run_id) do
-      provider_module.complete(
-        task_id,
-        %{run_id: run_id, artifact_path: artifact_path},
-        project_config
-      )
+      TaskProviderEffect.run(run_id, project_id, :complete, task_id, fn ->
+        provider_module.complete(
+          task_id,
+          completion_token(run_id, artifact_path, commit_sha),
+          project_config
+        )
+      end)
     end
   end
 
-  def complete(_project_id, _task_id, _run_id, _artifact_path),
+  def complete(_project_id, _task_id, _run_id, _artifact_path, _commit_sha),
     do: {:error, :invalid_completion}
 
   @spec fail(String.t(), String.t(), String.t(), term()) :: {:ok, term()} | {:error, term()}
@@ -332,7 +372,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
       plan_context: plan_context,
       resume_from: resume_from,
       resuming?: Keyword.get(opts, :resume_from) != nil,
-      project_settings: latch_project_settings(task_projection)
+      project_settings: latch_project_settings(task_projection),
+      skill_verdicts: %{}
     }
 
     Process.send_after(self(), :kickoff, 0)
@@ -422,6 +463,44 @@ defmodule ForemanServer.Workflow.RunExecutor do
   end
 
   defp kickoff_preflight(state) do
+    case preflight_network_isolation(state) do
+      {:error, reason} ->
+        # The host workflow door cannot enforce `environment.network`. The
+        # run ends here, before the task claim, the worktree and any phase.
+        Logger.warning(
+          "RunExecutor #{state.run_id} refused: #{inspect(reason)}",
+          run_id: state.run_id,
+          task_id: task_id(state),
+          operation: "run_executor.network_isolation_preflight",
+          outcome: "error",
+          reason: inspect(reason)
+        )
+
+        _ = dispatch_task_execution_fail(state, reason)
+        finalize_terminal_and_stop(state, reason)
+
+      :ok ->
+        kickoff_provider_preflight(state)
+    end
+  end
+
+  # Every RunExecutor launch is a host workflow launch
+  # (`ExecutionProfile.host_backend/0`). A project with no `environment.network`
+  # policy reads as the default policy and proceeds. Applies to a resumed run
+  # too: a policy that cannot be honoured is refused whenever the run starts
+  # executing, not only on its first start.
+  defp preflight_network_isolation(state) do
+    case project_id(state) do
+      id when is_binary(id) and id != "" ->
+        policy = id |> ProjectEnvironment.environment() |> Map.fetch!("network")
+        NetworkPolicy.check_backend(policy, ExecutionProfile.host_backend())
+
+      _no_project ->
+        :ok
+    end
+  end
+
+  defp kickoff_provider_preflight(state) do
     case preflight_providers_and_models(state) do
       {:error, failures} ->
         # `PreflightFailure.summarize/1` renders one clause per refusal as
@@ -444,7 +523,57 @@ defmodule ForemanServer.Workflow.RunExecutor do
         finalize_terminal_and_stop(state, {:provider_model_preflight_failed, failures})
 
       :ok ->
-        handle_kickoff_ready(state)
+        kickoff_skill_preflight(state)
+    end
+  end
+
+  # TRD-022 / AC-007-2: every `command:` phase that names a skill is resolved
+  # against the provider that will launch it, after the provider/model check and
+  # before the claim, the worktree and the first phase. `:missing` refuses the
+  # run; `:unverifiable` never blocks and rides on that phase's execution
+  # profile. The terminal reason is its own tuple, never
+  # `:provider_model_preflight_failed`, so neither names the other's contents.
+  defp kickoff_skill_preflight(state) do
+    case preflight_skills(state) do
+      {:error, failures} ->
+        summaries = Enum.map_join(failures, "; ", &PreflightFailure.summarize/1)
+
+        Logger.warning(
+          "RunExecutor skill preflight for #{state.run_id} rejected: #{summaries}",
+          run_id: state.run_id,
+          task_id: task_id(state),
+          operation: "run_executor.skill_preflight",
+          outcome: "error",
+          reason: inspect(failures)
+        )
+
+        _ = dispatch_task_execution_fail(state, {:capability_preflight_failed, failures})
+        finalize_terminal_and_stop(state, {:capability_preflight_failed, failures})
+
+      {:ok, verdicts, unverifiable} ->
+        # An unverifiable skill never blocks, but the run proceeds on a promise
+        # nobody checked: say so, once per phase (AGENTS.md: warn where the
+        # consequence is merely invisible).
+        for %{phase: phase, skill: skill, provider: provider, reason: reason} <- unverifiable do
+          why = if reason, do: " (project env unresolved: #{inspect(reason)})", else: ""
+
+          Logger.warning(
+            "RunExecutor skill preflight for #{state.run_id} could not verify skill " <>
+              "#{inspect(skill)} of phase #{inspect(phase)} for provider #{inspect(provider)} " <>
+              "on the #{inspect(ExecutionProfile.host_backend())} backend#{why}; the run proceeds",
+            run_id: state.run_id,
+            task_id: task_id(state),
+            operation: "run_executor.skill_preflight",
+            outcome: "unverifiable",
+            phase: inspect(phase),
+            skill: skill,
+            provider: inspect(provider),
+            backend: inspect(ExecutionProfile.host_backend()),
+            reason: if(reason, do: "project_env_unresolved: #{inspect(reason)}")
+          )
+        end
+
+        handle_kickoff_ready(Map.put(state, :skill_verdicts, verdicts))
     end
   end
 
@@ -452,8 +581,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # This function is the kickoff_ready handler that runs when all prerequisites pass.
   # `maybe_claim_task/1` (line 363) calls the TaskProvider.claim/3 before any phase work starts.
   defp handle_kickoff_ready(state) do
-    case rehydrate_resume_context(state) do
-      {:error, reason} ->
+    case resume_prelude(state) do
+      {:error, {:resume_context_unresolvable, reason}} ->
         Logger.error(
           "RunExecutor #{state.run_id} resume context unresolvable: #{inspect(reason)}",
           run_id: state.run_id,
@@ -465,25 +594,177 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
         finalize_terminal_and_stop(state, {:resume_context_unresolvable, reason})
 
+      {:error, {:resume_worktree_prune_failed, repo_path, code, output} = reason} ->
+        Logger.error(
+          "RunExecutor #{state.run_id} could not prune the worktree record in #{repo_path} " <>
+            "(exit #{code}): #{output}",
+          run_id: state.run_id,
+          task_id: task_id(state),
+          operation: "run_executor.resume",
+          outcome: "error",
+          reason: inspect(reason)
+        )
+
+        finalize_terminal_and_stop(state, reason)
+
+      {:error, {:resume_attempt_not_recorded, reason}} ->
+        Logger.error(
+          "RunExecutor #{state.run_id} could not record the resumed attempt: #{inspect(reason)}",
+          run_id: state.run_id,
+          task_id: task_id(state),
+          operation: "run_executor.resume",
+          outcome: "error",
+          reason: inspect(reason)
+        )
+
+        finalize_terminal_and_stop(state, {:resume_attempt_not_recorded, reason})
+
       {:ok, state} ->
-        claim_result = if state.resuming?, do: :ok, else: maybe_claim_task(state)
+        continue_kickoff(state)
+    end
+  end
 
-        case claim_result do
-          :ok ->
-            run_phases(state)
+  # Resume re-entry in order: rehydrate the worktree (which reaps orphaned
+  # agents), record the run's recovery, then record the phase attempt, so
+  # neither record precedes the reap. A no-op for a fresh run.
+  defp resume_prelude(state) do
+    with {:ok, state} <- tag_error(rehydrate_resume_context(state), :resume_context_unresolvable),
+         :ok <- tag_error(record_run_recovery(state), :resume_attempt_not_recorded),
+         {:ok, state} <- tag_error(record_resume_attempt(state), :resume_attempt_not_recorded) do
+      {:ok, state}
+    end
+  end
 
-          {:error, reason} ->
-            Logger.warning("RunExecutor claim #{task_id(state)} failed: #{inspect(reason)}",
-              run_id: state.run_id,
-              task_id: task_id(state),
-              operation: "run_executor.task_claim",
-              outcome: "error",
-              reason: inspect(reason)
-            )
+  # A prune failure has its own tag: `:resume_context_unresolvable` means the
+  # run's base could not be resolved (AC-002-3).
+  defp tag_error({:error, {:resume_worktree_prune_failed, _, _, _}} = error, _tag), do: error
+  defp tag_error({:error, reason}, tag), do: {:error, {tag, reason}}
+  defp tag_error(other, _tag), do: other
 
-            _ = dispatch_task_execution_fail(state, {:claim_failure, reason})
-            finalize_terminal_and_stop(state, {:claim_failure, reason})
+  # A restart that finds the resume phase still `in_progress` is one more
+  # attempt at it. The Phase aggregate stamps the attempt; the command id
+  # carries the incarnation, so a repeat within one boot appends nothing while
+  # every restart appends a new `PhaseRetried`. Runs after
+  # `rehydrate_resume_context/1` so orphaned agents are already reaped.
+  #
+  # That `PhaseRetried` is the first phase event after the resume, so it
+  # carries `prior_worktree_discarded` when the rehydrate found a worktree it
+  # could not reuse, and the discard is then cleared from the state. When no
+  # phase is in flight the discard stays for the next `PhaseStarted`
+  # (`emit_phase_start/3`).
+  defp record_resume_attempt(%{resuming?: false} = state), do: {:ok, state}
+
+  defp record_resume_attempt(%{resuming?: true} = state) do
+    case Enum.at(state.phase_specs, state.resume_from) do
+      nil ->
+        {:ok, state}
+
+      phase_spec ->
+        number = phase_number(phase_spec, state.resume_from)
+        phase_id = Identity.phase_id(state.run_id, number)
+
+        if phase_in_progress?(state.run_id, phase_id) do
+          with :ok <- dispatch_resume_retry(state, phase_id, number) do
+            {:ok, Map.delete(state, :prior_worktree_discarded)}
+          end
+        else
+          {:ok, state}
         end
+    end
+  end
+
+  defp phase_in_progress?(run_id, phase_id) do
+    run_id
+    |> ProjectionStore.phases_for_run()
+    |> Enum.any?(&(&1.phase_id == phase_id and &1.status == "in_progress"))
+  end
+
+  defp dispatch_resume_retry(state, phase_id, number) do
+    payload =
+      maybe_put_discard(
+        %{
+          run_id: state.run_id,
+          phase_id: phase_id,
+          index: number,
+          reason: "resumed",
+          input_artifacts: phase_input_artifacts(state.run_id, number)
+        },
+        state
+      )
+
+    case dispatch_system(
+           "phase.retry",
+           payload,
+           state.run_id,
+           "#{ForemanServer.Incarnation.id()}:#{phase_id}:#{number}",
+           "phase:#{state.run_id}:#{phase_id}"
+         ) do
+      {:ok, _} -> :ok
+      {:error, _} = error -> error
+    end
+  end
+
+  defp maybe_put_discard(payload, state) do
+    case Map.get(state, :prior_worktree_discarded) do
+      nil -> payload
+      discard -> Map.put(payload, :prior_worktree_discarded, discard)
+    end
+  end
+
+  # Every resume, a restart's or an operator's `run.resume` (`resuming?` cannot
+  # tell them apart), records its own time since boot on the run. The command id
+  # carries the incarnation, so a repeat within one boot appends nothing and a
+  # new boot appends one more. The time is only measured and reported
+  # (`run.recovery`, telemetry); nothing fails the run on it.
+  defp record_run_recovery(%{resuming?: false}), do: :ok
+
+  defp record_run_recovery(%{resuming?: true} = state) do
+    elapsed_since_boot_ms = System.monotonic_time(:millisecond) - Incarnation.started_at_ms()
+
+    case dispatch_system(
+           "run.recovery_attempt",
+           %{
+             run_id: state.run_id,
+             outcome: "resumed",
+             elapsed_since_boot_ms: elapsed_since_boot_ms
+           },
+           state.run_id,
+           Incarnation.id(),
+           "run:#{state.run_id}"
+         ) do
+      {:ok, recorded} ->
+        unless Actor.replayed?(recorded) do
+          :telemetry.execute(@resumed_event, %{elapsed_since_boot_ms: elapsed_since_boot_ms}, %{
+            run_id: state.run_id,
+            outcome: "resumed"
+          })
+        end
+
+        :ok
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  defp continue_kickoff(state) do
+    claim_result = if state.resuming?, do: :ok, else: maybe_claim_task(state)
+
+    case claim_result do
+      :ok ->
+        run_phases(state)
+
+      {:error, reason} ->
+        Logger.warning("RunExecutor claim #{task_id(state)} failed: #{inspect(reason)}",
+          run_id: state.run_id,
+          task_id: task_id(state),
+          operation: "run_executor.task_claim",
+          outcome: "error",
+          reason: inspect(reason)
+        )
+
+        _ = dispatch_task_execution_fail(state, {:claim_failure, reason})
+        finalize_terminal_and_stop(state, {:claim_failure, reason})
     end
   end
 
@@ -714,38 +995,105 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # existing checkout (refreshing `base_ref` from HEAD) instead of trying
   # to `git worktree add` a path that already exists. A no-op for a
   # fresh (non-resuming) run.
+  #
+  # A worktree that cannot be reused (no entry, or an entry whose directory is
+  # gone) is recorded in `state.prior_worktree_discarded`, to travel on the first
+  # phase event after the resume. Only uncommitted changes are lost: committed
+  # work lives on the run's branch, which provisioning re-attaches.
   defp rehydrate_resume_context(%{resuming?: false} = state), do: {:ok, state}
 
   defp rehydrate_resume_context(%{resuming?: true} = state) do
+    name = Worktree.operation_id(state.run_id, nil)
+
     case find_resumable_worktree(state.run_id) do
       nil ->
-        Logger.warning(
-          "RunExecutor #{state.run_id} resume found no worktree entry for wt-#{state.run_id}; provisioning a fresh worktree",
-          run_id: state.run_id,
-          task_id: task_id(state),
-          operation: "run_executor.resume"
-        )
+        if worktree_expected?(state) do
+          with :ok <- assert_resume_base_resolvable(state) do
+            Logger.warning(
+              "RunExecutor #{state.run_id} resume found no worktree entry for #{name}; provisioning a fresh worktree",
+              run_id: state.run_id,
+              task_id: task_id(state),
+              operation: "run_executor.resume"
+            )
 
-        {:ok, state}
+            {:ok, Map.put(state, :prior_worktree_discarded, %{name: name, path: nil})}
+          end
+        else
+          {:ok, state}
+        end
+
+      %{worktree_path: path} = entry when is_binary(path) and path != "" ->
+        if File.dir?(path) do
+          rehydrate_worktree_entry(state, entry)
+        else
+          discard_missing_worktree(state, entry, name)
+        end
 
       entry ->
-        with :ok <- reap_orphaned_agents(state, entry.worktree_path),
-             {:ok, _project_root, _base_ref, implementation_key, trd_scope} <-
-               resolve_run_base(state, state.worktree_spec || %{}) do
-          run_worktree = %{
-            operation_id: entry.operation_id,
-            worktree_path: entry.worktree_path,
-            branch: entry.branch,
-            base_ref: entry.base_ref,
-            project_root: entry.repo_path,
-            project_id: entry.project_id,
-            cleanup: entry.cleanup,
-            implementation_key: implementation_key,
-            trd_scope: trd_scope
-          }
+        rehydrate_worktree_entry(state, entry)
+    end
+  end
 
-          {:ok, state |> Map.put(:run_worktree, run_worktree) |> load_run_worktrees()}
-        end
+  # A missing entry only means lost work when a worktree was ever provisioned: a
+  # run whose workflow disables worktrees has none, and a run resumed before its
+  # first phase began never reached provisioning.
+  defp worktree_expected?(state) do
+    match?(%{enabled: false}, state.worktree_spec) == false and
+      ProjectionStore.phases_for_run(state.run_id) != []
+  end
+
+  defp rehydrate_worktree_entry(state, entry) do
+    with :ok <- reap_orphaned_agents(state, entry.worktree_path),
+         {:ok, _project_root, _base_ref, implementation_key, trd_scope} <-
+           resolve_run_base(state, state.worktree_spec || %{}) do
+      run_worktree = %{
+        operation_id: entry.operation_id,
+        worktree_path: entry.worktree_path,
+        branch: entry.branch,
+        base_ref: entry.base_ref,
+        project_root: entry.repo_path,
+        project_id: entry.project_id,
+        cleanup: entry.cleanup,
+        implementation_key: implementation_key,
+        trd_scope: trd_scope
+      }
+
+      {:ok, state |> Map.put(:run_worktree, run_worktree) |> load_run_worktrees()}
+    end
+  end
+
+  # The entry's directory is gone, so nothing in it can be running and there is
+  # nothing to reuse. Git still lists the worktree and would refuse to add the
+  # same path ("is a missing but already registered worktree"), so its record is
+  # pruned before provisioning creates a fresh one.
+  defp discard_missing_worktree(state, entry, name) do
+    Logger.warning(
+      "RunExecutor #{state.run_id} resume found worktree entry #{name} whose directory #{entry.worktree_path} is gone; its uncommitted changes are lost and a fresh worktree is provisioned",
+      run_id: state.run_id,
+      task_id: task_id(state),
+      operation: "run_executor.resume"
+    )
+
+    with {_output, 0} <-
+           System.cmd("git", ["-C", entry.repo_path, "worktree", "prune"], stderr_to_stdout: true),
+         :ok <- assert_resume_base_resolvable(state) do
+      {:ok, Map.put(state, :prior_worktree_discarded, %{name: name, path: entry.worktree_path})}
+    else
+      {output, code} when is_integer(code) ->
+        {:error, {:resume_worktree_prune_failed, entry.repo_path, code, output}}
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  # A worktree that is re-provisioned on resume is cut from the run's base. When
+  # that base cannot be resolved the run ends (`:resume_context_unresolvable`)
+  # before any phase starts: the run is never cut from a guessed base.
+  defp assert_resume_base_resolvable(state) do
+    case resolve_provisioned_base(state, state.worktree_spec || %{}) do
+      {:ok, _project_root, _base_ref, _implementation_key, _trd_scope} -> :ok
+      {:error, _} = error -> error
     end
   end
 
@@ -777,13 +1125,13 @@ defmodule ForemanServer.Workflow.RunExecutor do
     Enum.find(ProjectionStore.worktrees_for_run(run_id), &(&1.operation_id == operation_id))
   end
 
-  # Skips entirely when a phase declares neither `provider:` nor `models:` —
-  # unmodified phases keep today's behavior exactly (readiness is still
-  # checked later, per-phase, by JidoHarnessAdapter.execute/2 as it always
-  # has been). Only phases that opt into an explicit provider or model pay
-  # for the upfront check, and a run with ANY invalid phase fails once,
-  # before phase 1, naming every bad phase — not one at a time, deep into
-  # the run.
+  # Skips entirely when a phase declares neither `provider:` nor `models:` and
+  # has no `command:` — a phase the harness launches by command needs its harness
+  # installed even on the default provider (TRD-022), so it is checked too.
+  # Unmodified non-command phases keep today's behavior exactly (readiness is
+  # still checked later, per-phase, by JidoHarnessAdapter.execute/2). A run with
+  # ANY invalid phase fails once, before phase 1, naming every bad phase — not
+  # one at a time, deep into the run.
   #
   # This runs before `handle_kickoff_ready/1`, so before any worktree, branch,
   # or phase exists: a refused run executes zero phases by construction (see
@@ -801,11 +1149,152 @@ defmodule ForemanServer.Workflow.RunExecutor do
     if failures == [], do: :ok, else: {:error, failures}
   end
 
+  # A phase launched by a `command:` needs its harness whether or not the phase
+  # declares a provider: the default provider (`request_provider/1`) is a
+  # harness too.
+  defp command_phase?(phase_spec), do: is_binary(Map.get(phase_spec, :command))
+
+  # The provider that launches `phase_spec`: its declared one, else the default.
+  defp phase_launch_provider(phase_spec) do
+    JidoHarness.request_provider(%{context: %{"provider" => Map.get(phase_spec, :provider)}})
+  end
+
+  # What pi will read at launch. The harness inherits the server's environment
+  # overlaid with the project's environment record and secrets
+  # (`jido_harness_worker.ex` `put_env/2`, `env_mode: :overlay`); Foreman sets no
+  # `HOME` or `PI_CODING_AGENT_DIR` of its own. So the resolver's defaults (the
+  # server's `PI_CODING_AGENT_DIR`, else `~/.pi/agent`) are right unless the
+  # project's environment sets either one, and then the project's RAW value is
+  # what the launch sees: it is passed through as `agent_dir:`/`home:` and
+  # `SkillResolver` decides what it means (a relative agent dir is resolved by pi
+  # against a launch cwd that does not exist yet, so it is unverifiable there).
+  # `config :foreman_server, :skill_home` names a home to read instead of the
+  # server user's: `home` is that directory and the agent directory is
+  # `<home>/.pi/agent`, whatever the ambient environment says. The project root
+  # is the registered checkout: no worktree exists at admission.
+  #
+  # A project environment that cannot be resolved is what the launch fails on
+  # (`prepare_agent_launch/5` needs it too); the environment the launch would
+  # have had is unknown, so no home is guessed: `{:unverifiable, error_class}`.
+  # Only the error's class is kept, never its content (a value may be a secret).
+  defp skill_resolve_opts(state) do
+    case project_launch_env(state) do
+      {:ok, launch_env} ->
+        configured_home =
+          case Application.get_env(:foreman_server, :skill_home) do
+            home when is_binary(home) and home != "" -> home
+            _unset -> nil
+          end
+
+        home = env_string(launch_env, "HOME") || configured_home
+
+        agent_dir =
+          case env_string(launch_env, "PI_CODING_AGENT_DIR") do
+            nil when not is_nil(configured_home) -> Path.join(home, ".pi/agent")
+            dir -> dir
+          end
+
+        {:ok,
+         [home: home, agent_dir: agent_dir, project_root: project_path(state)]
+         |> Enum.reject(fn {_key, value} -> is_nil(value) end)}
+
+      {:error, class} ->
+        {:unverifiable, class}
+    end
+  end
+
+  defp env_string(env, name) do
+    case Map.get(env, name) do
+      value when is_binary(value) and value != "" -> value
+      _unset -> nil
+    end
+  end
+
+  # The project's environment as the launch will build it, or the CLASS of the
+  # tagged error `project_env/1` returned (never the error's content). An
+  # exception is not handled here: it propagates, as it would in the launch.
+  defp project_launch_env(state) do
+    case project_env(state) do
+      {:ok, %{env: env}} -> {:ok, env}
+      {:error, error} when is_tuple(error) and tuple_size(error) > 0 -> {:error, elem(error, 0)}
+      {:error, _other} -> {:error, :unknown}
+    end
+  end
+
+  defp unresolved_reason({:unverifiable, class}), do: class
+  defp unresolved_reason({:ok, _opts}), do: nil
+
+  # Resolves the skill each still-to-run `command:` phase names, against that
+  # phase's launching provider and the project's checkout (no worktree exists at
+  # admission). `{:ok, verdicts, unverifiable}` (`verdicts` is `%{phase_number =>
+  # :available | :unverifiable}`, `unverifiable` the phases whose skill could not
+  # be checked, for the log, each with the `reason` the environment was
+  # unresolved or `nil`) or the `:skill_not_found` failures of every phase whose
+  # skill is missing. A resumed run skips the phases it already completed: they
+  # never launch again.
+  defp preflight_skills(state) do
+    backend = ExecutionProfile.host_backend()
+    resolution = skill_resolve_opts(state)
+
+    {failures, verdicts, unverifiable} =
+      state.phase_specs
+      |> Enum.with_index()
+      |> Enum.drop(state.resume_from)
+      |> Enum.reduce({[], %{}, []}, fn {phase_spec, index}, {failures, verdicts, unverifiable} ->
+        with skill when is_binary(skill) <-
+               Validator.skill_from_command(Map.get(phase_spec, :command)),
+             provider = phase_launch_provider(phase_spec),
+             verdict = skill_verdict(resolution, provider, skill, backend) do
+          name = phase_spec_name(phase_spec)
+          verdicts = Map.put(verdicts, phase_number(phase_spec, index), verdict)
+
+          case verdict do
+            :missing ->
+              failure = %PreflightFailure{
+                phase: name,
+                provider: provider,
+                class: :skill_not_found,
+                backend: backend,
+                skill: skill
+              }
+
+              {[failure | failures], verdicts, unverifiable}
+
+            :unverifiable ->
+              note = %{
+                phase: name,
+                skill: skill,
+                provider: provider,
+                reason: unresolved_reason(resolution)
+              }
+
+              {failures, verdicts, [note | unverifiable]}
+
+            :available ->
+              {failures, verdicts, unverifiable}
+          end
+        else
+          _no_skill -> {failures, verdicts, unverifiable}
+        end
+      end)
+
+    if failures == [],
+      do: {:ok, verdicts, Enum.reverse(unverifiable)},
+      else: {:error, Enum.reverse(failures)}
+  end
+
+  # An unresolved launch environment is never guessed at: the resolver is not
+  # asked, whatever it would have said for the server's own home.
+  defp skill_verdict({:ok, opts}, provider, skill, backend),
+    do: SkillResolver.resolve(provider, skill, backend, opts)
+
+  defp skill_verdict({:unverifiable, _class}, _provider, _skill, _backend), do: :unverifiable
+
   defp phase_provider_and_model_check(phase_spec, state, cache) do
     declared_provider = Map.get(phase_spec, :provider)
     %ModelResolution{model: model, source: model_source} = resolve_phase_model(phase_spec, state)
 
-    if is_nil(declared_provider) and is_nil(model) do
+    if is_nil(declared_provider) and is_nil(model) and not command_phase?(phase_spec) do
       {:ok, cache}
     else
       name = phase_spec_name(phase_spec)
@@ -830,7 +1319,9 @@ defmodule ForemanServer.Workflow.RunExecutor do
               model: model,
               model_source: model_source,
               class: :provider_not_installed,
-              detail: ReadinessCheck.install_hint(provider)
+              detail: ReadinessCheck.install_hint(provider),
+              backend: ExecutionProfile.host_backend(),
+              skill: Validator.skill_from_command(Map.get(phase_spec, :command))
             }}, cache}
 
         true ->
@@ -1179,6 +1670,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
       with {:ok, state} <- snapshot_checkout(state, worktree_record) do
         {:ok,
          state
+         |> Map.delete(:prior_worktree_discarded)
          |> remember_run_worktree(worktree_record)
          |> remember_worktree(worktree_record)
          |> load_run_worktrees(), worktree_record}
@@ -1284,11 +1776,14 @@ defmodule ForemanServer.Workflow.RunExecutor do
         index: phase_index,
         name: Map.get(phase_spec, :name),
         attempt: 1,
-        artifact_template: Map.get(phase_spec, :artifact_template) || %{}
+        artifact_template: Map.get(phase_spec, :artifact_template) || %{},
+        input_artifacts: phase_input_artifacts(state.run_id, phase_index),
+        execution_profile: launch_execution_profile(state, phase_index)
       }
       |> Map.merge(
         ForemanServer.Workflow.StallPolicy.payload_fields(Map.get(phase_spec, :stall_detection))
       )
+      |> maybe_put_discard(state)
 
     dispatch_system(
       "phase.start",
@@ -1297,6 +1792,53 @@ defmodule ForemanServer.Workflow.RunExecutor do
       phase_id,
       "phase:#{state.run_id}:#{phase_id}"
     )
+  end
+
+  # What this launch's backend enforces, recorded on `PhaseStarted`. Every
+  # RunExecutor launch is a host workflow launch; the backend value is
+  # `ExecutionProfile`'s, not named here. Cleanup follows the workflow's
+  # `worktree:` block (a run whose workflow disables it has no worktree).
+  defp launch_execution_profile(state, phase_index) do
+    cleanup =
+      case state.worktree_spec do
+        %{enabled: false} ->
+          :none
+
+        spec ->
+          case worktree_cleanup(spec || %{}) do
+            {:ok, cleanup} -> cleanup
+            {:error, {:worktree_cleanup_invalid, other}} -> other
+          end
+      end
+
+    ExecutionProfile.host_backend()
+    |> ExecutionProfile.resolve(
+      cleanup: cleanup,
+      skill: state |> Map.get(:skill_verdicts, %{}) |> Map.get(phase_index)
+    )
+    |> ExecutionProfile.to_map()
+  end
+
+  # The artifact references a phase starts from. A phase reads one input at most:
+  # the artifact the PREVIOUS phase (`number - 1`) recorded on `PhaseCompleted`,
+  # which `CommandRouter.dispatch/2` has already folded into the projection when
+  # the next phase starts. Phase 1, and a phase whose predecessor recorded no
+  # artifact, has none: `[]`. `index` is the position in the list, from 0.
+  defp phase_input_artifacts(_run_id, number) when number <= 1, do: []
+
+  defp phase_input_artifacts(run_id, number) do
+    source_phase = Identity.phase_id(run_id, number - 1)
+
+    run_id
+    |> ProjectionStore.phases_for_run()
+    |> Enum.find(&(&1.phase_id == source_phase))
+    |> case do
+      %{artifact: %{path: path, sha256: sha256}} when is_binary(path) and is_binary(sha256) ->
+        [%{index: 0, source_phase: source_phase, path: path, sha256: sha256}]
+
+      _ ->
+        []
+    end
   end
 
   @default_activation_timeout_ms 30_000
@@ -1431,11 +1973,22 @@ defmodule ForemanServer.Workflow.RunExecutor do
          steering
        ) do
     state = with_run_worktrees(state, worktree_record)
-    request = build_request(state, phase_spec, phase_index, worktree_record)
+
+    # The launch's ONE `ProjectContext.build/1`: the prompt template variables, the
+    # command template, `ProjectContext.deliver/3` and the `PhaseContextRecorded`
+    # record all take this value, so the recorded hash describes the text the prompt
+    # used and the agent received.
+    context_bundle = project_context_bundle(state, :warning)
+    request = build_request(state, phase_spec, phase_index, worktree_record, context_bundle)
 
     # Decided before anything is recorded or written for the launch: a fork that cannot be honoured
     # fails the phase here, it never starts a blank agent (`fork_for_launch/3`).
-    with {:ok, fork} <- fork_for_launch(state, index, JidoHarness.request_provider(request)) do
+    #
+    # The record is dispatched before the agent starts. A record that cannot be
+    # appended fails the launch (the error reaches the phase as any launch failure):
+    # a phase must not run on context nobody can later inspect.
+    with {:ok, fork} <- fork_for_launch(state, index, JidoHarness.request_provider(request)),
+         :ok <- record_project_context(state, phase_index, context_bundle) do
       build_agent_launch(
         state,
         phase_spec,
@@ -1445,7 +1998,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
         resolved,
         steering,
         request,
-        fork
+        fork,
+        context_bundle
       )
     end
   end
@@ -1459,7 +2013,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
          resolved,
          steering,
          request,
-         fork
+         fork,
+         context_bundle
        ) do
     prompt_steering = if phase_action(phase_spec) == :command, do: [], else: steering
     request = %{request | prompt: append_steering_block(request.prompt, prompt_steering)}
@@ -1467,16 +2022,21 @@ defmodule ForemanServer.Workflow.RunExecutor do
     prompt =
       case phase_action(phase_spec) do
         :command ->
-          render_command_template(phase_value(phase_spec, :command), state, phase_spec, index) ||
+          render_command_template(
+            phase_value(phase_spec, :command),
+            state,
+            phase_spec,
+            index,
+            context_bundle
+          ) ||
             request.prompt
 
         _ ->
           request.prompt
       end
 
-    # One context build per launch. `ProjectContext.deliver/3` picks system
-    # prompt vs prompt prefix by provider capability.
-    context_bundle = project_context_bundle(state, :warning)
+    # `ProjectContext.deliver/3` picks system prompt vs prompt prefix by provider
+    # capability.
 
     {context_system_text, prompt} =
       ProjectContext.deliver(
@@ -1885,6 +2445,14 @@ defmodule ForemanServer.Workflow.RunExecutor do
          :ok <- finish_task_failure(state, reason, provider_attempt) do
       :ok
     else
+      {:error, {:provider_fail_not_attempted, refusal}} = error ->
+        Logger.error(
+          "RunExecutor #{state.run_id} task-provider fail for #{phase_id} was not attempted: " <>
+            "effect recovery refused it (#{inspect(refusal)}); the run still failed"
+        )
+
+        error
+
       {:error, reason} ->
         Logger.error(
           "RunExecutor phase.fail dispatch for #{state.run_id}/#{phase_id} failed: #{inspect(reason)}"
@@ -1986,7 +2554,9 @@ defmodule ForemanServer.Workflow.RunExecutor do
     primary_result =
       case {others, ProjectionStore.pr_association(state.run_id)} do
         {[_ | _], {:ok, %{pr_url: url}}} when is_binary(url) ->
+          head = reviewed_head(state)
           signal_pr_ready(state, url)
+          record_review_findings(state, url, head)
           {:ok, url}
 
         _ ->
@@ -2014,6 +2584,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
   end
 
   defp finalize_primary_pr(state) do
+    # The reviewed head is taken BEFORE AutoPR/PhasePR push: the local tip of the run branch.
+    head = reviewed_head(state)
     result = maybe_auto_pr(state)
 
     case result do
@@ -2026,6 +2598,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
         Logger.info("RunExecutor #{state.run_id} finalize_run: auto-pr created #{pr_url}")
         record_pr_association(state.run_id, pr_url)
         signal_pr_ready(state, pr_url)
+        record_review_findings(state, pr_url, head)
 
       {:error, reason} ->
         # The run produced commits but no PR. Logging at warning previously
@@ -2038,6 +2611,121 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
     result
   end
+
+  # TRD-034: the commit the review was produced for, the run branch's local tip. An
+  # `{:error, reason}` when it cannot be resolved (the findings are then not recorded and the PR
+  # evaluates `findings_absent`).
+  defp reviewed_head(state) do
+    with {:ok, base_branch} <- run_base_branch(state),
+         context = auto_pr_context(state, base_branch),
+         {:ok, branch} <- AutoPR.resolve_head_branch(context),
+         {:ok, sha} <- resolve_revision(context.cwd, "refs/heads/" <> branch) do
+      sha
+    else
+      {:error, reason} ->
+        {:error, reason}
+    end
+  rescue
+    error -> {:error, {:head_unresolvable, Exception.message(error)}}
+  end
+
+  # Reads the completion artifact once and records the typed outcome (`run.pr.findings`) for
+  # `pr_url` at `head`, independently of the ready signal. Best effort but loud: a failure
+  # appends nothing, is logged at error level, and the PR evaluates `findings_absent`.
+  defp record_review_findings(state, pr_url, {:error, reason}) do
+    Logger.error(
+      "RunExecutor #{state.run_id} finalize_run: findings of PR #{pr_url} NOT recorded, the " <>
+        "local tip could not be resolved: #{inspect(reason)}"
+    )
+
+    {:error, reason}
+  end
+
+  defp record_review_findings(state, pr_url, head) when is_binary(head) do
+    artifact_path = completion_artifact_path(state)
+    # One read: the findings, the judgement and the digest of the artifact all come from the
+    # same bytes.
+    loaded = ReviewFindings.load(artifact_path)
+    outcome = parse_loaded_findings(loaded)
+    judgement = parse_loaded_judgement(loaded)
+    recorded_at = System.system_time(:millisecond)
+
+    payload =
+      %{
+        run_id: state.run_id,
+        project_id: project_id(state),
+        task_id: task_id(state),
+        pr_url: pr_url,
+        head_sha: head,
+        artifact_path: artifact_path,
+        artifact_sha256: artifact_sha256(loaded, artifact_path),
+        judgement: judgement,
+        recorded_at: recorded_at
+      }
+      |> Map.merge(findings_payload(outcome))
+
+    case dispatch_system_command(
+           "run.pr.findings",
+           Identity.run_pr_findings_command_id(state.run_id, nil, head, recorded_at),
+           "run:#{state.run_id}",
+           payload
+         ) do
+      {:ok, _} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.error(
+          "RunExecutor #{state.run_id} finalize_run: findings of PR #{pr_url} NOT recorded: " <>
+            "#{inspect(reason)}"
+        )
+
+        {:error, reason}
+    end
+  end
+
+  defp findings_payload({:recorded, %ReviewFindings.Record{findings: findings}}) do
+    %{
+      status: "recorded",
+      findings: Enum.map(findings, &Map.from_struct/1),
+      defect: nil,
+      defect_detail: nil
+    }
+  end
+
+  defp findings_payload(:absent),
+    do: %{status: "absent", findings: [], defect: nil, defect_detail: nil}
+
+  defp findings_payload(outcome) do
+    {defect, detail} = ReviewFindings.defect(outcome)
+
+    %{
+      status: "malformed",
+      findings: [],
+      defect: Atom.to_string(defect),
+      defect_detail: detail
+    }
+  end
+
+  defp parse_loaded_findings({:ok, contents}), do: ReviewFindings.parse(contents)
+  defp parse_loaded_findings(other), do: other
+
+  # TRD-041: an artifact that was not read has no judgement block either.
+  defp parse_loaded_judgement({:ok, contents}), do: PrRisk.parse_judgement(contents)
+  defp parse_loaded_judgement(_not_loaded), do: PrRisk.absent()
+
+  # The sha of the bytes the findings and the judgement were parsed from. An artifact that could
+  # not be loaded within the bound (too large) is still hashed, so the operator can name it.
+  defp artifact_sha256({:ok, contents}, _path) when is_binary(contents),
+    do: :crypto.hash(:sha256, contents) |> Base.encode16(case: :lower)
+
+  defp artifact_sha256(_loaded, path) when is_binary(path) do
+    case File.read(path) do
+      {:ok, bytes} -> :crypto.hash(:sha256, bytes) |> Base.encode16(case: :lower)
+      {:error, _} -> nil
+    end
+  end
+
+  defp artifact_sha256(_loaded, _path), do: nil
 
   # AutoPR's `{:ok, pr_url}` used to be logged and dropped here, so a PR could
   # exist on GitHub while every read model denied it:
@@ -2076,22 +2764,15 @@ defmodule ForemanServer.Workflow.RunExecutor do
   defp signal_pr_ready(state, pr_url) do
     with {:ok, base_branch} <- run_base_branch(state),
          {:ok, head_branch} <- AutoPR.resolve_head_branch(auto_pr_context(state, base_branch)),
-         {:ok, head_sha} <- resolve_revision(vcs_working_directory(state), head_branch),
-         {:ok, _} <-
-           dispatch_system_command(
-             "run.pr.ready",
-             Identity.run_pr_ready_command_id(state.run_id),
-             "run:#{state.run_id}",
-             %{
-               run_id: state.run_id,
-               project_id: project_id(state),
-               task_id: task_id(state),
-               pr_url: pr_url,
-               branch_name: head_branch,
-               head_sha: head_sha,
-               base_branch: base_branch
-             }
-           ) do
+         :ok <-
+           PrReadySignal.signal(%{
+             run_id: state.run_id,
+             project_id: project_id(state),
+             task_id: task_id(state),
+             pr_url: pr_url,
+             branch_name: head_branch,
+             base_branch: base_branch
+           }) do
       :ok
     else
       {:error, reason} ->
@@ -2319,16 +3000,16 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
   end
 
-  defp build_request(state, phase_spec, index, worktree_record) do
+  defp build_request(state, phase_spec, index, worktree_record, context_bundle) do
     context = base_context(state, phase_spec, index, worktree_record)
 
     %{
       context: context,
-      prompt: read_phase_prompt(state, phase_spec, index, context)
+      prompt: read_phase_prompt(state, phase_spec, index, context, context_bundle)
     }
   end
 
-  defp read_phase_prompt(state, phase_spec, index, context) do
+  defp read_phase_prompt(state, phase_spec, index, context, context_bundle) do
     content =
       case Map.get(phase_spec, :prompt_path) do
         nil ->
@@ -2347,11 +3028,11 @@ defmodule ForemanServer.Workflow.RunExecutor do
           end
       end
 
-    render_prompt_template(content, state, phase_spec, index, context)
+    render_prompt_template(content, state, phase_spec, index, context, context_bundle)
   end
 
-  defp render_prompt_template(content, state, phase_spec, index, context) do
-    assigns = prompt_template_assigns(state, phase_spec, index, context)
+  defp render_prompt_template(content, state, phase_spec, index, context, context_bundle) do
+    assigns = prompt_template_assigns(state, phase_spec, index, context, context_bundle)
 
     result =
       content
@@ -2384,6 +3065,76 @@ defmodule ForemanServer.Workflow.RunExecutor do
   end
 
   defp log_project_context(_state, _bundle), do: :ok
+
+  # Records what the launch's bundle delivered, through the `phase.context` command
+  # on the Phase aggregate (never an append from here). A launch with no context
+  # (no project, no sections: `system_text` nil) records nothing.
+  #
+  # A delivery the phase entry already records (same `sha256`) is not dispatched
+  # again: one record per delivery, decided by the entry's state. A delivery that
+  # differs, or follows a resumed retry that cleared the entry, is recorded under an
+  # id that cannot collide with an earlier delivery of the same hash (see
+  # `dispatch_project_context/4`). A rejected or failed dispatch is returned, never
+  # dropped (AGENTS.md 5.2).
+  defp record_project_context(state, phase_index, %{system_text: text} = bundle)
+       when is_binary(text) and text != "" do
+    phase_id = Identity.phase_id(state.run_id, phase_index)
+
+    payload = %{
+      run_id: state.run_id,
+      phase_id: phase_id,
+      sections: Enum.map(bundle.sections, &%{id: to_string(&1.id), bytes: byte_size(&1.body)}),
+      sha256: bundle.sha256,
+      bytes: bundle.bytes,
+      truncated:
+        Enum.map(bundle.truncated, fn cut ->
+          %{cut | section: to_string(cut.section)}
+        end),
+      redactions: bundle.redactions,
+      redaction_scope: "project_context_sections"
+    }
+
+    case current_context_sha256(state.run_id, phase_id) do
+      sha when sha == bundle.sha256 ->
+        :ok
+
+      _differs_or_absent ->
+        dispatch_project_context(state, phase_id, payload, bundle.sha256)
+    end
+  end
+
+  defp record_project_context(_state, _phase_index, _bundle), do: :ok
+
+  defp current_context_sha256(run_id, phase_id) do
+    case phase_entry(run_id, phase_id) do
+      %{context: %{sha256: sha}} -> sha
+      _ -> nil
+    end
+  end
+
+  defp phase_entry(run_id, phase_id),
+    do: run_id |> ProjectionStore.phases_for_run() |> Enum.find(&(&1.phase_id == phase_id))
+
+  # The id carries how many context records the phase has taken (0 before the
+  # first), which grows with every record and survives the resumed retry that clears
+  # the entry's `context`. So two deliveries of the same hash that are not adjacent
+  # (A, B, A) never share an id, while the SAME command replayed (a crash between the
+  # append and its acknowledgement) still does and appends once. Adjacent identical
+  # deliveries never reach here: the entry already says what the record would.
+  defp dispatch_project_context(state, phase_id, payload, sha256) do
+    prior = (phase_entry(state.run_id, phase_id) || %{}) |> Map.get(:context_records, 0)
+
+    case dispatch_system(
+           "phase.context",
+           payload,
+           state.run_id,
+           "#{phase_id}:#{Incarnation.id()}:#{prior}:#{sha256}",
+           "phase:#{state.run_id}:#{phase_id}"
+         ) do
+      {:ok, _} -> :ok
+      {:error, reason} -> {:error, {:project_context_record_failed, reason}}
+    end
+  end
 
   # The evidence AC-005-2 / AC-006-1 ask for, log-only (TRD OTD-2): the model THIS
   # phase's driver is handed, the rule that chose it, and the workflow manifest
@@ -2511,11 +3262,11 @@ defmodule ForemanServer.Workflow.RunExecutor do
     String.trim(@command_phase_inbox_progress_system_prompt)
   end
 
-  defp render_command_template(nil, _state, _phase_spec, _index), do: nil
+  defp render_command_template(nil, _state, _phase_spec, _index, _context_bundle), do: nil
 
-  defp render_command_template(command, state, phase_spec, index)
+  defp render_command_template(command, state, phase_spec, index, context_bundle)
        when is_binary(command) do
-    assigns = prompt_template_assigns(state, phase_spec, index, %{})
+    assigns = prompt_template_assigns(state, phase_spec, index, %{}, context_bundle)
 
     Regex.replace(~r/\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}/, command, fn _match, key ->
       case Map.get(assigns, key) do
@@ -2548,7 +3299,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end)
   end
 
-  def prompt_template_assigns(state, phase_spec, index, context) do
+  def prompt_template_assigns(state, phase_spec, index, context, context_bundle) do
     phase_index = prompt_phase_index(phase_spec, index)
     artifact_path = __MODULE__.ArtifactTemplate.path(state, phase_spec, phase_index)
 
@@ -2560,7 +3311,6 @@ defmodule ForemanServer.Workflow.RunExecutor do
       |> Enum.map(fn {key, value} -> {to_string(key), render_template_value(value)} end)
       |> Map.new()
 
-    context_bundle = project_context_bundle(state, :debug)
     repositories = prompt_repositories(state)
 
     Map.merge(base, %{
@@ -3059,8 +3809,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
          :ok <- assert_safe_path_identifier(worktree_task_id(state)),
          :ok <- assert_safe_path_identifier(state.run_id),
          {:ok, project_root, base_ref, implementation_key, trd_scope} <-
-           resolve_run_base(state, spec),
-         {:ok, base_ref} <- apply_source_branch(state, project_root, base_ref, implementation_key),
+           resolve_provisioned_base(state, spec),
          {:ok, cleanup} <- worktree_cleanup(spec),
          phase_id = Identity.phase_id(state.run_id, phase_index),
          operation_id = Worktree.operation_id(state.run_id, nil),
@@ -3363,6 +4112,18 @@ defmodule ForemanServer.Workflow.RunExecutor do
       cleanup: primary.cleanup,
       repo_id: entry.repo_id
     }
+  end
+
+  # The base a run's worktree is cut from, exactly as provisioning computes it: the resolved base
+  # (`resolve_run_base/2`), replaced by the tip of the task's `source_branch` when it has one
+  # (`apply_source_branch/4`). Provisioning and the resume pre-check both use this one function,
+  # so a base the pre-check accepts is a base provisioning can use.
+  defp resolve_provisioned_base(state, spec) do
+    with {:ok, project_root, base_ref, implementation_key, trd_scope} <-
+           resolve_run_base(state, spec),
+         {:ok, base_ref} <- apply_source_branch(state, project_root, base_ref, implementation_key) do
+      {:ok, project_root, base_ref, implementation_key, trd_scope}
+    end
   end
 
   # An ImplementationContext is detected by the presence of the values it
@@ -4830,8 +5591,15 @@ defmodule ForemanServer.Workflow.RunExecutor do
       )
 
   @doc false
-  def __render_command_template_for_test__(command, state, phase_spec, index),
-    do: render_command_template(command, state, PhaseSpec.normalize(phase_spec), index)
+  def __render_command_template_for_test__(command, state, phase_spec, index, context_bundle),
+    do:
+      render_command_template(
+        command,
+        state,
+        PhaseSpec.normalize(phase_spec),
+        index,
+        context_bundle
+      )
 
   @doc false
   def __worktree_task_id_for_test__(task, run_id),
@@ -4854,6 +5622,15 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   @doc false
   def __rehydrate_resume_context_for_test__(state), do: rehydrate_resume_context(state)
+
+  @doc false
+  def __resume_prelude_for_test__(state), do: resume_prelude(state)
+
+  # Runs `handle_kickoff_ready/1` (resume prelude, then the first phase on
+  # success) as the GenServer callback result; it skips only the provider and
+  # model preflight that precedes it in `kickoff_preflight/1`.
+  @doc false
+  def __handle_kickoff_ready_for_test__(state), do: handle_kickoff_ready(state)
 
   @doc false
   def __resolve_run_repo_set_for_test__(state), do: resolve_run_repo_set(state)
@@ -4958,7 +5735,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
                project_id(state),
                provider_task_id(state),
                state.run_id,
-               completion_artifact_path(state)
+               completion_artifact_path(state),
+               completion_commit_sha(state)
              ) do
           {:ok, :already_terminal} -> :ok
           {:ok, _issue} -> dispatch_task_execution_complete(state)
@@ -4991,9 +5769,28 @@ defmodule ForemanServer.Workflow.RunExecutor do
           })
 
         try do
-          case fail(project_id(state), provider_task_id(state), state.run_id, failure_reason) do
+          case TaskProviderEffect.run(
+                 state.run_id,
+                 project_id(state),
+                 :fail,
+                 provider_task_id(state),
+                 fn ->
+                   fail(project_id(state), provider_task_id(state), state.run_id, failure_reason)
+                 end
+               ) do
             {:ok, _issue} ->
               :provider_failed
+
+            {:error, {kind, _detail} = refusal}
+            when kind in [
+                   :effect_unresolved,
+                   :effect_undecided,
+                   :effect_check_failed,
+                   :effect_marker_malformed,
+                   :intent_not_recorded
+                 ] ->
+              # `Effect.run/4` refused: the provider was never called.
+              {:permanent, {:provider_fail_not_attempted, refusal}}
 
             {:error, error_reason} ->
               case classify_fail_reason(error_reason) do
@@ -5205,9 +6002,11 @@ defmodule ForemanServer.Workflow.RunExecutor do
     with {:ok, project} <- fetch_project_projection(project_id),
          {:ok, task_provider} <- fetch_task_provider(project),
          {:ok, project_config} <- fetch_project_config(task_provider),
-         {:ok, database_path} <- fetch_database_path(project_config),
+         {:ok, %{provider_module: registered_module}} <-
+           TaskProviderRegistry.project_config(project_id),
+         {:ok, binding} <- fetch_storage_binding(registered_module, project_config),
          {:ok, provider_module} <-
-           TaskProviderRegistry.route(transition, {project_id, database_path}) do
+           TaskProviderRegistry.route(transition, {project_id, binding}) do
       project_config =
         if run_id && run_id != "",
           do: Map.put(project_config, :run_id, run_id),
@@ -5244,10 +6043,12 @@ defmodule ForemanServer.Workflow.RunExecutor do
       else: {:error, :task_provider_not_configured}
   end
 
-  defp fetch_database_path(project_config) do
-    case Map.get(project_config, :database_path) || Map.get(project_config, "database_path") do
-      database_path when is_binary(database_path) and database_path != "" -> {:ok, database_path}
-      _ -> {:error, :task_provider_not_configured}
+  # The project's binding to its provider's storage: the config key the provider's declared storage
+  # scheme names (`database_path` for `:sqlite`, `cwd` for `:cli_process`).
+  defp fetch_storage_binding(provider_module, project_config) do
+    case StorageBinding.fetch(provider_module, project_config) do
+      {:ok, binding} -> {:ok, binding}
+      {:error, _reason} -> {:error, :task_provider_not_configured}
     end
   end
 
@@ -5283,6 +6084,39 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
   end
 
+  # The one commit a completion may name as evidence: the newest commit the run itself made on its
+  # branch, the head of `base_ref..HEAD` in the run's worktree. `base_ref` is the commit the
+  # worktree was cut from, so a run that made no commit has an empty list and NO sha: HEAD is then
+  # the base, a commit that predates the run, and naming it would be a false completion claim. That
+  # covers a clean tree after every phase and a run whose phases all declare `commit: false`.
+  # Commits the agent made itself count along with Foreman's phase commits, so a phase whose
+  # commit step reports `:nothing_to_commit` still yields one. `finalize_run/1` reaches the close
+  # only after `finish_phases/1`, so every phase's commit step has already run by now.
+  defp completion_commit_sha(state) do
+    case Map.get(state, :run_worktree) do
+      nil ->
+        nil
+
+      %{worktree_path: path, base_ref: base_ref} when is_binary(path) and is_binary(base_ref) ->
+        case JobsiteGit.commits_between(path, base_ref, "HEAD") do
+          # `git log` lists the head first.
+          {:ok, [%{sha: sha} | _older]} ->
+            sha
+
+          {:ok, []} ->
+            nil
+
+          {:error, %JobsiteError{} = error} ->
+            Logger.warning(
+              "RunExecutor #{state.run_id} could not list the commits its run made in #{path}, " <>
+                "so its completion names none: #{inspect(error)}"
+            )
+
+            nil
+        end
+    end
+  end
+
   defp build_failure_token(run_id, reason) do
     failure_reason = normalize_failure_reason(reason)
 
@@ -5303,6 +6137,12 @@ defmodule ForemanServer.Workflow.RunExecutor do
     |> Map.put(:artifact_path, artifact_path)
     |> Map.put(:transition_comment, transition_comment)
   end
+
+  defp completion_token(run_id, artifact_path, nil),
+    do: %{run_id: run_id, artifact_path: artifact_path}
+
+  defp completion_token(run_id, artifact_path, commit_sha),
+    do: %{run_id: run_id, artifact_path: artifact_path, commit_sha: commit_sha}
 
   defp normalize_failure_reason(%FailureCause{} = reason),
     do: %{reason: FailureCause.render(reason)}
@@ -5329,27 +6169,55 @@ defmodule ForemanServer.Workflow.RunExecutor do
     "foreman-run:#{run_id}:#{artifact_path}"
   end
 
+  # A claim another actor holds is refused with one of `@claim_refusal_codes`. Foreman refreshes
+  # its ready set exactly once: a task that is no longer ready is lost, one that is still ready is
+  # claimed once more, and a claim refused again is lost too. Losing a claim fails the run before
+  # any phase dispatches, which drops the task from the dispatch set, and records the loss on
+  # `[:foreman_server, :task_provider, :claim, :lost]`. There is no third attempt. Any other
+  # failure, a failed refresh included, proves nothing about the claim and is returned as it came.
   defp maybe_retry_lost_claim(
-         {:error, %{code: "NOT_CLAIMABLE"} = error},
+         {:error, %ProviderError{code: code} = refusal},
          provider_module,
          project_config,
-         task_id
-       ) do
+         task_id,
+         actor
+       )
+       when code in @claim_refusal_codes do
     case provider_module.list_ready(project_config, []) do
       {:ok, issues} when is_list(issues) ->
         if Enum.any?(issues, &issue_matches_task_id?(&1, task_id)) do
-          {:error, error}
+          retry_refused_claim(provider_module, project_config, task_id, actor)
         else
-          TaskProviderTelemetry.emit(@claim_lost_event, %{count: 1}, %{})
-          {:error, error}
+          claim_lost(refusal)
         end
 
-      _other ->
-        {:error, error}
+      other ->
+        Logger.warning(
+          "RunExecutor claim #{task_id}: refreshing the ready set after a refused claim " <>
+            "did not return a list of issues: #{inspect(other)}"
+        )
+
+        {:error, refusal}
     end
   end
 
-  defp maybe_retry_lost_claim(result, _provider_module, _project_config, _task_id), do: result
+  defp maybe_retry_lost_claim(result, _provider_module, _project_config, _task_id, _actor),
+    do: result
+
+  defp retry_refused_claim(provider_module, project_config, task_id, actor) do
+    case provider_module.claim(task_id, actor, project_config) do
+      {:error, %ProviderError{code: code} = refusal} when code in @claim_refusal_codes ->
+        claim_lost(refusal)
+
+      result ->
+        result
+    end
+  end
+
+  defp claim_lost(refusal) do
+    TaskProviderTelemetry.emit(@claim_lost_event, %{count: 1}, %{})
+    {:error, refusal}
+  end
 
   defp issue_matches_task_id?(issue, task_id) when is_map(issue) do
     Map.get(issue, :id) == task_id || Map.get(issue, "id") == task_id

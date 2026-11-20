@@ -16,9 +16,12 @@ defmodule ForemanServer.PrCreate do
   `{:run_not_found, id}`, `{:unsupported_subject, :jobsite}` (a jobsite thread has no
   run stream; spike E9-SP1), `{:pr_already_associated, url}`, `:no_head_branch`,
   `:no_base_branch`, `:no_commits_to_propose`, `{:project_unresolved, id}` and AutoPR's
-  own errors. A PR that already exists for the branch (a retry after the association
-  write failed) is adopted, not duplicated; an association whose `PrCreated` was never
-  recorded (the dispatch after `execute/1` failed) is resumed by the retry, not refused.
+  own errors (`{:pr_lookup_mismatch, url, expected, actual}` among them). A PR that already
+  exists for the branch (a retry after the association write failed) is adopted, not
+  duplicated: `AutoPR` asks GitHub for it before anything is pushed or created
+  (`GitHub.PrLookup`: this repository's PR whose head is the pushed tip) and never reads
+  `gh`'s text. An association whose `PrCreated` was never recorded (the dispatch after
+  `execute/1` failed) is resumed by the retry, not refused.
 
   The PR enters the merge gate exactly as the PR of a run's own AutoPR does: once it is
   opened and associated, `execute/1` signals `run.pr.ready` (`PrReady`: the PR url, its
@@ -33,7 +36,7 @@ defmodule ForemanServer.PrCreate do
   `{output, exit_code}`); without it the installed `git`/`gh` run.
   """
 
-  alias ForemanServer.{CommandGateway, EventStore, Identity, PrAssociate, ProjectionStore}
+  alias ForemanServer.{EventStore, PrAssociate, PrReadySignal, ProjectionStore}
   alias ForemanServer.Workflow.AutoPR
 
   @runner_key {__MODULE__, :command_runner}
@@ -100,52 +103,28 @@ defmodule ForemanServer.PrCreate do
   end
 
   # `RunExecutor` and `RepoPr` signal the same command for the PRs they open, with the same
-  # deterministic id, so a repeat (a retry, a PR that already had its gate) is a no-op.
-  defp signal_ready(run, run_id, pr_url, project, head, base) do
-    with {:ok, head_sha} <- head_sha(project, head),
-         {:ok, _spec} <-
-           CommandGateway.dispatch_system(%{
-             type: "run.pr.ready",
-             command_id: Identity.run_pr_ready_command_id(run_id),
-             aggregate_id: "run:#{run_id}",
-             payload: %{
-               run_id: run_id,
-               project_id: run.project_id,
-               task_id: run.task_id,
-               pr_url: pr_url,
-               branch_name: head,
-               head_sha: head_sha,
-               base_branch: base
-             }
-           }) do
-      :ok
-    else
+  # deterministic id, so a repeat (a retry, a PR that already had its gate) is a no-op. The head
+  # recorded is the one GitHub names (`PrReadySignal`), never a local revision.
+  defp signal_ready(run, run_id, pr_url, _project, head, base) do
+    attrs = %{
+      run_id: run_id,
+      project_id: run.project_id,
+      task_id: run.task_id,
+      pr_url: pr_url,
+      branch_name: head,
+      base_branch: base
+    }
+
+    case PrReadySignal.signal(attrs, runner_opts()) do
+      :ok -> :ok
       {:error, reason} -> {:error, {:pr_ready_signal_failed, reason}}
     end
   end
 
-  # The commit the head branch points at in the project checkout (the branch was just pushed
-  # from there): the head `PrReady` records, from which the merge pin starts.
-  defp head_sha(project, branch) do
-    case run_command("git", ["rev-parse", "--verify", branch <> "^{commit}"],
-           stderr_to_stdout: true,
-           cd: project
-         ) do
-      {output, 0} ->
-        case output |> String.trim() |> String.downcase() do
-          "" -> {:error, :empty_revision}
-          sha -> {:ok, sha}
-        end
-
-      {output, _code} ->
-        {:error, {:unresolvable_revision, String.trim(output)}}
-    end
-  end
-
-  defp run_command(cmd, args, opts) do
+  defp runner_opts do
     case :persistent_term.get(@runner_key, :unset) do
-      :unset -> System.cmd(cmd, args, opts)
-      fun -> fun.(cmd, args, opts)
+      :unset -> []
+      fun -> [command_runner: fun]
     end
   end
 
@@ -212,19 +191,7 @@ defmodule ForemanServer.PrCreate do
     case AutoPR.maybe_create_pr(context) do
       {:ok, pr_url} -> {:ok, pr_url}
       :noop -> {:error, :no_commits_to_propose}
-      {:error, {:gh_pr_create_failed, _code, output} = error} -> adopt_existing(output, error)
       {:error, _} = error -> error
-    end
-  end
-
-  # `gh` answers "a pull request for branch X already exists: <url>" when a previous
-  # attempt opened it but the association was never recorded.
-  defp adopt_existing(output, error) do
-    with true <- String.contains?(output, "already exists"),
-         [url] <- Regex.run(~r{https://\S+/pull/\d+}, output) do
-      {:ok, url}
-    else
-      _ -> {:error, error}
     end
   end
 

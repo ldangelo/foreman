@@ -421,6 +421,95 @@ func TestProjectUpdateRequiresDatabasePathForBeadsBeforePost(t *testing.T) {
 	}
 }
 
+func kataUpdateServer(t *testing.T, getStatus int, getBody string, posts *[]map[string]any) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet {
+			w.WriteHeader(getStatus)
+			_, _ = w.Write([]byte(getBody))
+			return
+		}
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		*posts = append(*posts, body)
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"status":"accepted"}`))
+	}))
+}
+
+func TestProjectUpdateKataSendsFetchedPathAsCwd(t *testing.T) {
+	var posts []map[string]any
+	srv := kataUpdateServer(t, http.StatusOK, `{"project":{"project_id":"p1","path":"/work/demo"}}`, &posts)
+	defer srv.Close()
+	c := &client.Client{BaseURL: srv.URL, HTTP: srv.Client()}
+
+	captureStdout(t, func() {
+		if err := projectUpdate(c, []string{"--task-provider", "kata", "p1"}); err != nil {
+			t.Fatalf("projectUpdate: %v", err)
+		}
+	})
+	if len(posts) != 1 {
+		t.Fatalf("posts = %d, want 1", len(posts))
+	}
+	payload, _ := posts[0]["payload"].(map[string]any)
+	tp, _ := payload["task_provider"].(map[string]any)
+	cfg, _ := tp["config"].(map[string]any)
+	if tp["provider"] != "kata" || cfg["cwd"] != "/work/demo" {
+		t.Fatalf("task_provider = %#v, want kata with cwd /work/demo", tp)
+	}
+	if _, has := cfg["database_path"]; has {
+		t.Fatalf("config must not carry database_path: %#v", cfg)
+	}
+}
+
+func TestProjectUpdateKataFetchFailureSendsNoUpdate(t *testing.T) {
+	for name, tc := range map[string]struct {
+		status int
+		body   string
+	}{
+		"not found":     {http.StatusNotFound, `{"error":"not_found"}`},
+		"empty path":    {http.StatusOK, `{"project":{"project_id":"p1","path":""}}`},
+		"relative path": {http.StatusOK, `{"project":{"project_id":"p1","path":"rel/dir"}}`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var posts []map[string]any
+			srv := kataUpdateServer(t, tc.status, tc.body, &posts)
+			defer srv.Close()
+			c := &client.Client{BaseURL: srv.URL, HTTP: srv.Client()}
+			if err := projectUpdate(c, []string{"--task-provider", "kata", "p1"}); err == nil {
+				t.Fatal("projectUpdate error = nil, want failure")
+			}
+			if len(posts) != 0 {
+				t.Fatalf("posts = %d, want no update POST", len(posts))
+			}
+		})
+	}
+}
+
+func TestProjectUpdateBeadsDoesNotFetchProject(t *testing.T) {
+	var posts []map[string]any
+	gets := 0
+	inner := kataUpdateServer(t, http.StatusOK, `{}`, &posts)
+	defer inner.Close()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			gets++
+		}
+		inner.Config.Handler.ServeHTTP(w, r)
+	}))
+	defer srv.Close()
+	c := &client.Client{BaseURL: srv.URL, HTTP: srv.Client()}
+	captureStdout(t, func() {
+		if err := projectUpdate(c, []string{"--task-provider", "beads", "--task-provider-database-path", "/abs/b.db", "p1"}); err != nil {
+			t.Fatalf("projectUpdate: %v", err)
+		}
+	})
+	if gets != 0 || len(posts) != 1 {
+		t.Fatalf("gets=%d posts=%d, want 0 and 1", gets, len(posts))
+	}
+}
+
 func TestProjectUpdateRejectsUnsupportedFormatBeforePost(t *testing.T) {
 	var seenMethod string
 	var seenPath string
@@ -1448,5 +1537,71 @@ func TestProjectScheduleCreateRejectionPrintsServerError(t *testing.T) {
 	}
 	if client.ExitCode(err) == 0 {
 		t.Fatal("exit code = 0, want non-zero")
+	}
+}
+
+func TestProjectCreateKataEmitsCwdNotDatabasePath(t *testing.T) {
+	var seen []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"status":"accepted","result":{"events":1}}`))
+	}))
+	defer srv.Close()
+	c := &client.Client{BaseURL: srv.URL, HTTP: srv.Client()}
+
+	captureStdout(t, func() {
+		if err := projectCreate(c, []string{"--id", "project-kata", "--path", "/tmp/kata-ws", "--task-provider", "kata"}); err != nil {
+			t.Fatalf("projectCreate: %v", err)
+		}
+	})
+
+	var env commandEnvelope
+	if err := json.Unmarshal(seen, &env); err != nil {
+		t.Fatalf("decode: %v: %s", err, seen)
+	}
+	tp := env.Payload["task_provider"].(map[string]any)
+	config := tp["config"].(map[string]any)
+	if config["cwd"] != "/tmp/kata-ws" {
+		t.Fatalf("config.cwd = %#v, want /tmp/kata-ws", config["cwd"])
+	}
+	if _, present := config["database_path"]; present {
+		t.Fatalf("config has database_path: %#v", config)
+	}
+}
+
+func TestProjectCreateKataRejectsDatabasePathBeforePost(t *testing.T) {
+	var seenMethod string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenMethod = r.Method
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer srv.Close()
+	c := &client.Client{BaseURL: srv.URL, HTTP: srv.Client()}
+
+	err := projectCreate(c, []string{"--id", "p", "--path", "/tmp/kata-ws", "--task-provider", "kata", "--task-provider-database-path", "/tmp/x.db"})
+	if err == nil || client.ExitCode(err) != 1 {
+		t.Fatalf("err = %v, want usage error exit 1", err)
+	}
+	if !strings.Contains(err.Error(), "--task-provider-database-path is not supported with --task-provider=kata") {
+		t.Fatalf("error = %q", err.Error())
+	}
+	if seenMethod != "" {
+		t.Fatalf("unexpected HTTP call %q", seenMethod)
+	}
+}
+
+func TestProjectGetRendersKataCwd(t *testing.T) {
+	out := captureStdout(t, func() {
+		if err := printProject(map[string]any{"project": map[string]any{
+			"project_id":    "p",
+			"task_provider": map[string]any{"provider": "kata", "config": map[string]any{"cwd": "/tmp/kata-ws"}},
+		}}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(out, "cwd: /tmp/kata-ws") || strings.Contains(out, "database_path:") {
+		t.Fatalf("out = %q", out)
 	}
 }

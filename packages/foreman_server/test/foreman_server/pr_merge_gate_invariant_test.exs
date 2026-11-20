@@ -34,6 +34,9 @@ defmodule ForemanServer.PrMergeGateInvariantTest do
     # the `gh pr create` that PrCreate delegates to
     "workflow/auto_pr.ex",
     "pr_monitor.ex",
+    # TRD-021: the report publisher posts a comment; it must never merge or approve
+    "pr_report/publisher.ex",
+    "github/pr_comment.ex",
     "pr_watch_fold.ex",
     "aggregates/run/pr_watch.ex"
   ]
@@ -147,6 +150,7 @@ defmodule ForemanServer.PrMergeGateInvariantTest do
     assert "run.pr.fix_exhausted" in source_literals("pr_watcher/auto_fix.ex")
     assert "gh" in source_literals("workflow/auto_pr.ex")
     assert "run.pr.watch_stop" in source_literals("pr_watcher/observer.ex")
+    assert "run.pr.comment_published" in source_literals("pr_report/publisher.ex")
   end
 
   test "every command the auto-fix policy can request is a PR-watch fix command, never the gate" do

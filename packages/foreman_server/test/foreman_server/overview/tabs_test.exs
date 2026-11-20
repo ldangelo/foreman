@@ -76,6 +76,163 @@ defmodule ForemanServer.Overview.TabsTest do
            } = row
   end
 
+  describe "pull_requests evidence (TRD-024)" do
+    alias ForemanServer.{PrEvidence, PrWatchFold}
+    alias ForemanServer.Overview.Tabs.PullRequests
+    alias ForemanServer.PrWatch.DTO
+
+    @unit %{"name" => "unit", "kind" => "check_run"}
+
+    defp register(config) do
+      :ok =
+        ProjectionStore.apply_events([
+          %{
+            event_type: "ProjectRegistered",
+            payload: %{project_id: "p", path: "/r/p", config: config}
+          }
+        ])
+    end
+
+    test "a row of a project with the gate off reads off, with no reason" do
+      register(%{})
+      assert %{rows: [%{"evidence" => evidence}]} = Tabs.build("p").pull_requests
+      assert %{"status" => "off", "reasons" => [], "next_actions" => []} = evidence
+    end
+
+    test "a row of a gated project names its status, each reason code and its next actions" do
+      register(%{required_checks: [@unit]})
+      assert %{rows: [%{"evidence" => evidence}]} = Tabs.build("p").pull_requests
+
+      assert evidence["status"] == "ineligible"
+      assert evidence["pr_url"] == "https://g/p/1"
+      codes = Enum.map(evidence["reasons"], & &1["code"])
+      assert "findings_absent" in codes and "risk_missing" in codes
+      assert "rerun_review" in evidence["next_actions"]
+      assert "waive" in evidence["next_actions"]
+    end
+
+    test "a merged or closed PR has no evidence block; an open one in the same project has" do
+      register(%{required_checks: [@unit]})
+
+      settled =
+        for {run, status} <- [{"r-merged", "merged"}, {"r-closed", "closed"}], reduce: [] do
+          acc ->
+            url = "https://g/p/" <> run
+
+            acc ++
+              [
+                %{
+                  event_type: "RunStarted",
+                  payload: %{run_id: run, task_id: "t-" <> run, project_id: "p"}
+                },
+                %{
+                  event_type: "PrReady",
+                  payload: %{run_id: run, project_id: "p", pr_url: url, pr_number: 7}
+                },
+                %{
+                  event_type: "PrUpdated",
+                  payload: %{run_id: run, pr_url: url, pr_status: status, observed_at: 2_000_000}
+                }
+              ]
+        end
+
+      :ok = ProjectionStore.apply_events(settled)
+
+      rows = Tabs.build("p").pull_requests.rows
+      by_run = Map.new(rows, &{&1["run_id"], &1})
+
+      assert %{"pr_state" => "merged", "evidence" => nil} = by_run["r-merged"]
+      assert %{"pr_state" => "closed", "evidence" => nil} = by_run["r-closed"]
+      assert %{"pr_state" => "open", "evidence" => %{"status" => "ineligible"}} = by_run["r1"]
+    end
+
+    test "a project the store does not know reads unknown, never off" do
+      assert %{rows: [%{"evidence" => %{"status" => "unknown", "reasons" => [reason]}}]} =
+               Tabs.build("p").pull_requests
+
+      assert reason["code"] == "evidence_unreadable"
+    end
+
+    test "a run with no observed watch record has no evidence rather than an invented one" do
+      :ok =
+        ProjectionStore.apply_events([
+          %{
+            event_type: "PrAssociated",
+            payload: %{run_id: "r2", pr_url: "https://g/p/2", pr_number: 2}
+          }
+        ])
+
+      register(%{required_checks: [@unit]})
+      rows = Tabs.build("p").pull_requests.rows
+
+      assert %{"evidence" => %{"status" => "ineligible"}} =
+               Enum.find(rows, &(&1["run_id"] == "r1"))
+
+      # whatever the row of r2 holds, it is JSON-safe
+      assert {:ok, _json} = Jason.encode(rows)
+    end
+
+    test "the view bounds agent-written text and lists, keeps them as plain strings" do
+      required = [@unit]
+      long = String.duplicate("B", 5_000)
+
+      findings =
+        for n <- 1..8,
+            do: %{
+              "severity" => "major",
+              "disposition" => "open",
+              "description" => "<script>#{n}</script> " <> long,
+              "path" => "lib/" <> long
+            }
+
+      rationale =
+        for n <- 1..8,
+            do: %{"rule" => "r#{n}", "level" => "high", "basis" => "path", "detail" => long}
+
+      record =
+        "r1"
+        |> PrWatchFold.new_record("https://g/p/1")
+        |> Map.merge(%{status: "open", head_sha: "h1", project_id: "p"})
+        |> PrEvidence.apply_event("ReviewFindingsRecorded", %{
+          head_sha: "h1",
+          status: "recorded",
+          findings: findings,
+          defect_detail: long
+        })
+        |> PrEvidence.apply_event("PrRiskRecorded", %{
+          head_sha: "h1",
+          level: "high",
+          digest: "d",
+          rationale: rationale
+        })
+
+      context = %{
+        policy: {:ok, %{required: required, version: PrEvidence.policy_version(required)}},
+        now_ms: 1,
+        run_status: "completed"
+      }
+
+      view = record |> DTO.from_projection(:pending, context) |> PullRequests.evidence_view()
+
+      assert length(view["findings"]["items"]) == 5
+      assert length(view["risk"]["rationale"]) == 5
+
+      texts =
+        Enum.flat_map(view["findings"]["items"], &[&1["description"], &1["path"]]) ++
+          Enum.map(view["risk"]["rationale"], & &1["detail"]) ++
+          [view["findings"]["defect_detail"]]
+
+      for text <- texts do
+        assert String.length(text) <= 161
+        assert text =~ ~r/^[^\n]*$/
+      end
+
+      # the markup in it is still just a string: the page, not the view, escapes it
+      assert Enum.any?(texts, &String.starts_with?(&1, "<script>"))
+      assert {:ok, _json} = Jason.encode(view)
+    end
+  end
+
   test "scheduled lists the project's schedules from the schedule read model" do
     assert Tabs.build("p").scheduled == %{available: true, rows: []}
 

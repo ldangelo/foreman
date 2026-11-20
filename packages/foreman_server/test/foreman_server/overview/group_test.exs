@@ -97,6 +97,43 @@ defmodule ForemanServer.Overview.GroupTest do
      {:ready_for_review, :review_ready}},
     {[status: "completed", pr_state: :open, review_verdict: "partially_met"],
      {:ready_for_review, :review_ready}},
+    # TRD-024: a pending gate with ineligible/unknown evidence waits on the operator
+    {[status: "completed", pr_state: :open, merge_gate: :pending, evidence_blocked?: true],
+     {:waiting_on_you, :evidence_blocked}},
+    {[status: "completed", pr_state: :open, merge_gate: :pending, evidence_blocked?: false],
+     {:ready_for_review, :pr_ready}},
+    # already approved: the gate decided, so the flag changes nothing (:merge_in_flight is first)
+    {[status: "completed", pr_state: :open, merge_gate: :approved, evidence_blocked?: true],
+     {:landing, :merge_in_flight}},
+    # gate off (no gate hold): the flag is inert
+    {[status: "completed", pr_state: :open, merge_gate: :none, evidence_blocked?: true],
+     {:idle, :review_undetermined}},
+    # earlier PR rules keep their place before the new reason
+    {[
+       status: "completed",
+       pr_state: :open,
+       merge_gate: :pending,
+       checks_state: :failing,
+       evidence_blocked?: true
+     ], {:waiting_on_you, :ci_failing}},
+    {[
+       status: "completed",
+       pr_state: :open,
+       merge_gate: :pending,
+       review_state: :threads_unresolved,
+       evidence_blocked?: true
+     ], {:waiting_on_you, :review_threads}},
+    # a merged PR is resolved whatever its evidence said
+    {[status: "completed", pr_state: :merged, merge_gate: :pending, evidence_blocked?: true],
+     {:resolved, :pr_merged}},
+    # a met verdict does not outrank blocked evidence
+    {[
+       status: "completed",
+       pr_state: :open,
+       merge_gate: :pending,
+       review_verdict: "met",
+       evidence_blocked?: true
+     ], {:waiting_on_you, :evidence_blocked}},
     {[status: "in_progress"], {:working, :in_flight}},
     {[status: "awaiting_worker"], {:working, :in_flight}},
     {[door: :jobsite, status: "starting"], {:working, :in_flight}},
@@ -115,6 +152,14 @@ defmodule ForemanServer.Overview.GroupTest do
       assert Group.classify(input(unquote(Macro.escape(fields)))) ==
                unquote(Macro.escape(expected))
     end
+  end
+
+  test "evidence_blocked sits after merge_in_flight and before pr_ready in the closed set" do
+    reasons = Group.reasons()
+    position = &Enum.find_index(reasons, fn r -> r == &1 end)
+
+    assert position.(:merge_in_flight) < position.(:evidence_blocked)
+    assert position.(:evidence_blocked) < position.(:pr_ready)
   end
 
   test "a merged PR with an open gate is resolved, not ready for review (precedence 1 over 4)" do
@@ -155,7 +200,8 @@ defmodule ForemanServer.Overview.GroupTest do
             questions <- StreamData.integer(0..2),
             resolved? <- StreamData.boolean(),
             paused_reason <- StreamData.member_of([nil, "steer"]),
-            door <- StreamData.member_of([:workflow, :jobsite])
+            door <- StreamData.member_of([:workflow, :jobsite]),
+            blocked? <- StreamData.boolean()
           ) do
       {group, reason} =
         Group.classify(
@@ -168,7 +214,8 @@ defmodule ForemanServer.Overview.GroupTest do
             pending_approvals: approvals,
             open_questions: questions,
             resolved?: resolved?,
-            paused_reason: paused_reason
+            paused_reason: paused_reason,
+            evidence_blocked?: blocked?
           )
         )
 

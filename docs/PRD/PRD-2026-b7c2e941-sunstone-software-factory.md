@@ -29,7 +29,7 @@ The baseline is described in the original design at `packages/foreman_server/doc
 
 | Phase | PRD | Incremental outcome | Dependency |
 |---|---|---|---|
-| **0 — Durable execution and safety foundation** | [Phase 0 PRD](PRD-2026-a804d1c7-phase-0-durable-execution.md) | Assess and establish durable workflow semantics, stage provenance, project context, baseline isolation, and the execution-engine decision. | Foundation; prerequisite to the other phases. |
+| **0 — Durable execution and safety foundation** | [Phase 0 PRD](PRD-2026-a804d1c7-phase-0-durable-execution.md) | Assess and establish durable workflow semantics, stage provenance, project context, baseline isolation, and the execution-engine decision. Forward-pointer: the engine decision is recorded, with its per-criterion evidence, in [`docs/decisions/phase-0-durable-execution-engine.md`](../decisions/phase-0-durable-execution-engine.md). | Foundation; prerequisite to the other phases. |
 | **1 — Trustworthy PR delivery** | [Phase 1 PRD](PRD-2026-c12e5f93-phase-1-trustworthy-pr-delivery.md) | Enforce machine-verifiable quality evidence; publish structured risk findings; keep all merges human-approved. | Phase 0. |
 | **2 — Bounded merge automation** | [Phase 2 PRD](PRD-2026-9b7306a2-phase-2-bounded-merge-automation.md) | Opt-in MEDIUM/LOW auto-merge only under explicit, verified safeguards. | Phase 1 exit criteria. |
 | **3 — Idea-to-spec lifecycle** | [Phase 3 PRD](PRD-2026-e4f18c60-phase-3-idea-to-spec.md) | Add idea cultivation/go-no-go and independently reviewable PRD/TRD stages. | Phase 0; does not require Phase 2. |

@@ -185,13 +185,31 @@ defmodule ForemanServer.LibraryDeliveryTest do
   describe "workflow door" do
     defp launch_env(project_id) do
       state = %{
-        run_id: "run-lib",
+        run_id: "run-lib-#{project_id}",
         plan_context: %{},
         task: %{task_id: "t1", project_id: project_id},
         completed: [],
         phase_specs: [],
         artifact_base: System.tmp_dir!()
       }
+
+      # A launch records its project context on the phase the executor started.
+      phase_id = ForemanServer.Identity.phase_id(state.run_id, 1)
+
+      {:ok, _} =
+        ForemanServer.CommandGateway.dispatch_system(%{
+          type: "phase.start",
+          command_id: "test:library-launch:#{state.run_id}",
+          aggregate_id: "phase:#{state.run_id}:#{phase_id}",
+          payload: %{
+            run_id: state.run_id,
+            phase_id: phase_id,
+            index: 1,
+            name: "implement",
+            attempt: 1,
+            artifact_template: %{}
+          }
+        })
 
       {:ok, launch} =
         RunExecutor.__prepare_agent_launch_for_test__(state, %{name: :implement}, 0, 1, nil)

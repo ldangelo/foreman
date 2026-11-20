@@ -5,6 +5,7 @@ defmodule ForemanServerWeb.RunController do
   `GET /api/runs` returns projected runs with optional filters.
   `GET /api/runs/:id` returns the projected state for a single run.
   `GET /api/runs/:id/prs` returns the run's watched PRs as `ForemanServer.PrWatch.DTO`s.
+  `GET /api/runs/:id/phases` returns the run's phases in workflow order with their own status.
   """
 
   use ForemanServerWeb, :controller
@@ -60,6 +61,32 @@ defmodule ForemanServerWeb.RunController do
         conn
         |> put_status(:not_found)
         |> json(%{error: "run_not_found", run_id: run_id})
+
+      # TRD-031 (AC-005-3): unreadable means unknown, never an empty list.
+      {:error, {:projection_unavailable, cause}} ->
+        conn
+        |> put_status(:service_unavailable)
+        |> json(%{
+          error: "projection_unavailable",
+          status: "unknown",
+          run_id: run_id,
+          cause: cause
+        })
+    end
+  end
+
+  def phases(conn, %{"id" => run_id}) do
+    cond do
+      ProjectionStore.run(run_id) != nil ->
+        body = ForemanServer.RunPhases.build(run_id, ProjectionStore.phases_for_run(run_id))
+        conn |> put_status(:ok) |> json(body)
+
+      # Queued or deferred: admitted nothing yet, so no phase has started.
+      ProjectionStore.pending_run(run_id) != nil ->
+        conn |> put_status(:ok) |> json(ForemanServer.RunPhases.build(run_id, []))
+
+      true ->
+        conn |> put_status(:not_found) |> json(%{error: "run_not_found", run_id: run_id})
     end
   end
 

@@ -36,6 +36,9 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
   back to the dispatching Foreman task via the `--agent-context` JSON envelope
   (REQ-020 / REQ-021). The remaining nine entries cover the existing
   lifecycle, priority, dependency, and assignment operations.
+
+  `storage_scheme: :sqlite` marks a provider backed by a database file: a project is routed and
+  preflighted by its `config.database_path` (see `ForemanServer.TaskProvider.StorageBinding`).
   """
   @impl true
   def capabilities do
@@ -43,6 +46,7 @@ defmodule ForemanServer.TaskProviders.BeadsAdapter do
       provider_id: :beads,
       contract_version: "br.capabilities.v1",
       id_format: @id_format_source,
+      storage_scheme: :sqlite,
       supports: [
         :claim,
         :close,

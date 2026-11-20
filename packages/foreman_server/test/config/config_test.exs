@@ -4,8 +4,12 @@ defmodule ForemanServer.BaseConfigTest do
   @config_path Path.expand("../../config/config.exs", __DIR__)
   @expected_task_provider [
     actor: nil,
-    accepted_contract_versions: ["br.capabilities.v1"],
-    providers: [ForemanServer.TaskProviders.BeadsAdapter]
+    accepted_contract_versions: ["br.capabilities.v1", "kata.capabilities.v1"],
+    accepted_kata_versions: [">= 0.19.0"],
+    providers: [
+      ForemanServer.TaskProviders.BeadsAdapter,
+      ForemanServer.TaskProviders.KataAdapter
+    ]
   ]
 
   defp load_base_foreman_config! do
@@ -62,5 +66,29 @@ defmodule ForemanServer.BaseConfigTest do
              :foreman_server,
              :task_provider
            )[:providers]
+  end
+
+  test ":accepted_contract_versions contains 'kata.capabilities.v1' next to the br contract" do
+    versions = Application.get_env(:foreman_server, :task_provider)[:accepted_contract_versions]
+
+    assert "kata.capabilities.v1" in versions
+    assert "br.capabilities.v1" in versions
+  end
+
+  test "providers list contains KataAdapter" do
+    assert ForemanServer.TaskProviders.KataAdapter in Application.get_env(
+             :foreman_server,
+             :task_provider
+           )[:providers]
+  end
+
+  test ":accepted_kata_versions entries are Version requirements, apart from the contract list" do
+    task_provider = Application.get_env(:foreman_server, :task_provider)
+    requirements = task_provider[:accepted_kata_versions]
+
+    assert [_ | _] = requirements
+    assert Enum.all?(requirements, &is_binary/1)
+    assert Enum.all?(requirements, &match?({:ok, _}, Version.parse_requirement(&1)))
+    refute Enum.any?(requirements, &(&1 in task_provider[:accepted_contract_versions]))
   end
 end

@@ -43,7 +43,9 @@ defmodule ForemanServer.Overview do
   """
 
   alias ForemanServer.Overview.{Group, Input, PrFold, Signals, Tabs, ThreadCard}
+  alias ForemanServer.Overview.Tabs.PullRequests
   alias ForemanServer.{ProjectionStore, Threads}
+  alias ForemanServer.PrWatch.DTO
   alias ForemanServer.Threads.Thread
 
   @default_resolved_limit 20
@@ -267,6 +269,9 @@ defmodule ForemanServer.Overview do
   # `threads` arrive newest-first (`Threads.by_project/0`), so each group keeps
   # `updated_at desc` order; only the newest `Threads.max_limit/0` are classified.
   defp classify_threads(project_id, threads, now) do
+    # The project's evidence policy is read ONCE for the whole classification, never per PR:
+    # it is the only evidence input that is not on the watch record (TRD-024).
+    policy = PullRequests.evidence_policy(project_id)
     pr_states = ProjectionStore.pr_states_for_project(project_id)
     repo_states = ProjectionStore.repo_pr_states_for_project(project_id)
     {window, rest} = Enum.split(threads, Threads.max_limit())
@@ -276,7 +281,8 @@ defmodule ForemanServer.Overview do
       Enum.map(window, fn %Thread{} = thread ->
         pr = thread_pr(thread, pr_states, repo_states)
         watch = watch_records(thread, pr)
-        input = input(thread, pr, watch, Map.fetch!(signals, thread.id), now)
+        blocked? = evidence_blocked?(thread, watch, pr_states, repo_states, policy, now)
+        input = input(thread, pr, watch, Map.fetch!(signals, thread.id), now, blocked?)
         {{thread, pr, watch}, Group.classify(input)}
       end)
 
@@ -292,13 +298,38 @@ defmodule ForemanServer.Overview do
     PrFold.rollup(Map.get(pr_states, run_id), Map.get(repo_states, run_id, []))
   end
 
-  defp input(%Thread{} = thread, pr, watch, signals, now) do
+  # True when a still-live watched PR of the head run holds a pending merge gate and the
+  # evidence the approval gate would decide on (`PrWatch.DTO`'s `eligibility`, the same
+  # `PrEvidence.evaluate/2` over the same record) is `ineligible` or `unknown`. The gate is
+  # per PR (S6), so each record is judged under its own PR's gate; `off`, `eligible` and
+  # `waived` evidence blocks nothing.
+  defp evidence_blocked?(_thread, [], _pr_states, _repo_states, _policy, _now), do: false
+
+  defp evidence_blocked?(%Thread{} = thread, watch, pr_states, repo_states, policy, now) do
+    run_id = head_run_id(thread)
+
+    gates =
+      PullRequests.gates_by_url(Map.get(pr_states, run_id), Map.get(repo_states, run_id, []))
+
+    context = %{policy: policy, now_ms: now, run_status: thread.status}
+
+    Enum.any?(watch, fn record ->
+      record.status not in ["merged", "closed"] and Map.get(gates, record.pr_url) == :pending and
+        DTO.from_projection(record, :pending, context).eligibility.status in [
+          "ineligible",
+          "unknown"
+        ]
+    end)
+  end
+
+  defp input(%Thread{} = thread, pr, watch, signals, now, evidence_blocked?) do
     %Input{
       door: thread.door,
       status: thread.status,
       resolved?: thread.resolved,
       pr_state: pr && pr.pr_state,
       merge_gate: (pr && pr.merge_gate) || :none,
+      evidence_blocked?: evidence_blocked?,
       checks_state: checks_state(watch),
       review_state: review_state(watch),
       pending_approvals: signals.pending_approvals,

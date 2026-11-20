@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/url"
+	"os"
 	"strings"
 
 	"github.com/fortium/foreman/packages/foreman_cli/internal/client"
@@ -20,11 +21,11 @@ func generateID(prefix string) string {
 var validBackends = map[string]bool{"pi": true, "claude": true, "codex": true, "opencode": true}
 
 func runRun(c *client.Client, args []string) error {
-	usage := "Usage:\n  foreman run list [--status <status>] [--project-id <id>] [--limit <n>]\n  foreman run get <id>\n  foreman run cancel --id <run-id> [--reason <reason>]\n  foreman run pause --id <run-id> [--reason <reason>]\n  foreman run resume --id <run-id>\n  foreman run remove --id <run-id>\n  foreman run reset --id <run-id>\n  foreman run approve-merge --id <run-id> --approver <name> --identity <github:login> --head-sha <sha> [--repo-id <repo-id>]\n  foreman run merge --id <run-id> [--repo-id <repo-id>]\n  foreman run prs <id>\n  foreman run fix-ci <id> [--pr <url>] [--note <text>]\n  foreman run address-comments <id> [--pr <url>] [--note <text>]\n  foreman run resolve-conflicts <id> [--pr <url>] [--note <text>]\n  foreman run create-pr <id>\n  foreman run retry-pr <id> --repo-id <repo-id>\n  foreman run watch-stop <id> [--pr <url>]\n  foreman run watch-start <id> [--pr <url>]\n  foreman run submit --workflow <name> --prompt <text> --project-id <id> [--work-id <id>] [--backend <backend>]"
+	usage := "Usage:\n  foreman run list [--status <status>] [--project-id <id>] [--limit <n>]\n  foreman run get <id>\n  foreman run cancel --id <run-id> [--reason <reason>]\n  foreman run pause --id <run-id> [--reason <reason>]\n  foreman run resume --id <run-id>\n  foreman run remove --id <run-id>\n  foreman run reset --id <run-id>\n  foreman run approve-merge --id <run-id> --approver <name> --identity <github:login> --head-sha <sha> [--repo-id <repo-id>] [--acknowledge-gate-off]\n  foreman run waive-evidence --id <run-id> --approver <name> --identity <github:login> --head-sha <sha> --waive <codes> --reason <text> [--repo-id <repo-id>]\n  foreman run merge --id <run-id> [--repo-id <repo-id>]\n  foreman run prs <id>\n  foreman run phases <id>\n  foreman run fix-ci <id> [--pr <url>] [--note <text>]\n  foreman run address-comments <id> [--pr <url>] [--note <text>]\n  foreman run resolve-conflicts <id> [--pr <url>] [--note <text>]\n  foreman run create-pr <id>\n  foreman run retry-pr <id> --repo-id <repo-id>\n  foreman run watch-stop <id> [--pr <url>]\n  foreman run watch-start <id> [--pr <url>]\n  foreman run publish-report <id> [--pr <url>] [--repo-id <repo-id>]\n  foreman run submit --workflow <name> --prompt <text> --project-id <id> [--work-id <id>] [--backend <backend>]"
 
 	if len(args) == 0 {
 		return usageTextError(
-			"foreman run: missing subcommand (list, get, prs, cancel, pause, resume, remove, reset, approve-merge, merge, fix-ci, address-comments, resolve-conflicts, create-pr, retry-pr, watch-stop, watch-start, submit)",
+			"foreman run: missing subcommand (list, get, prs, cancel, pause, resume, remove, reset, approve-merge, waive-evidence, merge, fix-ci, address-comments, resolve-conflicts, create-pr, retry-pr, watch-stop, watch-start, publish-report, submit)",
 			usage,
 		)
 	}
@@ -46,10 +47,14 @@ func runRun(c *client.Client, args []string) error {
 		return runReset(c, args[1:])
 	case "approve-merge":
 		return runApproveMerge(c, args[1:])
+	case "waive-evidence":
+		return runWaiveEvidence(c, args[1:])
 	case "merge":
 		return runMerge(c, args[1:])
 	case "prs":
 		return runPrs(c, args[1:])
+	case "phases":
+		return runPhases(c, args[1:])
 	case "fix-ci":
 		return runPrFix(c, "fix-ci", "run.pr.fix_ci", args[1:])
 	case "address-comments":
@@ -64,6 +69,8 @@ func runRun(c *client.Client, args []string) error {
 		return runPrWatch(c, "watch-stop", "run.pr.watch_stop", args[1:])
 	case "watch-start":
 		return runPrWatch(c, "watch-start", "run.pr.watch_start", args[1:])
+	case "publish-report":
+		return runPublishReport(c, args[1:])
 	case "submit":
 		return runSubmit(c, args[1:])
 	default:
@@ -205,6 +212,7 @@ func runApproveMerge(c *client.Client, args []string) error {
 	identity := fs.String("identity", "", "Approver identity, e.g. github:<login> (required)")
 	headSHA := fs.String("head-sha", "", "Full head commit SHA of the PR as you reviewed it, e.g. from 'foreman run prs <id>' or GitHub (required)")
 	repoID := fs.String("repo-id", "", "Repository whose PR to approve (default: the run's primary repository)")
+	ackGateOff := fs.Bool("acknowledge-gate-off", false, "Approve a project that has no required_checks (merge gate off, no PR evidence checked); recorded in the approval event. Without it the server refuses such an approval")
 	if err := fs.parse(args); err != nil {
 		return err
 	}
@@ -231,8 +239,73 @@ func runApproveMerge(c *client.Client, args []string) error {
 	if *repoID != "" {
 		payload["repo_id"] = *repoID
 	}
+	// Only ever sent as true: absence is the default the server refuses on.
+	if *ackGateOff {
+		payload["acknowledge_gate_off"] = true
+	}
 
 	return postCommand(c, commandEnvelope{Type: "merge_approve", Payload: payload})
+}
+
+// runWaiveEvidence records the operator's waiver of named evidence reasons for one PR
+// of a run (the primary's, or the repository named by --repo-id). --waive is a
+// comma-separated list of reason codes; the server validates the codes, the approver
+// allowlist and that --head-sha is the live PR head, and stamps the policy version
+// itself (the CLI never sends one).
+func runWaiveEvidence(c *client.Client, args []string) error {
+	fs := newFlagSet("run waive-evidence")
+	runID := fs.String("id", "", "Run ID (required)")
+	approver := fs.String("approver", "", "Approver name (required)")
+	identity := fs.String("identity", "", "Approver identity, e.g. github:<login> (required)")
+	headSHA := fs.String("head-sha", "", "Full head commit SHA of the PR as you reviewed it (required)")
+	waive := fs.String("waive", "", "Comma-separated evidence reason codes to waive (required)")
+	reason := fs.String("reason", "", "Why the reasons are waived (required)")
+	repoID := fs.String("repo-id", "", "Repository whose PR to waive for (default: the run's primary repository)")
+	if err := fs.parse(args); err != nil {
+		return err
+	}
+
+	if *runID == "" {
+		return usageError(fs, "foreman run waive-evidence: --id is required")
+	}
+	if *approver == "" {
+		return usageError(fs, "foreman run waive-evidence: --approver is required")
+	}
+	if *identity == "" {
+		return usageError(fs, "foreman run waive-evidence: --identity is required")
+	}
+	if *headSHA == "" {
+		return usageError(fs, "foreman run waive-evidence: --head-sha is required")
+	}
+	if *waive == "" {
+		return usageError(fs, "foreman run waive-evidence: --waive is required")
+	}
+	if strings.TrimSpace(*reason) == "" {
+		return usageError(fs, "foreman run waive-evidence: --reason is required")
+	}
+
+	reasons := []string{}
+	for _, item := range strings.Split(*waive, ",") {
+		code := strings.TrimSpace(item)
+		if code == "" {
+			return usageError(fs, "foreman run waive-evidence: --waive has an empty item")
+		}
+		reasons = append(reasons, code)
+	}
+
+	payload := map[string]any{
+		"run_id":            *runID,
+		"approver":          *approver,
+		"approver_identity": *identity,
+		"head_sha":          *headSHA,
+		"reasons":           reasons,
+		"reason":            *reason,
+	}
+	if *repoID != "" {
+		payload["repo_id"] = *repoID
+	}
+
+	return postCommand(c, commandEnvelope{Type: "run.pr.waive_evidence", Payload: payload})
 }
 
 // runMerge squash-merges the PR of an approved run (the primary's, or the one of
@@ -393,6 +466,25 @@ func runPrs(c *client.Client, args []string) error {
 	return printJSON(out)
 }
 
+// runPhases lists a run's phases with their own status: `foreman run phases <id>`.
+func runPhases(c *client.Client, args []string) error {
+	fs := newFlagSet("run phases")
+	if err := fs.parse(args); err != nil {
+		return err
+	}
+
+	if fs.NArg() != 1 {
+		return usageError(fs, "foreman run phases: expected one argument: <run-id>")
+	}
+
+	var out map[string]any
+	if err := c.GetJSON(client.JoinPath("/api/runs", fs.Arg(0), "phases"), &out); err != nil {
+		return err
+	}
+
+	return printJSON(out)
+}
+
 // runPrFix requests a fix thread for a watched PR. The server decides everything
 // else (head SHA, attempt, caps); the CLI sends only the run, the optional PR and
 // the optional operator note.
@@ -508,3 +600,54 @@ func runPrWatch(c *client.Client, verb, commandType string, args []string) error
 
 	return postCommand(c, commandEnvelope{Type: commandType, Payload: payload})
 }
+
+// runPublishReport asks the server to publish the risk report of a run's PR again
+// (`run.pr.publish_report`, an operator command): the retry of a refused publication. It names
+// no head, digest or level: the server publishes the report of the PR's current risk record.
+// Each call carries its own random command id, so two requests are two requests.
+func runPublishReport(c *client.Client, args []string) error {
+	fs := newFlagSet("run publish-report")
+	runID := fs.String("id", "", "Run ID (or pass it as the first argument)")
+	prURL := fs.String("pr", "", "PR URL (required when the run watches several PRs)")
+	repoID := fs.String("repo-id", "", "Repository whose PR to report on (multi-repo runs)")
+
+	positional, rest := prRunID(args)
+	if err := fs.parse(rest); err != nil {
+		return err
+	}
+	if fs.NArg() > 0 {
+		return usageError(fs, "foreman run publish-report: unexpected argument %q (use --pr <url> to select a PR)", fs.Arg(0))
+	}
+	if positional != "" {
+		*runID = positional
+	}
+
+	if *runID == "" {
+		return usageError(fs, "foreman run publish-report: <run-id> is required")
+	}
+
+	payload := map[string]any{"run_id": *runID}
+	if *prURL != "" {
+		payload["pr_url"] = *prURL
+	}
+	if *repoID != "" {
+		payload["repo_id"] = *repoID
+	}
+
+	if err := postCommand(c, commandEnvelope{
+		Type:        "run.pr.publish_report",
+		CommandID:   generateID("publish-report"),
+		AggregateID: "run:" + *runID,
+		Payload:     payload,
+	}); err != nil {
+		return err
+	}
+
+	// The server records the request whatever the project's gate says; say what that means.
+	fmt.Fprintln(os.Stderr, publishReportNote)
+	return nil
+}
+
+// publishReportNote is printed (to stderr, so the JSON answer stays parseable) after an
+// accepted publish-report request.
+const publishReportNote = "publish-report: the request is recorded; the report is posted only for a project whose required_checks gate is on, and only for the PR's current risk record (a project with the gate off publishes nothing)."

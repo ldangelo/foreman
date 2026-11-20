@@ -8,6 +8,7 @@ service in `packages/foreman_server`. This repository contains:
 | `packages/foreman_server/` | The Elixir/Phoenix runtime. Hosts the `ForemanServer.AgentRuntime` subsystem (TRD-2026-6af02293, TRD-2026-4212be7e) and the workflow catalog (TRD-2026-96872fc5). |
 | `packages/foreman_cli/` | The Go CLI. Wraps the Phoenix HTTP boundary for operator use; the only operator-facing path into the runtime. |
 | `packages/jido_harness/` | Vendored Sunstone-Partners fork of `agentjido/jido_harness`. The current agent-execution backend (see `JIDO_FORKS.md` for pinned SHAs). |
+| `ops/herdr-sidebar/` | Optional Herdr desktop-app sidebar panel listing runs by project and status, and a live run-detail tab (phases, activity, changes); read-only, talks to Foreman through the `foreman` CLI and its read-only HTTP API. See its [`README.md`](./ops/herdr-sidebar/README.md). |
 | `docs/PRD/` | Product requirements documents, one per design slice. |
 | `docs/TRD/` | Technical requirements documents, one per design slice. |
 | `docs/architecture/`, `docs/standards/`, `docs/guides/` | Architectural context, the project constitution, and step-by-step operator/developer guides. |
@@ -36,7 +37,8 @@ A project is a registered repository with standing instructions, durable memory,
 - **Approvals and questions: reads and scope** — list them with `foreman approvals|questions list`, `GET /api/projects/:id/approvals|questions`, `GET /api/runs/:run_id/approvals` or the read-only MCP tools `foreman_approvals_list` / `foreman_questions_list` (one typed payload for HTTP and MCP). Approving decides ONE request; only an in-flight approval (a Claude phase in `approval_mode: prompt`) is per call, while a post-hoc approval (`resume_with_override`) relaxes the approval mode of the run's next phase as a whole, so every tool of that phase is allowed.
 - **PR watching and auto-fix** — observation by default, bounded opt-in fix threads; verified against a real private GitHub repo (the workspace buttons and the `pr_auto_fix` policy off/on/bounded included) and, in a temporary public window of a scratch repository, an operator merge under real branch protection (a required review and required status checks; the squash results had one parent, but a refusal by `required_linear_history` itself was not tested); the voiding of an approval by a later push (#650) is covered by tests and not re-run live (see `docs/acceptance/github-live-run.md`, `docs/acceptance/live-github-protection-ui-autofix.md` and `docs/acceptance/live-github-branch-protection.md`).
 - **Notifications, schedules, usage and limits, pause/resume, adoption and setup recommendations.**
-- **The merge gate is operator-only** (`foreman run approve-merge --head-sha <sha>`, then `foreman run merge`). You approve the exact commit you reviewed; a push after approval voids the approval and holds the gate again.
+- **The merge gate is operator-only** (`foreman run approve-merge --head-sha <sha>`, then `foreman run merge`). You approve the exact commit you reviewed; a push after approval voids the approval and holds the gate again. A project can also require evidence for that commit: with the `required_checks` setting on (`foreman project update --required-checks '<json>'`, operator-only, off by default), `approve-merge` is refused unless the required checks, a review-findings record and a risk record for that head are eligible, with a recorded risk level of `LOW` or `MEDIUM` (`HIGH`, or a level the server does not recognise, refuses), or an operator waived the waivable reasons (`foreman run waive-evidence`; a `HIGH` level is the reason `risk_high`, which can be waived with a recorded reason, and an unrecognised level is never waivable); the agent's findings and the risk rationale are shown, never a substitute for your review. What it does not enforce, and the known gaps, are in the [user guide](./docs/user-guide.md#pr-watching-and-auto-fix) and the [Phase 1 exit record](./docs/decisions/phase-1-trustworthy-pr-delivery-exit.md).
+  A project without `required_checks` has its gate off and no evidence is checked, so there `approve-merge` is refused unless you add `--acknowledge-gate-off`; the acknowledgement is recorded in the approval event (`gate_off_acknowledged`).
 - **Acceptance evidence** — verdicts for the Claude Projects capabilities C1-C13 and the residual gaps are in [`docs/acceptance/parity-audit.md`](docs/acceptance/parity-audit.md) (earlier narrative audit: [`docs/audit/claude-projects-parity-audit.md`](docs/audit/claude-projects-parity-audit.md)); how to run the live acceptance and the evidence index are in [`docs/acceptance/README.md`](docs/acceptance/README.md).
 
 Quickstart (server running via `devbox run server`; `FOREMAN_API_URL` defaults to `http://127.0.0.1:4766`, set `FOREMAN_API_TOKEN` for the CLI):
@@ -44,11 +46,13 @@ Quickstart (server running via `devbox run server`; `FOREMAN_API_URL` defaults t
 ```bash
 foreman project create --id demo --path /srv/demo \
   --task-provider beads --task-provider-database-path /srv/demo/.beads
+# A Kata-backed project instead binds --path (absolute) as the kata working directory:
+#   foreman project create --id demo-kata --path /srv/demo-kata --task-provider kata
 foreman project update --goal "Ship the importer" --instructions-file ./INSTRUCTIONS.md demo
 foreman project memory write --name conventions --file notes.md demo
 foreman project chat demo "triage the failing nightly build"
 foreman thread list --project demo
-foreman run approve-merge --id <run-id> --approver me --identity github:<login> --head-sha <sha>
+foreman run approve-merge --id <run-id> --approver me --identity github:<login> --head-sha <sha> --acknowledge-gate-off  # gate-off project (no required_checks); on a gated project drop the flag
 foreman run merge --id <run-id>
 ```
 
@@ -110,9 +114,13 @@ passes `prompt` separately for `:prompt`-action phases, and defaults
   `GET /api/tasks/:id`. Projects without a `:create` provider take
   the no-op path: no Bead is minted, no `external_id` is surfaced,
   and the `task.create` response carries only the Foreman `task_id`.
-- **Beads provider config.** Register Beads-backed projects with an
-  absolute `task_provider.config.database_path`; the Go CLI requires
-  `--task-provider-database-path` when `--task-provider=beads`.
+- **Task-provider config (provider-conditional).** The project's binding to
+  its tracker follows the provider's declared `storage_scheme`. Beads
+  (`sqlite`) needs an absolute `task_provider.config.database_path`; the Go CLI
+  requires `--task-provider-database-path` only when `--task-provider=beads`.
+  Kata (`cli_process`) needs an absolute `task_provider.config.cwd`; the Go CLI
+  sends the absolute `--path` as `config.cwd` and rejects
+  `--task-provider-database-path` for Kata. See "Kata task provider" below.
 - **Beads → Foreman (inbound).** Opt in with
   `config :foreman_server, :start_beads_watcher?, true`. The
   `BeadsWatcherSupervisor` spawns one `BeadsWatcher` per registered
@@ -161,6 +169,30 @@ for the current invocation path. See
 [`docs/cli-reference.md`](./docs/cli-reference.md) for the CLI surface
 and [`CLAUDE.md`](./CLAUDE.md) §11–§13 for the architectural
 invariants.
+
+## Kata task provider
+
+Foreman can use [Kata](https://katatracker.com) (`kata`, tested against
+v0.23.0) instead of Beads as a project's task tracker (provider id `kata`,
+contract version `kata.capabilities.v1`). Setup:
+
+```bash
+brew install kata                                  # macOS
+curl -fsSL https://katatracker.com/install.sh | bash   # Linux
+cd /srv/demo-kata && kata init                      # binds the workspace (.kata.toml)
+foreman project create --id demo-kata --path /srv/demo-kata --task-provider kata
+```
+
+`--path` must be absolute; it becomes `task_provider.config.cwd`, the
+directory every `kata` command runs in. `--task-provider-database-path` is
+rejected for Kata. Switch an existing project with
+`foreman project update --task-provider kata <id>` (the CLI reads the
+project's registered path and sends it as `config.cwd`). Kata, not Foreman, is
+authoritative for claim state, and Foreman does not scan Kata for orphans: a
+stranded claim is released by an operator with `kata unassign <ref>`. The Kata
+health report (`ForemanServer.CLI.DoctorTaskProvider`, same not-yet-wired
+caveat as above) and the operator semantics are in
+[`docs/user-guide.md`](./docs/user-guide.md) §10.
 
 ## Per-DB Beads lease (Beads write serialization)
 
@@ -220,7 +252,8 @@ See [`CLAUDE.md`](./CLAUDE.md) §15 for the architectural invariants.
 ## Task-provider boundary overview
 
 The Go/Elixir CQRS task-provider slice keeps task-tracker ownership on
-the Beads side and splits Foreman's responsibilities by lifecycle:
+the tracker side (Beads or Kata, chosen per project by the `task_provider`
+block) and splits Foreman's responsibilities by lifecycle:
 
 - `RunExecutor` drives claim, complete, and fail transitions during an
   active run.
@@ -349,7 +382,9 @@ The project library (`<project>/.foreman/library/`, the only gitignored path und
 
 Standing context: every agent launch (workflow phases and jobsite iterations) receives the project instructions, repository list and memory index as its system prompt, built by `ForemanServer.ProjectContext.build/2` with a byte budget and visible truncation markers. Inspect it with `foreman project context <project-id>` / `GET /api/projects/:id/context`. See the user guide section "Standing context".
 
-`foreman_run_status` returns a bounded run-status DTO from run and phase projections: `run_id`, `status`, `terminal`, `project_id`, `task_id`, `workflow_name`, `current_phase`, timestamps, and `failure_reason`.
+`foreman_run_status` returns a bounded run-status DTO from run and phase projections: `run_id`, `status`, `terminal`, `project_id`, `task_id`, `workflow_name`, `current_phase`, timestamps, `failure_reason` and `recovery` (the latest recovery record of a restarted or reconciled run). `current_phase` adds `input_artifacts`, `context` (what standing context the launch delivered), `execution_profile` (what the backend enforces, including the skill verdict) and `prior_worktree_discarded`.
+
+Durable execution (Phase 0): a server restart resumes in-flight runs without resetting their recovery budget, and an external effect (a branch push, a PR create, a task-provider claim/complete/fail/reopen) that a crash left undecided is reconciled at boot or blocks the run (`effect_already_done`, `effect_outcome_ambiguous`, `effect_class_unregistered`) instead of being repeated blindly. The key store is durable only with `config :foreman_server, :jido_ecto, enabled: true` and `JIDO_CHECKPOINT_DATABASE_URL` (the `FOREMAN_JIDO_ECTO_ENABLED` env var named in older docs and comments is not wired); otherwise effects still run but their keys do not survive a restart, and boot and `foreman doctor` (the store line of its `effect_keys` check) say so. At kickoff a run is refused (before the task claim) when its project has a non-default network policy (the host cannot enforce one), when a provider/model is unavailable, or when a `command:` phase names a skill pi provably cannot find. `foreman_queue_status` / `GET /api/queue` list `orphan_recovery`, and `foreman doctor` prints the `effect_keys` check (listing unresolved keys never affects `--strict`; only an unreadable store warns). Details: [`CLAUDE.md`](./CLAUDE.md) §13.2 and [`docs/user-guide.md`](./docs/user-guide.md).
 
 `foreman_run_get_logs` reads the Elixir projection of durable worker stdout/stderr events. Known runs with no captured output return an empty result and unknown runs return `NOT_FOUND`, so "wrote nothing" is never confused with "no such run". The read is bounded (latest 500 of at most 5,000 entries / 1 MiB retained per run) and reports eviction as `truncated: true` with non-zero `omitted_entries`.
 

@@ -34,6 +34,10 @@ defmodule ForemanServer.Aggregates.Project.Settings do
   @pr_fix_attempts_range 1..5
   @pr_fix_cooldown_range 0..86_400
   @max_active_threads_range 1..50
+  @max_required_checks 20
+  @max_check_text_chars 200
+  @required_check_kinds ~w(check_run status_context)
+  @required_check_entry_keys ~w(name kind workflow allow_skipped)
   # What `Jido.Harness.RunRequest` accepts for `reasoning_effort`; a wider value
   # would validate here and then fail the launch.
   @efforts ~w(low medium high)
@@ -44,7 +48,7 @@ defmodule ForemanServer.Aggregates.Project.Settings do
            coordinator_effort max_concurrent_runs daily_thread_cap pr_auto_fix
            coordinator_propose_before_start coordinator_max_active_threads
            coordinator_reuse_threads library_collect_produced repo_allowlist max_repos_per_run
-           notification_preference)a
+           notification_preference required_checks)a
 
   # Config keys that existing callers send and that are not settings: the
   # registered display name, task-provider routing, the beads database path and
@@ -69,6 +73,7 @@ defmodule ForemanServer.Aggregates.Project.Settings do
           | :coordinator_max_active_threads
           | :coordinator_reuse_threads
           | :notification_preference
+          | :required_checks
 
   @type error ::
           {:goal_too_long, non_neg_integer(), pos_integer()}
@@ -95,6 +100,14 @@ defmodule ForemanServer.Aggregates.Project.Settings do
           | {:coordinator_propose_before_start_invalid, term()}
           | {:coordinator_reuse_threads_invalid, term()}
           | {:notification_preference_invalid, term(), [String.t()]}
+          | {:required_checks_invalid, term()}
+          | {:required_checks_too_many, non_neg_integer(), pos_integer()}
+          | {:required_checks_name_invalid, term()}
+          | {:required_checks_kind_invalid, term()}
+          | {:required_checks_workflow_invalid, term()}
+          | {:required_checks_allow_skipped_invalid, term()}
+          | {:required_checks_unknown_key, String.t()}
+          | {:required_checks_conflicting_entry, String.t(), String.t(), String.t() | nil}
           | {:unknown_setting, String.t()}
 
   @doc "Default `max_repos_per_run` when the project does not set one."
@@ -128,6 +141,45 @@ defmodule ForemanServer.Aggregates.Project.Settings do
   @doc "Non-setting keys existing callers may send inside `config`."
   @spec legacy_keys() :: [atom()]
   def legacy_keys, do: @legacy_keys
+
+  @doc """
+  The setting keys a `project.update` or `project.register` payload sets or
+  clears, as `%{key => :set | :clear}`. It reads the typed top-level fields,
+  the open `config` map and `cleared_settings` (atom or string keys) and does
+  not validate: a non-nil value is `:set` (`[]` and `false` included), a `nil`
+  value or a name in `cleared_settings` is `:clear`. A key that is both set and
+  cleared reports `:set` (the aggregate refuses such a payload anyway).
+  """
+  @spec changed_keys(map()) :: %{optional(key()) => :set | :clear}
+  def changed_keys(payload) when is_map(payload) do
+    config =
+      case fetch(payload, :config) do
+        {:ok, config} when is_map(config) -> config
+        _ -> %{}
+      end
+
+    cleared =
+      case fetch(payload, :cleared_settings) do
+        {:ok, list} when is_list(list) ->
+          for item <- list, {:ok, key} <- [to_key(item)], into: %{}, do: {key, :clear}
+
+        _ ->
+          %{}
+      end
+
+    nested = changes_in(config)
+    top = changes_in(payload)
+
+    cleared
+    |> Map.merge(nested)
+    |> Map.merge(top)
+  end
+
+  defp changes_in(map) do
+    for key <- @keys, {:ok, value} <- [fetch(map, key)], into: %{} do
+      {key, if(is_nil(value), do: :clear, else: :set)}
+    end
+  end
 
   @doc """
   Resolves a user supplied key (atom or string) to a setting key atom.
@@ -290,6 +342,21 @@ defmodule ForemanServer.Aggregates.Project.Settings do
   defp validate(:notification_preference, value),
     do: {:error, {:notification_preference_invalid, value, @notification_preferences}}
 
+  defp validate(:required_checks, nil), do: {:ok, nil}
+
+  defp validate(:required_checks, entries) when is_list(entries) do
+    if length(entries) > @max_required_checks do
+      {:error, {:required_checks_too_many, length(entries), @max_required_checks}}
+    else
+      with {:ok, clean} <- required_check_entries(entries),
+           :ok <- required_check_conflicts(clean) do
+        {:ok, clean |> Enum.uniq() |> Enum.sort_by(&required_check_sort_key/1)}
+      end
+    end
+  end
+
+  defp validate(:required_checks, other), do: {:error, {:required_checks_invalid, other}}
+
   defp boolean(nil, _name), do: {:ok, nil}
   defp boolean(value, _name) when is_boolean(value), do: {:ok, value}
   defp boolean(value, name), do: {:error, {:"#{name}_invalid", value}}
@@ -308,6 +375,105 @@ defmodule ForemanServer.Aggregates.Project.Settings do
   end
 
   defp allowlist_entry(_entry), do: :error
+
+  defp required_check_entries(entries) do
+    entries
+    |> Enum.reduce_while({:ok, []}, fn entry, {:ok, acc} ->
+      case required_check_entry(entry) do
+        {:ok, clean} -> {:cont, {:ok, [clean | acc]}}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, acc} -> {:ok, Enum.reverse(acc)}
+      error -> error
+    end
+  end
+
+  defp required_check_entry(entry) when is_map(entry) do
+    entry = Map.new(entry, fn {key, value} -> {to_string_key(key), value} end)
+
+    with :ok <- required_check_keys(entry),
+         {:ok, name} <- check_text(Map.get(entry, "name"), :required_checks_name_invalid),
+         {:ok, kind} <- required_check_kind(Map.get(entry, "kind")),
+         {:ok, workflow} <- required_check_workflow(kind, Map.get(entry, "workflow")),
+         {:ok, allow_skipped} <-
+           required_check_allow_skipped(kind, Map.get(entry, "allow_skipped")) do
+      {:ok,
+       %{"name" => name, "kind" => kind}
+       |> put_unless_nil("workflow", workflow)
+       |> put_unless_nil("allow_skipped", allow_skipped)}
+    end
+  end
+
+  defp required_check_entry(entry), do: {:error, {:required_checks_invalid, entry}}
+
+  defp required_check_keys(entry) do
+    case entry
+         |> Map.keys()
+         |> Enum.sort()
+         |> Enum.find(&(&1 not in @required_check_entry_keys)) do
+      nil -> :ok
+      key -> {:error, {:required_checks_unknown_key, key}}
+    end
+  end
+
+  defp required_check_kind(kind) when kind in @required_check_kinds, do: {:ok, kind}
+  defp required_check_kind(kind), do: {:error, {:required_checks_kind_invalid, kind}}
+
+  defp required_check_workflow(_kind, nil), do: {:ok, nil}
+
+  defp required_check_workflow("check_run", workflow),
+    do: check_text(workflow, :required_checks_workflow_invalid)
+
+  defp required_check_workflow(_kind, workflow),
+    do: {:error, {:required_checks_workflow_invalid, workflow}}
+
+  # `false` is the default and is dropped, so one meaning has one stored form.
+  defp required_check_allow_skipped(_kind, nil), do: {:ok, nil}
+  defp required_check_allow_skipped("check_run", false), do: {:ok, nil}
+  defp required_check_allow_skipped("check_run", true), do: {:ok, true}
+
+  defp required_check_allow_skipped(_kind, value),
+    do: {:error, {:required_checks_allow_skipped_invalid, value}}
+
+  defp check_text(value, error) when is_binary(value) do
+    trimmed = String.trim(value)
+
+    cond do
+      not String.valid?(value) -> {:error, {error, value}}
+      trimmed == "" -> {:error, {error, value}}
+      String.length(trimmed) > @max_check_text_chars -> {:error, {error, value}}
+      String.match?(trimmed, ~r/[[:cntrl:]]/u) -> {:error, {error, value}}
+      true -> {:ok, trimmed}
+    end
+  end
+
+  defp check_text(value, error), do: {:error, {error, value}}
+
+  defp put_unless_nil(map, _key, nil), do: map
+  defp put_unless_nil(map, key, value), do: Map.put(map, key, value)
+
+  defp required_check_sort_key(entry),
+    do: {entry["name"], entry["kind"], entry["workflow"] || ""}
+
+  # One name, kind and workflow with two `allow_skipped` values is a
+  # contradiction, not a duplicate.
+  defp required_check_conflicts(entries) do
+    entries
+    |> Enum.uniq()
+    |> Enum.group_by(&required_check_sort_key/1)
+    |> Enum.sort()
+    |> Enum.find(fn {_identity, group} -> length(group) > 1 end)
+    |> case do
+      nil ->
+        :ok
+
+      {_identity, [entry | _]} ->
+        {:error,
+         {:required_checks_conflicting_entry, entry["name"], entry["kind"], entry["workflow"]}}
+    end
+  end
 
   defp unknown_provider(value),
     do: {:error, {:invalid_setting, :coordinator_provider, {:unknown_provider, value}}}

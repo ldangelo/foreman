@@ -10,8 +10,11 @@ defmodule ForemanServer.TaskProvider.ProjectProviderProjector do
     * `ProjectRegistered` without `task_provider` does nothing.
     * `ProjectUpdated` with `task_provider` re-registers the provider.
     * `ProjectUpdated` without `task_provider` preserves the existing routing.
-    * Preflight failures unregister the project with a concrete reason such as
-      `:database_not_found`.
+    * Preflight follows the provider's declared storage scheme
+      (`ForemanServer.TaskProvider.StorageBinding`): a `:sqlite` provider is verified through its
+      own `preflight_database/2`, a `:cli_process` provider needs an absolute, existing `cwd`.
+      Failures unregister the project with a concrete reason such as `:database_not_found`,
+      `:cwd_not_found`, `:cwd_not_absolute` or `:cwd_missing`.
   """
 
   use GenServer
@@ -19,6 +22,7 @@ defmodule ForemanServer.TaskProvider.ProjectProviderProjector do
   alias EventStore.{EventData, RecordedEvent}
   alias ForemanServer.ProjectionStore
   alias ForemanServer.TaskProvider.Registry, as: TaskProviderRegistry
+  alias ForemanServer.TaskProvider.StorageBinding
   alias ForemanServer.TaskProviders.ProviderError
   alias ForemanServer.TaskProviders.BeadsOrphanJanitorSupervisor
   alias ForemanServer.TaskProviders.BeadsWatcherSupervisor
@@ -164,12 +168,11 @@ defmodule ForemanServer.TaskProvider.ProjectProviderProjector do
   defp register_or_unregister_project(project_id, task_provider) do
     provider_ref = Map.get(task_provider, :provider) || Map.get(task_provider, "provider")
     config = Map.get(task_provider, :config) || Map.get(task_provider, "config") || %{}
-    database_path = project_database_path(config)
 
     with {:ok, provider_module} <- resolve_provider_module(provider_ref),
          :ok <- preflight_provider(provider_module, config),
          :ok <- TaskProviderRegistry.register_for_project(project_id, provider_module, config) do
-      reconcile_beads_children(project_id, provider_module, database_path)
+      reconcile_beads_children(project_id, provider_module, config)
       :ok
     else
       {:error, reason} ->
@@ -182,11 +185,13 @@ defmodule ForemanServer.TaskProvider.ProjectProviderProjector do
   # BeadsWatcher / BeadsOrphanJanitor are Beads-only. For other providers we
   # must NOT spawn JSONL workers (they don't speak beads), and we MUST tear
   # down any previously-running Beads children when the project switches away.
-  defp reconcile_beads_children(project_id, provider_module, database_path) do
-    if beads_provider?(provider_module) and is_binary(database_path) do
+  defp reconcile_beads_children(project_id, provider_module, config) do
+    with true <- beads_provider?(provider_module),
+         {:ok, database_path} <- StorageBinding.fetch(provider_module, config) do
       spawn_project_children(project_id, database_path)
     else
-      stop_project_children(project_id)
+      false -> stop_project_children(project_id)
+      {:error, _no_binding} -> stop_project_children(project_id)
     end
   end
 
@@ -225,24 +230,40 @@ defmodule ForemanServer.TaskProvider.ProjectProviderProjector do
   defp beads_orphan_janitor_enabled?,
     do: Application.get_env(:foreman_server, :start_beads_orphan_janitor?, false)
 
+  # Preflight follows the provider's declared storage scheme: a `:sqlite` provider is verified
+  # through its own `preflight_database/2`; a `:cli_process` provider has no database, so its
+  # project must be bound to an absolute, existing directory. Neither demands the other's key.
   defp preflight_provider(provider_module, config)
        when is_atom(provider_module) and is_map(config) do
-    database_path = project_database_path(config)
-
-    cond do
-      is_nil(database_path) ->
-        {:error, :preflight_failed}
-
-      function_exported?(provider_module, :preflight_database, 2) ->
-        provider_module.preflight_database(database_path, [])
-        |> normalize_preflight()
-
-      true ->
-        :ok
+    with {:ok, scheme} <- StorageBinding.scheme(provider_module) do
+      preflight_binding(provider_module, scheme, StorageBinding.fetch(provider_module, config))
     end
   end
 
-  defp preflight_provider(_provider_module, _config), do: :ok
+  defp preflight_provider(_provider_module, _config), do: {:error, :preflight_failed}
+
+  defp preflight_binding(provider_module, :sqlite, {:ok, database_path}) do
+    if function_exported?(provider_module, :preflight_database, 2) do
+      provider_module.preflight_database(database_path, [])
+      |> normalize_preflight()
+    else
+      :ok
+    end
+  end
+
+  defp preflight_binding(_provider_module, :sqlite, {:error, {:missing_binding_key, _key}}),
+    do: {:error, :preflight_failed}
+
+  defp preflight_binding(_provider_module, :cli_process, {:ok, cwd}) do
+    cond do
+      Path.type(cwd) != :absolute -> {:error, :cwd_not_absolute}
+      not File.dir?(cwd) -> {:error, :cwd_not_found}
+      true -> :ok
+    end
+  end
+
+  defp preflight_binding(_provider_module, :cli_process, {:error, {:missing_binding_key, _key}}),
+    do: {:error, :cwd_missing}
 
   # Total over the documented `preflight_database/2` contract
   # (`:ok | {:error, ProviderError.t()}`) and nothing else.
@@ -329,10 +350,4 @@ defmodule ForemanServer.TaskProvider.ProjectProviderProjector do
       ArgumentError -> :not_full_module
     end
   end
-
-  defp project_database_path(config) when is_map(config) do
-    Map.get(config, :database_path) || Map.get(config, "database_path")
-  end
-
-  defp project_database_path(_config), do: nil
 end

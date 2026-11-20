@@ -1,5 +1,21 @@
 defmodule ForemanServer.Events.PhaseStarted do
-  @moduledoc "Typed event emitted when a workflow phase has started."
+  @moduledoc """
+  Typed event emitted when a workflow phase has started.
+
+  `prior_worktree_discarded` is optional: it carries the record of uncommitted
+  work lost when the run's worktree was re-provisioned on resume, on the first
+  phase event after the resume when no phase was in flight.
+
+  `input_artifacts` is optional: the artifact references the phase started from,
+  `[%{index, source_phase, path, sha256}]`. Phase 1 carries `[]`; a stream
+  recorded before the field existed carries none.
+
+  `execution_profile` is optional: what the launch's backend enforces, as
+  `Jobsite.ExecutionProfile.to_map/1` builds it (`backend` string and a
+  `%{state, reason}` map per property). Its nested keys keep the form their
+  writer used (atom or string); the projection normalises them. A stream
+  recorded before the field existed carries none.
+  """
   @enforce_keys [:phase_id, :run_id, :index, :name, :attempt, :artifact_template]
   @type t :: %__MODULE__{
           phase_id: String.t(),
@@ -11,7 +27,10 @@ defmodule ForemanServer.Events.PhaseStarted do
           artifact_template: String.t(),
           stall_detection_kind: String.t() | nil,
           stall_threshold_ms: pos_integer() | nil,
-          stall_policy: String.t() | nil
+          stall_policy: String.t() | nil,
+          prior_worktree_discarded: %{name: String.t(), path: String.t() | nil} | nil,
+          input_artifacts: [map()] | nil,
+          execution_profile: map() | nil
         }
   @derive Jason.Encoder
   defstruct [
@@ -24,6 +43,9 @@ defmodule ForemanServer.Events.PhaseStarted do
     :artifact_template,
     :stall_detection_kind,
     :stall_threshold_ms,
-    :stall_policy
+    :stall_policy,
+    :prior_worktree_discarded,
+    :input_artifacts,
+    :execution_profile
   ]
 end

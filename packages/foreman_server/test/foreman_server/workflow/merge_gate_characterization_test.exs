@@ -123,7 +123,8 @@ defmodule ForemanServer.Workflow.MergeGateCharacterizationTest do
           run_id: run_id,
           approver: "ldangelo",
           approver_identity: "github:ldangelo",
-          head_sha: "abc456"
+          head_sha: "abc456",
+          evidence: ForemanServer.TestSupport.GateEvidence.off()
         }
       })
 

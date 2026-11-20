@@ -38,13 +38,38 @@ config :foreman_server, :agent_runtime,
 # and flip run.status from awaiting_worker → in_progress. Test mode
 # overrides this to false in config/test.exs.
 config :foreman_server, ForemanServer.Overwatch, enabled: true
+# Phase 1 (P-3): gating a project on required_checks needs the durable idempotency store.
+# `KeyStore.require_durable/0` refuses (`{:store_not_durable, note}`) while this is true and
+# the store is ETS-only or unreachable. dev.exs and test.exs set it false (their store is
+# ETS-only); prod.exs leaves it true and the store off by default, so turning the store on
+# (`:jido_ecto`) stays a deployment step.
+config :foreman_server, :require_durable_store_for_gating, true
+
+# Effect reconcilers (TRD-011..013): the class of an ambiguous `effect:` key (the
+# `effect_class` its metadata carries) mapped to the module that asks the outside
+# world whether the effect happened. A class with no entry blocks the run
+# `effect_class_unregistered`.
+config :foreman_server, ForemanServer.Idempotency.Reconciler,
+  classes: %{
+    "branch_push" => ForemanServer.Idempotency.Reconcilers.BranchPush,
+    "pr_create" => ForemanServer.Idempotency.Reconcilers.PrCreate,
+    "pr_comment" => ForemanServer.Idempotency.Reconcilers.PrComment,
+    "task_provider" => ForemanServer.Idempotency.Reconcilers.TaskProvider
+  }
+
 # foreman_server: task_provider subsystem (TRD-029)
 config :foreman_server, :br_runner, ForemanServer.TaskProviders.SystemBrRunner
 
+# `accepted_kata_versions` are `Version.match?/2` requirements read only by `foreman doctor`; the
+# adapter itself accepts any kata that answers `--version` (TRD-KATA-T009, T022).
 config :foreman_server, :task_provider,
   actor: nil,
-  accepted_contract_versions: ["br.capabilities.v1"],
-  providers: [ForemanServer.TaskProviders.BeadsAdapter]
+  accepted_contract_versions: ["br.capabilities.v1", "kata.capabilities.v1"],
+  accepted_kata_versions: [">= 0.19.0"],
+  providers: [
+    ForemanServer.TaskProviders.BeadsAdapter,
+    ForemanServer.TaskProviders.KataAdapter
+  ]
 
 # Per-project Beads JSONL watcher + orphan janitor supervisors (TRD-014).
 # Both default `false` — operators opt in for production via

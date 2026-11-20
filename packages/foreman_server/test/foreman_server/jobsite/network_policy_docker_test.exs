@@ -6,7 +6,10 @@ defmodule ForemanServer.Jobsite.NetworkPolicyDockerTest do
   # selects exactly the labelled objects.
   use ExUnit.Case, async: false
 
-  alias ForemanServer.Jobsite.NetworkPolicy
+  alias ForemanServer.Jobsite
+  alias ForemanServer.Jobsite.{NetworkPolicy, Worktree}
+  alias ForemanServer.Jobsite.Sandboxes.Docker
+  alias ForemanServer.TestSupport.{DockerJobsite, ProjectionStoreReset}
 
   @moduletag :docker
   @image "alpine:3.20"
@@ -91,5 +94,177 @@ defmodule ForemanServer.Jobsite.NetworkPolicyDockerTest do
 
     assert bystander in names(["network", "ls", "--format", "{{.Name}}"])
     assert bystander_container in names(["ps", "-aq"])
+  end
+
+  # -- the docker jobsite's enforced properties and cleanup (PRD AC-006-3, AC-006-4) ----------------
+  #
+  # Real daemon, real jobsite on an allowlist project: the sandbox container, the proxy sidecar and
+  # the internal network all exist while the agent runs. Every assertion is on the ids captured from
+  # the jobsite's own `foreman.jobsite=<id>` label while it was live (ids are unique per jobsite), so
+  # nothing else on the host is looked at, let alone removed.
+
+  describe "filesystem: a negative read, not an event" do
+    test "a command in the sandbox cannot read a host path outside the bind-mounted worktree" do
+      repo = DockerJobsite.tmp_repo!()
+      image = DockerJobsite.ensure_image!()
+
+      assert {:ok, worktree} = Worktree.create(repo_path: repo, strategy: :merge_to_head)
+      on_exit(fn -> Worktree.close(worktree) end)
+
+      # Outside every mount: in the repo root (the worktree is a linked checkout elsewhere) and in
+      # the host temp dir. Neither path is mounted into the sandbox.
+      repo_marker = Path.join(repo, "outside-marker-#{System.unique_integer([:positive])}.txt")
+
+      tmp_marker =
+        Path.join(System.tmp_dir!(), "outside-marker-#{System.unique_integer([:positive])}.txt")
+
+      File.write!(repo_marker, "secret-in-repo\n")
+      File.write!(tmp_marker, "secret-in-tmp\n")
+      on_exit(fn -> File.rm(tmp_marker) end)
+      refute String.starts_with?(repo_marker, worktree.path <> "/")
+
+      assert {:ok, state, sandbox_path, _container} =
+               Docker.create(
+                 %{image: image, labels: %{"netpolicy-docker-test" => "fs"}},
+                 worktree
+               )
+
+      on_exit(fn -> Docker.close(state) end)
+
+      # A file next to the worktree, in its parent directory: a mount wider by one level shows it
+      # at `<sandbox_path>/<name>` (Docker Desktop on macOS does not expose the host's `/` itself,
+      # so a widening that stops short of the root is the one it can show).
+      parent_marker =
+        Path.join(
+          Path.dirname(worktree.path),
+          "outside-marker-#{System.unique_integer([:positive])}.txt"
+        )
+
+      File.write!(parent_marker, "secret-in-parent\n")
+      on_exit(fn -> File.rm(parent_marker) end)
+
+      # The host path itself, the same path under the sandbox mount (what a host-root mount would
+      # expose), a climb out of the mount, and the marker's bare name under the mount (what a wider
+      # mount shows): each read fails and shows nothing.
+      for marker <- [repo_marker, tmp_marker, parent_marker],
+          path <- [
+            marker,
+            sandbox_path <> marker,
+            "#{sandbox_path}/../.." <> marker,
+            "#{sandbox_path}/#{Path.basename(marker)}"
+          ] do
+        assert {:ok, %{exit_code: code, stdout: out}} = Docker.exec(state, "cat #{path}", [])
+        assert code != 0, "read of #{path} succeeded"
+        refute out =~ "secret-in"
+      end
+
+      # Positive control (so the failures above are not a broken sandbox): a file inside the
+      # worktree is readable at the sandbox path.
+      File.write!(Path.join(worktree.path, "inside.txt"), "inside\n")
+
+      assert {:ok, %{exit_code: 0, stdout: inside}} =
+               Docker.exec(state, "cat #{sandbox_path}/inside.txt", [])
+
+      assert inside =~ "inside"
+    end
+  end
+
+  describe "cleanup on every exit route: container, proxy sidecar and network are gone" do
+    setup do
+      ProjectionStoreReset.reset!()
+      on_exit(&ProjectionStoreReset.reset!/0)
+      repo = DockerJobsite.tmp_repo!()
+      {:ok, repo: repo, project_id: DockerJobsite.allowlist_project!(repo)}
+    end
+
+    test "normal completion", %{repo: repo, project_id: project_id} do
+      id = DockerJobsite.start_held!(repo, project_id, 4)
+      live = DockerJobsite.live_resources!(id)
+
+      DockerJobsite.wait_until(fn -> Jobsite.get(id).status == "completed" end, 60_000)
+
+      DockerJobsite.wait_until(fn ->
+        DockerJobsite.resources(id) == %{containers: [], networks: []}
+      end)
+
+      DockerJobsite.assert_gone!(live)
+      assert DockerJobsite.resources(id) == %{containers: [], networks: []}
+    end
+
+    test "operator cancel", %{repo: repo, project_id: project_id} do
+      id = DockerJobsite.start_held!(repo, project_id)
+      live = DockerJobsite.live_resources!(id)
+
+      assert :ok = Jobsite.cancel(id, "docker cleanup test")
+      DockerJobsite.wait_until(fn -> Jobsite.get(id).status == "cancelled" end, 60_000)
+
+      DockerJobsite.wait_until(fn ->
+        DockerJobsite.resources(id) == %{containers: [], networks: []}
+      end)
+
+      DockerJobsite.assert_gone!(live)
+    end
+  end
+
+  # With no network policy a jobsite has only its sandbox container, so nothing but the sandbox's own
+  # `close` removes it: a network teardown (which also removes the jobsite's labelled containers)
+  # cannot mask a missing `close` on these two routes.
+  describe "cleanup on every exit route: the sandbox container alone (no network policy)" do
+    setup do
+      ProjectionStoreReset.reset!()
+      on_exit(&ProjectionStoreReset.reset!/0)
+      {:ok, repo: DockerJobsite.tmp_repo!()}
+    end
+
+    test "normal completion", %{repo: repo} do
+      {id, label} = DockerJobsite.start_held_plain!(repo, 4)
+      assert [container] = DockerJobsite.containers(label)
+      assert DockerJobsite.container?(container)
+
+      DockerJobsite.wait_until(fn -> Jobsite.get(id).status == "completed" end, 60_000)
+      DockerJobsite.wait_until(fn -> DockerJobsite.containers(label) == [] end)
+
+      refute DockerJobsite.container?(container)
+    end
+
+    test "operator cancel", %{repo: repo} do
+      {id, label} = DockerJobsite.start_held_plain!(repo)
+      assert [container] = DockerJobsite.containers(label)
+
+      assert :ok = Jobsite.cancel(id, "docker cleanup test")
+      DockerJobsite.wait_until(fn -> Jobsite.get(id).status == "cancelled" end, 60_000)
+      DockerJobsite.wait_until(fn -> DockerJobsite.containers(label) == [] end)
+
+      refute DockerJobsite.container?(container)
+    end
+
+    # `release_all/3` (executor.ex) is the completion path of a RESUMED jobsite; a fresh run is
+    # released by the engine's release step. The crash leaves the first sandbox for the boot sweep;
+    # the sandbox the resume provisions must be closed when the resumed jobsite completes.
+    test "completion of a resumed jobsite", %{repo: repo} do
+      {id, label} = DockerJobsite.start_held_plain!(repo, 300, max_iterations: 3)
+      assert [first] = DockerJobsite.containers(label)
+
+      DockerJobsite.wait_until(fn -> is_binary(Jobsite.get(id)[:session_id]) end, 30_000)
+      pid = ForemanServer.Jobsite.Executor.pid_for(id)
+      ref = Process.monitor(pid)
+      Process.exit(pid, :kill)
+      assert_receive {:DOWN, ^ref, :process, ^pid, :killed}, 2_000
+      assert DockerJobsite.container?(first)
+
+      assert {:ok, _result} = Jobsite.resume(id)
+      assert Jobsite.get(id).status == "completed"
+
+      {:ok, events} = ForemanServer.EventStore.read_stream_forward("jobsite:" <> id, 0, 99_999)
+
+      provisioned =
+        for %{event_type: "JobsiteSandboxProvisioned", data: data} <- events,
+            do: Map.get(data, :container_id) || Map.get(data, "container_id")
+
+      assert [^first | _] = provisioned
+      resumed = List.last(provisioned)
+      assert resumed != first
+      refute DockerJobsite.container?(resumed)
+    end
   end
 end

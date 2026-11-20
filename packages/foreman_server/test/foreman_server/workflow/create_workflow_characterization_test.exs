@@ -269,7 +269,8 @@ defmodule ForemanServer.Workflow.CreateWorkflowCharacterizationTest do
             run_id: run_id,
             approver: "ldangelo",
             approver_identity: "github:ldangelo",
-            head_sha: "abc1234"
+            head_sha: "abc1234",
+            evidence: ForemanServer.TestSupport.GateEvidence.off()
           }
         })
 

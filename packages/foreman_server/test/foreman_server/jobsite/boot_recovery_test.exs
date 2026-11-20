@@ -371,4 +371,48 @@ defmodule ForemanServer.Jobsite.BootRecoveryTest do
     Application.put_env(:foreman_server, key, false)
     assert ForemanServer.Application.maybe_jobsite_boot_recovery_child() == []
   end
+
+  # PRD AC-006-4, server-crash route. Real docker daemon: excluded by default, run with
+  # `mix test --include docker`. A real docker jobsite on an allowlist project (sandbox container,
+  # proxy sidecar, internal network); its executor is hard-killed, so the `after` that tears the
+  # network down never runs and docker keeps all three. The next boot's sweep removes them.
+  #
+  # Scope: the sweep takes everything labelled with THIS event store's owner digest
+  # (`NetworkPolicy.owner/0`: host, port and database of the test event store, so another server's
+  # objects and the dev server's carry a different one) and nothing else. The assertions look only
+  # at this jobsite's own ids.
+  @tag :docker
+  test "a server crash leaves the jobsite's docker objects, and the next boot's sweep removes them" do
+    alias ForemanServer.TestSupport.{DockerJobsite, ProjectionStoreReset}
+
+    ProjectionStoreReset.reset!()
+    on_exit(&ProjectionStoreReset.reset!/0)
+
+    previous = Application.get_env(:foreman_server, :network_policy, [])
+    on_exit(fn -> Application.put_env(:foreman_server, :network_policy, previous) end)
+
+    repo = DockerJobsite.tmp_repo!()
+    project_id = DockerJobsite.allowlist_project!(repo)
+    id = DockerJobsite.start_held!(repo, project_id)
+    live = DockerJobsite.live_resources!(id)
+
+    executor_pid = Executor.pid_for(id)
+    ref = Process.monitor(executor_pid)
+    Process.exit(executor_pid, :kill)
+    assert_receive {:DOWN, ^ref, :process, ^executor_pid, :killed}, 2_000
+
+    # The crash is what leaks: nothing ran the executor's cleanup.
+    assert DockerJobsite.resources(id) == live
+    assert Enum.all?(live.containers, &DockerJobsite.container?/1)
+    assert Enum.all?(live.networks, &DockerJobsite.network?/1)
+
+    # The next boot: BootRecovery's sweep is on at boot (the test config turns it off).
+    Application.put_env(:foreman_server, :network_policy, sweep_on_boot: true)
+    {:ok, pid} = BootRecovery.start_link([])
+    boot = Process.monitor(pid)
+    assert_receive {:DOWN, ^boot, :process, ^pid, :normal}, 30_000
+
+    DockerJobsite.assert_gone!(live)
+    assert DockerJobsite.resources(id) == %{containers: [], networks: []}
+  end
 end

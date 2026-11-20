@@ -78,7 +78,8 @@ defmodule ForemanServer.Workflow.PreflightFailureTest do
              :provider_unsupported,
              :provider_not_installed,
              :model_not_found,
-             :catalog_unavailable
+             :catalog_unavailable,
+             :skill_not_found
            ]
   end
 
@@ -87,6 +88,56 @@ defmodule ForemanServer.Workflow.PreflightFailureTest do
     # access), and `class` — the whole discriminator — is among them.
     assert_raise ArgumentError, fn ->
       struct!(PreflightFailure, phase: "code", provider: :pi)
+    end
+  end
+
+  describe ":skill_not_found" do
+    test "backend and skill default to nil and the class is part of the closed set" do
+      failure = %PreflightFailure{phase: "code", provider: :pi, class: :skill_not_found}
+
+      assert failure.backend == nil
+      assert failure.skill == nil
+      assert :skill_not_found in PreflightFailure.classes()
+    end
+
+    test "its summary names the skill and the backend, and no other class says so" do
+      failure = %PreflightFailure{
+        phase: "code",
+        provider: :pi,
+        class: :skill_not_found,
+        skill: "fix-issue",
+        backend: :host_workflow
+      }
+
+      text = PreflightFailure.summarize(failure)
+
+      assert text =~ "skill_not_found"
+      assert text =~ ~s("fix-issue")
+      assert text =~ ":host_workflow"
+      refute text =~ "unclassified"
+
+      for class <- PreflightFailure.classes() -- [:skill_not_found] do
+        other =
+          PreflightFailure.summarize(%PreflightFailure{
+            phase: "code",
+            provider: :pi,
+            class: class
+          })
+
+        refute other =~ "skill"
+      end
+    end
+
+    test "the skill and backend are optional in the summary" do
+      text =
+        PreflightFailure.summarize(%PreflightFailure{
+          phase: "code",
+          provider: :pi,
+          class: :skill_not_found
+        })
+
+      assert text =~ "skill_not_found"
+      refute text =~ "unclassified"
     end
   end
 end

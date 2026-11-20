@@ -22,9 +22,22 @@ defmodule ForemanServer.GitHub.PrStatus do
       A comment's `bot` is `nil` until `fetch/2` ran with `threads: true`, which asks GraphQL who
       wrote each conversation comment (`gh pr view` gives a login only, and a GraphQL login carries
       no `[bot]` marker): `true` when GitHub says the author is a Bot actor (a review bot's
-      walkthrough), `false` for every other actor.
+      walkthrough), `false` for every other actor. `viewer_did_author` is `true` only when
+      `gh pr view` says (`viewerDidAuthor`) that the token's own user wrote the comment; an absent
+      field is `false`, never assumed true (TRD-030).
     * `merge_state_status` - the documented `mergeStateStatus` values plus
       `:unknown` (GitHub computes it lazily; `UNKNOWN` is not an error).
+    * `files`, `changed_files`, `additions`, `deletions` - the machine-derived size
+      and changed paths of the PR, from the same `gh pr view` response as the head
+      SHA and the checks. `files` is `[%{path, additions, deletions}]` (the
+      `changeType` is not kept), at most `@max_list` items as GitHub lists them
+      (it lists 100 of a 223-file PR); `changed_files`, `additions` and
+      `deletions` are the PR's own totals, so an incomplete list still gives the
+      size of the whole diff. A response that omits a field leaves it `nil`
+      (never an empty or zero default); a field present with the wrong shape
+      (a negative count, a file item without a `path`) is a typed
+      `{:gh_unexpected_payload, _}`. `files_incomplete?/1` is true when the list
+      is shorter than `changed_files` or either is unavailable.
     * `threads` - `nil` until `fetch_threads/2` (or `fetch/2` with
       `threads: true`) read the review threads via GraphQL; inline review
       comments and their resolved state are not part of `gh pr view`.
@@ -43,6 +56,10 @@ defmodule ForemanServer.GitHub.PrStatus do
     :base_branch,
     :review_decision,
     :merge_state_status,
+    :files,
+    :changed_files,
+    :additions,
+    :deletions,
     checks: [],
     checks_state: :none,
     checks_truncated: false,
@@ -67,7 +84,9 @@ defmodule ForemanServer.GitHub.PrStatus do
           state: check_state(),
           conclusion: String.t() | nil,
           url: String.t() | nil,
-          workflow: String.t() | nil
+          workflow: String.t() | nil,
+          started_at: String.t() | nil,
+          completed_at: String.t() | nil
         }
 
   @type review :: %{
@@ -82,10 +101,13 @@ defmodule ForemanServer.GitHub.PrStatus do
           id: String.t(),
           author: String.t() | nil,
           bot: boolean() | nil,
+          viewer_did_author: boolean(),
           body: String.t(),
           url: String.t() | nil,
           created_at: String.t() | nil
         }
+
+  @type file :: %{path: String.t(), additions: non_neg_integer(), deletions: non_neg_integer()}
 
   @type thread_comment :: %{
           id: String.t(),
@@ -111,6 +133,10 @@ defmodule ForemanServer.GitHub.PrStatus do
           base_branch: String.t(),
           review_decision: review_decision(),
           merge_state_status: merge_state_status(),
+          files: [file()] | nil,
+          changed_files: non_neg_integer() | nil,
+          additions: non_neg_integer() | nil,
+          deletions: non_neg_integer() | nil,
           checks: [check()],
           checks_state: checks_state(),
           checks_truncated: boolean(),
@@ -128,9 +154,14 @@ defmodule ForemanServer.GitHub.PrStatus do
           | {:gh_unparsable, String.t()}
           | {:gh_unexpected_payload, term()}
 
-  @json_fields "state,mergeable,headRefOid,headRefName,baseRefName,statusCheckRollup,reviewDecision,reviews,comments,mergeStateStatus"
+  @json_fields "state,mergeable,headRefOid,headRefName,baseRefName,statusCheckRollup,reviewDecision,reviews,comments,mergeStateStatus,files,changedFiles,additions,deletions"
 
   @max_list 100
+
+  @doc "The most checks (and comments, reviews) one reading keeps."
+  @spec max_list() :: pos_integer()
+  def max_list, do: @max_list
+
   @max_body 2000
 
   @threads_query "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100){nodes{id isResolved isOutdated path line originalLine comments(first:20){nodes{databaseId author{login} body createdAt url}}}}}}}"
@@ -142,6 +173,7 @@ defmodule ForemanServer.GitHub.PrStatus do
 
   @fail_conclusions ~w(FAILURE TIMED_OUT CANCELLED ACTION_REQUIRED STARTUP_FAILURE STALE)
   @pass_conclusions ~w(SUCCESS NEUTRAL SKIPPED)
+  @zero_time "0001-01-01T00:00:00Z"
   @pending_check_status ~w(IN_PROGRESS QUEUED PENDING WAITING REQUESTED)
   @merge_states %{
     "CLEAN" => :clean,
@@ -300,7 +332,16 @@ defmodule ForemanServer.GitHub.PrStatus do
     end
   end
 
-  defp parse_pr_url(pr_url) do
+  @doc """
+  Owner, repository and number of a pull request URL: the first `github.com/<owner>/<repo>/pull/<n>`
+  found in it (lax: any scheme, host prefix, trailing segment, query or fragment), or a typed
+  `{:gh_unexpected_payload, {:unrecognised_pr_url, url}}`. `GitHub.PrComment.parse_pr_url/1` is
+  the strict form that a content write needs.
+  """
+  @spec parse_pr_url(String.t()) ::
+          {:ok, String.t(), String.t(), pos_integer()}
+          | {:error, {:gh_unexpected_payload, term()}}
+  def parse_pr_url(pr_url) do
     case Regex.run(~r{github\.com/([^/]+)/([^/]+)/pull/(\d+)}, pr_url) do
       [_, owner, name, number] -> {:ok, owner, name, String.to_integer(number)}
       nil -> {:error, {:gh_unexpected_payload, {:unrecognised_pr_url, pr_url}}}
@@ -330,7 +371,11 @@ defmodule ForemanServer.GitHub.PrStatus do
          {:ok, decision} <- review_decision(Map.get(payload, "reviewDecision")),
          {:ok, merge_state} <- merge_state_status(Map.get(payload, "mergeStateStatus")),
          {:ok, reviews} <- reviews(Map.get(payload, "reviews")),
-         {:ok, comments} <- comments(Map.get(payload, "comments")) do
+         {:ok, comments} <- comments(Map.get(payload, "comments")),
+         {:ok, files} <- files(Map.get(payload, "files")),
+         {:ok, changed_files} <- count(payload, "changedFiles"),
+         {:ok, additions} <- count(payload, "additions"),
+         {:ok, deletions} <- count(payload, "deletions") do
       {check_list, checks_truncated} = bound(checks)
       {review_list, reviews_truncated} = bound(reviews)
       {comment_list, comments_truncated} = bound(comments)
@@ -343,6 +388,10 @@ defmodule ForemanServer.GitHub.PrStatus do
          base_branch: base,
          review_decision: decision,
          merge_state_status: merge_state,
+         files: files,
+         changed_files: changed_files,
+         additions: additions,
+         deletions: deletions,
          checks: check_list,
          checks_state: checks_state(checks),
          checks_truncated: checks_truncated,
@@ -385,11 +434,14 @@ defmodule ForemanServer.GitHub.PrStatus do
 
   defp checks(other), do: {:error, {:gh_unexpected_payload, other}}
 
+  # A check without a name has no identity the evidence can carry (`PrEvidence` refuses it), so
+  # it is a typed payload error here, not a placeholder.
   defp check(%{"__typename" => "CheckRun", "name" => name, "status" => status} = item)
-       when is_binary(name) do
+       when is_binary(name) and name != "" do
     conclusion = Map.get(item, "conclusion")
 
-    with {:ok, state} <- check_run_state(status, conclusion) do
+    with {:ok, state} <- check_run_state(status, conclusion),
+         {:ok, completed_at} <- completed_at(status, Map.get(item, "completedAt")) do
       {:ok,
        %{
          name: name,
@@ -397,13 +449,15 @@ defmodule ForemanServer.GitHub.PrStatus do
          state: state,
          conclusion: blank_to_nil(conclusion),
          url: blank_to_nil(Map.get(item, "detailsUrl")),
-         workflow: blank_to_nil(Map.get(item, "workflowName"))
+         workflow: blank_to_nil(Map.get(item, "workflowName")),
+         started_at: reported_time(Map.get(item, "startedAt")),
+         completed_at: completed_at
        }}
     end
   end
 
   defp check(%{"__typename" => "StatusContext", "context" => name, "state" => state} = item)
-       when is_binary(name) do
+       when is_binary(name) and name != "" do
     with {:ok, check_state} <- status_context_state(state) do
       {:ok,
        %{
@@ -412,12 +466,33 @@ defmodule ForemanServer.GitHub.PrStatus do
          state: check_state,
          conclusion: state,
          url: blank_to_nil(Map.get(item, "targetUrl")),
-         workflow: nil
+         workflow: nil,
+         started_at: reported_time(Map.get(item, "startedAt")),
+         completed_at: nil
        }}
     end
   end
 
   defp check(_other), do: :error
+
+  # A completed run must say when it completed (GitHub reports the zero date for a run that
+  # has not); anything else is a payload this parser does not understand, never a default.
+  # The order of `startedAt` and `completedAt` is not assumed: skipped jobs report a
+  # `completedAt` before their `startedAt`.
+  defp completed_at("COMPLETED", value) do
+    case reported_time(value) do
+      nil -> :error
+      time -> if iso8601?(time), do: {:ok, time}, else: :error
+    end
+  end
+
+  defp completed_at(_status, value), do: {:ok, reported_time(value)}
+
+  defp reported_time(value) when value in [nil, "", @zero_time], do: nil
+  defp reported_time(value) when is_binary(value), do: value
+  defp reported_time(_value), do: nil
+
+  defp iso8601?(value), do: match?({:ok, _datetime, _offset}, DateTime.from_iso8601(value))
 
   defp check_run_state("COMPLETED", conclusion) when conclusion in @fail_conclusions,
     do: {:ok, :failing}
@@ -497,6 +572,7 @@ defmodule ForemanServer.GitHub.PrStatus do
            id: id,
            author: login(Map.get(item, "author")),
            bot: nil,
+           viewer_did_author: Map.get(item, "viewerDidAuthor") == true,
            body: item |> Map.get("body", "") |> truncate_body(),
            url: blank_to_nil(Map.get(item, "url")),
            created_at: blank_to_nil(Map.get(item, "createdAt"))
@@ -536,6 +612,54 @@ defmodule ForemanServer.GitHub.PrStatus do
   defp truncate_body(_body), do: ""
 
   # Newest kept: GitHub returns oldest first.
+  # -- files / size -------------------------------------------------------
+
+  @doc """
+  True when the changed-path list cannot be taken as the whole diff: GitHub listed
+  fewer files than `changed_files`, or the response did not carry the list or the
+  count at all (the evidence is unavailable, never an empty complete list).
+  """
+  @spec files_incomplete?(t()) :: boolean()
+  def files_incomplete?(%__MODULE__{files: files, changed_files: changed})
+      when is_list(files) and is_integer(changed),
+      do: length(files) < changed
+
+  def files_incomplete?(%__MODULE__{}), do: true
+
+  defp files(nil), do: {:ok, nil}
+
+  defp files(items) when is_list(items) do
+    items
+    |> Enum.take(@max_list)
+    |> Enum.reduce_while({:ok, []}, fn item, {:ok, acc} ->
+      case file(item) do
+        {:ok, file} -> {:cont, {:ok, [file | acc]}}
+        :error -> {:halt, {:error, {:gh_unexpected_payload, item}}}
+      end
+    end)
+    |> case do
+      {:ok, list} -> {:ok, Enum.reverse(list)}
+      error -> error
+    end
+  end
+
+  defp files(other), do: {:error, {:gh_unexpected_payload, {:files, other}}}
+
+  defp file(%{"path" => path, "additions" => add, "deletions" => del})
+       when is_binary(path) and path != "" and is_integer(add) and add >= 0 and
+              is_integer(del) and del >= 0,
+       do: {:ok, %{path: path, additions: add, deletions: del}}
+
+  defp file(_other), do: :error
+
+  defp count(payload, key) do
+    case Map.get(payload, key) do
+      nil -> {:ok, nil}
+      n when is_integer(n) and n >= 0 -> {:ok, n}
+      other -> {:error, {:gh_unexpected_payload, {key, other}}}
+    end
+  end
+
   defp bound(list) do
     if length(list) > @max_list, do: {Enum.take(list, -@max_list), true}, else: {list, false}
   end

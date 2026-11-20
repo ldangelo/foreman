@@ -297,6 +297,361 @@ defmodule ForemanServer.EventCodecTest do
     end
   end
 
+  describe "PhaseRetried" do
+    test "round-trips through the codec, with the optional field defaulting to nil" do
+      data = %{run_id: "r1", phase_id: "p1", index: 2, attempt: 3, reason: "resumed"}
+
+      assert %ForemanServer.Events.PhaseRetried{
+               run_id: "r1",
+               phase_id: "p1",
+               index: 2,
+               attempt: 3,
+               reason: "resumed",
+               prior_worktree_discarded: nil
+             } = decoded = EventCodec.decode!("PhaseRetried", data)
+
+      assert EventCodec.decode!("PhaseRetried", decoded) == decoded
+
+      assert EventCodec.decode!("PhaseRetried", Map.new(data, fn {k, v} -> {"#{k}", v} end)) ==
+               decoded
+
+      assert "PhaseRetried" in EventCodec.registered()
+    end
+
+    test "rejects a payload missing an enforced key" do
+      assert_raise ArgumentError, ~r/missing enforced keys/, fn ->
+        EventCodec.decode!("PhaseRetried", %{run_id: "r1", phase_id: "p1"})
+      end
+    end
+
+    test "a stream recorded before the event existed still decodes unchanged" do
+      assert %ForemanServer.Events.PhaseStarted{attempt: 1} =
+               EventCodec.decode!("PhaseStarted", %{
+                 run_id: "r1",
+                 phase_id: "p1",
+                 index: 1,
+                 name: "dev",
+                 attempt: 1,
+                 artifact_template: "t"
+               })
+    end
+  end
+
+  describe "PrChecksChanged evidence fields" do
+    @checks_data %{
+      run_id: "r1",
+      project_id: "p1",
+      task_id: "t1",
+      pr_url: "https://github.com/acme/repo/pull/7",
+      head_sha: "h1",
+      checks_state: "failing",
+      digest: "d1",
+      checks: [%{"name" => "unit", "kind" => "check_run", "state" => "failing"}],
+      checks_truncated: true,
+      evidence_digest: "e1",
+      observation_ref: "n-1",
+      required: [%{"name" => "unit", "kind" => "check_run"}],
+      policy_version: "p1",
+      source: "gate"
+    }
+
+    test "round-trips through the codec and through JSON" do
+      assert %ForemanServer.Events.PrChecksChanged{} =
+               decoded = EventCodec.decode!("PrChecksChanged", @checks_data)
+
+      assert decoded.checks == @checks_data.checks
+      assert decoded.checks_truncated == true
+      assert decoded.evidence_digest == "e1"
+      assert decoded.observation_ref == "n-1"
+      assert decoded.required == @checks_data.required
+      assert decoded.policy_version == "p1"
+      assert decoded.source == "gate"
+
+      replayed = @checks_data |> Jason.encode!() |> Jason.decode!()
+      assert %{checks: checks, source: "gate"} = EventCodec.decode!("PrChecksChanged", replayed)
+      assert checks == @checks_data.checks
+    end
+
+    test "an event written before the fields existed replays as no list recorded, never zero checks" do
+      old =
+        Map.drop(@checks_data, [
+          :checks,
+          :checks_truncated,
+          :evidence_digest,
+          :observation_ref,
+          :required,
+          :policy_version,
+          :source
+        ])
+
+      assert %{checks: nil, checks_truncated: false, required: nil, source: nil} =
+               EventCodec.decode!("PrChecksChanged", old)
+    end
+  end
+
+  describe "ReviewFindingsRecorded" do
+    @findings_data %{
+      run_id: "r1",
+      project_id: "p1",
+      task_id: "t1",
+      pr_url: "https://github.com/acme/repo/pull/7",
+      repo_id: "repo-b",
+      head_sha: "h1",
+      status: "recorded",
+      findings: [
+        %{
+          "severity" => "major",
+          "path" => "lib/a.ex",
+          "line" => 3,
+          "description" => "bad",
+          "disposition" => "open",
+          "source" => "repo-rules"
+        }
+      ],
+      defect: nil,
+      defect_detail: nil,
+      judgement: %{
+        "status" => "recorded",
+        "level" => "HIGH",
+        "rationale" => "touches auth",
+        "defect" => nil,
+        "defect_detail" => nil
+      },
+      artifact_path: "/w/review.md",
+      artifact_sha256: String.duplicate("a", 64),
+      digest: "0123456789abcdef",
+      recorded_at: 7
+    }
+
+    test "round-trips through the codec and through JSON with every declared field" do
+      assert %ForemanServer.Events.ReviewFindingsRecorded{} =
+               decoded = EventCodec.decode!("ReviewFindingsRecorded", @findings_data)
+
+      assert Map.from_struct(decoded) == @findings_data
+
+      replayed = @findings_data |> Jason.encode!() |> Jason.decode!()
+
+      assert Map.from_struct(EventCodec.decode!("ReviewFindingsRecorded", replayed)) ==
+               @findings_data
+    end
+
+    test "an event written before the judgement field decodes, with no judgement" do
+      legacy = Map.delete(@findings_data, :judgement)
+      refute Map.has_key?(legacy, :judgement)
+
+      assert %ForemanServer.Events.ReviewFindingsRecorded{judgement: nil} =
+               decoded = EventCodec.decode!("ReviewFindingsRecorded", legacy)
+
+      assert decoded.head_sha == "h1"
+
+      replayed = legacy |> Jason.encode!() |> Jason.decode!()
+
+      assert %ForemanServer.Events.ReviewFindingsRecorded{judgement: nil} =
+               EventCodec.decode!("ReviewFindingsRecorded", replayed)
+    end
+
+    test "an unknown key is refused and the enforced keys are required" do
+      assert_raise ArgumentError, fn ->
+        EventCodec.decode!("ReviewFindingsRecorded", Map.put(@findings_data, :bogus, "x"))
+      end
+
+      assert_raise ArgumentError, fn ->
+        EventCodec.decode!("ReviewFindingsRecorded", Map.delete(@findings_data, :head_sha))
+      end
+    end
+  end
+
+  describe "PrRiskRecorded" do
+    @risk_data %{
+      run_id: "r1",
+      project_id: "p1",
+      task_id: "t1",
+      pr_url: "https://github.com/acme/repo/pull/7",
+      repo_id: "repo-b",
+      head_sha: "h1",
+      level: "HIGH",
+      rubric_version: "1",
+      rationale: [%{"rule" => "checks", "level" => "HIGH", "basis" => "machine", "detail" => "d"}],
+      evidence: %{"checks" => %{"status" => "off", "reasons" => []}, "files" => %{"listed" => 1}},
+      unresolved_findings: [
+        %{
+          "severity" => "major",
+          "path" => "a",
+          "line" => 1,
+          "description" => "bad",
+          "disposition" => "open",
+          "source" => "s"
+        }
+      ],
+      instructions: ["read the check list"],
+      judgement: %{"head_sha" => "h1", "status" => "recorded", "level" => "LOW", "defect" => nil},
+      findings_digest: "0123456789abcdef",
+      digest: "fedcba9876543210",
+      seq: 3,
+      recorded_at: 7
+    }
+
+    test "round-trips through the codec and through JSON with every declared field" do
+      assert %ForemanServer.Events.PrRiskRecorded{} =
+               decoded = EventCodec.decode!("PrRiskRecorded", @risk_data)
+
+      assert Map.from_struct(decoded) == @risk_data
+
+      assert Enum.sort(Map.keys(@risk_data)) ==
+               Enum.sort(decoded |> Map.from_struct() |> Map.keys())
+
+      replayed = @risk_data |> Jason.encode!() |> Jason.decode!()
+      assert Map.from_struct(EventCodec.decode!("PrRiskRecorded", replayed)) == @risk_data
+    end
+
+    test "an unknown key is refused and the enforced keys are required" do
+      assert_raise ArgumentError, fn ->
+        EventCodec.decode!("PrRiskRecorded", Map.put(@risk_data, :bogus, "x"))
+      end
+
+      for key <- [:head_sha, :level, :rubric_version, :digest, :seq, :recorded_at] do
+        assert_raise ArgumentError, fn ->
+          EventCodec.decode!("PrRiskRecorded", Map.delete(@risk_data, key))
+        end
+      end
+    end
+  end
+
+  describe "PrCommentPublished" do
+    @published_data %{
+      run_id: "r1",
+      project_id: "p1",
+      task_id: "t1",
+      pr_url: "https://github.com/acme/repo/pull/7",
+      repo_id: "repo-b",
+      head_sha: "h1",
+      digest: "fedcba9876543210",
+      status: "published",
+      reason: nil,
+      detail: "adopted",
+      comment_id: 4242,
+      comment_url: "https://github.com/acme/repo/pull/7#issuecomment-4242",
+      superseded: "h0",
+      recorded_at: 7
+    }
+
+    test "round-trips through the codec and through JSON with every declared field" do
+      assert %ForemanServer.Events.PrCommentPublished{} =
+               decoded = EventCodec.decode!("PrCommentPublished", @published_data)
+
+      assert Map.from_struct(decoded) == @published_data
+
+      assert Enum.sort(Map.keys(@published_data)) ==
+               Enum.sort(decoded |> Map.from_struct() |> Map.keys())
+
+      replayed = @published_data |> Jason.encode!() |> Jason.decode!()
+
+      assert Map.from_struct(EventCodec.decode!("PrCommentPublished", replayed)) ==
+               @published_data
+    end
+
+    test "an unknown key is refused and the enforced keys are required" do
+      assert_raise ArgumentError, fn ->
+        EventCodec.decode!("PrCommentPublished", Map.put(@published_data, :bogus, "x"))
+      end
+
+      for key <- [
+            :run_id,
+            :project_id,
+            :task_id,
+            :pr_url,
+            :head_sha,
+            :digest,
+            :status,
+            :recorded_at
+          ] do
+        assert_raise ArgumentError, fn ->
+          EventCodec.decode!("PrCommentPublished", Map.delete(@published_data, key))
+        end
+      end
+    end
+  end
+
+  describe "PhaseContextRecorded" do
+    @data %{
+      run_id: "r1",
+      phase_id: "p1",
+      sections: [%{id: "instructions", bytes: 12}],
+      sha256: String.duplicate("a", 64),
+      bytes: 40,
+      truncated: [%{section: "memory", omitted_bytes: 5, omitted_lines: 1}],
+      redactions: 1,
+      redaction_scope: "project_context_sections"
+    }
+
+    test "round-trips through the codec and through JSON" do
+      assert %ForemanServer.Events.PhaseContextRecorded{
+               run_id: "r1",
+               phase_id: "p1",
+               sha256: sha,
+               bytes: 40,
+               redactions: 1,
+               redaction_scope: "project_context_sections"
+             } = decoded = EventCodec.decode!("PhaseContextRecorded", @data)
+
+      assert sha == @data.sha256
+      assert EventCodec.decode!("PhaseContextRecorded", decoded) == decoded
+
+      replayed = @data |> Jason.encode!() |> Jason.decode!()
+      assert %{sha256: ^sha, bytes: 40} = EventCodec.decode!("PhaseContextRecorded", replayed)
+      assert "PhaseContextRecorded" in EventCodec.registered()
+    end
+
+    test "rejects a payload missing an enforced key" do
+      assert_raise ArgumentError, ~r/missing enforced keys/, fn ->
+        EventCodec.decode!("PhaseContextRecorded", Map.delete(@data, :redaction_scope))
+      end
+    end
+  end
+
+  describe "RunRecoveryAttempted" do
+    test "round-trips through the codec with the optional fields defaulting to nil" do
+      data = %{run_id: "r1", outcome: "resumed", elapsed_since_boot_ms: 840}
+
+      assert %ForemanServer.Events.RunRecoveryAttempted{
+               run_id: "r1",
+               outcome: "resumed",
+               elapsed_since_boot_ms: 840,
+               reason: nil,
+               effect_class: nil,
+               effect_key: nil,
+               effect_verdict: nil
+             } = decoded = EventCodec.decode!("RunRecoveryAttempted", data)
+
+      assert EventCodec.decode!("RunRecoveryAttempted", decoded) == decoded
+
+      assert EventCodec.decode!(
+               "RunRecoveryAttempted",
+               Map.new(data, fn {k, v} -> {"#{k}", v} end)
+             ) == decoded
+
+      assert "RunRecoveryAttempted" in EventCodec.registered()
+    end
+
+    test "carries the effect fields of an effect outcome" do
+      assert %{effect_class: "push", effect_key: "k", effect_verdict: "unknown"} =
+               EventCodec.decode!("RunRecoveryAttempted", %{
+                 run_id: "r1",
+                 outcome: "effect_blocked",
+                 elapsed_since_boot_ms: 1,
+                 effect_class: "push",
+                 effect_key: "k",
+                 effect_verdict: "unknown"
+               })
+    end
+
+    test "rejects a payload missing an enforced key" do
+      assert_raise ArgumentError, ~r/missing enforced keys/, fn ->
+        EventCodec.decode!("RunRecoveryAttempted", %{run_id: "r1", outcome: "resumed"})
+      end
+    end
+  end
+
   describe "decode_recorded!/1" do
     test "decodes a RecordedEvent-shaped map" do
       recorded = %{event_type: "WorkerUnresponsive", data: %{worker_id: "w1", run_id: "r1"}}
@@ -462,6 +817,39 @@ defmodule ForemanServer.EventCodecTest do
                      VcsOperationFailed) do
         assert type in EventCodec.registered(), "#{type} must be registered"
       end
+    end
+  end
+
+  describe "MergeGateApproved.gate_off_acknowledged (AC-001-3)" do
+    alias ForemanServer.Events.MergeGateApproved
+
+    # What an approval recorded before the field existed holds on disk (string keys, no
+    # `gate_off_acknowledged`): it must keep decoding, or the whole run stream stops replaying.
+    @old_approval %{
+      "run_id" => "r1",
+      "approver" => "leo",
+      "approver_identity" => "github:ldangelo",
+      "head_sha" => "abc",
+      "approved_at" => 1,
+      "evidence" => nil
+    }
+
+    test "an approval recorded before the field existed still decodes, with the field nil" do
+      assert %MergeGateApproved{gate_off_acknowledged: nil, run_id: "r1", head_sha: "abc"} =
+               EventCodec.decode!("MergeGateApproved", @old_approval)
+    end
+
+    test "an approval with the field decodes and round-trips through JSON" do
+      raw = Map.put(@old_approval, "gate_off_acknowledged", true)
+
+      assert %MergeGateApproved{gate_off_acknowledged: true} =
+               decoded = EventCodec.decode!("MergeGateApproved", raw)
+
+      assert decoded ==
+               decoded
+               |> Jason.encode!()
+               |> Jason.decode!()
+               |> then(&EventCodec.decode!("MergeGateApproved", &1))
     end
   end
 end

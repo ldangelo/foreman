@@ -23,6 +23,7 @@ defmodule ForemanServer.Test.Support.DoctorStubProvider do
       provider_id: :doctor_test_stub,
       contract_version: "br.capabilities.v1",
       id_format: "stub:%s",
+      storage_scheme: :sqlite,
       supports: [:list_ready]
     }
   end

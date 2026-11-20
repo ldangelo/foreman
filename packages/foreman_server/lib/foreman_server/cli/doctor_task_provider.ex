@@ -19,12 +19,14 @@ defmodule ForemanServer.CLI.DoctorTaskProvider do
   @probe_timeout_ms 30_000
   @version_argv ["br", "--version"]
 
+  @kata_runner_default ForemanServer.TaskProviders.SystemKataRunner
+  @kata_version_argv ["--version"]
+  @kata_sample_list_argv ["list", "--limit", "1", "--json"]
+
   @type run_result :: :ok | {:error, pos_integer(), String.t()}
 
   @spec run([String.t()]) :: run_result()
   def run([]) do
-    :ok = ensure_schema_cache_started()
-
     reports =
       ProjectionStore.list_projects()
       |> Enum.filter(&task_provider_project?/1)
@@ -52,51 +54,13 @@ defmodule ForemanServer.CLI.DoctorTaskProvider do
     with {:ok, provider_module} <-
            route_or_resolve_provider(project_id, database_path, provider_ref),
          capabilities when is_map(capabilities) <- provider_module.capabilities() do
-      report = %{
-        project_id: project_id,
-        healthy: true,
-        provider_id: normalize_provider_id(capabilities[:provider_id]),
-        contract_version: capabilities[:contract_version],
-        br_version: nil,
-        capabilities: nil,
-        sample_ready: nil,
-        schema_validation_failures: []
-      }
-
-      janitor_enabled = Application.get_env(:foreman_server, :start_beads_orphan_janitor?, false)
-      {janitor_running, orphan_backlog} = orphan_backlog_snapshot(project_id, janitor_enabled)
-
-      report =
-        Map.merge(report, %{
-          janitor_enabled: janitor_enabled,
-          janitor_running: janitor_running,
-          orphan_backlog: orphan_backlog
-        })
-
-      cond do
-        not is_binary(database_path) or database_path == "" ->
-          put_unhealthy(report, %{
-            code: "DATABASE_PATH_MISSING",
-            message: "task_provider.config.database_path is missing",
-            hint: nil,
-            exit_code: nil,
-            stderr_byte_count: 0,
-            redacted_fields: []
-          })
-
-        not provider_module.available?() ->
-          put_unhealthy(report, %{
-            code: "PROVIDER_MISSING",
-            message: "br not installed",
-            hint: nil,
-            exit_code: nil,
-            stderr_byte_count: 0,
-            redacted_fields: []
-          })
-
-        true ->
-          probe_project(report, provider_module, project_config, database_path)
-      end
+      build_resolved_report(
+        capabilities,
+        provider_module,
+        project_id,
+        project_config,
+        database_path
+      )
     else
       {:error, reason} ->
         janitor_enabled =
@@ -126,6 +90,281 @@ defmodule ForemanServer.CLI.DoctorTaskProvider do
           }
         }
     end
+  end
+
+  # The probe follows the provider's declared storage. A CLI-process provider (Kata) has
+  # no database file, so it is never held to the Beads `database_path` check.
+  defp build_resolved_report(
+         %{storage_scheme: :cli_process, provider_id: :kata} = capabilities,
+         provider_module,
+         project_id,
+         project_config,
+         _database_path
+       ) do
+    build_kata_report(capabilities, provider_module, project_id, project_config)
+  end
+
+  defp build_resolved_report(
+         capabilities,
+         provider_module,
+         project_id,
+         project_config,
+         database_path
+       ) do
+    # Only the Beads probe validates against the br JSON schemas; a Kata run never starts them.
+    :ok = ensure_schema_cache_started()
+
+    report = %{
+      project_id: project_id,
+      healthy: true,
+      provider_id: normalize_provider_id(capabilities[:provider_id]),
+      contract_version: capabilities[:contract_version],
+      br_version: nil,
+      capabilities: nil,
+      sample_ready: nil,
+      schema_validation_failures: []
+    }
+
+    janitor_enabled = Application.get_env(:foreman_server, :start_beads_orphan_janitor?, false)
+    {janitor_running, orphan_backlog} = orphan_backlog_snapshot(project_id, janitor_enabled)
+
+    report =
+      Map.merge(report, %{
+        janitor_enabled: janitor_enabled,
+        janitor_running: janitor_running,
+        orphan_backlog: orphan_backlog
+      })
+
+    cond do
+      not is_binary(database_path) or database_path == "" ->
+        put_unhealthy(report, %{
+          code: "DATABASE_PATH_MISSING",
+          message: "task_provider.config.database_path is missing",
+          hint: nil,
+          exit_code: nil,
+          stderr_byte_count: 0,
+          redacted_fields: []
+        })
+
+      not provider_module.available?() ->
+        put_unhealthy(report, %{
+          code: "PROVIDER_MISSING",
+          message: "br not installed",
+          hint: nil,
+          exit_code: nil,
+          stderr_byte_count: 0,
+          redacted_fields: []
+        })
+
+      true ->
+        probe_project(report, provider_module, project_config, database_path)
+    end
+  end
+
+  defp build_kata_report(capabilities, provider_module, project_id, project_config) do
+    report = %{
+      project_id: project_id,
+      healthy: true,
+      provider_id: normalize_provider_id(capabilities[:provider_id]),
+      contract_version: capabilities[:contract_version],
+      kata_version: nil,
+      warnings: [],
+      sample_list: nil,
+      schema_validation_failures: []
+    }
+
+    cwd = fetch_value(project_config, :cwd)
+
+    cond do
+      not is_binary(cwd) or cwd == "" ->
+        put_unhealthy(report, diagnostic("CWD_MISSING", "task_provider.config.cwd is missing"))
+
+      not provider_module.available?() ->
+        put_unhealthy(report, kata_unavailable_error())
+
+      true ->
+        probe_kata_project(report, cwd)
+    end
+  end
+
+  # `available?/0` only says that kata cannot be used. Name the cause: no binary on PATH, or
+  # `kata --version` failing (whose exit code and stderr byte count are reported; stderr text
+  # is never read).
+  defp kata_unavailable_error do
+    case System.find_executable("kata") do
+      nil ->
+        diagnostic("PROVIDER_MISSING", "kata not installed")
+
+      _path ->
+        case kata_version_probe() do
+          {:error, error} ->
+            %{error | code: "PROVIDER_MISSING", message: "kata --version failed"}
+
+          {:ok, _banner} ->
+            diagnostic("PROVIDER_MISSING", "kata --version failed")
+        end
+    end
+  end
+
+  defp probe_kata_project(report, cwd) do
+    case kata_version_probe() do
+      {:ok, banner} ->
+        report
+        |> Map.put(:kata_version, %{exit_code: 0, stdout: banner})
+        |> Map.put(:warnings, kata_version_warnings(banner))
+        |> sample_kata_listing(cwd)
+
+      {:error, error} ->
+        put_unhealthy(report, error)
+    end
+  end
+
+  defp kata_version_probe do
+    case kata_runner().cmd(@kata_version_argv, File.cwd!(), timeout_ms: @probe_timeout_ms) do
+      {:ok, stdout} when is_binary(stdout) -> {:ok, String.trim(stdout)}
+      {:error, %ProviderError{} = error} -> {:error, provider_error_map(error)}
+    end
+  end
+
+  # Resolved at call time, like KataAdapter, so both follow a runtime rebinding of `:kata_runner`.
+  defp kata_runner, do: Application.get_env(:foreman_server, :kata_runner, @kata_runner_default)
+
+  defp sample_kata_listing(report, cwd) do
+    case kata_runner().cmd(@kata_sample_list_argv, cwd, timeout_ms: @probe_timeout_ms) do
+      {:ok, stdout} when is_binary(stdout) ->
+        case decode_kata_listing(stdout) do
+          {:ok, issue_count} ->
+            Map.put(report, :sample_list, %{outcome: "ok", issue_count: issue_count})
+
+          {:error, failures} ->
+            report
+            |> Map.put(:healthy, false)
+            |> Map.put(:schema_validation_failures, failures)
+        end
+
+      {:error, %ProviderError{} = error} ->
+        put_unhealthy(report, provider_error_map(error))
+    end
+  end
+
+  # `kata list --json` prints an envelope whose `issues` is the array of issue records.
+  defp decode_kata_listing(stdout) do
+    case decode_json(stdout, "list_envelope", "list") do
+      {:ok, %{"issues" => issues}} when is_list(issues) ->
+        {:ok, length(issues)}
+
+      {:ok, %{"issues" => _other}} ->
+        {:error, [schema_failure("list", "list_envelope", ["issues"], "issues must be an array")]}
+
+      {:ok, %{}} ->
+        {:error, [schema_failure("list", "list_envelope", ["issues"], "issues is missing")]}
+
+      {:ok, _not_an_object} ->
+        {:error,
+         [schema_failure("list", "list_envelope", [], "sample list must decode to a JSON object")]}
+
+      {:error, failures} ->
+        {:error, failures}
+    end
+  end
+
+  # Warnings never change `healthy`: a version outside `accepted_kata_versions`, or one that
+  # is not a semantic version, only warns.
+  defp kata_version_warnings(banner) do
+    case parse_kata_version(banner) do
+      {:ok, %Version{} = version} ->
+        accepted_kata_version_warnings(version)
+
+      {:unparseable, raw} ->
+        [
+          warning(
+            "KATA_VERSION_UNPARSEABLE",
+            "kata version #{inspect(raw)} is not a semantic version"
+          )
+        ]
+    end
+  end
+
+  # The banner's first line is `kata v<semver>`; the leading `v` is not part of the version.
+  defp parse_kata_version(banner) do
+    [first_line | _rest] = String.split(banner, "\n", parts: 2)
+
+    case Regex.run(~r/\Akata\s+v?(\S+)/, first_line) do
+      [_match, identifier] ->
+        case Version.parse(identifier) do
+          {:ok, version} -> {:ok, version}
+          :error -> {:unparseable, identifier}
+        end
+
+      nil ->
+        {:unparseable, first_line}
+    end
+  end
+
+  # `accepted_kata_versions` is a list of `Version.match?/2` requirement strings; a version is
+  # accepted when it satisfies at least one. Absent or empty means no range is configured.
+  defp accepted_kata_version_warnings(version) do
+    :foreman_server
+    |> Application.get_env(:task_provider, [])
+    |> Keyword.get(:accepted_kata_versions)
+    |> case do
+      nil -> []
+      [] -> []
+      requirements when is_list(requirements) -> range_warnings(version, requirements)
+      other -> [invalid_requirement_warning(other)]
+    end
+  end
+
+  defp range_warnings(version, requirements) do
+    parsed = Enum.map(requirements, &parse_requirement/1)
+    invalid = for {:invalid, entry} <- parsed, do: invalid_requirement_warning(entry)
+    valid = for {:ok, entry, requirement} <- parsed, do: {entry, requirement}
+
+    accepted? =
+      Enum.any?(valid, fn {_entry, requirement} -> Version.match?(version, requirement) end)
+
+    if valid == [] or accepted? do
+      invalid
+    else
+      accepted_entries = Enum.map(valid, fn {entry, _requirement} -> entry end)
+
+      invalid ++
+        [
+          warning(
+            "KATA_VERSION_OUT_OF_RANGE",
+            "kata #{version} is outside accepted_kata_versions #{inspect(accepted_entries)}"
+          )
+        ]
+    end
+  end
+
+  defp parse_requirement(entry) when is_binary(entry) do
+    case Version.parse_requirement(entry) do
+      {:ok, requirement} -> {:ok, entry, requirement}
+      :error -> {:invalid, entry}
+    end
+  end
+
+  defp parse_requirement(entry), do: {:invalid, entry}
+
+  defp invalid_requirement_warning(entry) do
+    warning(
+      "KATA_VERSION_REQUIREMENT_INVALID",
+      "accepted_kata_versions entry #{inspect(entry)} is not a valid version requirement"
+    )
+  end
+
+  defp warning(code, message), do: %{code: code, message: message}
+
+  defp diagnostic(code, message) do
+    %{
+      code: code,
+      message: message,
+      hint: nil,
+      exit_code: nil,
+      stderr_byte_count: 0,
+      redacted_fields: []
+    }
   end
 
   defp task_provider_error_code({:invalid_task_provider_reference, _}),

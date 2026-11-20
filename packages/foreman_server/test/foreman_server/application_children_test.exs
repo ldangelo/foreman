@@ -19,19 +19,32 @@ defmodule ForemanServer.ApplicationChildrenTest do
     CommandRouter,
     EventStore,
     PrMonitor,
+    PrReport,
     PrWatcher,
     ProjectionStore
   }
 
   alias ForemanServer.Aggregates.BeadsDbLease.{KeeperRegistry, KeeperSupervisor}
   alias ForemanServer.Schedule.Ticker
-  alias ForemanServer.TaskProviders.{BeadsOrphanJanitorSupervisor, BeadsWatcherSupervisor}
+
+  alias ForemanServer.TaskProviders.{
+    BeadsOrphanJanitorSupervisor,
+    BeadsWatcherSupervisor,
+    ConcurrencyLimiter
+  }
+
   alias ForemanServer.Workflow.{BootReconciliation, Dispatcher, RunSupervisor}
 
   @config_dir Path.expand("../../config", __DIR__)
 
   # Every key a test below writes; restored after each test, deleting a key that was unset.
-  @app_env_keys [:pr_watcher, :pr_monitor_enabled, :schedule, :secret_log_filter]
+  @app_env_keys [
+    :pr_watcher,
+    :pr_report_publisher,
+    :pr_monitor_enabled,
+    :schedule,
+    :secret_log_filter
+  ]
 
   # The operator switches `config/runtime.exs` reads. Cleared before a config is evaluated so a
   # developer's shell cannot change a test's outcome.
@@ -92,6 +105,28 @@ defmodule ForemanServer.ApplicationChildrenTest do
     end
   end
 
+  describe "ProjectionStore boot (TRD-031)" do
+    test "is a plain child that reads the real event log, restarted within the application budget" do
+      # A bare module entry: no injected reader, so production boots from the durable log.
+      assert ProjectionStore in ForemanServer.Application.children()
+      assert_started_after(child_ids(), ProjectionStore, [EventStore])
+
+      # A failed boot read stops the store; these two numbers are the bound on how many times
+      # the supervisor retries before it stops the application instead of serving nothing.
+      assert %{max_restarts: 50, max_seconds: 10, strategy: :one_for_one} =
+               Map.new(ForemanServer.Application.supervisor_opts())
+
+      # Started with no options (nothing injects a reader) and restarted for as long as the
+      # budget allows: the supervisor's own normalisation of the entry, as the real boot sees it.
+      assert {:ok, {_flags, specs}} =
+               Supervisor.init([ProjectionStore], strategy: :one_for_one)
+
+      assert [%{start: {ProjectionStore, :start_link, [[]]}} = spec] = specs
+      # No `:restart` override: the supervisor's default, `:permanent`, applies.
+      assert Map.get(spec, :restart, :permanent) == :permanent
+    end
+  end
+
   describe "PrWatcher" do
     test "is supervised, after the ProjectionStore and CommandRouter it uses, while enabled" do
       watcher(true)
@@ -103,6 +138,38 @@ defmodule ForemanServer.ApplicationChildrenTest do
       watcher(false)
 
       refute PrWatcher in child_ids()
+    end
+  end
+
+  describe "PrReport.Publisher (TRD-021)" do
+    defp publisher(on?),
+      do: Application.put_env(:foreman_server, :pr_report_publisher, enabled: on?)
+
+    test "is supervised after the PrWatcher whose PrRiskRecorded it reacts to, while enabled" do
+      watcher(true)
+      publisher(true)
+
+      assert_started_after(child_ids(), PrReport.Publisher, [
+        ProjectionStore,
+        CommandRouter,
+        PrWatcher
+      ])
+    end
+
+    test "is not supervised once it is disabled, which is how the test environment runs" do
+      watcher(true)
+      publisher(false)
+
+      refute PrReport.Publisher in child_ids()
+      assert PrWatcher in child_ids()
+    end
+
+    test "is on when the key is unset, and the test configuration turns it off" do
+      Application.delete_env(:foreman_server, :pr_report_publisher)
+      assert PrReport.Publisher in child_ids()
+
+      test_config = Config.Reader.read!(Path.join(@config_dir, "test.exs"), env: :test)
+      assert test_config[:foreman_server][:pr_report_publisher] == [enabled: false]
     end
   end
 
@@ -200,6 +267,49 @@ defmodule ForemanServer.ApplicationChildrenTest do
       # proves the registry survives that).
       assert AggregateRegistry in ids
       assert_started_after(ids, Aggregator, [AggregateRegistry])
+    end
+  end
+
+  describe "ConcurrencyLimiter (TRD-KATA-T055, AC-009-1)" do
+    test "is supervised unconditionally, once, before the registry that routes to Kata" do
+      ids = child_ids()
+
+      assert ConcurrencyLimiter in ids
+      assert_started_after(ids, ForemanServer.TaskProvider.Registry, [ConcurrencyLimiter])
+      assert ids == Enum.uniq(ids)
+    end
+
+    test "the running application supervises it as a live, registered process" do
+      pid = Process.whereis(ConcurrencyLimiter)
+
+      assert is_pid(pid) and Process.alive?(pid)
+
+      assert Enum.any?(
+               Supervisor.which_children(ForemanServer.Application),
+               &match?({ConcurrencyLimiter, ^pid, :worker, _modules}, &1)
+             )
+    end
+
+    test "a crashed limiter is restarted and grants slots again" do
+      original = Process.whereis(ConcurrencyLimiter)
+      ref = Process.monitor(original)
+
+      Process.exit(original, :kill)
+      assert_receive {:DOWN, ^ref, :process, ^original, :killed}, 5_000
+
+      restarted =
+        ForemanServer.TestSupport.Eventually.await(
+          fn ->
+            pid = Process.whereis(ConcurrencyLimiter)
+            if is_pid(pid) and pid != original, do: pid
+          end,
+          message: "the supervisor never restarted the ConcurrencyLimiter"
+        )
+
+      project_id = make_ref()
+      assert :ok = ConcurrencyLimiter.acquire(project_id)
+      assert :ok = ConcurrencyLimiter.release(project_id)
+      assert Process.alive?(restarted)
     end
   end
 

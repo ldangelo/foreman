@@ -70,11 +70,11 @@ config :foreman_server, :prod_secret_provider,
   ]
 
 # Jido checkpoint store (TRD-2026-4212be7e, JCR-T004) — off in prod
-# by default. Operators enable via
-#   JIDO_CHECKPOINT_DATABASE_URL=postgres://... \
-#   FOREMAN_JIDO_ECTO_ENABLED=true \
-#   elixir --no-halt -S mix run --no-compile
-# (or by setting config :foreman_server, :jido_ecto, enabled: true).
+# by default. Operators enable it by setting
+#   config :foreman_server, :jido_ecto, enabled: true
+# and providing JIDO_CHECKPOINT_DATABASE_URL=postgres://... for the Repo url.
+# (An env var `FOREMAN_JIDO_ECTO_ENABLED` was once named here; no code reads it,
+# so setting it leaves the store off and the idempotency keys on the ETS fallback.)
 config :foreman_server, :jido_ecto, enabled: false
 # TRD-2026-4212be7e JOT-T001: jido_otel runtime OTLP endpoint for
 # Langfuse-compatible ingestion. Endpoint comes from the standard

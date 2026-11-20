@@ -32,6 +32,21 @@ defmodule ForemanServer.Workflow.Validator do
   # "/skill:ensemble-full-implement-trd ..." → "ensemble-full-implement-trd"
   @skill_from_command ~r{^/skill:(\S+)}
 
+  @doc """
+  The skill a phase `command:` names through a `/skill:<name>` prefix, or `nil`
+  when the command has no such prefix or is not a string (absent is not
+  malformed: a plain command is not a skill invocation).
+  """
+  @spec skill_from_command(term()) :: String.t() | nil
+  def skill_from_command(command) when is_binary(command) do
+    case Regex.run(@skill_from_command, command) do
+      [_, skill | _] -> skill
+      nil -> nil
+    end
+  end
+
+  def skill_from_command(_non_string), do: nil
+
   @type validation_error ::
           :missing_name
           | :missing_phases
@@ -114,20 +129,14 @@ defmodule ForemanServer.Workflow.Validator do
     end
   end
 
-  defp validate_skill_from_command(command, _index) when is_binary(command) do
-    case Regex.run(@skill_from_command, command) do
-      [_, skill | _] ->
-        if skill in @known_skills do
-          :ok
-        else
-          {:error, {:unknown_skill, skill}}
-        end
-
+  defp validate_skill_from_command(command, _index) do
+    case skill_from_command(command) do
       nil ->
-        # No /skill: prefix — not an Ensemble skill invocation; skip validation.
+        # No /skill: prefix: not an Ensemble skill invocation; skip validation.
         :ok
+
+      skill ->
+        if skill in @known_skills, do: :ok, else: {:error, {:unknown_skill, skill}}
     end
   end
-
-  defp validate_skill_from_command(_non_string, _index), do: :ok
 end

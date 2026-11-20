@@ -35,6 +35,12 @@ defmodule ForemanServer.RunPrMergeTest do
 
     :ok = ProjectionStore.apply_events([%{event_type: "RunStarted", payload: started}])
 
+    # The gate reads the run's project policy: the project must be known to the projection.
+    :ok =
+      ProjectionStore.apply_events([
+        %{event_type: "ProjectRegistered", payload: %{project_id: "project-pr-merge", path: nil}}
+      ])
+
     {:ok, _} =
       CommandGateway.dispatch_system(%{
         type: "run.pr.ready",
@@ -93,7 +99,9 @@ defmodule ForemanServer.RunPrMergeTest do
     end)
   end
 
-  # What an operator sends: the head they reviewed rides along as `head_sha`.
+  # What an operator sends: the head they reviewed rides along as `head_sha`. This file's project
+  # has no `required_checks` (the gate is off), so the operator acknowledges that on every
+  # approval (`--acknowledge-gate-off`, AC-001-3).
   defp approve(run_id, overrides \\ %{}) do
     CommandGateway.dispatch_operator(%{
       command_id: "approve-#{System.unique_integer([:positive])}",
@@ -105,7 +113,8 @@ defmodule ForemanServer.RunPrMergeTest do
             run_id: run_id,
             approver: "leo",
             approver_identity: @approver,
-            head_sha: @approved_sha
+            head_sha: @approved_sha,
+            acknowledge_gate_off: true
           },
           overrides
         )
@@ -286,7 +295,11 @@ defmodule ForemanServer.RunPrMergeTest do
       assert [event] = events(run_id, "MergeGateApproved")
 
       assert Map.keys(event) |> Enum.sort() ==
-               ~w(approved_at approver approver_identity head_sha run_id)
+               ~w(approved_at approver approver_identity evidence gate_off_acknowledged head_sha run_id)
+
+      assert event["gate_off_acknowledged"] == true
+
+      assert %{"status" => "off", "inputs" => %{"checks_head_sha" => nil}} = event["evidence"]
     end
 
     test "the head GitHub shows is the authority, not the one the PR watch last recorded", %{
@@ -601,7 +614,9 @@ defmodule ForemanServer.RunPrMergeTest do
           state: :failing,
           conclusion: "FAILURE",
           url: nil,
-          workflow: nil
+          workflow: nil,
+          started_at: "2026-11-12T13:58:43Z",
+          completed_at: "2026-11-12T13:58:49Z"
         }
       ]
 
@@ -635,7 +650,7 @@ defmodule ForemanServer.RunPrMergeTest do
       stub_gh()
       assert {:ok, _} = approve(run_id)
 
-      assert {:ok, %{dispatched: ["run.pr.update"]}} =
+      assert {:ok, %{dispatched: ["run.pr.update", "run.pr.risk"]}} =
                Observer.observe(pr_url,
                  fetch_fun: fn ^pr_url -> {:ok, pr_status(@pushed_sha)} end,
                  auto_fix: false
@@ -677,6 +692,9 @@ defmodule ForemanServer.RunPrMergeTest do
           %EventStore.EventData{event_type: type, data: data, metadata: %{}}
         end)
       )
+
+    # The gate reads the run's project policy through the projection.
+    :ok = ProjectionStore.apply_events([%{event_type: "RunStarted", payload: ids}])
 
     %{run_id: run_id, pr_url: pr_url}
   end
