@@ -63,6 +63,11 @@ config :foreman_server, :max_concurrent_runs_per_project, 100
 # not the project's primary (`{:error, :multi_repo_runs_disabled}`). Tests state the
 # gate they need with `ForemanServer.MultiRepoRuns.enable!/0` and `disable!/0`.
 config :foreman_server, :multi_repo, runs: true
+# Follow-up runs (docs/plans/retire-jobsites.md): a task-less run attached to a PR head branch that
+# replaces the jobsite door for PR fixes. OFF by default: the first `RunFollowUpRequested` event
+# writes keys an older build cannot decode, so rollback stays safe until an operator turns it on.
+# Tests state the gate they need with `ForemanServer.FollowUpRuns.enable!/0` and `disable!/0`.
+config :foreman_server, :followup_runs, enabled: false
 # Anubis MCP server (TRD-036)
 config :foreman_server, :mcp,
   enabled: false,
