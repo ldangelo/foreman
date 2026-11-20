@@ -47,6 +47,7 @@ defmodule ForemanServer.PrFix do
   @type kind :: String.t()
   @type plan :: %{
           jobsite_opts: keyword(),
+          followup: map(),
           prompt: String.t(),
           resumed_session: boolean(),
           head_branch: String.t()
@@ -87,6 +88,7 @@ defmodule ForemanServer.PrFix do
       {:ok,
        %{
          jobsite_opts: spec_opts,
+         followup: followup_request(run, repo_path, head, prompt, agent, attach, kind, pr_url),
          prompt: prompt,
          resumed_session: attach.resume? and not is_nil(agent.session_id),
          head_branch: head
@@ -395,6 +397,34 @@ defmodule ForemanServer.PrFix do
        |> Keyword.put(:sync_remote, "origin")
        |> put_path(attach.path)}
     end
+  end
+
+  # The same fix as a follow-up run request (`run.followup.request`, docs/plans/retire-jobsites.md):
+  # attach to the PR's head branch, push it (fast-forward only), the run's agent and its session.
+  # `worktree_path` is where the original run's session was keyed: used again when it is free, so a
+  # session resumes (the same rule `attach/3` applies to the jobsite's `path:`).
+  defp followup_request(run, repo_path, head, prompt, agent, attach, kind, pr_url) do
+    cfg = Application.get_env(:foreman_server, :pr_fix, [])
+
+    %{
+      project_id: run.project_id,
+      kind: "pr_fix",
+      requested_by: "pr_watcher",
+      parent_run_id: run.run_id,
+      pr_url: pr_url,
+      fix_kind: kind,
+      attach_branch: head,
+      push: true,
+      prompt: prompt,
+      provider: agent.provider,
+      model: agent.model,
+      approval_mode: agent.approval_mode,
+      sandbox: Keyword.get(cfg, :sandbox),
+      repo_path: repo_path,
+      worktree_path: attach.path
+    }
+    |> put_if(:resume_session_provider, agent.session_id && agent.provider)
+    |> put_if(:resume_session_id, agent.session_id)
   end
 
   defp agent_map(agent) do

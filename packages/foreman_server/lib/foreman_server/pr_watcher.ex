@@ -57,7 +57,8 @@ defmodule ForemanServer.PrWatcher do
 
   use GenServer
 
-  alias ForemanServer.{CommandGateway, Jobsite, PrFix, PrObservation, ProjectionStore}
+  alias ForemanServer.{CommandGateway, FollowUpRuns, Jobsite, PrFix, PrObservation, ProjectionStore}
+  alias ForemanServer.Workflow.FollowUp
   alias ForemanServer.PrWatcher.Observer
 
   require Logger
@@ -65,6 +66,8 @@ defmodule ForemanServer.PrWatcher do
   @refresh_timeout 120_000
   @observe_events ~w(PrAssociated PrReady PrWatchStarted)
   @jobsite_terminal ~w(JobsiteCompleted JobsiteFailed)
+  # A fix that runs as a follow-up run ends with its run.
+  @run_terminal ~w(RunCompleted RunFailed RunCancelled RunFlaggedStuck RunBlocked RunDeleted)
 
   @type server :: GenServer.server()
   @type refresh_result :: {:ok, Observer.result()} | {:error, Observer.error()}
@@ -123,6 +126,7 @@ defmodule ForemanServer.PrWatcher do
            supervisor: supervisor,
            fetch_fun: Keyword.get(opts, :fetch_fun, &Observer.default_fetch/1),
            jobsite_starter: Keyword.get(opts, :jobsite_starter, &Jobsite.run_async/1),
+           followup_starter: Keyword.get(opts, :followup_starter, &FollowUp.request/1),
            plan_opts: Keyword.get(opts, :plan_opts, []),
            inflight: %{},
            starting: MapSet.new(),
@@ -157,6 +161,12 @@ defmodule ForemanServer.PrWatcher do
       when type in @jobsite_terminal do
     payload = event_payload(event)
     {:noreply, jobsite_ended(state, get(payload, :jobsite_id), terminal_of(type, payload))}
+  end
+
+  def handle_info({:projection_event, %{event_type: type} = event}, state)
+      when type in @run_terminal do
+    payload = event_payload(event)
+    {:noreply, jobsite_ended(state, get(payload, :run_id), run_terminal_of(type))}
   end
 
   def handle_info({:projection_event, _other}, state), do: {:noreply, state}
@@ -251,12 +261,12 @@ defmodule ForemanServer.PrWatcher do
     if MapSet.member?(state.starting, key) or not requested?(key, payload) do
       state
     else
-      starter = state.jobsite_starter
+      starters = %{jobsite: state.jobsite_starter, followup: state.followup_starter}
       plan_opts = state.plan_opts
 
       task =
         Task.Supervisor.async_nolink(state.supervisor, fn ->
-          {:started, run_fix(payload, starter, plan_opts)}
+          {:started, run_fix(payload, starters, plan_opts)}
         end)
 
       %{
@@ -279,30 +289,31 @@ defmodule ForemanServer.PrWatcher do
     end
   end
 
-  defp run_fix(payload, starter, plan_opts) do
+  defp run_fix(payload, starters, plan_opts) do
     kind = get(payload, :kind)
     run_id = get(payload, :run_id)
     pr_url = get(payload, :pr_url)
     plan_opts = Keyword.put_new(plan_opts, :note, get(payload, :note))
 
     with {:ok, plan} <- PrFix.plan(kind, run_id, pr_url, plan_opts),
-         {:ok, jobsite_id} <- start_jobsite(starter, plan) do
-      started = %{
-        run_id: run_id,
-        pr_url: pr_url,
-        jobsite_id: jobsite_id,
-        resumed_session: plan.resumed_session
-      }
+         {:ok, execution} <- start_fix_execution(starters, plan, payload) do
+      started =
+        Map.merge(
+          %{run_id: run_id, pr_url: pr_url, resumed_session: plan.resumed_session},
+          execution_key(execution)
+        )
+
+      {_mode, id} = execution
 
       case dispatch_fix(:started, payload, started) do
         {:ok, _} ->
           :ok
 
         {:error, reason} ->
-          Logger.error("PrWatcher could not record fix start #{jobsite_id}: #{inspect(reason)}")
+          Logger.error("PrWatcher could not record fix start #{id}: #{inspect(reason)}")
       end
 
-      {:ok, jobsite_id}
+      {:ok, id}
     else
       {:error, reason} ->
         Logger.warning("PrWatcher fix #{kind} for #{pr_url} not started: #{inspect(reason)}")
@@ -317,6 +328,28 @@ defmodule ForemanServer.PrWatcher do
         {:error, reason}
     end
   end
+
+  # A fix runs as a follow-up run while the `followup_runs` gate is on, else as a jobsite (the door
+  # stays functional until it is retired). The id of either is what the PR's fix-in-flight records.
+  defp start_fix_execution(starters, plan, payload) do
+    if FollowUpRuns.enabled?() do
+      run_id =
+        FollowUp.run_id(
+          get(payload, :run_id),
+          get(payload, :pr_url),
+          get(payload, :kind),
+          get(payload, :attempt)
+        )
+
+      with {:ok, id} <- starters.followup.(Map.put(plan.followup, :run_id, run_id)),
+           do: {:ok, {:followup, id}}
+    else
+      with {:ok, id} <- start_jobsite(starters.jobsite, plan), do: {:ok, {:jobsite, id}}
+    end
+  end
+
+  defp execution_key({:followup, id}), do: %{fix_run_id: id}
+  defp execution_key({:jobsite, id}), do: %{jobsite_id: id}
 
   defp start_jobsite(starter, plan) do
     case starter.(plan.jobsite_opts) do
@@ -382,11 +415,31 @@ defmodule ForemanServer.PrWatcher do
   defp terminal_of("JobsiteFailed", payload),
     do: {:failed, get(payload, :code) || "jobsite_failed"}
 
-  defp projected_terminal(jobsite_id) do
-    case ProjectionStore.jobsite(jobsite_id) do
-      %{status: "completed"} -> :completed
-      %{status: status} when status in ["failed", "cancelled"] -> {:failed, "jobsite_#{status}"}
-      _running_or_unknown -> nil
+  defp run_terminal_of("RunCompleted"), do: :completed
+  defp run_terminal_of("RunFailed"), do: {:failed, "run_failed"}
+  defp run_terminal_of("RunCancelled"), do: {:failed, "run_cancelled"}
+  defp run_terminal_of("RunFlaggedStuck"), do: {:failed, "run_stuck"}
+  defp run_terminal_of("RunBlocked"), do: {:failed, "run_blocked"}
+  defp run_terminal_of("RunDeleted"), do: {:failed, "run_deleted"}
+
+  # The id is a jobsite's or a follow-up run's: the projection that knows it tells how it ended.
+  defp projected_terminal(id) do
+    case ProjectionStore.jobsite(id) do
+      %{status: "completed"} ->
+        :completed
+
+      %{status: status} when status in ["failed", "cancelled"] ->
+        {:failed, "jobsite_#{status}"}
+
+      %{} ->
+        nil
+
+      nil ->
+        case ProjectionStore.run(id) do
+          %{terminal?: true, status: "completed"} -> :completed
+          %{terminal?: true, status: status} -> {:failed, "run_#{status}"}
+          _running_or_unknown -> nil
+        end
     end
   end
 
