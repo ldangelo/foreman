@@ -11,8 +11,9 @@ defmodule ForemanServer.PrWatcher do
     * `PrAssociated`, `PrReady`, `PrWatchStarted` - observe the PR immediately
       instead of waiting for the next poll;
     * `PrFixRequested` - the fix reactor (below);
-    * `JobsiteCompleted` / `JobsiteFailed` of a jobsite this watcher started for a fix -
-      finish that fix;
+    * a terminal run event (`RunCompleted`, `RunFailed`, ...) of a follow-up run this watcher
+      started for a fix - finish that fix. `JobsiteCompleted` / `JobsiteFailed` still finish a
+      fix that was started on the retired jobsite door before the upgrade;
     * every other event - ignored, state unchanged (so the observations the
       watcher itself causes can never feed back into it).
 
@@ -29,18 +30,19 @@ defmodule ForemanServer.PrWatcher do
   `PrFixRequested` (appended by `run.pr.fix_ci | address_comments | resolve_conflicts`,
   from an operator or the auto-fix policy) is the only trigger. The aggregate has
   already decided the request is allowed and bounded; the reactor starts exactly one
-  push-enabled follow-up jobsite on the PR head branch (`ForemanServer.PrFix.plan/4`,
-  `Jobsite.run_async/1`) and records `run.pr.fix_started` with its id. The side effect
+  push-enabled follow-up RUN on the PR head branch (`ForemanServer.PrFix.plan/4`,
+  `Workflow.FollowUp.request/1`, admitted by the Dispatcher like any run) and records
+  `run.pr.fix_started` with its `fix_run_id`. The side effect
   lives here, never in the aggregate (the actor re-runs `handle_command/2` on a version
   conflict). A re-delivered `PrFixRequested` starts nothing: the request is skipped when
-  its fix is already starting, has a jobsite, or is no longer the PR's in-flight request.
-  When the jobsite ends the reactor re-reads the PR and records `run.pr.fix_finished`
+  its fix is already starting, has a run, or is no longer the PR's in-flight request.
+  When the run ends the reactor re-reads the PR and records `run.pr.fix_finished`
   with the outcome (`pushed` when the PR head moved, `no_change` when it did not,
-  `failed` when the jobsite failed or could not start), then hands the fresh observation
+  `failed` when the run failed or could not start), then hands the fresh observation
   to the auto-fix policy. A start task that crashes (a defect: it is logged with its
   reason) is finished as `failed` (`start_crashed`) as well, so a defect never leaves the
   PR "fixing" until the next restart. After a restart (`handle_continue(:recover)`) fixes
-  whose jobsite already ended are finished, a request that never got a jobsite is finished
+  whose run already ended are finished, a request that never got a run is finished
   as `failed` (`lost_on_restart`), and fixes still running are waited for.
 
   Nothing in this module can merge a PR: the merge gate (`run.pr.merge` /
@@ -84,8 +86,7 @@ defmodule ForemanServer.PrWatcher do
   Start the watcher. Options: `:name` (default `#{inspect(__MODULE__)}`),
   `:fetch_fun` (`pr_url -> {:ok, PrStatus.t()} | {:error, term()}`, defaults to
   `Observer.default_fetch/1`), `:followup_starter` (`request -> {:ok, run_id} |
-  {:error, term()}`, defaults to `Workflow.FollowUp.request/1`), `:jobsite_starter` (`opts -> {:ok, jobsite_id}`,
-  tests of the retired jobsite path only: absent in production) and `:plan_opts` (keyword passed to
+  {:error, term()}`, defaults to `Workflow.FollowUp.request/1`),  and `:plan_opts` (keyword passed to
   `PrFix.plan/4`, for tests).
   """
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -126,13 +127,12 @@ defmodule ForemanServer.PrWatcher do
          %{
            supervisor: supervisor,
            fetch_fun: Keyword.get(opts, :fetch_fun, &Observer.default_fetch/1),
-           jobsite_starter: Keyword.get(opts, :jobsite_starter),
            followup_starter: Keyword.get(opts, :followup_starter, &FollowUp.request/1),
            plan_opts: Keyword.get(opts, :plan_opts, []),
            inflight: %{},
            starting: MapSet.new(),
            fix_tasks: %{},
-           jobsites: %{},
+           fixes: %{},
            observations: 0,
            errors: 0,
            last_error: nil
@@ -161,13 +161,13 @@ defmodule ForemanServer.PrWatcher do
   def handle_info({:projection_event, %{event_type: type} = event}, state)
       when type in @jobsite_terminal do
     payload = event_payload(event)
-    {:noreply, jobsite_ended(state, get(payload, :jobsite_id), terminal_of(type, payload))}
+    {:noreply, fix_ended(state, get(payload, :jobsite_id), terminal_of(type, payload))}
   end
 
   def handle_info({:projection_event, %{event_type: type} = event}, state)
       when type in @run_terminal do
     payload = event_payload(event)
-    {:noreply, jobsite_ended(state, get(payload, :run_id), run_terminal_of(type))}
+    {:noreply, fix_ended(state, get(payload, :run_id), run_terminal_of(type))}
   end
 
   def handle_info({:projection_event, _other}, state), do: {:noreply, state}
@@ -209,7 +209,7 @@ defmodule ForemanServer.PrWatcher do
     {:reply,
      state
      |> Map.take([:observations, :errors, :last_error])
-     |> Map.put(:fixes_in_flight, map_size(state.jobsites) + MapSet.size(state.starting)), state}
+     |> Map.put(:fixes_in_flight, map_size(state.fixes) + MapSet.size(state.starting)), state}
   end
 
   # -- observation -------------------------------------------------------------
@@ -263,9 +263,7 @@ defmodule ForemanServer.PrWatcher do
       state
     else
       starters = %{
-        jobsite: state.jobsite_starter,
-        followup: state.followup_starter,
-        legacy_jobsites: is_function(state.jobsite_starter, 1)
+        followup: state.followup_starter
       }
       plan_opts = state.plan_opts
 
@@ -335,34 +333,21 @@ defmodule ForemanServer.PrWatcher do
   end
 
   # A fix runs as a follow-up run. The `followup_runs` gate is its kill switch: with it off the request
-  # is refused (`:followup_runs_disabled`) and the fix is finished as failed. The jobsite starter is
-  # kept only until the door is deleted.
+  # is refused (`:followup_runs_disabled`) and the fix is finished as failed.
   defp start_fix_execution(starters, plan, payload) do
-    if starters[:legacy_jobsites] do
-      with {:ok, id} <- start_jobsite(starters.jobsite, plan), do: {:ok, {:jobsite, id}}
-    else
-      run_id =
-        FollowUp.run_id(
-          get(payload, :run_id),
-          get(payload, :pr_url),
-          get(payload, :kind),
-          get(payload, :attempt)
-        )
+    run_id =
+      FollowUp.run_id(
+        get(payload, :run_id),
+        get(payload, :pr_url),
+        get(payload, :kind),
+        get(payload, :attempt)
+      )
 
-      with {:ok, id} <- starters.followup.(Map.put(plan.followup, :run_id, run_id)),
-           do: {:ok, {:followup, id}}
-    end
+    with {:ok, id} <- starters.followup.(Map.put(plan.followup, :run_id, run_id)),
+         do: {:ok, {:followup, id}}
   end
 
   defp execution_key({:followup, id}), do: %{fix_run_id: id}
-  defp execution_key({:jobsite, id}), do: %{jobsite_id: id}
-
-  defp start_jobsite(starter, plan) do
-    case starter.(plan.jobsite_opts) do
-      {:ok, jobsite_id} when is_binary(jobsite_id) -> {:ok, jobsite_id}
-      {:error, reason} -> {:error, reason}
-    end
-  end
 
   defp release_start(starting, {:start, key, _payload}), do: MapSet.delete(starting, key)
   defp release_start(starting, _finish_task), do: starting
@@ -394,27 +379,27 @@ defmodule ForemanServer.PrWatcher do
     state = %{state | starting: MapSet.delete(state.starting, key)}
 
     case result do
-      {:ok, jobsite_id} ->
+      {:ok, execution_id} ->
         meta = %{
           run_id: get(payload, :run_id),
           pr_url: get(payload, :pr_url),
           kind: get(payload, :kind),
           attempt: get(payload, :attempt),
           head_sha: get(payload, :head_sha),
-          jobsite_id: jobsite_id
+          execution_id: execution_id
         }
 
-        state = %{state | jobsites: Map.put(state.jobsites, jobsite_id, meta)}
+        state = %{state | fixes: Map.put(state.fixes, execution_id, meta)}
         # The jobsite may have ended before it was registered here; the projection knows.
-        jobsite_ended(state, jobsite_id, projected_terminal(jobsite_id))
+        fix_ended(state, execution_id, projected_terminal(execution_id))
 
       {:error, _reason} ->
         state
     end
   end
 
-  defp fix_task_done(state, {:finish, jobsite_id}, _result),
-    do: %{state | jobsites: Map.delete(state.jobsites, jobsite_id)}
+  defp fix_task_done(state, {:finish, execution_id}, _result),
+    do: %{state | fixes: Map.delete(state.fixes, execution_id)}
 
   defp terminal_of("JobsiteCompleted", _payload), do: :completed
 
@@ -449,14 +434,14 @@ defmodule ForemanServer.PrWatcher do
     end
   end
 
-  defp jobsite_ended(state, _jobsite_id, nil), do: state
+  defp fix_ended(state, _execution_id, nil), do: state
 
-  defp jobsite_ended(state, jobsite_id, terminal) do
-    case Map.pop(state.jobsites, jobsite_id) do
+  defp fix_ended(state, execution_id, terminal) do
+    case Map.pop(state.fixes, execution_id) do
       {nil, _} ->
         state
 
-      {meta, jobsites} ->
+      {meta, fixes} ->
         fetch = state.fetch_fun
 
         task =
@@ -466,8 +451,8 @@ defmodule ForemanServer.PrWatcher do
 
         %{
           state
-          | jobsites: jobsites,
-            fix_tasks: Map.put(state.fix_tasks, task.ref, {:finish, jobsite_id})
+          | fixes: fixes,
+            fix_tasks: Map.put(state.fix_tasks, task.ref, {:finish, execution_id})
         }
     end
   end
@@ -557,22 +542,22 @@ defmodule ForemanServer.PrWatcher do
           :requested ->
             end_recovered(acc, meta, :lost)
 
-          jobsite_id when is_binary(jobsite_id) ->
-            meta = Map.put(meta, :jobsite_id, jobsite_id)
-            acc = %{acc | jobsites: Map.put(acc.jobsites, jobsite_id, meta)}
-            jobsite_ended(acc, jobsite_id, projected_terminal(jobsite_id))
+          execution_id when is_binary(execution_id) ->
+            meta = Map.put(meta, :execution_id, execution_id)
+            acc = %{acc | fixes: Map.put(acc.fixes, execution_id, meta)}
+            fix_ended(acc, execution_id, projected_terminal(execution_id))
         end
     end
   end
 
   defp end_recovered(state, meta, terminal) do
     fetch = state.fetch_fun
-    jobsite_id = "recovered:#{meta.run_id}:#{meta.kind}:#{meta.attempt}"
+    execution_id = "recovered:#{meta.run_id}:#{meta.kind}:#{meta.attempt}"
 
     task =
       Task.Supervisor.async_nolink(state.supervisor, fn -> finish_fix(meta, terminal, fetch) end)
 
-    %{state | fix_tasks: Map.put(state.fix_tasks, task.ref, {:finish, jobsite_id})}
+    %{state | fix_tasks: Map.put(state.fix_tasks, task.ref, {:finish, execution_id})}
   end
 
   # -- helpers -------------------------------------------------------------------------

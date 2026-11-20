@@ -41,40 +41,28 @@ defmodule ForemanServer.Skills.InstallerTest do
     end
   end
 
-  test "install/1 includes the foreman-jobsite-template skill" do
-    home_dir = make_temp_dir!("skills-installer-jobsite")
+  # The bundle ships no skill today (the one it had, for authoring Jobsite scripts, went with the
+  # jobsite dispatch path), so `priv/defaults/skills` holds only a `.gitkeep`. An empty bundle is a
+  # legitimate configuration (`{:ok, :noop}` at boot, see `list_skill_dirs/2`); the tests below that
+  # need a skill to copy use `fixture_source!/0`.
+  test "the bundled skills directory exists and an empty bundle installs nothing" do
+    assert File.dir?(@bundled_source_dir)
+    assert @bundled_skill_dirs == []
 
-    assert {:ok, installed_paths} = Installer.install(home_dir: home_dir)
+    home_dir = make_temp_dir!("skills-installer-empty-bundle")
+    assert {:ok, []} = Installer.install(home_dir: home_dir)
+  end
 
-    skill_md =
-      Path.join([home_dir, ".foreman", "skills", "foreman-jobsite-template", "SKILL.md"])
+  # Recursive copy: nested assets, not just SKILL.md.
+  test "install/1 copies a skill's nested assets recursively" do
+    source_dir = fixture_source!()
+    home_dir = make_temp_dir!("skills-installer-nested")
 
-    assert skill_md in installed_paths
-    assert File.regular?(skill_md)
+    assert {:ok, installed_paths} = Installer.install(source_dir: source_dir, home_dir: home_dir)
 
-    content = File.read!(skill_md)
-    assert content =~ "foreman-jobsite-template"
-    assert content =~ "Jobsite.Spec.from_json"
-    assert content =~ "on_event"
-    assert content =~ "hooks.host"
-
-    # Prove the recursive copy (File.cp_r) installs nested assets, not just SKILL.md.
-    nested_rel = Path.join(["scripts", "validate_spec.py"])
-
-    installed_nested =
-      Path.join([home_dir, ".foreman", "skills", "foreman-jobsite-template"])
-      |> Path.join(nested_rel)
-
-    source_nested =
-      Installer.bundled_skills_source()
-      |> Path.join("foreman-jobsite-template")
-      |> Path.join(nested_rel)
-
-    assert File.regular?(installed_nested),
-           "expected nested asset #{nested_rel} to be installed recursively"
-
-    assert File.read!(installed_nested) == File.read!(source_nested),
-           "nested asset content must match source bytes"
+    nested = Path.join([home_dir, ".foreman", "skills", "fixture-skill", "scripts", "run.sh"])
+    assert nested in installed_paths
+    assert File.read!(nested) == "echo fixture\n"
   end
 
   test "install/1 with a custom target_dir writes skills there" do
@@ -115,32 +103,34 @@ defmodule ForemanServer.Skills.InstallerTest do
     home_dir = make_temp_dir!("skills-installer-missing-home")
     File.rm_rf!(home_dir)
 
-    assert {:ok, installed_paths} = Installer.maybe_install(home_dir: home_dir)
-    assert Enum.any?(installed_paths, &String.contains?(&1, "foreman-jobsite-template"))
+    assert {:ok, installed_paths} =
+             Installer.maybe_install(source_dir: fixture_source!(), home_dir: home_dir)
+
+    assert Enum.any?(installed_paths, &String.contains?(&1, "fixture-skill"))
 
     # The returned paths alone are not proof: a bug that reports paths without
     # writing them would still satisfy the assertions above.
     assert File.regular?(
-             Path.join([home_dir, ".foreman", "skills", "foreman-jobsite-template", "SKILL.md"])
+             Path.join([home_dir, ".foreman", "skills", "fixture-skill", "SKILL.md"])
            )
   end
 
   test "maybe_install/1 does not overwrite an existing skill" do
     home_dir = make_temp_dir!("skills-installer-existing-home")
-    skill_dir = Path.join([home_dir, ".foreman", "skills", "foreman-jobsite-template"])
+    skill_dir = Path.join([home_dir, ".foreman", "skills", "fixture-skill"])
     File.mkdir_p!(skill_dir)
     File.write!(Path.join(skill_dir, "SKILL.md"), "# operator edited\n")
 
-    assert {:ok, :noop} = Installer.maybe_install(home_dir: home_dir)
+    assert {:ok, :noop} =
+             Installer.maybe_install(source_dir: fixture_source!(), home_dir: home_dir)
+
     assert File.read!(Path.join(skill_dir, "SKILL.md")) == "# operator edited\n"
   end
 
   # The pre-fix gate asked "is anything in the destination?" rather than "is
   # everything the bundle ships there?", so once an operator had any skill
   # installed, a skill added to the bundle in a later release never reached them.
-  # With one bundled skill today this cannot fail against `priv/defaults/skills`
-  # (`@bundled_skill_dirs` == ["foreman-jobsite-template"]), so the source is
-  # faked to two skills.
+  # The bundle ships no skill today, so the source is faked to two skills.
   test "maybe_install/1 installs a skill added to the bundle when another is present" do
     source_dir = make_temp_dir!("skills-installer-two-source")
     home_dir = make_temp_dir!("skills-installer-two-home")
@@ -290,9 +280,9 @@ defmodule ForemanServer.Skills.InstallerTest do
   test "Catalog boot hook reports a successful skills install" do
     skills_dir = make_temp_dir!("skills-catalog-hook-target")
 
-    assert %{installed: installed, errors: 0} = boot_catalog(skills_target_dir: skills_dir)
+    assert %{installed: installed, errors: 0} = boot_catalog(skills_source_dir: fixture_source!(), skills_target_dir: skills_dir)
     assert installed > 0
-    assert File.regular?(Path.join([skills_dir, "foreman-jobsite-template", "SKILL.md"]))
+    assert File.regular?(Path.join([skills_dir, "fixture-skill", "SKILL.md"]))
 
     # `count` is the number of FILES the installer copied, so it is larger than the one
     # `installed` event the counter records; the file on disk is the real assertion.
@@ -309,7 +299,7 @@ defmodule ForemanServer.Skills.InstallerTest do
 
     log =
       ExUnit.CaptureLog.capture_log(fn ->
-        assert %{installed: 0, errors: errors} = boot_catalog(skills_target_dir: blocked)
+        assert %{installed: 0, errors: errors} = boot_catalog(skills_source_dir: fixture_source!(), skills_target_dir: blocked)
         assert errors > 0
       end)
 
@@ -329,11 +319,11 @@ defmodule ForemanServer.Skills.InstallerTest do
   test "Catalog boot hook defaults the skills target to the user home" do
     home_dir = make_temp_dir!("skills-catalog-hook-default-home")
 
-    assert %{installed: installed, errors: 0} = boot_catalog(skills_home_dir: home_dir)
+    assert %{installed: installed, errors: 0} = boot_catalog(skills_source_dir: fixture_source!(), skills_home_dir: home_dir)
     assert installed > 0
 
     assert File.regular?(
-             Path.join([home_dir, ".foreman", "skills", "foreman-jobsite-template", "SKILL.md"])
+             Path.join([home_dir, ".foreman", "skills", "fixture-skill", "SKILL.md"])
            )
   end
 
@@ -481,5 +471,15 @@ defmodule ForemanServer.Skills.InstallerTest do
     File.mkdir_p!(directory)
     on_exit(fn -> File.rm_rf(directory) end)
     directory
+  end
+
+  # One skill with a nested asset, in its own temp source directory.
+  defp fixture_source! do
+    source_dir = make_temp_dir!("skills-fixture-source")
+    skill = Path.join(source_dir, "fixture-skill")
+    File.mkdir_p!(Path.join(skill, "scripts"))
+    File.write!(Path.join(skill, "SKILL.md"), "# fixture-skill\n")
+    File.write!(Path.join([skill, "scripts", "run.sh"]), "echo fixture\n")
+    source_dir
   end
 end

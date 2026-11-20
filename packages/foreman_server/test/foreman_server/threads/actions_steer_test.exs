@@ -1,17 +1,14 @@
 defmodule ForemanServer.Threads.ActionsSteerTest do
   # `Threads.Actions.steer/3` on both doors: the workflow door queues
-  # `run.steer` on the run aggregate; the jobsite door goes through
-  # `Jobsite.steer/3` (pause, then resume with the message as the prompt).
+  # `run.steer` on the run aggregate; the jobsite door is retired
+  # (`{:error, :jobsite_retired}`).
   use ExUnit.Case, async: false
 
   alias ForemanServer.CommandGateway
   alias ForemanServer.CommandRouter
-  alias ForemanServer.Jobsite
-  alias ForemanServer.Jobsite.{Agents, Sandboxes}
   alias ForemanServer.ProjectionStore
   alias ForemanServer.Threads.Actions
 
-  @recording_agent Path.join(__DIR__, "../jobsite/support/recording_agent.sh")
 
   setup do
     :ok = ProjectionStore.subscribe(replay_existing: false)
@@ -101,50 +98,6 @@ defmodule ForemanServer.Threads.ActionsSteerTest do
     assert {:error, :thread_not_found} = Actions.steer("jobsite:nope-steer", "hi")
   end
 
-  describe "jobsite door" do
-    setup do
-      repo = tmp_repo!()
-      log = Path.join(System.tmp_dir!(), "thread-steer-#{System.unique_integer([:positive])}.log")
-      agent_bin = recording_binary!(log)
-
-      on_exit(fn ->
-        File.rm_rf(repo)
-        File.rm(log)
-        File.rm(agent_bin)
-      end)
-
-      {:ok, repo: repo, log: log, agent_bin: agent_bin}
-    end
-
-    test "steers a running jobsite: paused with reason steer, resumed with the message", ctx do
-      id = start_running!(ctx.repo, ctx.agent_bin)
-
-      assert {:ok, %{message_id: "js-m", mode: :pause_resume}} =
-               Actions.steer("jobsite:" <> id, "switch to JWT", message_id: "js-m")
-
-      assert field(await_event("JobsitePaused", :jobsite_id, id), :reason) == "steer"
-      await_event("JobsiteCompleted", :jobsite_id, id)
-
-      invocations = ctx.log |> File.read!() |> String.split("--invocation--\n", trim: true)
-      assert List.last(invocations) =~ "switch to JWT"
-    end
-
-    test "a terminal jobsite is {:not_steerable, status}; blank text pauses nothing", ctx do
-      id = start_running!(ctx.repo, ctx.agent_bin)
-
-      assert {:error, {:invalid_text, :blank}} = Actions.steer("jobsite:" <> id, " ")
-      assert Jobsite.Executor.pid_for(id) != nil
-
-      pid = Jobsite.Executor.pid_for(id)
-      ref = Process.monitor(pid)
-      :ok = Jobsite.cancel(id, "done")
-      assert_receive {:DOWN, ^ref, :process, ^pid, _}, 20_000
-      await_event("JobsiteCancelled", :jobsite_id, id)
-
-      assert {:error, {:not_steerable, "cancelled"}} = Actions.steer("jobsite:" <> id, "late")
-    end
-  end
-
   # -- helpers ---------------------------------------------------------------
 
   defp unique(prefix), do: "#{prefix}-thread-steer-#{System.unique_integer([:positive])}"
@@ -172,58 +125,6 @@ defmodule ForemanServer.Threads.ActionsSteerTest do
 
     await_event("RunStarted", :run_id, run_id)
     run_id
-  end
-
-  defp recording_binary!(log) do
-    path = Path.join(System.tmp_dir!(), "rec-agent-#{System.unique_integer([:positive])}.sh")
-
-    File.write!(
-      path,
-      "#!/bin/sh\nFAKE_AGENT_PROMPT_LOG=#{log} exec #{@recording_agent} \"$@\"\n"
-    )
-
-    File.chmod!(path, 0o755)
-    path
-  end
-
-  defp tmp_repo! do
-    path = Path.join(System.tmp_dir!(), "thread-steer-repo-#{System.unique_integer([:positive])}")
-    File.mkdir_p!(path)
-    {_o, 0} = System.cmd("git", ["-C", path, "init", "-q"])
-    {_o, 0} = System.cmd("git", ["-C", path, "config", "user.email", "test@example.com"])
-    {_o, 0} = System.cmd("git", ["-C", path, "config", "user.name", "Test"])
-    File.write!(Path.join(path, "README.md"), "hello\n")
-    {_o, 0} = System.cmd("git", ["-C", path, "add", "-A"])
-    {_o, 0} = System.cmd("git", ["-C", path, "commit", "-q", "-m", "init"])
-    path
-  end
-
-  defp start_running!(repo, agent_bin) do
-    agent =
-      Agents.pi("x",
-        binary: agent_bin,
-        env: %{
-          "FAKE_AGENT_SESSION_FIRST" => "1",
-          "FAKE_AGENT_SLEEP_ON_RUN" => "1",
-          "FAKE_AGENT_SLEEP_SECS" => "30"
-        }
-      )
-
-    {:ok, id} =
-      Jobsite.run_async(
-        repo_path: repo,
-        strategy: :merge_to_head,
-        sandbox: Sandboxes.host(),
-        agent: agent,
-        prompt: "go",
-        max_iterations: 1,
-        completion_signal: "NEVER"
-      )
-
-    await_event("JobsiteIterationStarted", :jobsite_id, id)
-    # A steer pauses then resumes: the resume needs the agent's provider session (foreman-cm8nv).
-    ForemanServer.TestSupport.JobsiteSession.await!(id)
-    id
   end
 
   defp field(data, key) do

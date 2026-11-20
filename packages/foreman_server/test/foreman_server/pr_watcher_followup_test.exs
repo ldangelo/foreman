@@ -71,7 +71,7 @@ defmodule ForemanServer.PrWatcherFollowUpTest do
 
   defp await_registered(id, attempts \\ 200_000) do
     cond do
-      Map.has_key?(:sys.get_state(PrWatcher).jobsites, id) -> :ok
+      Map.has_key?(:sys.get_state(PrWatcher).fixes, id) -> :ok
       attempts == 0 -> flunk("watcher never registered #{id}")
       true -> await_registered(id, attempts - 1)
     end

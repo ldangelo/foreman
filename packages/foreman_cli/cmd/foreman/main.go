@@ -30,7 +30,6 @@
 //	run remove          Remove a run and clean worktree/branch
 //	run reset           Reset a failed or stuck run projection
 //	thread list|get|stop|resolve|reopen|steer|rereview  Inspect and act on threads
-//	jobsite template    POST /api/jobsites/template (generate a runnable Jobsite script from a prompt)
 //	workflow install    Install workflow assets from --source or --remote
 //	init --force        Refresh the installed runtime copy of bundled prompts/workflows
 //	doctor              GET /api/doctor
@@ -106,12 +105,11 @@ Commands:
   run watch-stop <id>  Stop watching a run's PR (--pr)
   thread list         List a project's threads (--project <id>)
   thread get <id>     Fetch a thread
-  thread stop <id>    Stop a thread (workflow run or jobsite)
+  thread stop <id>    Stop a thread (workflow run)
   thread resolve <id> Mark a thread resolved
   thread reopen <id>  Reopen a resolved thread
   thread steer <id>   Send an operator message to a thread (--message)
-  thread rereview <id> Re-run an undetermined review (workflow run or jobsite)
-  jobsite template    Generate a runnable Jobsite script from a prompt (--project-id --prompt [--name --provider --model --iterations --signal --branch --sandbox --push --dir --format])
+  thread rereview <id> Re-run an undetermined review (workflow run)
   workflow install    Install workflow assets
   workflow remove     Remove installed workflow assets (--all)
   init --force        Refresh the installed runtime copy of bundled prompts/workflows
@@ -153,8 +151,6 @@ func main() {
 		err = runRun(c, args)
 	case "thread":
 		err = runThread(c, args)
-	case "jobsite":
-		err = runJobsite(c, args)
 	case "workflow":
 		err = runWorkflow(c, args)
 	case "init":

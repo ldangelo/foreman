@@ -524,6 +524,9 @@ gh_pr_head_recorded() { [ "$(gh_pr_field '.head_sha')" = "$1" ]; }
 # at the same working-directory path as the run (a claude session is found by its id, yet its transcript is appended to wherever
 # the original lives). Everything here is real: a bead of type claude-e2e makes the `claudeedit` workflow (one claude phase, haiku)
 # do the run through the private HOME of claude_home.sh, AutoPR opens the PR, a regression pushed to the PR branch fails the real
+# NOTE (docs/plans/retire-jobsites.md): a fix now runs as a follow-up run (PrFixStarted.fix_run_id, streams
+# run_followup:<id> and run:<id>); the assertions below still read the retired jobsite events and need a live
+# rewrite before this stage can pass again.
 # check, Fix CI starts the fix jobsite. The assertions read the event store (PrFixStarted, the fix jobsite's own stream) and
 # claude's own transcript of the session, never Foreman's log.
 
