@@ -1,5 +1,5 @@
 // Foreman runs grouped by project, from `foreman run list` ({"runs": [...]}), and each project's queue
-// (work waiting for a run slot, and open tasks not started yet). Click a run to open its detail tab;
+// (work waiting for a run slot, and open tasks awaiting approval). Click a run to open its detail tab;
 // click a project, status or queue header to collapse it.
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, ScrollHandle } from "gpui-base";
@@ -15,7 +15,7 @@ const TERMINAL_RUN = new Set(["completed", "failed", "cancelled"]);
 // The queue of every project, from three server reads.
 //   q        GET /api/queue: {capacity, running: [run_id], waiting: [run_id]}; waiting is in slot order,
 //            runs the server admitted but has no free slot for yet.
-//   open     GET /api/tasks?status=open: tasks created but not started (no run).
+//   open     GET /api/tasks?status=open: tasks not yet approved (no run); "ready" means approved and bound to a run.
 //   resolved Map run_id -> {project_id, task_id, title, stale}: what each waiting run is for.
 // A waiting id that resolves to nothing, or to a run that has already ended, is a leftover in the
 // server's queue; it is kept (never hidden) but marked stale, and not counted as queued.
@@ -427,7 +427,7 @@ export default class ForemanRuns extends View {
   renderRail(t) {
     const failed = this.runs.filter((r) => r.status === "failed").length;
     const active = this.runs.filter(isActive).length;
-    const queuedN = this.queue.entries.filter((e) => !e.stale).length;
+    const queuedN = this.queue.entries.filter((e) => e.kind === "slot" && !e.stale).length;
     const summary = (text, color) => div().text_size(11).text_color(color).child(text);
     const tile = (g) => {
       const f = g.all.filter((r) => r.status === "failed").length;
@@ -483,14 +483,16 @@ export default class ForemanRuns extends View {
     const queueHead = (g) => {
       const key = `${g.id}::queued`;
       const closed = this.collapsed.has(key);
-      const n = g.queued.filter((e) => !e.stale).length;
-      const staleN = g.queued.length - n;
+      const n = g.queued.filter((e) => e.kind === "slot" && !e.stale).length;
+      const awaitingN = g.queued.filter((e) => e.kind === "open").length;
+      const staleN = g.queued.filter((e) => e.stale).length;
+      const counts = [`${n}`, ...(awaitingN > 0 ? [`${awaitingN} awaiting`] : []), ...(staleN > 0 ? [`${staleN} stale`] : [])];
       return h_flex().id(`queue-head-${key}`).pl(22).pr(12).pt(4).pb(2).gap(6).items_center().cursor_pointer()
         .on_click((_e, cx) => this.toggle(key, cx))
         .child(div().w(10).text_size(10).text_color(t.dim).child(closed ? "▸" : "▾"))
         .child(div().size(7).rounded(4).bg(t.idle ?? t.dim))
         .child(div().flex_1().truncate().text_size(11.5).text_color(t.idle ?? t.dim).child("queued"))
-        .child(div().text_size(11).text_color(t.dim).child(staleN > 0 ? `${n} · ${staleN} stale` : `${n}`));
+        .child(div().text_size(11).text_color(t.dim).child(counts.join(" · ")));
     };
 
     // A queued item. Display only: a queued run has no transcript or phases to open yet.
@@ -498,7 +500,7 @@ export default class ForemanRuns extends View {
       const what = e.title ?? e.task_id ?? e.run_id ?? "unknown";
       const sub = e.stale ? `${e.task_id ?? e.run_id ?? "?"} · stale: ${e.task_id ? "its run has ended" : "the server has no such run"}`
         : e.kind === "slot" ? `${e.task_id ?? e.run_id} · waiting for a slot`
-        : `${e.task_id} · not started${e.created ? ` · ${ago(e.created)}` : ""}`;
+        : `${e.task_id} · awaiting approval${e.created ? ` · ${ago(e.created)}` : ""}`;
       return v_flex().id(`queued-${e.run_id ?? e.task_id}`).pl(38).pr(12).py(4).gap(1)
         .child(h_flex().gap(8).items_center()
           .child(div().flex_1().truncate().text_size(12.5).text_color(e.stale ? t.dim : t.foreground).child(what))

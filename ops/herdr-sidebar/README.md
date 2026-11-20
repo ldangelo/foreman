@@ -89,10 +89,13 @@ time of the last successful refresh (red while the latest refresh is failing).
 work that is waiting, in the order the server will start it:
 
 - `#N … waiting for a slot`: a run the server has admitted but has no free run slot for yet, with its
-  place in the server's global slot queue (`GET /api/queue`, `waiting`). The title is its task's.
-- `… not started`: a task that exists in the project but has no run yet (`GET /api/tasks?status=open`),
-  oldest first, with how long ago it was created.
-- `… stale`: an entry still in the server's queue whose run has ended or no longer exists, so it can
+  place in the server's global slot queue (`GET /api/queue`, `waiting`). The title is its task's. `N`
+  is the server's own position, so it counts entries that can no longer start (see "stale"); the
+  group header counts only the live ones.
+- `… awaiting approval`: a task in the project that is still `open`, i.e. not yet approved and with no
+  run (`GET /api/tasks?status=open`), oldest first, with how long ago it was created. Not counted
+  as queued: the group header shows it separately as `N awaiting`.
+- `… stale`: an entry still in the server's slot queue whose run has ended or no longer exists, so it can
   never start. It is shown dimmed and is not counted: the group header reads `N · M stale`. When the
   server cannot say which project such an entry belonged to it is listed under "Unresolved queue
   entries". The compact rail shows the total of the live ones as `⧖N`.
