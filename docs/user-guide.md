@@ -833,7 +833,7 @@ the rest. Foreman never computes a price. `--from` / `--to` are inclusive UTC da
 The same data is `GET /api/projects/<id>/usage?from=&to=&group_by=&limit=` (422 `invalid_range`,
 `range_too_large`, `invalid_group_by`, `invalid_limit`; 404 for an unknown project) and the MCP read tool
 `foreman_usage_get`. The response also carries the `limits` block (including `deferred_today` /
-`deferred_by_reason`, the durable count of tasks refused today by the daily cap, run limit or pause) and
+`deferred_by_reason`, the durable count of tasks refused today by the daily cap or pause) and
 `cache_hints`, one per thread: `cache_read_ratio`, `idle_seconds` and `likely_cold` (`null` when the provider has
 no configured cache TTL; the TTLs are `config :foreman_server, :usage, cache_ttl_seconds:`, claude 300 by
 default, an assumption to tune per provider). Usage covers the last 366 days per project. Jobsite iteration
@@ -917,16 +917,19 @@ re-admitted on resume. `reactivate` is for archived projects (and clears any
 earlier pause); `resume` is for paused ones.
 
 A run id returned by `foreman run submit` exists before admission has produced a
-run. A task refused at admission (`run_limit_exceeded`, daily thread cap, pause)
+run. A task refused at admission (daily thread cap, paused or archived project)
 keeps its run id and `foreman run get <id>` / `GET /api/runs/<id>` answers `200`
 with `run.status` `deferred` and `run.reason` (or `queued` while admission is
 pending), never a 404. It is re-admitted when the project is resumed, when a
-`project update` changes its settings (a raised limit), when a finished run
+`project update` changes its settings, when a finished run
 frees its reservation, and when the UTC day rolls over (a task the daily thread
 cap refused is retried as soon as the cap resets, with no operator action; a
 timer in the Dispatcher fires at the next UTC midnight). A run slot is
 only taken once the project's own limits admit the run, so a deferred run never
 starves other projects.
+The run ceiling is not an admission refusal: a run over the project's `max_concurrent_runs`
+is admitted and waits in that project's own slot queue (see `waiting_runs`), not `deferred`;
+a raised limit starts queued runs in order.
 
 ### Tasks
 
