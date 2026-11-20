@@ -1,16 +1,15 @@
 defmodule ForemanServer.TestSupport.RunSlotsReset do
   @moduledoc false
-  # The `run_slots:global` aggregate is a process-wide singleton (its
-  # `aggregate_id` is hardcoded in `RunAdmission.acquire_slot/2` and the
-  # dispatcher/release paths). Tests that exercise `RunAdmission.start/3`
-  # append `RunSlotAcquired` events to its event stream and mutate the
-  # shared actor's in-memory `holders` / `waiters` state. Without a
-  # per-test reset, one file's holders persist into the next file's
+  # Every project has its own `run_slots:<project_id>` aggregate (the legacy
+  # `run_slots:global` stream may still exist from older tests). Tests that
+  # exercise `RunAdmission.start/3` append `RunSlotAcquired` events to those
+  # streams and mutate the shared actors' in-memory `holders` / `waiters`
+  # state. Without a per-test reset, one file's holders persist into the next file's
   # `setup` (and the next example within a file) and downstream
   # admissions return `:slot_queued`.
   #
   # `reset!/0` mirrors `run_executor_test.exs`'s
-  # `init_run_slots_capacity/0`: hard-delete the stream, kill the actor
+  # `init_run_slots_capacity/0`: hard-delete every `run_slots:*` stream, kill every actor
   # (so the next lookup re-replays the now-empty stream), then reset the
   # projection store's slot view via the suite-wide helper that seeds
   # every key the production `initial_state/0` defines, passing
@@ -20,33 +19,64 @@ defmodule ForemanServer.TestSupport.RunSlotsReset do
   # the dispatch chain for tests exercising the wired Dispatcher).
   # Hard delete requires `enable_hard_deletes: true` in
   # `ForemanServer.EventStore` config, which `config/test.exs` sets.
+  @stream_prefix "run_slots:"
+  @page_size 100
+
   @spec reset!() :: :ok
   def reset! do
-    stream = "run_slots:global"
-
     # Leftover executors and Dispatcher slot releases must be done before the
-    # stream is deleted and its actor killed, or they land mid-reset
+    # streams are deleted and their actors killed, or they land mid-reset
     # (`run_slots.release ... exited {:killed, ...}`).
     ForemanServer.TestSupport.RunDrain.drain!()
 
-    hard_delete_with_retry(stream, 3)
+    # One stream per project (`run_slots:<project_id>`, TRD-005) plus the
+    # legacy `run_slots:global`: every one of them is reset, so no holder or
+    # waiter of an earlier test can survive into the next.
+    streams = run_slot_streams(1, [])
 
-    case Registry.lookup(ForemanServer.AggregateRegistry, stream) do
-      [{pid, _}] when is_pid(pid) ->
-        Process.exit(pid, :kill)
+    Enum.each(streams, &hard_delete_with_retry(&1, 3))
 
-      _ ->
-        :ok
-    end
+    Enum.each(streams, fn stream ->
+      case Registry.lookup(ForemanServer.AggregateRegistry, stream) do
+        [{pid, _}] when is_pid(pid) -> Process.exit(pid, :kill)
+        _ -> :ok
+      end
+    end)
 
-    # Give the Aggregator supervisor time to restart the actor and
-    # register the new pid under the same aggregate_id before the next
+    # Give the Aggregator supervisor time to restart the actors and
+    # register the new pids under the same aggregate_id before the next
     # dispatch. Without this, `Aggregator.start_aggregate/2` can return
-    # the stale dead pid and the subsequent `GenServer.call` exits.
+    # a stale dead pid and the subsequent `GenServer.call` exits.
     Process.sleep(20)
 
     ForemanServer.TestSupport.ProjectionStoreReset.reset!(keep_subscribers: true)
     :ok
+  end
+
+  # `paginate_streams(search: term)` matches `%term%`, so the prefix is
+  # re-checked; sorting by `stream_uuid` keeps paging stable.
+  defp run_slot_streams(page_number, acc) do
+    opts = [
+      search: @stream_prefix,
+      page_number: page_number,
+      page_size: @page_size,
+      sort_by: :stream_uuid
+    ]
+
+    case ForemanServer.EventStore.paginate_streams(opts) do
+      {:ok, %EventStore.Page{entries: entries, total_pages: total_pages}} ->
+        acc =
+          Enum.reduce(entries, acc, fn %EventStore.Streams.StreamInfo{stream_uuid: uuid}, acc ->
+            if String.starts_with?(uuid, @stream_prefix), do: [uuid | acc], else: acc
+          end)
+
+        if page_number >= total_pages,
+          do: Enum.reverse(acc),
+          else: run_slot_streams(page_number + 1, acc)
+
+      {:error, reason} ->
+        raise "RunSlotsReset.reset!/0: could not list run_slots streams: #{inspect(reason)}"
+    end
   end
 
   # `EventStore.delete_stream/3` normally returns `:ok | {:ok, _} |

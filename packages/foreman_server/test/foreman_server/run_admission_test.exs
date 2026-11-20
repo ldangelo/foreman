@@ -312,39 +312,27 @@ defmodule ForemanServer.RunAdmissionTest do
         workflow_snapshot: %{phases: [%{id: "phase-1", kind: "command"}]}
       }
 
-      # Setup already holds one slot (init_run_id) at capacity 100, but
-      # RunAdmission.start/2 dispatches its own acquire at
-      # RunSlots.Config.max_concurrent_runs() (50 in test config) — fill
-      # every remaining slot at that same capacity so the real admission
-      # call below genuinely finds none free.
-      capacity = ForemanServer.RunSlots.Config.max_concurrent_runs()
+      # Capacity comes from the project: with a limit of one, a single filler
+      # holder on the project's own slot stream leaves none free.
+      register_project!(project_id)
 
-      filler_run_ids = for i <- 1..(capacity - 1), do: unique_id("filler-run-#{i}")
+      assert {:ok, _} =
+               ForemanServer.CommandRouter.dispatch(%{
+                 aggregate_id: "project:#{project_id}",
+                 command_id: "limit:#{project_id}",
+                 type: "project.update",
+                 payload: %{project_id: project_id, max_concurrent_runs: 1}
+               })
 
-      for filler_run_id <- filler_run_ids do
-        assert {:ok, _} =
-                 ForemanServer.CommandGateway.dispatch_system(%{
-                   type: "run_slots.acquire",
-                   command_id: "test:fill:#{filler_run_id}",
-                   aggregate_id: "run_slots:global",
-                   payload: %{run_id: filler_run_id, capacity: capacity}
-                 })
-      end
+      filler_run_id = unique_id("filler-run")
 
-      on_exit(fn ->
-        for filler_run_id <- filler_run_ids do
-          try do
-            ForemanServer.CommandGateway.dispatch_system(%{
-              type: "run_slots.release",
-              command_id: "test:fill-cleanup:#{filler_run_id}",
-              aggregate_id: "run_slots:global",
-              payload: %{run_id: filler_run_id}
-            })
-          rescue
-            _ -> :ok
-          end
-        end
-      end)
+      assert {:ok, _} =
+               ForemanServer.CommandGateway.dispatch_system(%{
+                 type: "run_slots.acquire",
+                 command_id: "test:fill:#{filler_run_id}",
+                 aggregate_id: ForemanServer.Aggregates.RunSlots.stream_id(project_id),
+                 payload: %{run_id: filler_run_id, capacity: 1, project_id: project_id}
+               })
 
       assert {:ok, :slot_queued} = RunAdmission.start(project_id, payload)
       assert ProjectionStore.run(run_id) == nil
