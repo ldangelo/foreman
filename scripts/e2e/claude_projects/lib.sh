@@ -302,7 +302,7 @@ evidence_keep() {
     ev_get "/api/projects/$PROJECT" "$ek/api/project.json"
     ev_get "/api/projects/$PROJECT/overview?include_resolved=true" "$ek/api/overview.json"
     ev_get "/api/runs?project_id=$PROJECT&limit=500" "$ek/api/runs.json"
-    ev_get "/api/queue" "$ek/api/queue.json"
+    ev_get "/api/queue?project_id=$PROJECT" "$ek/api/queue.json"
     for ek_t in $(jq -r '.threads[]?.id // empty' "$ek/api/threads.json" 2>/dev/null | head -n 40); do
       ek_n=$(printf '%s' "$ek_t" | tr -c 'A-Za-z0-9._-' '_')
       ev_get "/api/threads/$ek_t" "$ek/api/thread-$ek_n.json"
