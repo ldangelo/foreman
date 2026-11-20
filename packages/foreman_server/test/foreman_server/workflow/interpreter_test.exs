@@ -218,6 +218,54 @@ defmodule ForemanServer.Workflow.InterpreterTest do
                  end
   end
 
+  describe "sandbox validation" do
+    test "accepts docker and keeps the key on the loaded workflow" do
+      path =
+        write_temp_yaml!("""
+        name: sandboxed
+        sandbox: docker
+        phases:
+          - name: only
+            command: "/skill:x"
+        """)
+
+      assert {:ok, workflow} = Workflow.Interpreter.load!(path)
+      assert workflow["sandbox"] == "docker"
+    end
+
+    test "refuses an unknown sandbox instead of running the agent unsandboxed" do
+      path =
+        write_temp_yaml!("""
+        name: typo
+        sandbox: dokcer
+        phases:
+          - name: only
+            command: "/skill:x"
+        """)
+
+      assert_raise Workflow.MissingRequiredPhaseError,
+                   ~r/"sandbox" "dokcer" is not supported/,
+                   fn ->
+                     Workflow.Interpreter.load!(path)
+                   end
+    end
+
+    test "refuses a non-string sandbox" do
+      path =
+        write_temp_yaml!("""
+        name: shape
+        sandbox: true
+        phases:
+          - name: only
+            command: "/skill:x"
+        """)
+
+      assert_raise Workflow.MissingRequiredPhaseError, ~r/"sandbox" must be a string/, fn ->
+        Workflow.Interpreter.load!(path)
+      end
+    end
+  end
+
   describe "worktree validation" do
     test "accepts a phase without a worktree block (legacy compatible)" do
       path =

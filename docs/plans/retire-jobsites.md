@@ -49,7 +49,7 @@ non-door users.
 |---|---|---|
 | **Docker sandbox** | **Keep** | New optional manifest/phase field `sandbox: docker` (default: none = today's run behavior). `Lowering` emits the existing `:sandbox`/`:release` steps. Strict approval rendering shows it. Image from `.foreman/Dockerfile` as today. |
 | **Host sandbox** | **Drop (no-op)** | Runs *are* host execution; the concept and `allow_host_sandbox` flag disappear. |
-| **NetworkPolicy** | **Keep, docker only** | Same enforcement as today (docker jobsites only). A project network policy on a run with no docker sandbox fails the phase launch with the existing typed error, never silently ignored. Boot sweep (`NetworkPolicy.sweep_orphans/1`) stays. |
+| **NetworkPolicy** | **Keep, docker only** | Same enforcement as today (docker jobsites only). Corrected after PR1: a run WITHOUT `sandbox: docker` still cannot enforce a project network policy (the documented workflow-door limitation, unchanged); a run WITH it applies the policy exactly as a jobsite did, and refuses the run with `{:network_policy, code}` if it cannot. Boot sweep (`NetworkPolicy.sweep_orphans/1`) stays. |
 | **Push to existing PR head, fast-forward only** | **Keep** | Follow-up run with `attach_branch` (worktree at the branch tip on `origin`, `sync_remote` ff-only, never force) and `push: true` publishing exactly that branch. Required by PrFix. New `Workflow.Worktree` "attach" mode beside "create from base". |
 | **Crash-resume of a provider session with a custom prompt** | **Keep** | `RunExecutor` resume uses the last `WorkerSessionBound` session id (the `put_fork` path at run_executor.ex:1574 already carries `provider_session_id`) plus the pending steer text as prompt. Parity rule from `BootRecovery`: no recorded session => run fails `executor_lost`, never starts a blank agent. Replaces `Jobsite.BootRecovery`; `Workflow.BootReconciliation` owns it. |
 | **Steer** | **Drop jobsite's, runs already have it** | `run.steer` (live via `LiveSteer`, pause/resume fallback). `Jobsite.steer/3` deleted. |
@@ -147,3 +147,12 @@ replays an event carrying it (same shape as the E12 multi-repo caveat, CLAUDE.md
 5. Confirm you are overriding the 2026-10-23 KEEP decision (`9mds`) for the remote API.
 
 Resolved: (1) drop `merge_into` and the iteration loop; (2) fixes queue behind global run slots; (3) `jobsite` thread door stays read-only history; (4) AGENTS.md may be edited in PR 8; (5) the 2026-10-23 KEEP decision (`9mds`) is overridden and the remote API is removed.
+
+## 9. Findings during Phase 2 (corrections to the plan)
+
+- **PR1 split**: 1a = `Lowering` sandbox/release steps + `Runners.Overwatch` passes the sandbox shim as harness `cli_path`; 1b = workflow-level `sandbox: docker` manifest key (Interpreter, Catalog + digest only when declared, approval snapshot, `RunExecutor`), network policy, cleanup of the container and policy network on every program exit.
+- **`cli_path` is shared** with Claude's in-flight approval wrapper (`Approvals.Inflight`). Sandboxed runs skip in-flight approvals and keep the pause-and-re-run path.
+- **Sandboxed runs are single-repo**: `{:sandbox_unsupported, :multi_repo}`.
+- **Known limit**: `FOREMAN_*` path env vars (`FOREMAN_WORKTREE_PATH` etc.) are host paths and are not translated inside the container; a sandboxed phase must not depend on them. PrFix prompts do not.
+- **Crashed server leaves the container**: same as jobsites today (kata `ptpn`); the boot sweep of `NetworkPolicy.sweep_orphans/1` is the existing mitigation and still needs wiring beyond `Jobsite.BootRecovery` before PR 7 deletes it.
+- Pre-existing test failures on the base branch (not caused by this work): 3 tests on the bundled `fix.yaml` (`prompt_inbox_progress_test`, `catalog_test` fix workflow, `full_workflow_lifecycle_test`), from commit `dd0c239b`.

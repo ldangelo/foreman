@@ -307,6 +307,18 @@ defmodule ForemanServer.Workflow.RunExecutor do
     WorktreeSpec.normalize(Map.get(snapshot, :worktree) || Map.get(snapshot, "worktree"))
   end
 
+  # The workflow's `sandbox:` name ("docker"), read from the frozen snapshot beside
+  # `worktree:`. `nil` (absent) runs on the host, as every run did before.
+  defp extract_sandbox(task) do
+    snapshot =
+      Map.get(task, :workflow_snapshot) || Map.get(task, "workflow_snapshot") || %{}
+
+    case Map.get(snapshot, :sandbox) || Map.get(snapshot, "sandbox") do
+      name when is_binary(name) and name != "" -> name
+      _ -> nil
+    end
+  end
+
   @impl true
   def init({run_id, task_projection, opts}) do
     phase_specs = extract_phase_specs(task_projection)
@@ -324,6 +336,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
       task: task_projection,
       phase_specs: phase_specs,
       worktree_spec: extract_worktree_spec(task_projection),
+      sandbox: extract_sandbox(task_projection),
       current_phase: nil,
       completed: if(resume_from > 0, do: Enum.to_list(0..(resume_from - 1)), else: []),
       phase_statuses: %{},
@@ -518,18 +531,26 @@ defmodule ForemanServer.Workflow.RunExecutor do
         # so `finalize_run/1` knows which branch the run's work was cut from.
         state = remember_run_base_branch(state)
 
-        lowering_ctx = %{
-          run_id: state.run_id,
-          worktree_spec: state.worktree_spec,
-          start_index: state.resume_from
-        }
+        case run_sandbox(state) do
+          {:ok, sandbox, network_cleanup} ->
+            lowering_ctx = %{
+              run_id: state.run_id,
+              worktree_spec: state.worktree_spec,
+              start_index: state.resume_from,
+              sandbox: sandbox
+            }
 
-        case Lowering.lower(state.phase_specs, lowering_ctx) do
-          {:ok, program} ->
-            run_program(state, program)
+            case Lowering.lower(state.phase_specs, lowering_ctx) do
+              {:ok, program} ->
+                run_program(state, program, network_cleanup)
 
-          {:error, %JobsiteError{details: %{index: index, reason: reason}}} ->
-            refuse_phase(state, index, reason)
+              {:error, %JobsiteError{details: %{index: index, reason: reason}}} ->
+                network_cleanup.()
+                refuse_phase(state, index, reason)
+            end
+
+          {:error, reason} ->
+            initialization_failed(state, reason)
         end
     end
   end
@@ -550,14 +571,57 @@ defmodule ForemanServer.Workflow.RunExecutor do
     initialization_failed(state, reported)
   end
 
-  defp run_program(state, program) do
+  # The run's sandbox, or `nil` for a host run. Docker only (the manifest validator
+  # refuses any other name). The project's `environment.network` policy is enforced
+  # here and ONLY here: a host run cannot enforce it, which is the documented
+  # limitation of the workflow door, so the policy is a ceiling exactly when the
+  # manifest asked for isolation. `network_cleanup` removes the policy's network and
+  # sidecar and must run however the program ends.
+  #
+  # Refused: more than one repository (the extra worktrees are not mounted into the
+  # container, so the agent could not reach them).
+  defp run_sandbox(%{sandbox: "docker", run_repos: %{}}),
+    do: {:error, {:sandbox_unsupported, :multi_repo}}
+
+  defp run_sandbox(%{sandbox: "docker"} = state) do
+    {provider, config} = ForemanServer.Jobsite.Sandboxes.docker()
+
+    with {:ok, config, network_cleanup} <- apply_run_network_policy(state, provider, config) do
+      {:ok, %{provider: provider, config: config}, network_cleanup}
+    end
+  end
+
+  defp run_sandbox(_state), do: {:ok, nil, fn -> :ok end}
+
+  defp apply_run_network_policy(state, provider, config) do
+    with id when is_binary(id) and id != "" <- project_id(state),
+         %{"network" => policy} <- ForemanServer.ProjectEnvironment.environment(id) do
+      case ForemanServer.Jobsite.NetworkPolicy.apply(policy, provider, config, state.run_id) do
+        {:ok, config, cleanup} -> {:ok, config, cleanup}
+        {:error, %JobsiteError{code: code}} -> {:error, {:network_policy, code}}
+      end
+    else
+      _no_project_policy -> {:ok, config, fn -> :ok end}
+    end
+  end
+
+  defp run_program(state, program, network_cleanup) do
     ctx = %JobsiteContext{jobsite_id: state.run_id, repo_path: vcs_working_directory(state)}
 
-    case JobsiteEngine.run_program(program, ctx,
-           observer: JobsiteObserver,
-           observer_state: JobsiteObserver.new(state),
-           intent: fn -> engine_intent(state.run_id) end
-         ) do
+    result =
+      JobsiteEngine.run_program(program, ctx,
+        observer: JobsiteObserver,
+        observer_state: JobsiteObserver.new(state),
+        intent: fn -> engine_intent(state.run_id) end
+      )
+
+    # The program's `:release` step closes the sandbox only when it is reached; a pause,
+    # cancel or failure ends the program earlier. Closing again after `:release` is a
+    # harmless no-op on the provider, and the network policy is removed on every exit.
+    release_sandbox(result)
+    network_cleanup.()
+
+    case result do
       {:ok, _ctx, %{executor: executor}} ->
         finish_phases(executor)
 
@@ -567,6 +631,20 @@ defmodule ForemanServer.Workflow.RunExecutor do
       {:error, %JobsiteError{} = error, _ctx, observer_state} ->
         fail_phases(state, error, observer_state)
     end
+  end
+
+  defp release_sandbox({:ok, ctx, _observer_state}), do: close_ctx_sandbox(ctx)
+
+  defp release_sandbox({:interrupted, _kind, _reason, ctx, _observer_state}),
+    do: close_ctx_sandbox(ctx)
+
+  defp release_sandbox({:error, _error, ctx, _observer_state}), do: close_ctx_sandbox(ctx)
+
+  defp close_ctx_sandbox(%JobsiteContext{sandbox: nil}), do: :ok
+
+  defp close_ctx_sandbox(%JobsiteContext{sandbox: sandbox}) do
+    _ = sandbox.provider.close(sandbox.state)
+    :ok
   end
 
   # How an operator's `run.pause`/`run.cancel` reaches the engine between
@@ -1532,7 +1610,11 @@ defmodule ForemanServer.Workflow.RunExecutor do
          |> append_system_prompt(context_system_text)
          |> maybe_put_command_phase_inbox_system_prompt(state, phase_spec)
          |> maybe_put_approval_mode(phase_spec, steering)
-         |> maybe_put_inflight_permission(state.run_id, JidoHarness.request_provider(request))
+         |> maybe_put_inflight_permission(
+           state,
+           state.run_id,
+           JidoHarness.request_provider(request)
+         )
          |> maybe_put_add_dirs(state, JidoHarness.request_provider(request))
          |> put_fork(fork)
          |> LiveSteer.put_driver_opts(JidoHarness.request_provider(request))
@@ -1610,7 +1692,13 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # (pi has no per-call approvals) or mode, an unknown endpoint URL, or a claude CLI that
   # does not know the flag (`Inflight.claude_options/1` is `nil`) leaves the E8 phase-pause
   # path untouched.
-  defp maybe_put_inflight_permission(driver_opts, run_id, :claude) do
+  # A sandboxed run never asks in flight: the permission wrapper and the sandbox shim
+  # both need the harness `cli_path`, so its phases keep the pause-and-re-run path.
+  defp maybe_put_inflight_permission(driver_opts, %{sandbox: sandbox}, _run_id, _provider)
+       when is_binary(sandbox),
+       do: driver_opts
+
+  defp maybe_put_inflight_permission(driver_opts, _state, run_id, :claude) do
     with :prompt <- Keyword.get(driver_opts, :approval_mode),
          true <- ForemanServer.Approvals.Config.inflight?(),
          options when is_list(options) <- ForemanServer.Approvals.Inflight.claude_options(run_id) do
@@ -1620,7 +1708,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
   end
 
-  defp maybe_put_inflight_permission(driver_opts, _run_id, _provider), do: driver_opts
+  defp maybe_put_inflight_permission(driver_opts, _state, _run_id, _provider), do: driver_opts
 
   # The latest override wins when several approvals queued before one resume.
   defp steering_override(steering) do
@@ -4857,6 +4945,9 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   @doc false
   def __resolve_run_repo_set_for_test__(state), do: resolve_run_repo_set(state)
+
+  @doc false
+  def __run_sandbox_for_test__(state), do: run_sandbox(state)
 
   @doc false
   def __load_run_worktrees_for_test__(state), do: load_run_worktrees(state)
