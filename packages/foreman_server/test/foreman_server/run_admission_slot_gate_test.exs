@@ -181,10 +181,52 @@ defmodule ForemanServer.RunAdmissionSlotGateTest do
       refute ProjectionStore.run(waiting)
     end
 
-    @tag skip:
-           "AC-007-1 backstop sweep over project streams is TRD-008 (RunLifecycleReconciler); covered by TRD-008-TEST"
     test "abnormal death frees the slot: the backstop sweep releases it (AC-007-1)" do
-      flunk("pending TRD-008")
+      project_id = unique_id("project")
+      register_project!(project_id)
+      set_project_limit!(project_id, 1)
+      dead = unique_id("dead-holder")
+      waiting = unique_id("waiting")
+
+      assert {:ok, _} = RunAdmission.start(project_id, plain_payload(dead))
+      assert {:ok, :slot_queued} = RunAdmission.start(project_id, plain_payload(waiting))
+      assert holder_ids(project_id) == [dead]
+
+      # The holder's run is terminal but no release event ever reached the Dispatcher
+      # (its process died abnormally); only this project's slot stream still lists it.
+      pid =
+        start_supervised!(
+          {ForemanServer.RunLifecycleReconciler,
+           [
+             name: :"slot_gate_backstop_#{System.unique_integer([:positive])}",
+             interval_ms: 600_000,
+             subscribe_fun: fn -> :ok end,
+             list_active_runs_fun: fn -> [] end,
+             run_loader_fun: fn
+               ^dead ->
+                 %ForemanServer.Aggregates.Run.State{
+                   exists?: true,
+                   run_id: dead,
+                   project_id: project_id,
+                   status: "failed",
+                   terminal?: true
+                 }
+
+               other ->
+                 %ForemanServer.Aggregates.Run.State{
+                   exists?: true,
+                   run_id: other,
+                   project_id: project_id,
+                   status: "running",
+                   terminal?: false
+                 }
+             end
+           ]}
+        )
+
+      send(pid, :scheduled)
+
+      assert eventually(fn -> dead not in holder_ids(project_id) end)
     end
   end
 
@@ -318,6 +360,14 @@ defmodule ForemanServer.RunAdmissionSlotGateTest do
       refute result == {:error, :slot_state_unknown}
       assert {:ok, :slot_queued} = result
       assert waiter_ids(project_id) == [queued]
+    end
+  end
+
+  defp eventually(fun, attempts \\ 50) do
+    cond do
+      fun.() -> true
+      attempts == 0 -> false
+      true -> Process.sleep(50) && eventually(fun, attempts - 1)
     end
   end
 

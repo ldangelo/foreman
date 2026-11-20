@@ -2,7 +2,7 @@ defmodule ForemanServer.RunLifecycleReconcilerSlotTest do
   use ExUnit.Case, async: false
 
   alias EventStore.RecordedEvent
-  alias ForemanServer.Aggregates.{Project, Run}
+  alias ForemanServer.Aggregates.{Project, Run, RunSlots}
   alias ForemanServer.RunLifecycleReconciler
 
   @terminal_release [:foreman_server, :reconciler, :terminal_release]
@@ -135,8 +135,8 @@ defmodule ForemanServer.RunLifecycleReconcilerSlotTest do
       assert_receive {:dispatch,
                       %{
                         type: "run_slots.release",
-                        aggregate_id: "run_slots:global",
-                        payload: %{run_id: "run-1"}
+                        aggregate_id: "run_slots:project-1",
+                        payload: %{run_id: "run-1", project_id: "project-1"}
                       }, 5_000},
                      1_000
 
@@ -273,6 +273,93 @@ defmodule ForemanServer.RunLifecycleReconcilerSlotTest do
       assert_receive {:run_load, :active, "run-1"}, 1_000
       refute_receive {:retry, _project_id, _payload, _timeout}, 200
       refute_receive {:dispatch, _command, _timeout}, 200
+    end
+  end
+
+  describe "backstop sweep walks every project's slot stream (AC-007-1)" do
+    test "a terminal holder is released on its own project's stream, in any project" do
+      parent = self()
+
+      holders = %{
+        "project-1" => %{"run-1" => %{}, "run-live" => %{}},
+        "project-2" => %{"run-2" => %{}}
+      }
+
+      pid =
+        start_supervised!(
+          {RunLifecycleReconciler,
+           [
+             name: unique_name(),
+             interval_ms: 60_000,
+             subscribe_fun: fn -> :ok end,
+             list_active_runs_fun: fn -> [] end,
+             list_projects_fun: fn -> [%{project_id: "project-1"}, %{project_id: "project-2"}] end,
+             slot_state_loader_fun: fn project_id ->
+               %{holders: Map.fetch!(holders, project_id)}
+             end,
+             run_loader_fun: fn
+               "run-live" -> active_run_state("run-live", "project-1")
+               run_id -> terminal_run_state(run_id, "project-x")
+             end,
+             dispatch_fun: fn command, timeout ->
+               send(parent, {:dispatch, command, timeout})
+               {:ok, %{}}
+             end
+           ]}
+        )
+
+      send(pid, :scheduled)
+
+      assert_receive {:dispatch,
+                      %{
+                        type: "run_slots.release",
+                        aggregate_id: "run_slots:project-1",
+                        payload: %{run_id: "run-1", project_id: "project-1"}
+                      }, 5_000},
+                     1_000
+
+      assert_receive {:dispatch,
+                      %{
+                        type: "run_slots.release",
+                        aggregate_id: "run_slots:project-2",
+                        payload: %{run_id: "run-2", project_id: "project-2"}
+                      }, 5_000},
+                     1_000
+
+      refute_receive {:dispatch, %{payload: %{run_id: "run-live"}}, _}, 200
+      refute_receive {:dispatch, %{aggregate_id: "run_slots:global"}, _}, 100
+    end
+  end
+
+  describe "one slot per run (AC-018-1)" do
+    test "a run touching three repositories holds exactly one slot" do
+      project_id = "multi-repo-#{System.unique_integer([:positive])}"
+      run_id = "run-multi-#{System.unique_integer([:positive])}"
+
+      {:ok, _} =
+        ForemanServer.CommandRouter.dispatch(%{
+          aggregate_id: "project:#{project_id}",
+          command_id: "register:#{project_id}",
+          type: "project.register",
+          payload: %{project_id: project_id, name: "Multi #{project_id}", path: System.tmp_dir!()}
+        })
+
+      payload = %{
+        run_id: run_id,
+        task_id: "task-#{run_id}",
+        approval_id: "approval-#{run_id}",
+        workflow_snapshot: %{phases: [%{id: "p", kind: "command"}]},
+        phase_specs: [%{phase_id: "p", kind: "command"}],
+        repo_ids: ["repo-a", "repo-b", "repo-c"]
+      }
+
+      assert {:ok, _} = ForemanServer.RunAdmission.start(project_id, payload)
+
+      {slots, _version} =
+        ForemanServer.Aggregate.load(RunSlots, RunSlots.stream_id(project_id))
+
+      assert Map.keys(slots.holders) == [run_id]
+      assert slots.waiters == []
     end
   end
 
