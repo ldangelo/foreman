@@ -290,6 +290,37 @@ defmodule ForemanServer.RunAdmissionSlotGateTest do
     end
   end
 
+  describe "a deduplicated re-admission is not stranded (kata teak, AC-009-2)" do
+    test "a queued run whose waiter was removed ends as holder or waiter when admission is retried" do
+      project_id = unique_id("project")
+      register_project!(project_id)
+      set_project_limit!(project_id, 1)
+      holder = unique_id("holder")
+      queued = unique_id("queued")
+
+      assert {:ok, _} = RunAdmission.start(project_id, plain_payload(holder))
+      assert {:ok, :slot_queued} = RunAdmission.start(project_id, plain_payload(queued))
+      assert waiter_ids(project_id) == [queued]
+
+      {:ok, _} =
+        CommandGateway.dispatch_system(%{
+          type: "run_slots.remove_waiter",
+          command_id: "teak-remove:#{queued}",
+          aggregate_id: RunSlots.stream_id(project_id),
+          payload: %{run_id: queued, project_id: project_id, reason: "boot_orphan_waiter"}
+        })
+
+      assert waiter_ids(project_id) == []
+
+      # The original `slot-acquire:<run_id>` command id was already processed, so the
+      # acquire is deduplicated to {:ok, nil}: admission must re-issue it, not give up.
+      result = RunAdmission.start(project_id, plain_payload(queued))
+      refute result == {:error, :slot_state_unknown}
+      assert {:ok, :slot_queued} = result
+      assert waiter_ids(project_id) == [queued]
+    end
+  end
+
   defp run_of(data), do: Map.get(data, "run_id") || Map.get(data, :run_id)
 
   defp slot_state(project_id) do
