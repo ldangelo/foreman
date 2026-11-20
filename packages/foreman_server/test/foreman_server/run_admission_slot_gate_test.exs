@@ -202,6 +202,7 @@ defmodule ForemanServer.RunAdmissionSlotGateTest do
              interval_ms: 600_000,
              subscribe_fun: fn -> :ok end,
              list_active_runs_fun: fn -> [] end,
+             list_projects_fun: fn -> [%{project_id: project_id}] end,
              run_loader_fun: fn
                ^dead ->
                  %ForemanServer.Aggregates.Run.State{

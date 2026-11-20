@@ -353,12 +353,29 @@ defmodule ForemanServer.RunLifecycleReconcilerSlotTest do
         repo_ids: ["repo-a", "repo-b", "repo-c"]
       }
 
+      set_limit = fn ->
+        ForemanServer.CommandRouter.dispatch(%{
+          aggregate_id: "project:#{project_id}",
+          command_id: "limit:#{project_id}",
+          type: "project.update",
+          payload: %{project_id: project_id, max_concurrent_runs: 2}
+        })
+      end
+
+      assert {:ok, _} = set_limit.()
       assert {:ok, _} = ForemanServer.RunAdmission.start(project_id, payload)
+
+      # With a limit of 2, a second run still starts (not queued): the
+      # three-repository run took one slot, not three.
+      second = %{payload | run_id: run_id <> "-2", task_id: "task-#{run_id}-2", repo_ids: []}
+
+      assert {:ok, %{"event_type" => "RunStarted"}} =
+               ForemanServer.RunAdmission.start(project_id, second)
 
       {slots, _version} =
         ForemanServer.Aggregate.load(RunSlots, RunSlots.stream_id(project_id))
 
-      assert Map.keys(slots.holders) == [run_id]
+      assert Map.keys(slots.holders) |> Enum.sort() == [run_id, run_id <> "-2"]
       assert slots.waiters == []
     end
   end

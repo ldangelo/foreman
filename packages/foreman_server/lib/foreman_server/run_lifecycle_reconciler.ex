@@ -340,11 +340,29 @@ defmodule ForemanServer.RunLifecycleReconciler do
   # exactly one slot however many repositories it touches, so nothing here is
   # repo-aware.
   defp run_slots_backstop_sweep(state) do
-    state.list_projects_fun.()
-    |> Enum.map(&project_id_of/1)
-    |> Enum.filter(&valid_id?/1)
-    |> Enum.uniq()
-    |> Enum.each(&sweep_project_slots(&1, state))
+    # A timeout or restart of the projection must not crash this always-on
+    # process, and one bad project must not abort the rest of the pass.
+    try do
+      state.list_projects_fun.()
+      |> Enum.map(&project_id_of/1)
+      |> Enum.filter(&valid_id?/1)
+      |> Enum.uniq()
+      |> Enum.each(fn project_id ->
+        try do
+          sweep_project_slots(project_id, state)
+        catch
+          :exit, reason ->
+            Logger.warning(
+              "RunLifecycleReconciler: backstop sweep of project #{project_id} exited: #{inspect(reason)}"
+            )
+        end
+      end)
+    catch
+      :exit, reason ->
+        Logger.warning(
+          "RunLifecycleReconciler: backstop sweep could not list projects: #{inspect(reason)}"
+        )
+    end
 
     :ok
   end
