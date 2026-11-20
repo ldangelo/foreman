@@ -2,7 +2,7 @@
 Document ID: TRD-2026-b9e27ab5
 Label: trd-per-project-queues
 prd_reference: docs/PRD/PRD-2026-b9e27ab5-per-project-dispatch-queues.md
-Version: 1.0.1
+Version: 1.0.2
 Status: Draft
 Date: 2026-11-19
 Design Readiness Score: 4.5 (PASS, self-scored; was 4.25 at create-trd)
@@ -77,6 +77,18 @@ holders and waiters over.
    project settings; REQ-016 is a verification task, not a new rule.
 8. **`Aggregates.ProjectRunLimit`** (hardcoded 100) has no caller in `lib/`. It is dead code;
    this TRD leaves it alone and does not depend on it.
+
+9. **A queued run has no run projection, and boot reconciliation treats that as "absent".**
+   `reconcile_run_slots_stream` removes a waiter when `ProjectionStore.run/1` is `nil`, which is
+   true of every queued run. Combined with the deterministic acquire command id, a restart
+   strands queued runs forever (`:slot_state_unknown`; kata `teak`, P1). The design rebuilds
+   this code per project, so the defect is fixed here (TRD-018) and TRD-009's migration must
+   not repeat it.
+10. **Overlap with the jobsite retirement** (kata `5z8s` and its PR issues, in another
+    worktree). It folds jobsites and PR-fix threads into runs, so they will use these
+    per-project slots with no extra work, and its PR7 deletes `Jobsite.*`. Both efforts edit
+    `workflow/dispatcher.ex`, `run_admission.ex` and the docs, so expect rebase work in the
+    second to merge. The "jobsites unchanged" guard test was dropped for that reason.
 
 ## Architecture Decision
 
@@ -158,6 +170,7 @@ serialises only through its own mailbox.
 | `Workflow.Dispatcher` | project-scoped release; promotion handler for both event shapes; rebalance on `ProjectUpdated`/`ProjectReactivated`; adoption handling on `ProjectSubjectAdopted` |
 | `RunLifecycleReconciler`, `Workflow.BootReconciliation` | iterate project streams |
 | `Workflow.RunSlotsMigration` (new, plain module) | one-shot legacy carry-over, idempotent |
+| `BootReconciliation` / `RunAdmission.slot_decision` / `Dispatcher` log | queued-run waiter predicate, one re-acquire on a deduplicated miss, one error per stranded task (TRD-018) |
 | `ProjectionStore` | per-project fold; `queue_status/1`; limits usage fields |
 | `ProjectLimits` | no global clamp; `running_runs`, `waiting_runs` |
 | `QueueController` | `project_id` required |
@@ -374,7 +387,25 @@ implementation task.
     - [ ] Scenario: moved waiter rejoins behind -- Given a waiting run is adopted by another project that already has two waiters, When the adoption is accepted, Then the run queues third in the destination and no longer counts against the source. (AC-017-3)
     - [ ] Scenario: a refused adoption leaves both queues untouched -- Given the aggregate refuses to adopt an active subject, When adoption is attempted, Then neither queue changes and the refusal is the asserted result; the outcome is recorded in the TRD's Known Gaps if it makes AC-017-3 unreachable. (AC-017-3)
 
-- [ ] **TRD-009** New `Workflow.RunSlotsMigration.run/0` per the Migration section; `BootReconciliation.scan_run_slot_orphans/0` and `reconcile_run_slots_stream/0` iterate project streams and then call the migration; legacy stream is read-only; every release it issues uses `RunSlots.release_command/3`. (6h) [satisfies REQ-008] [satisfies REQ-009] [depends: TRD-003, TRD-005, TRD-007]
+- [ ] **TRD-018** Fix the stranded-queued-run defect (kata `teak`) in the code this TRD rebuilds. (a) `BootReconciliation`: a slot **waiter** is an orphan only when its run is terminal, or when it has no run projection AND no task is `in_progress` with that `run_id` (`ProjectionStore.tasks_by_run_id/1`); today `run_absent_or_terminal?/1` calls `ProjectionStore.run/1`, which is `nil` for every queued run (a queued run has no run projection yet), so boot removed every queued waiter. Holders keep the old predicate. The same waiter predicate is used by TRD-009's migration. (b) `RunAdmission.slot_decision/2`: when an acquire returns `{:ok, nil}` (deduplicated replay) and the run is neither holder nor waiter, re-issue the acquire once with a fresh command id (`workflow:run-admission:slot-reacquire:<run_id>:<ms>`, the resume path's scheme) and decide again; only a second miss returns `{:error, :slot_state_unknown}`. (c) `Dispatcher`: log one `error` per `{task_id, reason}` for a stranded admission and `debug` for repeats (a `MapSet` in state), not a `warning` per tick. Out of scope (recorded in Known Gaps): surfacing a run whose aggregate is missing but whose projection says queued as failed. (4h) [satisfies REQ-005] [satisfies REQ-007] [satisfies REQ-009] [depends: TRD-005]
+  - Target Files: `packages/foreman_server/lib/foreman_server/workflow/boot_reconciliation.ex`, `packages/foreman_server/lib/foreman_server/run_admission.ex`, `packages/foreman_server/lib/foreman_server/workflow/dispatcher.ex`
+  - Validates PRD ACs: AC-005-2, AC-007-1, AC-009-2
+  - Implementation AC:
+    - Given a queued run (task `in_progress`, no run projection) in a project stream, when boot reconciliation runs, then its waiter is kept.
+    - Given a waiter whose run is terminal, when boot reconciliation runs, then the waiter is removed.
+    - Given a run whose waiter was removed and whose original acquire command id was already processed, when admission is retried, then it ends as holder or waiter, never `:slot_state_unknown`.
+    - Given the same stranded task fails admission on ten consecutive ticks, then exactly one `error` log names it.
+
+- [ ] **TRD-018-TEST** `boot_reconciliation_queued_waiter_test.exs` and a case in `run_admission_slot_gate_test.exs` (the test named in kata `teak`: queue a run, remove its waiter, retry admission, assert it ends as holder or waiter). Written before TRD-018 and seen to fail. (3h) [verifies TRD-018] [satisfies REQ-005] [satisfies REQ-007] [satisfies REQ-009] [depends: TRD-018]
+  - Target Files: `packages/foreman_server/test/foreman_server/workflow/boot_reconciliation_queued_waiter_test.exs`, `packages/foreman_server/test/foreman_server/run_admission_slot_gate_test.exs`
+  - Validates PRD ACs: AC-005-2, AC-007-1, AC-009-2
+  - Test AC:
+    - [ ] Scenario: a restart does not drop queued runs -- Given three runs queued in a project (tasks in progress, no run projections), When the server restarts and boot reconciliation runs, Then all three waiters remain in their original order. (AC-005-2)
+    - [ ] Scenario: a terminal run's waiter is cleaned up -- Given a waiter whose run is terminal, When boot reconciliation runs, Then the waiter is removed and the next waiter is considered. (AC-007-1)
+    - [ ] Scenario: a deduplicated re-admission is not stranded -- Given a queued run whose waiter was removed, When admission is retried with the already-processed command id, Then the run ends as holder or waiter. (AC-009-2)
+    - [ ] Scenario: one error per stranded task -- Given one task that fails admission repeatedly, When ten ticks pass, Then one error line names it and the rest are debug. (AC-007-1)
+
+- [ ] **TRD-009** New `Workflow.RunSlotsMigration.run/0` per the Migration section; `BootReconciliation.scan_run_slot_orphans/0` and `reconcile_run_slots_stream/0` iterate project streams and then call the migration; legacy stream is read-only; every release it issues uses `RunSlots.release_command/3`; it treats a waiter as an orphan only by TRD-018's predicate, so queued runs (no run projection yet) are carried over, not dropped. (6h) [satisfies REQ-008] [satisfies REQ-009] [depends: TRD-003, TRD-005, TRD-007, TRD-018]
   - Target Files: `packages/foreman_server/lib/foreman_server/workflow/run_slots_migration.ex`, `packages/foreman_server/lib/foreman_server/workflow/boot_reconciliation.ex`
   - Validates PRD ACs: AC-008-1, AC-009-1, AC-009-2, AC-009-3
   - Implementation AC:
@@ -456,9 +487,9 @@ implementation task.
     - [ ] Scenario: queued/granted/released carry counts -- Given a run is queued, granted and released, Then each event has the project and the counts at that moment. (AC-014-1)
     - [ ] Scenario: time in queue observable -- Given a run waited, Then promotion reports `queue_wait_ms`. (AC-014-2)
 
-### PR 5: Settings validation, jobsite non-change and documentation
+### PR 5: Settings validation and documentation
 
-**Shippable State:** The documentation, CLI reference and configuration reference describe per-project queues only (with no machine-wide ceiling stated), a limit of 0 or below is refused with its valid range, and jobsites are verified to behave exactly as before.
+**Shippable State:** The documentation, CLI reference and configuration reference describe per-project queues only (with no machine-wide ceiling stated), and a limit of 0 or below is refused with its valid range.
 
 - [ ] **TRD-014** Verification only: confirm the settings validator rejects 0, negatives and over-range (`Aggregates.Project.Settings`); if its error text does not name the range, make it do so; no other code. (1h) [satisfies REQ-016] [depends: TRD-010]
   - Target Files: `packages/foreman_server/lib/foreman_server/aggregates/project/settings.ex`
@@ -473,19 +504,6 @@ implementation task.
     - [ ] Scenario: invalid limits are refused -- Given a limit of 0 or -1, When saved, Then it is rejected with the valid range and the old value stays. (AC-016-1)
     - [ ] Scenario: limit one serialises -- Given a limit of 1, Then runs go one at a time. (AC-016-2)
     - [ ] Scenario: pause is the stop -- Given a paused project, Then no run starts whatever the limit. (AC-016-3)
-
-- [ ] **TRD-015** Jobsite non-change guard: no edit to `jobsite/*`; add a source-contract test asserting `Jobsite.Supervisor`/`jobsite_controller` still use `max_concurrent_jobsites` and never reference `RunSlots`. (1h) [satisfies REQ-004] [depends: TRD-010]
-  - Target Files: `packages/foreman_server/test/foreman_server/jobsite/jobsite_unchanged_test.exs`
-  - Validates PRD ACs: AC-004-1, AC-004-2
-  - Implementation AC:
-    - Given the jobsite modules, when grepped, then they contain no `RunSlots` reference.
-
-- [ ] **TRD-015-TEST** Same file as TRD-015 (the guard is the test); plus one admission case: running jobsites do not change a project's run limit. (1h) [verifies TRD-015] [satisfies REQ-004] [depends: TRD-015]
-  - Target Files: `packages/foreman_server/test/foreman_server/jobsite/jobsite_unchanged_test.exs`
-  - Validates PRD ACs: AC-004-1, AC-004-2
-  - Test AC:
-    - [ ] Scenario: jobsite admission unchanged -- Given a jobsite start, Then it is admitted or refused by its own cap exactly as before. (AC-004-1)
-    - [ ] Scenario: jobsites do not consume run slots -- Given running jobsites, When a workflow run is requested, Then the project's run limit counts workflow runs only. (AC-004-2)
 
 - [ ] **TRD-016** Documentation (constitution section 8, a blocking gate): `docs/user-guide.md` (the project settings table row for `max_concurrent_runs`, the **Limits** paragraph, the daily-cap paragraph that mentions the global run slot, and the paragraph that lists `GET /api/queue`: per-project, no machine-wide ceiling, total concurrency is the sum of per-project limits); `docs/cli-reference.md` (the `foreman project settings` limits-block description: add `running_runs`, `waiting_runs`); new `CLAUDE.md` subsection "Per-project run slots" replacing nothing (it states the stream key, capacity source, promotion rule, migration, and that `run_slots.*` stay system-only); config comments in `config.exs`. (3h) [satisfies REQ-015] [depends: TRD-010, TRD-012]
   - Target Files: `docs/user-guide.md`, `docs/cli-reference.md`, `CLAUDE.md`, `packages/foreman_server/config/config.exs`
@@ -510,6 +528,12 @@ implementation task.
   whether a queued run counts as active; if it does, AC-017-3 needs either an adoption-rule
   change (a PRD decision) or removal.
 
+- **AC-004-1 and AC-004-2 have no task.** REQ-004 is Won't; its "jobsites unchanged" guard
+  test was dropped because the jobsite retirement deletes the modules it would assert on.
+- **kata `teak` item 3 is not fixed here:** a run whose aggregate is missing but whose
+  projection says queued is still not surfaced as failed. It needs a new failure path that
+  the PRD does not define; it stays on `teak`.
+
 ## Acceptance Criteria Traceability
 
 | REQ | Description | Implementation Tasks | Test Tasks |
@@ -517,11 +541,11 @@ implementation task.
 | REQ-001 | Each project admits independently | TRD-001, TRD-005, TRD-006, TRD-007 | TRD-001-TEST, TRD-005-TEST, TRD-006-TEST, TRD-007-TEST |
 | REQ-002 | Default limit of 3 | TRD-005, TRD-010 | TRD-005-TEST, TRD-010-TEST |
 | REQ-003 | Setting overrides both ways | TRD-002, TRD-003, TRD-007 | TRD-002-TEST, TRD-003-TEST, TRD-007-TEST |
-| REQ-005 | FIFO within a project | TRD-003, TRD-007 | TRD-003-TEST, TRD-007-TEST |
+| REQ-005 | FIFO within a project | TRD-003, TRD-007, TRD-018 | TRD-003-TEST, TRD-007-TEST, TRD-018-TEST |
 | REQ-006 | Freed slot goes to same project | TRD-002, TRD-007 | TRD-002-TEST, TRD-007-TEST |
-| REQ-007 | No leaked or double-granted slot | TRD-003, TRD-004, TRD-005, TRD-008 | TRD-003-TEST, TRD-004-TEST, TRD-005-TEST, TRD-008-TEST |
+| REQ-007 | No leaked or double-granted slot | TRD-003, TRD-004, TRD-005, TRD-008, TRD-018 | TRD-003-TEST, TRD-004-TEST, TRD-005-TEST, TRD-008-TEST, TRD-018-TEST |
 | REQ-008 | No global queue or cap | TRD-009, TRD-010 | TRD-009-TEST, TRD-010-TEST |
-| REQ-009 | Upgrade preserves runs | TRD-003, TRD-009 | TRD-003-TEST, TRD-009-TEST |
+| REQ-009 | Upgrade preserves runs | TRD-003, TRD-009, TRD-018 | TRD-003-TEST, TRD-009-TEST, TRD-018-TEST |
 | REQ-010 | Per-project visibility | TRD-011, TRD-012 | TRD-011-TEST, TRD-012-TEST |
 | REQ-011 | No cross-project view | TRD-012 | TRD-012-TEST |
 | REQ-012 | Paused/archived/daily-capped unchanged | TRD-005, TRD-007 | TRD-005-TEST, TRD-007-TEST |
@@ -531,7 +555,7 @@ implementation task.
 | REQ-016 | Positive integers only | TRD-014 | TRD-014-TEST |
 | REQ-017 | Lifecycle of waiting runs (AC-017-2 not covered, see Known Gaps) | TRD-005, TRD-006, TRD-017 | TRD-005-TEST, TRD-006-TEST, TRD-017-TEST |
 | REQ-018 | One slot per run | TRD-007, TRD-008 | TRD-007-TEST, TRD-008-TEST |
-| REQ-004 (Won't) | Jobsites unchanged | TRD-015 | TRD-015-TEST |
+| REQ-004 (Won't) | Jobsites unchanged (no task; see Known Gaps) | none | none |
 
 ## Sprint Planning (informational, not parsed)
 
@@ -563,6 +587,9 @@ Issues found and how the draft resolves them:
 5. **Projection fold for legacy events.** `ProjectionStore` rebuild would crash if a legacy
    event reached the new fold without `project_id`. Resolved: TRD-011 ignores events with no
    `project_id`, with a test.
+6a. **Same defect class as kata `teak`** (added in refine pass 2): the new per-project boot
+   scan and the migration would both have dropped queued runs. TRD-018 fixes the predicate
+   and the dedup replay; TRD-009 depends on it.
 6. **Test-suite blast radius.** About 30 test files reference `:max_concurrent_runs` or the
    global stream. Resolved: TRD-005-TEST reworks `RunSlotsReset` once; the remaining files
    change a config key. Estimate risk is in the estimates, not the design.
@@ -572,7 +599,7 @@ Issues found and how the draft resolves them:
 - Longest chain: TRD-001 -> TRD-003 -> TRD-005 -> TRD-007 -> TRD-009 -> TRD-010, depth 6.
   The chain is inherent (aggregate, then admission, then dispatcher, then migration, then
   removal); PRs 1 and 4's TRD-011 are independent of it after TRD-001.
-- No task is 8h or more; TRD-009 (6h) is the largest and carries the risk; TRD-007 (4h) and TRD-017 (3h) were split in refine pass 1.
+- No task is 8h or more; TRD-009 (6h) is the largest (TRD-018 is 4h) and carries the risk; TRD-007 (4h) and TRD-017 (3h) were split in refine pass 1.
 - Estimates assume the existing slot tests can be adapted, not rewritten; if the test
   reset helpers resist (see `run_slots_reset.ex`), TRD-005-TEST is the one to grow.
 - No circular dependencies.
@@ -602,6 +629,14 @@ Overall **4.5 / 5: PASS** (was 4.25; self-scored).
 
 ## Changelog
 
+- **1.0.2 (2026-11-19), refine pass 2 (from the pre-build check in implement-trd-tasks):**
+  - Added TRD-018 and TRD-018-TEST: fix kata `teak` (boot reconciliation dropped every
+    queued waiter; deduplicated acquire stranded runs; per-tick warnings) in the rebuilt code;
+    TRD-009 now depends on it and uses its waiter predicate.
+  - Dropped TRD-015 and TRD-015-TEST (jobsites-unchanged guard) because the jobsite
+    retirement in kata `5z8s` deletes those modules; REQ-004 stays a documented Won't.
+  - Recorded the jobsite-retirement overlap and `teak` item 3 under Findings and Known Gaps.
+  - Tasks 34 -> 34 (+2, -2); hours 94 -> 99.
 - **1.0.1 (2026-11-19), refine pass 1:**
   - Moved the migration (TRD-009, TRD-009-TEST) from PR 3 into PR 2 so no PR depends on a
     later one; rewrote PR 2 and PR 3 Shippable State lines and the sprint plan.
