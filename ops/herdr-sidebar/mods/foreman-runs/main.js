@@ -119,7 +119,7 @@ export default class ForemanRuns extends View {
   // Project names come from `foreman project list`, asked only when a run names a project
   // not seen yet (at most once a minute). Without a name a group is headed by its project id.
   async loadProjects() {
-    const unknown = this.runs.some((r) => r.project_id && !this.projectNames.has(r.project_id));
+    const unknown = [...this.runs, ...this.queue.entries].some((r) => r.project_id && !this.projectNames.has(r.project_id));
     if (!unknown || Date.now() - this.projectsTriedAt < PROJECT_RETRY_MS) return;
     this.projectsTriedAt = Date.now();
     try {
@@ -366,7 +366,7 @@ export default class ForemanRuns extends View {
     return [...byProject.entries()]
       .map(([id, { all, queued }]) => ({
         id,
-        name: id ? (this.projectNames.get(id) ?? id) : "No project",
+        name: id ? (this.projectNames.get(id) ?? id) : all.length === 0 ? "Unresolved queue entries" : "No project",
         all,
         queued,
         runs: (filtering ? all.filter((r) => r.status === "failed") : all).sort(byRank),
@@ -427,6 +427,7 @@ export default class ForemanRuns extends View {
   renderRail(t) {
     const failed = this.runs.filter((r) => r.status === "failed").length;
     const active = this.runs.filter(isActive).length;
+    const queuedN = this.queue.entries.filter((e) => !e.stale).length;
     const summary = (text, color) => div().text_size(11).text_color(color).child(text);
     const tile = (g) => {
       const f = g.all.filter((r) => r.status === "failed").length;
@@ -444,7 +445,8 @@ export default class ForemanRuns extends View {
       .when(this.error, (el) => el.child(summary("!", t.blocked)))
       .when(!this.error && failed > 0, (el) => el.child(summary(`✕${failed}`, t.blocked)))
       .when(!this.error && active > 0, (el) => el.child(summary(`▶${active}`, t.working)))
-      .when(!this.error && this.loaded && failed === 0 && active === 0, (el) => el.child(summary("✓", t.dim)))
+      .when(!this.error && this.loaded && failed === 0 && active === 0 && queuedN === 0, (el) => el.child(summary("✓", t.dim)))
+      .when(!this.error && this.loaded && queuedN > 0, (el) => el.child(summary(`⧖${queuedN}`, t.dim)))
       .children(this.error ? [] : this.groups(false).map(tile));
   }
 
@@ -453,7 +455,6 @@ export default class ForemanRuns extends View {
     if (narrow()) return this.renderRail(t);
     const active = this.runs.filter(isActive).length;
     const failed = this.runs.filter((r) => r.status === "failed").length;
-    const queuedN = this.queue.entries.filter((e) => !e.stale).length;
 
     const row = (r) => {
       return v_flex().id(`run-${r.run_id}`).pl(38).pr(12).py(4).gap(1).cursor_pointer().hover((s) => s.bg(t.hover))
@@ -483,12 +484,13 @@ export default class ForemanRuns extends View {
       const key = `${g.id}::queued`;
       const closed = this.collapsed.has(key);
       const n = g.queued.filter((e) => !e.stale).length;
+      const staleN = g.queued.length - n;
       return h_flex().id(`queue-head-${key}`).pl(22).pr(12).pt(4).pb(2).gap(6).items_center().cursor_pointer()
         .on_click((_e, cx) => this.toggle(key, cx))
         .child(div().w(10).text_size(10).text_color(t.dim).child(closed ? "▸" : "▾"))
         .child(div().size(7).rounded(4).bg(t.idle ?? t.dim))
         .child(div().flex_1().truncate().text_size(11.5).text_color(t.idle ?? t.dim).child("queued"))
-        .child(div().text_size(11).text_color(t.dim).child(`${n}`));
+        .child(div().text_size(11).text_color(t.dim).child(staleN > 0 ? `${n} · ${staleN} stale` : `${n}`));
     };
 
     // A queued item. Display only: a queued run has no transcript or phases to open yet.
@@ -523,7 +525,6 @@ export default class ForemanRuns extends View {
       : this.error ? [note(`foreman: ${this.error}`, t.blocked)]
       : items.length === 0 ? [note(this.onlyFailed ? "No failed runs" : "No runs or queued work", t.dim)]
       : [
-        ...(this.queueError ? [note(`Queue unavailable: ${this.queueError}`, t.dim)] : []),
         ...items.map((it) => it.kind === "project" ? projectHead(it.g) : it.kind === "status" ? statusHead(it.g, it.status, it.rs)
           : it.kind === "queue" ? queueHead(it.g) : it.kind === "queued" ? queuedRow(it.e) : row(it.r)),
       ];
@@ -549,13 +550,13 @@ export default class ForemanRuns extends View {
             .on_click((_e, cx) => this.toggleFailedFilter(cx))
             .child(`${failed} failed`)))
         .child(div().text_size(11).text_color(active > 0 ? t.working : t.dim).child(`${active} active`))
-        .when(queuedN > 0, (el) => el.child(div().text_size(11).text_color(t.idle ?? t.dim).child(`${queuedN} queued`)))
         .when(this.updatedAt > 0, (el) => el.child(
           div().text_size(11).text_color(this.error ? t.blocked : t.dim).child(clock(this.updatedAt))))
         .child(div().id("foreman-refresh").px(5).rounded(4).cursor_pointer().text_size(13)
           .text_color(this.refreshing ? t.working : t.muted).hover((s) => s.bg(t.hover))
           .on_click((_e, cx) => this.refresh(cx, true))
           .child("↻")))
+      .when(!this.error && this.queueError, (el) => el.child(note(`Queue unavailable: ${this.queueError}`, t.dim)))
       .child(v_flex().id("foreman-runs-scroll").flex_1().min_h(0).overflow_y_scrollbar().track_scroll(this.scroll)
         .children(elements))
       .when(!narrow(), (el) => el.child(footer));

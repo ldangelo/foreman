@@ -93,12 +93,15 @@ work that is waiting, in the order the server will start it:
 - `… not started`: a task that exists in the project but has no run yet (`GET /api/tasks?status=open`),
   oldest first, with how long ago it was created.
 - `… stale`: an entry still in the server's queue whose run has ended or no longer exists, so it can
-  never start. It is shown dimmed (under "No project" when the server cannot say which project it
-  belonged to) and is not counted. The header shows the total of the live ones as `N queued`.
+  never start. It is shown dimmed and is not counted: the group header reads `N · M stale`. When the
+  server cannot say which project such an entry belonged to it is listed under "Unresolved queue
+  entries". The compact rail shows the total of the live ones as `⧖N`.
 
 Queue rows are display only: a queued run has no transcript or phases to open yet. The queue is read
 every 30 s (a manual refresh reads it at once), and if reading it fails the runs still show, with a
-one-line "Queue unavailable: …" note. The failed filter hides the queue.
+one-line "Queue unavailable: …" note under the header. The failed filter hides the queue. Work the
+server is holding back (daily thread cap, run limit, a paused project) is not in the slot queue and is
+not shown; `GET /api/projects/<id>/usage` reports it as `limits.deferred_tasks`.
 
 | Action | Mouse | Shortcut |
 |---|---|---|
