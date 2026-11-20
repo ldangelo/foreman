@@ -44,6 +44,33 @@ defmodule ForemanServer.Aggregates.RunSlotsPromoteTest do
     end)
   end
 
+  describe "FIFO with free capacity and an older waiter" do
+    test "a new run queues behind an older waiter even when a slot is free; promote starts the older first" do
+      # Limit was lowered then raised: one holder, capacity 3, w1 still queued
+      # (rebalance has not landed yet).
+      state = fill(~w(h1), ~w(w1), 1)
+      assert waiter_ids(state) == ~w(w1)
+
+      {event, state} = acquire(state, "new", 3)
+      assert %RunSlotQueued{run_id: "new", position: 2} = event
+      assert waiter_ids(state) == ~w(w1 new)
+
+      {started, state} = promote(state, 3)
+      assert %RunSlotAcquired{run_id: "w1", promoted: true} = started
+      assert waiter_ids(state) == ~w(new)
+    end
+
+    test "a new run still takes a free slot when the queue is empty" do
+      state = fill(~w(h1), [], 3)
+      assert {%RunSlotAcquired{run_id: "new"}, _} = acquire(state, "new", 3)
+    end
+
+    test "force still adopts a holder ahead of waiters" do
+      state = fill(~w(h1), ~w(w1), 1)
+      assert {%RunSlotAcquired{run_id: "legacy"}, _} = acquire(state, "legacy", 3, %{force: true})
+    end
+  end
+
   describe "promote" do
     test "AC-003-3: raising the limit starts waiters in order" do
       state = fill(~w(h1 h2 h3), ~w(w1 w2), 3)

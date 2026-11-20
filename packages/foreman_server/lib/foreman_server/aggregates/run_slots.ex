@@ -500,7 +500,10 @@ defmodule ForemanServer.Aggregates.RunSlots do
       waiting? ->
         {:ok, nil}
 
-      not enqueue_only? and map_size(state.holders) < capacity ->
+      # FIFO: a new run may take a free slot only when no older run is queued;
+      # otherwise (e.g. a limit change left capacity free before the promote
+      # lands) it queues behind them.
+      not enqueue_only? and state.waiters == [] and map_size(state.holders) < capacity ->
         Telemetry.run_slots_acquired(run_id, map_size(state.holders) + 1, capacity,
           project_id: project_id,
           waiting: length(state.waiters)
