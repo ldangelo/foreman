@@ -7,11 +7,10 @@ import Config
 #
 #   FOREMAN_API_TOKEN                        bearer token every /api call must present (unset = /api answers 401)
 #   FOREMAN_API_ALLOW_INSECURE_LOCAL=true    with no token set, let /api through unauthenticated (local use only)
-#   FOREMAN_JOBSITES_ALLOW_REMOTE_START=true allow POST /api/jobsites to start a jobsite
-#   FOREMAN_JOBSITES_ALLOW_HOST_SANDBOX=true allow `"sandbox": "host"` (the agent runs unsandboxed
-#                                            on this machine; the default is docker)
-#   FOREMAN_JOBSITES_AGENT_ENV_ALLOWLIST=A,B comma-separated names a request may set in `agent.env`
-#                                            (e.g. ANTHROPIC_API_KEY); empty/unset leaves the list as configured
+#   FOREMAN_PR_FIX_SANDBOX=docker|host       where PR fix runs execute (default docker)
+#   FOREMAN_PR_FIX_ALLOW_HOST_SANDBOX=true   allow FOREMAN_PR_FIX_SANDBOX=host (the agent runs unsandboxed
+#                                            on this machine). The retired FOREMAN_JOBSITES_ALLOW_HOST_SANDBOX
+#                                            is read as the same switch.
 #   FOREMAN_START_BEADS_WATCHER=true|false   start/stop BeadsWatcher auto-dispatch (dev.exs defaults to true)
 #   FOREMAN_PR_MONITOR_ENABLED=true          poll GitHub for PR state of every run with an associated PR
 #   FOREMAN_GITHUB_WEBHOOK_SECRET=<secret>   authenticate POST /webhooks/github (HMAC-SHA256); unset = endpoint refuses all deliveries
@@ -41,15 +40,14 @@ if config_env() != :test do
     token -> config :foreman_server, :api_bearer_token, token
   end
 
-  jobsite_flags =
-    for {key, var} <- [
-          allow_remote_start: "FOREMAN_JOBSITES_ALLOW_REMOTE_START",
-          allow_host_sandbox: "FOREMAN_JOBSITES_ALLOW_HOST_SANDBOX"
-        ],
-        System.get_env(var) != nil,
-        do: {key, System.get_env(var) == "true"}
+  if System.get_env("FOREMAN_PR_FIX_ALLOW_HOST_SANDBOX") != nil or
+       System.get_env("FOREMAN_JOBSITES_ALLOW_HOST_SANDBOX") != nil do
+    allowed =
+      System.get_env("FOREMAN_PR_FIX_ALLOW_HOST_SANDBOX") == "true" or
+        System.get_env("FOREMAN_JOBSITES_ALLOW_HOST_SANDBOX") == "true"
 
-  if jobsite_flags != [], do: config(:foreman_server, :jobsites, jobsite_flags)
+    config :foreman_server, :pr_fix, allow_host_sandbox: allowed
+  end
 
   # Without a token /api answers 401 (fail closed); this lets an operator allow
   # unauthenticated access on a trusted local node. Unset changes nothing.
@@ -59,15 +57,6 @@ if config_env() != :test do
         do: {key, System.get_env(var) == "true"}
 
   if api_flags != [], do: config(:foreman_server, :api, api_flags)
-
-  case System.get_env("FOREMAN_JOBSITES_AGENT_ENV_ALLOWLIST") do
-    value when value in [nil, ""] ->
-      :ok
-
-    value ->
-      names = value |> String.split(",") |> Enum.map(&String.trim/1) |> Enum.reject(&(&1 == ""))
-      config :foreman_server, :jobsites, agent_env_allowlist: names
-  end
 
   # Unlike the flags above this one may switch BeadsWatcher off as well as on,
   # because dev.exs turns it on by default.
@@ -213,9 +202,9 @@ if config_env() != :test do
       :ok
   end
 
-  # Where PR fix-thread jobsites run (`config :foreman_server, :pr_fix, sandbox:`).
-  # Unset leaves the jobsite default (docker). `host` runs the agent unsandboxed on
-  # this machine; it additionally needs FOREMAN_JOBSITES_ALLOW_HOST_SANDBOX=true.
+  # Where PR fix runs execute (`config :foreman_server, :pr_fix, sandbox:`).
+  # Unset leaves the default (docker). `host` runs the agent unsandboxed on
+  # this machine; it additionally needs FOREMAN_PR_FIX_ALLOW_HOST_SANDBOX=true.
   case System.get_env("FOREMAN_PR_FIX_SANDBOX", "") do
     sandbox when sandbox in ["docker", "host"] ->
       config :foreman_server, :pr_fix, sandbox: sandbox

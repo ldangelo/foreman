@@ -1,7 +1,7 @@
 defmodule ForemanServer.ProjectSetup do
   @moduledoc """
   The project's setup script (E4-S4), run once after a fresh run worktree is
-  created. Fatal on non-zero exit and on timeout (the `Jobsite.Hooks` contract).
+  created. Fatal on non-zero exit and on timeout (the `Exec.Hooks` contract).
 
   Trust: the script text comes ONLY from the project's environment record
   (`config.environment.setup_script`), written by the operator-only
@@ -16,7 +16,7 @@ defmodule ForemanServer.ProjectSetup do
   `config :foreman_server, :project_setup, timeout_ms:` (default 300_000).
   """
 
-  alias ForemanServer.Jobsite.HostCommand
+  alias ForemanServer.Exec.HostCommand
   alias ForemanServer.Overwatch.WorkerLogPolicy
   alias ForemanServer.ProjectEnvironment
 

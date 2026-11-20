@@ -71,8 +71,8 @@ defmodule ForemanServerWeb.ThreadController do
   @doc """
   `POST /api/threads/:id/stop` with optional `reason` and `idempotency_key`.
   200 `{thread_id, requested: "stopping"}`; 404 unknown thread; 409 when the
-  thread is terminal (`not_stoppable`) or its jobsite has no executor
-  (`no_executor`), both naming `status`; 422 when the cancel is rejected.
+  thread is terminal (`not_stoppable`) (`not_stoppable`, naming `status`); 410 `jobsite_retired` for a thread of the retired jobsite
+  door; 422 when the cancel is rejected.
   """
   def stop(conn, %{"id" => id} = params) do
     opts =
@@ -90,6 +90,11 @@ defmodule ForemanServerWeb.ThreadController do
         |> put_status(:not_found)
         |> json(%{error: "thread_not_found", thread_id: id})
 
+      {:error, :jobsite_retired} ->
+        conn
+        |> put_status(:gone)
+        |> json(%{error: "jobsite_retired", thread_id: id})
+
       {:error, {code, status}} when code in [:not_stoppable, :no_executor] ->
         conn
         |> put_status(:conflict)
@@ -105,7 +110,7 @@ defmodule ForemanServerWeb.ThreadController do
   @doc """
   `POST /api/threads/:id/steer` with `text`, optional `message_id` and `resume`
   (boolean, workflow door). 202 `{thread_id, message_id, mode}`; 404 unknown
-  thread; 409 `not_steerable` naming `status` for a terminal thread; 400 for
+  thread; 409 `not_steerable` naming `status` for a terminal thread; 410 `jobsite_retired` for a jobsite thread; 400 for
   blank or oversize `text` or a non-boolean `resume`; 422 when steering is
   rejected otherwise.
   """
@@ -119,6 +124,9 @@ defmodule ForemanServerWeb.ThreadController do
     else
       {:error, :thread_not_found} ->
         conn |> put_status(:not_found) |> json(%{error: "thread_not_found", thread_id: id})
+
+      {:error, :jobsite_retired} ->
+        conn |> put_status(:gone) |> json(%{error: "jobsite_retired", thread_id: id})
 
       {:error, {:not_steerable, status}} ->
         conn

@@ -16,7 +16,7 @@ defmodule ForemanServer.Workflow.RunExecutorIsolationTest do
   alias ForemanServer.Aggregate
   alias ForemanServer.Aggregates.Run
   alias ForemanServer.{CommandGateway, EventStore, Identity, ProjectEnvironment, ProjectionStore}
-  alias ForemanServer.Jobsite.{ExecutionProfile, NetworkPolicy}
+  alias ForemanServer.Exec.{ExecutionProfile, NetworkPolicy}
   alias ForemanServer.RunAdmission
   alias ForemanServer.TaskProvider.Registry
   alias ForemanServer.TestSupport.{FakeTaskProvider, KeyStoreReset, TestApplication}

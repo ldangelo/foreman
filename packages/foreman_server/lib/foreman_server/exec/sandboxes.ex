@@ -1,0 +1,42 @@
+defmodule ForemanServer.Exec.Sandboxes do
+  @moduledoc "Constructors for the bundled `ForemanServer.Exec.SandboxProvider` implementations."
+
+  alias ForemanServer.Exec.Sandboxes.{Docker, Host}
+
+  @doc "The host sandbox provider: commands run directly on the host, in the worktree."
+  @spec host(keyword()) :: {module(), map()}
+  def host(opts \\ []), do: {Host, Map.new(opts)}
+
+  @doc """
+  The Docker (or Podman, via `:binary`) sandbox provider.
+
+  Options: `:image` (default `"foreman-jobsite:" <> basename(repo_path)`),
+  `:sandbox_path` (default `"/workspace"`), `:uid`/`:gid` (default the host
+  user), `:mounts` (default `[]`, each `%{host_path:, sandbox_path:,
+  readonly?: false}`), `:network` (default none), `:env` (default `%{}`: the
+  container's own environment, so hooks, `Sandbox.exec/3` and the agent all run
+  under it; it is persisted with the config, so never put a secret in it),
+  `:labels` (default `%{}`: docker labels of the container) and `:binary`
+  (default `"docker"`).
+  """
+  @spec docker(keyword()) :: {module(), map()}
+  def docker(opts \\ []), do: {Docker, Map.new(opts)}
+
+  @doc """
+  Resolves a provider's `name/0` string (as persisted on `JobsiteStarted`)
+  back to its module, for `Jobsite.resume/1` rebuilding a sandbox without
+  the caller re-supplying `:sandbox`.
+  """
+  @spec resolve(String.t()) :: {:ok, module()} | {:error, ForemanServer.Exec.Error.t()}
+  def resolve("host"), do: {:ok, Host}
+  def resolve("docker"), do: {:ok, Docker}
+
+  def resolve(name) do
+    {:error,
+     ForemanServer.Exec.Error.new(
+       :sandbox_create_failed,
+       "unknown sandbox provider #{name}",
+       %{name: name}
+     )}
+  end
+end

@@ -128,6 +128,40 @@ defmodule ForemanServer.Workflow.ApprovalTest do
       assert snapshot.manifest_digest == prepared.workflow_digest
     end
 
+    test "freezes a declared sandbox onto the snapshot and leaves it off otherwise", %{tmp: tmp} do
+      File.write!(Path.join(tmp, "prompts/boxed.md"), "do the thing")
+      File.write!(Path.join(tmp, "prompts/open.md"), "do the thing")
+
+      File.write!(Path.join(tmp, "boxed.yaml"), """
+      name: boxed
+      sandbox: docker
+      phases:
+        - name: only
+          prompt: boxed.md
+      """)
+
+      File.write!(Path.join(tmp, "open.yaml"), """
+      name: open
+      phases:
+        - name: only
+          prompt: open.md
+      """)
+
+      :ok = Catalog.reload()
+
+      assert {:ok, boxed} =
+               Approval.prepare(%{task_id: "task-box", task_type: "boxed"}, approval_id: "ap-box")
+
+      assert boxed.workflow_snapshot.sandbox == "docker"
+
+      assert {:ok, open} =
+               Approval.prepare(%{task_id: "task-open", task_type: "open"},
+                 approval_id: "ap-open"
+               )
+
+      refute Map.has_key?(open.workflow_snapshot, :sandbox)
+    end
+
     test "carries a non-empty prompt into workflow_snapshot[\"input\"][\"prompt\"]", %{tmp: tmp} do
       manifest_path = Path.join(tmp, "demo2.yaml")
       prompt_path = Path.join(tmp, "prompts/demo2.md")

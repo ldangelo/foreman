@@ -1,5 +1,8 @@
 # Phase execution, AutoPR, timeouts, artifact/env contract, merge gate
 
+> **Status (2026-11, jobsite retirement):** the jobsite dispatch door described in the paragraphs below (`/api/jobsites`, `Jobsite.run_async/1`, `JobsiteController`, `Jobsite.Template`, the prompt-to-template generator, the jobsite resume/steer paths) was retired; PR fixes are follow-up runs. The substrate (`ForemanServer.Exec.*`, formerly `ForemanServer.Jobsite.*`) is what workflow runs execute on. Read these entries as history; the current contract is CLAUDE.md §27 and `docs/plans/retire-jobsites.md`.
+
+
 > Archived verbatim from the former monolithic `AGENTS.md` (2026-10-18) to keep the always-loaded agent context small. RunExecutor/Jobsite engine, `commit:`/`stack_pr:`/`timeout_minutes:`, AutoPR base-branch resolution, `FOREMAN_*` env contract, operator-only merge gate, remote Jobsite API.
 > Section-number references inside (e.g. "section 4", "§5.4") point at the pre-split `AGENTS.md`; the §5 rules are summarised in `AGENTS.md` and full text is in `typed-boundaries-full.md`.
 

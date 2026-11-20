@@ -1,7 +1,7 @@
 defmodule ForemanServer.Review.Error do
   @moduledoc """
   Typed error payload for every Review failure (archive, capture, analysis,
-  bead sink). Mirrors `ForemanServer.Jobsite.Error`.
+  bead sink). Mirrors `ForemanServer.Exec.Error`.
 
   `code` vocabulary: `:archive_write_failed`, `:archive_missing`,
   `:archive_malformed`, `:diff_failed`, `:evaluator_failed`,

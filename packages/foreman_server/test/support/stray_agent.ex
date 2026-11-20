@@ -13,7 +13,7 @@ defmodule ForemanServer.TestSupport.StrayAgent do
 
   alias Jido.Harness.{Run, RunRequest}
 
-  @fake_agent Path.expand("../foreman_server/jobsite/support/fake_agent.sh", __DIR__)
+  @fake_agent Path.expand("../foreman_server/exec/support/fake_agent.sh", __DIR__)
 
   @live_states [:starting, :running, :stopping]
 

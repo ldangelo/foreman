@@ -14,7 +14,7 @@ defmodule ForemanServer.VcsAdapter.Default do
   @behaviour ForemanServer.VcsAdapter
 
   alias ForemanServer.CommandGateway
-  alias ForemanServer.Jobsite.Git
+  alias ForemanServer.Exec.Git
 
   @impl true
   def clone(url, opts) do

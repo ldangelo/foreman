@@ -88,6 +88,13 @@ config :foreman_server, :max_concurrent_runs_per_project, 100
 # not the project's primary (`{:error, :multi_repo_runs_disabled}`). Tests state the
 # gate they need with `ForemanServer.MultiRepoRuns.enable!/0` and `disable!/0`.
 config :foreman_server, :multi_repo, runs: true
+# Follow-up runs (docs/plans/retire-jobsites.md): a task-less run attached to a PR head branch. It is
+# how a PR fix runs now that the jobsite door is retired, so the gate is ON. `enabled: false` is the
+# operator's kill switch: `run.followup.request` is refused and a PR fix is finished as failed. The
+# first `RunFollowUpRequested` event writes keys an older build cannot decode: after it, rolling back
+# to a build without this event is NOT safe. Tests state the gate they need with
+# `ForemanServer.FollowUpRuns.enable!/0` and `disable!/0`.
+config :foreman_server, :followup_runs, enabled: true
 # Anubis MCP server (TRD-036)
 config :foreman_server, :mcp,
   enabled: false,
@@ -322,7 +329,9 @@ config :foreman_server, :review,
 # (FOREMAN_PR_MONITOR_ENABLED=true -> ForemanServer.PrMonitor). The fix-thread jobsite
 # runs `agent` unless the run's own provider session names one; `max_iterations`
 # bounds one fix agent invocation; `log_tail_bytes` caps the failing-CI log excerpt.
-config :foreman_server, :pr_watcher, enabled: true
+# no_change_rechecks / no_change_recheck_ms: an unchanged PR head after a fix run is re-read this many times,
+# this far apart, before the fix is recorded `no_change` (GitHub's read side lags a push by moments).
+config :foreman_server, :pr_watcher, enabled: true, no_change_rechecks: 3, no_change_recheck_ms: 3_000
 
 config :foreman_server, :pr_fix,
   agent: %{"provider" => "claude"},

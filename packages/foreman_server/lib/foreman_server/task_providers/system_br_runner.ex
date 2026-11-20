@@ -602,7 +602,7 @@ defmodule ForemanServer.TaskProviders.SystemBrRunner do
   # parent re-parents its children to pid 1, after which `pgrep -P` no longer finds them).
   # A process group would close the race of a fork after the snapshot, but erlang's port
   # spawn gives the child no group of its own and macOS ships no `setsid`
-  # (same trade-off as `Jobsite.Git`).
+  # (same trade-off as `Exec.Git`).
   defp terminate_os_process(os_pid) when is_integer(os_pid) do
     if process_exists?(os_pid) do
       tree = process_tree(os_pid)

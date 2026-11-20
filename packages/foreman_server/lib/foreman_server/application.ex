@@ -134,13 +134,6 @@ defmodule ForemanServer.Application do
         # that resolves a workflow (CommandRouter, Dispatcher, RunExecutor).
         ForemanServer.Workflow.Catalog,
         ForemanServer.Workflow.RunSupervisor,
-        # Jobsite.Registry/Jobsite.Supervisor mirror the
-        # RunExecutorRegistry/RunSupervisor pattern above, for the
-        # scripted event-sourced jobsite engine: one Executor per
-        # jobsite id, registered via `{:via, Registry, {Jobsite.Registry, id}}`.
-        {Registry, keys: :unique, name: ForemanServer.Jobsite.Registry},
-        ForemanServer.Jobsite.Control,
-        ForemanServer.Jobsite.Supervisor,
         # Dispatcher subscribes to ProjectionStore and reacts to TaskDispatched
         # AND terminal run events (RunCancelled, RunFlaggedStuck, RunCompleted,
         # RunFailed), forwarding the latter to BootReconciliation.run_terminated/2
@@ -788,12 +781,12 @@ defmodule ForemanServer.Application do
   # Gated on :start_jobsite_boot_recovery? config so the test suite can opt out
   # of the boot-time scan (it would otherwise pause jobsites that other tests
   # seed in non-terminal states in the shared event store). Its own tests call
-  # `Jobsite.BootRecovery.scan/1` directly. Listed after CommandRouter,
+  # `Exec.BootRecovery.scan/1` directly. Listed after CommandRouter,
   # ProjectionStore, Jobsite.Registry and Jobsite.Supervisor, which the scan
   # reads and dispatches through.
   def maybe_jobsite_boot_recovery_child do
     if Application.get_env(:foreman_server, :start_jobsite_boot_recovery?, true) do
-      [ForemanServer.Jobsite.BootRecovery]
+      [ForemanServer.Exec.BootRecovery]
     else
       []
     end

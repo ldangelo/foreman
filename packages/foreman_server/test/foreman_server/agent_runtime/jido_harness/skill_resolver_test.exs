@@ -3,7 +3,7 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.SkillResolverTest do
   use ExUnit.Case, async: true
 
   alias ForemanServer.AgentRuntime.JidoHarness.SkillResolver
-  alias ForemanServer.Jobsite.ExecutionProfile
+  alias ForemanServer.Exec.ExecutionProfile
 
   # TRD-021 / PRD AC-007-1. The fixtures mirror what pi 1.5.0 loads (see the
   # SkillResolver moduledoc): the user skills dir `<agent_dir>/skills`, the

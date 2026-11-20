@@ -322,15 +322,20 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
     fixes = Map.get(state.pr_fixes, pr_url, new_fixes())
 
     with {:ok, ids} <- identity(state, payload),
-         {:ok, jobsite_id} <-
-           Aggregate.required_binary(Aggregate.get(payload, :jobsite_id), :jobsite_id),
+         {:ok, execution} <- fix_execution(payload),
          :ok <- fix_requested(fixes, pr_url) do
-      event("run.pr.fix_started", run_id, pr_url, payload, ids, %{
-        kind: fixes.in_flight_kind,
-        attempt: fixes.in_flight_attempt,
-        jobsite_id: jobsite_id,
-        started_at: Aggregate.get(payload, :started_at) || System.system_time(:millisecond)
-      })
+      event(
+        "run.pr.fix_started",
+        run_id,
+        pr_url,
+        payload,
+        ids,
+        Map.merge(execution, %{
+          kind: fixes.in_flight_kind,
+          attempt: fixes.in_flight_attempt,
+          started_at: Aggregate.get(payload, :started_at) || System.system_time(:millisecond)
+        })
+      )
     end
   end
 
@@ -1034,6 +1039,24 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
   defp cooldown_seconds(n) when is_integer(n) and n >= 0, do: {:ok, n}
   defp cooldown_seconds(other), do: {:error, {:invalid_integer, :cooldown_seconds, other}}
 
+  # What executes the fix: a follow-up run (`fix_run_id`) or, for a fix started before the jobsite
+  # door was retired, a jobsite (`jobsite_id`). Exactly one.
+  defp fix_execution(payload) do
+    case {Aggregate.get(payload, :fix_run_id), Aggregate.get(payload, :jobsite_id)} do
+      {run_id, nil} when is_binary(run_id) and run_id != "" ->
+        {:ok, %{fix_run_id: run_id}}
+
+      {nil, jobsite_id} when is_binary(jobsite_id) and jobsite_id != "" ->
+        {:ok, %{jobsite_id: jobsite_id}}
+
+      {nil, nil} ->
+        {:error, {:missing_or_invalid, :jobsite_id}}
+
+      _both_or_malformed ->
+        {:error, {:missing_or_invalid, :fix_run_id}}
+    end
+  end
+
   @passthrough ~w(observed_at observation_seq failing branch_name base_branch pr_status
                   comment_ids thread_ids new_comment_count requested_by resumed_session
                   error_code new_head_sha stopped_by started_by)a
@@ -1168,7 +1191,12 @@ defmodule ForemanServer.Aggregates.Run.PrWatch do
   end
 
   defp fold(state, "PrFixStarted", url, payload) do
-    fixes(state, url, fn fx -> %{fx | in_flight: Aggregate.get(payload, :jobsite_id)} end)
+    fixes(state, url, fn fx ->
+      %{
+        fx
+        | in_flight: Aggregate.get(payload, :fix_run_id) || Aggregate.get(payload, :jobsite_id)
+      }
+    end)
   end
 
   defp fold(state, "PrFixFinished", url, payload) do

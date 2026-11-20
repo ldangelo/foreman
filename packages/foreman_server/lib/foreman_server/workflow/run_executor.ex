@@ -7,14 +7,14 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
     1. Claim the task through the configured task provider when the project
        has `task_provider` config.
-    2. Compile the manifest's phases into one `ForemanServer.Jobsite.Program`
+    2. Compile the manifest's phases into one `ForemanServer.Exec.Program`
        (`ForemanServer.Workflow.Lowering`) and run it on
-       `ForemanServer.Jobsite.Engine`, the same engine Jobsite scripts use.
+       `ForemanServer.Exec.Engine`, the same engine Jobsite scripts use.
        `ForemanServer.Workflow.JobsiteObserver` threads this executor's own
        state through the engine and calls the phase hooks below —
        `phase_begin/3` (`PhaseStarted` + the run's worktree),
        `phase_launch/4` (the agent dispatch the
-       `ForemanServer.Jobsite.Runners.Overwatch` runner performs),
+       `ForemanServer.Exec.Runners.Overwatch` runner performs),
        `ArtifactTemplate.write/4`, `enforce_required_file/4`, the commit and
        `phase_finish/5` (`PhaseCompleted`) — or `emit_phase_failure/4`
        (`PhaseFailed` + `TaskExecutionFailed`) when a phase fails.
@@ -57,20 +57,21 @@ defmodule ForemanServer.Workflow.RunExecutor do
   alias ForemanServer.ProjectContext
   alias ForemanServer.ProjectionStore
   alias ForemanServer.Workflow.CommitDeferral
+  alias ForemanServer.Workflow.AttachBranch
   alias ForemanServer.Workflow.AutoPR
   alias ForemanServer.Workflow.PhasePR
   alias ForemanServer.Workflow.PhaseSpec
   alias ForemanServer.Workflow.PlanContext
   alias ForemanServer.Workflow.PreflightFailure
   alias ForemanServer.Workflow.ModelResolution
-  alias ForemanServer.Jobsite.Context, as: JobsiteContext
-  alias ForemanServer.Jobsite.ExecutionProfile
-  alias ForemanServer.Jobsite.NetworkPolicy
+  alias ForemanServer.Exec.Context, as: JobsiteContext
+  alias ForemanServer.Exec.ExecutionProfile
+  alias ForemanServer.Exec.NetworkPolicy
   alias ForemanServer.ProjectEnvironment
-  alias ForemanServer.Jobsite.Engine, as: JobsiteEngine
-  alias ForemanServer.Jobsite.Git, as: JobsiteGit
-  alias ForemanServer.Jobsite.Error, as: JobsiteError
-  alias ForemanServer.Jobsite.Runners.Overwatch, as: OverwatchRunner
+  alias ForemanServer.Exec.Engine, as: JobsiteEngine
+  alias ForemanServer.Exec.Git, as: JobsiteGit
+  alias ForemanServer.Exec.Error, as: JobsiteError
+  alias ForemanServer.Exec.Runners.Overwatch, as: OverwatchRunner
   alias ForemanServer.Workflow.JobsiteObserver
   alias ForemanServer.Workflow.Lowering
   alias ForemanServer.AgentRuntime.JidoHarness.FailureCause
@@ -347,6 +348,18 @@ defmodule ForemanServer.Workflow.RunExecutor do
     WorktreeSpec.normalize(Map.get(snapshot, :worktree) || Map.get(snapshot, "worktree"))
   end
 
+  # The workflow's `sandbox:` name ("docker"), read from the frozen snapshot beside
+  # `worktree:`. `nil` (absent) runs on the host, as every run did before.
+  defp extract_sandbox(task) do
+    snapshot =
+      Map.get(task, :workflow_snapshot) || Map.get(task, "workflow_snapshot") || %{}
+
+    case Map.get(snapshot, :sandbox) || Map.get(snapshot, "sandbox") do
+      name when is_binary(name) and name != "" -> name
+      _ -> nil
+    end
+  end
+
   @impl true
   def init({run_id, task_projection, opts}) do
     phase_specs = extract_phase_specs(task_projection)
@@ -364,6 +377,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
       task: task_projection,
       phase_specs: phase_specs,
       worktree_spec: extract_worktree_spec(task_projection),
+      sandbox: extract_sandbox(task_projection),
+      resume_session: Keyword.get(opts, :resume_session),
       current_phase: nil,
       completed: if(resume_from > 0, do: Enum.to_list(0..(resume_from - 1)), else: []),
       phase_statuses: %{},
@@ -484,8 +499,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
   end
 
-  # Every RunExecutor launch is a host workflow launch
-  # (`ExecutionProfile.host_backend/0`). A project with no `environment.network`
+  # A RunExecutor launch is a host workflow launch (`ExecutionProfile.host_backend/0`) unless the workflow
+  # declares `sandbox: docker` (`launch_backend/1`: the docker backend, whose launch applies the policy). A project with no `environment.network`
   # policy reads as the default policy and proceeds. Applies to a resumed run
   # too: a policy that cannot be honoured is refused whenever the run starts
   # executing, not only on its first start.
@@ -493,7 +508,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
     case project_id(state) do
       id when is_binary(id) and id != "" ->
         policy = id |> ProjectEnvironment.environment() |> Map.fetch!("network")
-        NetworkPolicy.check_backend(policy, ExecutionProfile.host_backend())
+        NetworkPolicy.check_backend(policy, launch_backend(state))
 
       _no_project ->
         :ok
@@ -769,7 +784,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   end
 
   # Runs every phase from `state.resume_from` to the end as ONE engine
-  # program: `Workflow.Lowering` compiles the manifest, `Jobsite.Engine`
+  # program: `Workflow.Lowering` compiles the manifest, `Exec.Engine`
   # executes it, and `Workflow.JobsiteObserver` carries this executor's run
   # state through it and performs every Foreman-specific step.
   #
@@ -799,18 +814,26 @@ defmodule ForemanServer.Workflow.RunExecutor do
         # so `finalize_run/1` knows which branch the run's work was cut from.
         state = remember_run_base_branch(state)
 
-        lowering_ctx = %{
-          run_id: state.run_id,
-          worktree_spec: state.worktree_spec,
-          start_index: state.resume_from
-        }
+        case run_sandbox(state) do
+          {:ok, sandbox, network_cleanup} ->
+            lowering_ctx = %{
+              run_id: state.run_id,
+              worktree_spec: state.worktree_spec,
+              start_index: state.resume_from,
+              sandbox: sandbox
+            }
 
-        case Lowering.lower(state.phase_specs, lowering_ctx) do
-          {:ok, program} ->
-            run_program(state, program)
+            case Lowering.lower(state.phase_specs, lowering_ctx) do
+              {:ok, program} ->
+                run_program(state, program, network_cleanup)
 
-          {:error, %JobsiteError{details: %{index: index, reason: reason}}} ->
-            refuse_phase(state, index, reason)
+              {:error, %JobsiteError{details: %{index: index, reason: reason}}} ->
+                network_cleanup.()
+                refuse_phase(state, index, reason)
+            end
+
+          {:error, reason} ->
+            initialization_failed(state, reason)
         end
     end
   end
@@ -831,14 +854,57 @@ defmodule ForemanServer.Workflow.RunExecutor do
     initialization_failed(state, reported)
   end
 
-  defp run_program(state, program) do
+  # The run's sandbox, or `nil` for a host run. Docker only (the manifest validator
+  # refuses any other name). The project's `environment.network` policy is enforced
+  # here and ONLY here: a host run cannot enforce it, which is the documented
+  # limitation of the workflow door, so the policy is a ceiling exactly when the
+  # manifest asked for isolation. `network_cleanup` removes the policy's network and
+  # sidecar and must run however the program ends.
+  #
+  # Refused: more than one repository (the extra worktrees are not mounted into the
+  # container, so the agent could not reach them).
+  defp run_sandbox(%{sandbox: "docker", run_repos: %{}}),
+    do: {:error, {:sandbox_unsupported, :multi_repo}}
+
+  defp run_sandbox(%{sandbox: "docker"} = state) do
+    {provider, config} = ForemanServer.Exec.Sandboxes.docker()
+
+    with {:ok, config, network_cleanup} <- apply_run_network_policy(state, provider, config) do
+      {:ok, %{provider: provider, config: config}, network_cleanup}
+    end
+  end
+
+  defp run_sandbox(_state), do: {:ok, nil, fn -> :ok end}
+
+  defp apply_run_network_policy(state, provider, config) do
+    with id when is_binary(id) and id != "" <- project_id(state),
+         %{"network" => policy} <- ForemanServer.ProjectEnvironment.environment(id) do
+      case ForemanServer.Exec.NetworkPolicy.apply(policy, provider, config, state.run_id) do
+        {:ok, config, cleanup} -> {:ok, config, cleanup}
+        {:error, %JobsiteError{code: code}} -> {:error, {:network_policy, code}}
+      end
+    else
+      _no_project_policy -> {:ok, config, fn -> :ok end}
+    end
+  end
+
+  defp run_program(state, program, network_cleanup) do
     ctx = %JobsiteContext{jobsite_id: state.run_id, repo_path: vcs_working_directory(state)}
 
-    case JobsiteEngine.run_program(program, ctx,
-           observer: JobsiteObserver,
-           observer_state: JobsiteObserver.new(state),
-           intent: fn -> engine_intent(state.run_id) end
-         ) do
+    result =
+      JobsiteEngine.run_program(program, ctx,
+        observer: JobsiteObserver,
+        observer_state: JobsiteObserver.new(state),
+        intent: fn -> engine_intent(state.run_id) end
+      )
+
+    # The program's `:release` step closes the sandbox only when it is reached; a pause,
+    # cancel or failure ends the program earlier. Closing again after `:release` is a
+    # harmless no-op on the provider, and the network policy is removed on every exit.
+    release_sandbox(result)
+    network_cleanup.()
+
+    case result do
       {:ok, _ctx, %{executor: executor}} ->
         finish_phases(executor)
 
@@ -848,6 +914,20 @@ defmodule ForemanServer.Workflow.RunExecutor do
       {:error, %JobsiteError{} = error, _ctx, observer_state} ->
         fail_phases(state, error, observer_state)
     end
+  end
+
+  defp release_sandbox({:ok, ctx, _observer_state}), do: close_ctx_sandbox(ctx)
+
+  defp release_sandbox({:interrupted, _kind, _reason, ctx, _observer_state}),
+    do: close_ctx_sandbox(ctx)
+
+  defp release_sandbox({:error, _error, ctx, _observer_state}), do: close_ctx_sandbox(ctx)
+
+  defp close_ctx_sandbox(%JobsiteContext{sandbox: nil}), do: :ok
+
+  defp close_ctx_sandbox(%JobsiteContext{sandbox: sandbox}) do
+    _ = sandbox.provider.close(sandbox.state)
+    :ok
   end
 
   # How an operator's `run.pause`/`run.cancel` reaches the engine between
@@ -1501,7 +1581,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   defp dispatch_run_base_branch(_run_id, {:error, _reason}), do: :ok
 
-  # `Jobsite.Git.current_branch/1` is `git symbolic-ref --quiet --short HEAD`,
+  # `Exec.Git.current_branch/1` is `git symbolic-ref --quiet --short HEAD`,
   # which names the checked-out branch and exits non-zero on a detached HEAD.
   # `rev-parse --abbrev-ref HEAD` would instead print the literal `HEAD`
   # there, which `gh pr create --base` accepts as a ref name — a wrong PR
@@ -1794,8 +1874,16 @@ defmodule ForemanServer.Workflow.RunExecutor do
     )
   end
 
-  # What this launch's backend enforces, recorded on `PhaseStarted`. Every
-  # RunExecutor launch is a host workflow launch; the backend value is
+  # The backend a run's launches use: the host, or the docker sandbox when the workflow declares
+  # `sandbox: docker`. The value is `ExecutionProfile`'s, not named here.
+  # The host paths a docker launch bind-mounts: the run's worktree (the sandbox mounts nothing else).
+  defp sandbox_mounts(%{run_worktree: %{worktree_path: path}}) when is_binary(path), do: [path]
+  defp sandbox_mounts(_state), do: []
+
+  defp launch_backend(%{sandbox: "docker"}), do: ExecutionProfile.docker_backend()
+  defp launch_backend(_state), do: ExecutionProfile.host_backend()
+
+  # What this launch's backend enforces, recorded on `PhaseStarted`. The backend value is
   # `ExecutionProfile`'s, not named here. Cleanup follows the workflow's
   # `worktree:` block (a run whose workflow disables it has no worktree).
   defp launch_execution_profile(state, phase_index) do
@@ -1811,8 +1899,9 @@ defmodule ForemanServer.Workflow.RunExecutor do
           end
       end
 
-    ExecutionProfile.host_backend()
+    launch_backend(state)
     |> ExecutionProfile.resolve(
+      mounts: sandbox_mounts(state),
       cleanup: cleanup,
       skill: state |> Map.get(:skill_verdicts, %{}) |> Map.get(phase_index)
     )
@@ -1867,7 +1956,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   end
 
   # Everything `dispatch_agent` used to compute before it launched a worker, as
-  # the `launch` map `Jobsite.Runners.Overwatch` dispatches from (its moduledoc
+  # the `launch` map `Exec.Runners.Overwatch` dispatches from (its moduledoc
   # lists the keys). It stays here because every value derives from run state:
   # the request and rendered prompt, the 13-variable env, the FailurePolicy
   # deadline, and the heartbeat lease's identity.
@@ -1987,7 +2076,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
     # The record is dispatched before the agent starts. A record that cannot be
     # appended fails the launch (the error reaches the phase as any launch failure):
     # a phase must not run on context nobody can later inspect.
-    with {:ok, fork} <- fork_for_launch(state, index, JidoHarness.request_provider(request)),
+    with {:ok, fork} <-
+           session_for_launch(state, index, JidoHarness.request_provider(request)),
          :ok <- record_project_context(state, phase_index, context_bundle) do
       build_agent_launch(
         state,
@@ -2092,7 +2182,11 @@ defmodule ForemanServer.Workflow.RunExecutor do
          |> append_system_prompt(context_system_text)
          |> maybe_put_command_phase_inbox_system_prompt(state, phase_spec)
          |> maybe_put_approval_mode(phase_spec, steering)
-         |> maybe_put_inflight_permission(state.run_id, JidoHarness.request_provider(request))
+         |> maybe_put_inflight_permission(
+           state,
+           state.run_id,
+           JidoHarness.request_provider(request)
+         )
          |> maybe_put_add_dirs(state, JidoHarness.request_provider(request))
          |> put_fork(fork)
          |> LiveSteer.put_driver_opts(JidoHarness.request_provider(request))
@@ -2129,6 +2223,41 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   defp fork_for_launch(_state, _index, _provider), do: {:ok, nil}
 
+  # Which provider session the phase starts from, if any: a FORK of the task's session
+  # (`fork_for_launch/3`) or an explicit RESUME (`resume_for_launch/3`). Both are only for
+  # the run's first phase and both refuse to launch rather than start a blank agent, so
+  # asking for both is refused too: one phase has one session.
+  defp session_for_launch(state, index, provider) do
+    with {:ok, fork} <- fork_for_launch(state, index, provider),
+         {:ok, resume} <- resume_for_launch(state, index, provider) do
+      case {fork, resume} do
+        {nil, resume} -> {:ok, resume}
+        {fork, nil} -> {:ok, fork}
+        {_fork, _resume} -> {:error, :fork_and_resume_session}
+      end
+    end
+  end
+
+  # A run started to CONTINUE a provider session (`state.resume_session`, `{provider, id}`,
+  # handed over by whoever starts the run; the PR fix follow-up run is its user): the first
+  # phase launches with that session's id as a plain harness resume, in place, which for pi
+  # needs the same working directory (`ForkSession` moduledoc). Unlike a fork, a resume
+  # writes to the source session, so it is only valid when nothing else runs it.
+  #
+  # The session is checked like a fork's (`ForkSession.validate/2`: closed provider list,
+  # id safe to become a CLI argument) and must be the phase's own provider: a mismatch is a
+  # failed launch, never a blank agent for a run that claims to continue a thread.
+  defp resume_for_launch(%{resume_session: {provider, session_id}}, 0, phase_provider)
+       when is_binary(provider) and is_binary(session_id) do
+    with :ok <- ForkSession.validate(provider, session_id) do
+      if to_string(phase_provider) == provider,
+        do: {:ok, {session_id, %{}}},
+        else: {:error, {:resume_provider_mismatch, provider, to_string(phase_provider)}}
+    end
+  end
+
+  defp resume_for_launch(_state, _index, _provider), do: {:ok, nil}
+
   defp put_fork(driver_opts, nil), do: driver_opts
 
   defp put_fork(driver_opts, {session_id, provider_options}) do
@@ -2158,7 +2287,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
         driver_opts
 
       name ->
-        {:ok, mode} = ForemanServer.Jobsite.Agent.parse_approval_mode(name)
+        {:ok, mode} = ForemanServer.Exec.Agent.parse_approval_mode(name)
         Keyword.put(driver_opts, :approval_mode, mode)
     end
   end
@@ -2170,7 +2299,13 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # (pi has no per-call approvals) or mode, an unknown endpoint URL, or a claude CLI that
   # does not know the flag (`Inflight.claude_options/1` is `nil`) leaves the E8 phase-pause
   # path untouched.
-  defp maybe_put_inflight_permission(driver_opts, run_id, :claude) do
+  # A sandboxed run never asks in flight: the permission wrapper and the sandbox shim
+  # both need the harness `cli_path`, so its phases keep the pause-and-re-run path.
+  defp maybe_put_inflight_permission(driver_opts, %{sandbox: sandbox}, _run_id, _provider)
+       when is_binary(sandbox),
+       do: driver_opts
+
+  defp maybe_put_inflight_permission(driver_opts, _state, run_id, :claude) do
     with :prompt <- Keyword.get(driver_opts, :approval_mode),
          true <- ForemanServer.Approvals.Config.inflight?(),
          options when is_list(options) <- ForemanServer.Approvals.Inflight.claude_options(run_id) do
@@ -2180,7 +2315,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
   end
 
-  defp maybe_put_inflight_permission(driver_opts, _run_id, _provider), do: driver_opts
+  defp maybe_put_inflight_permission(driver_opts, _state, _run_id, _provider), do: driver_opts
 
   # The latest override wins when several approvals queued before one resume.
   defp steering_override(steering) do
@@ -2495,41 +2630,57 @@ defmodule ForemanServer.Workflow.RunExecutor do
   defp finalize_run(state) do
     Logger.info("RunExecutor #{state.run_id} finalize_run: maybe_complete_task")
 
-    case maybe_complete_task(state) do
-      :ok ->
-        Logger.info("RunExecutor #{state.run_id} finalize_run: attempting auto-pr")
+    with :ok <- maybe_complete_task(state),
+         :ok <- publish_followup(state) do
+      Logger.info("RunExecutor #{state.run_id} finalize_run: attempting auto-pr")
 
-        # After AutoPR, never before: the worktree is the checkout AutoPR pushes
-        # from. Reclaiming it earlier is what the old per-phase `after` clause
-        # did, and it deleted the work before anything could propose it.
-        _ = finalize_repo_prs_and_cleanup(state)
+      # After AutoPR, never before: the worktree is the checkout AutoPR pushes
+      # from. Reclaiming it earlier is what the old per-phase `after` clause
+      # did, and it deleted the work before anything could propose it.
+      _ = finalize_repo_prs_and_cleanup(state)
 
-        Logger.info("RunExecutor #{state.run_id} finalize_run: dispatch_run_complete")
+      Logger.info("RunExecutor #{state.run_id} finalize_run: dispatch_run_complete")
 
-        case dispatch_run_complete(state) do
-          {:ok, _} ->
-            Logger.info("RunExecutor #{state.run_id} finalize_run: dispatched run.complete")
-            {:ok, %{state | status: :completed}}
+      case dispatch_run_complete(state) do
+        {:ok, _} ->
+          Logger.info("RunExecutor #{state.run_id} finalize_run: dispatched run.complete")
+          {:ok, %{state | status: :completed}}
 
-          {:error, reason} = err ->
-            Logger.error(
-              "RunExecutor #{state.run_id} finalize_run: dispatch_run_complete returned: #{inspect(reason)}"
-            )
+        {:error, reason} = err ->
+          Logger.error(
+            "RunExecutor #{state.run_id} finalize_run: dispatch_run_complete returned: #{inspect(reason)}"
+          )
 
-            err
-        end
-
+          err
+      end
+    else
       {:error, reason} = err ->
         Logger.error(
-          "RunExecutor #{state.run_id} finalize_run: maybe_complete_task returned: #{inspect(reason)}"
+          "RunExecutor #{state.run_id} finalize_run: completion or publish returned: #{inspect(reason)}"
         )
 
         err
     end
   end
 
+  # A follow-up run publishes its work by pushing the branch it is attached to: a plain `git push`
+  # of that one branch, which the remote refuses unless it is a fast-forward, so nothing is ever
+  # forced. It opens no PR (the PR exists) and any other run is untouched.
+  defp publish_followup(state) do
+    with branch when is_binary(branch) <- followup_attach_branch(state),
+         %{push: true} <- Map.get(state.task, :followup),
+         %{worktree_path: path, branch: ^branch} <- Map.get(state, :run_worktree) do
+      case ForemanServer.Exec.Git.push(path, "origin", branch) do
+        :ok -> :ok
+        {:error, error} -> {:error, {:followup_push_failed, branch, error.message}}
+      end
+    else
+      _ -> :ok
+    end
+  end
+
   defp finalize_repo_prs_and_cleanup(state) do
-    results = finalize_repo_prs(state)
+    results = if followup_attach_branch(state), do: [], else: finalize_repo_prs(state)
     _ = cleanup_run_worktree(state, :success, pr_failed_repo_ids(results))
     results
   end
@@ -3009,7 +3160,25 @@ defmodule ForemanServer.Workflow.RunExecutor do
     }
   end
 
+  # A follow-up run (`Workflow.FollowUp`) carries its already-redacted prompt in the task map; it is
+  # used as it stands, never run through the template renderer (its PR text is untrusted data).
   defp read_phase_prompt(state, phase_spec, index, context, context_bundle) do
+    case followup_prompt(state) do
+      prompt when is_binary(prompt) -> prompt
+      nil -> read_catalog_phase_prompt(state, phase_spec, index, context, context_bundle)
+    end
+  end
+
+  defp followup_prompt(%{task: task}) when is_map(task) do
+    case Map.get(task, :followup) do
+      %{prompt: prompt} when is_binary(prompt) and prompt != "" -> prompt
+      _ -> nil
+    end
+  end
+
+  defp followup_prompt(_state), do: nil
+
+  defp read_catalog_phase_prompt(state, phase_spec, index, context, context_bundle) do
     content =
       case Map.get(phase_spec, :prompt_path) do
         nil ->
@@ -3802,6 +3971,88 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # only in where those two values came from, never in what a manifest was
   # allowed to say.
   defp create_run_worktree(state, phase_index) do
+    case followup_attach_branch(state) do
+      nil -> create_new_run_worktree(state, phase_index)
+      branch -> create_attached_run_worktree(state, phase_index, branch)
+    end
+  end
+
+  # The branch a follow-up run is attached to (`Workflow.FollowUp`), or nil for every other run.
+  defp followup_attach_branch(%{task: task}) when is_map(task) do
+    case Map.get(task, :followup) do
+      %{attach_branch: branch} when is_binary(branch) and branch != "" -> branch
+      _ -> nil
+    end
+  end
+
+  defp followup_attach_branch(_state), do: nil
+
+  # A follow-up run works ON an existing branch (a PR's head) instead of cutting a new one:
+  # `AttachBranch` brings the local branch to the remote tip (fast-forward only, never discarding a
+  # commit) and says whether a linked worktree already holds it (reused as it stands, which keeps the
+  # provider session's working directory) or one is created. A single-repository run only: a
+  # repository other than the project's primary needs the multi-repo layout this does not build.
+  defp create_attached_run_worktree(state, phase_index, branch) do
+    spec = state.worktree_spec || %{}
+    followup = Map.get(state.task, :followup, %{})
+
+    with {:ok, project_id} <- fetch_project_id(state),
+         :ok <- assert_safe_path_identifier(project_id),
+         :ok <- assert_safe_path_identifier(state.run_id),
+         {:ok, project_root, _base_ref, implementation_key, trd_scope} <-
+           resolve_run_base(state, spec),
+         {:ok, repo_root} <- followup_repo_root(project_id, project_root, followup),
+         {:ok, cleanup} <- worktree_cleanup(spec),
+         default_path = run_worktree_path(project_id, state, spec),
+         {:ok, plan} <-
+           AttachBranch.prepare(repo_root, branch, "origin",
+             default_path: default_path,
+             hint_path: Map.get(followup, :worktree_path)
+           ),
+         phase_id = Identity.phase_id(state.run_id, phase_index),
+         operation_id = Worktree.operation_id(state.run_id, nil),
+         :ok <- ensure_worktree_parent_dir(plan.path),
+         {:ok, _path} <-
+           Worktree.create(%{
+             operation_id: operation_id,
+             project_id: project_id,
+             run_id: state.run_id,
+             phase_id: phase_id,
+             repo_path: repo_root,
+             worktree_path: plan.path,
+             base_ref: plan.tip,
+             branch: branch,
+             reuse_existing: plan.mode == :reuse
+           }) do
+      record = %{
+        operation_id: operation_id,
+        worktree_path: plan.path,
+        branch: branch,
+        base_ref: plan.tip,
+        project_root: repo_root,
+        project_id: project_id,
+        implementation_key: implementation_key,
+        trd_scope: trd_scope,
+        cleanup: cleanup
+      }
+
+      # A reused worktree was set up by the run that made it; only a fresh one runs the setup script.
+      if plan.mode == :reuse, do: {:ok, record}, else: run_project_setup(state, record)
+    end
+  end
+
+  defp followup_repo_root(project_id, project_root, followup) do
+    case Map.get(followup, :repo_path) do
+      path when path in [nil, ""] or path == project_root ->
+        {:ok, project_root}
+
+      path when is_binary(path) ->
+        registered = Enum.map(ProjectionStore.project_repositories(project_id) || [], & &1.path)
+        if path in registered, do: {:ok, path}, else: {:error, {:unknown_followup_repo, path}}
+    end
+  end
+
+  defp create_new_run_worktree(state, phase_index) do
     spec = state.worktree_spec || %{}
 
     with {:ok, project_id} <- fetch_project_id(state),
@@ -4613,7 +4864,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
     )
   end
 
-  # Delegates to `Jobsite.Git.commit_all/3`, the one implementation of
+  # Delegates to `Exec.Git.commit_all/3`, the one implementation of
   # status → add → commit shared with the engine's `:commit` step. Its typed
   # error names the failing git step (`:stage`), which this maps back onto
   # the `{:phase_commit_status_failed | :phase_commit_failed, path, reason}`
@@ -5518,6 +5769,9 @@ defmodule ForemanServer.Workflow.RunExecutor do
   def __finalize_repo_prs_for_test__(state), do: finalize_repo_prs(state)
 
   @doc false
+  def __publish_followup_for_test__(state), do: publish_followup(state)
+
+  @doc false
   def __finalize_repo_prs_and_cleanup_for_test__(state), do: finalize_repo_prs_and_cleanup(state)
 
   @doc false
@@ -5634,6 +5888,9 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   @doc false
   def __resolve_run_repo_set_for_test__(state), do: resolve_run_repo_set(state)
+
+  @doc false
+  def __run_sandbox_for_test__(state), do: run_sandbox(state)
 
   @doc false
   def __load_run_worktrees_for_test__(state), do: load_run_worktrees(state)
@@ -5809,7 +6066,12 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
   end
 
+  # A follow-up run has no task: there is no `task:` stream to move, so nothing is dispatched.
   defp dispatch_task_execution_complete(state) do
+    if task_id(state) == "", do: :ok, else: do_dispatch_task_execution_complete(state)
+  end
+
+  defp do_dispatch_task_execution_complete(state) do
     dispatch_system_command(
       "task.execution_complete",
       Identity.task_complete_command_id(state.run_id),
@@ -5820,6 +6082,12 @@ defmodule ForemanServer.Workflow.RunExecutor do
   end
 
   defp dispatch_task_execution_fail(state, reason) do
+    if task_id(state) == "",
+      do: :ok,
+      else: do_dispatch_task_execution_fail(state, reason)
+  end
+
+  defp do_dispatch_task_execution_fail(state, reason) do
     dispatch_system_command(
       "task.execution_fail",
       Identity.task_fail_command_id(state.run_id),

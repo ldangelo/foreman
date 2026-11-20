@@ -1,8 +1,8 @@
 defmodule ForemanServer.Workflow.JobsiteObserver do
   @moduledoc """
-  `ForemanServer.Jobsite.Observer` for a program compiled by
+  `ForemanServer.Exec.Observer` for a program compiled by
   `ForemanServer.Workflow.Lowering`: everything Foreman-specific about running
-  a workflow phase, so none of it lives in `ForemanServer.Jobsite.Engine`.
+  a workflow phase, so none of it lives in `ForemanServer.Exec.Engine`.
 
   `state` is `%{executor: RunExecutor.state(), phase: phase | nil}` — the
   `RunExecutor`'s own run state, threaded through every callback and handed
@@ -46,10 +46,10 @@ defmodule ForemanServer.Workflow.JobsiteObserver do
   command carries a deterministic id besides.
   """
 
-  @behaviour ForemanServer.Jobsite.Observer
+  @behaviour ForemanServer.Exec.Observer
 
-  alias ForemanServer.Jobsite.{Error, Step}
-  alias ForemanServer.Jobsite.Worktree, as: JobsiteWorktree
+  alias ForemanServer.Exec.{Error, Step}
+  alias ForemanServer.Exec.Worktree, as: JobsiteWorktree
   alias ForemanServer.Workflow.{PhaseSpec, RunExecutor}
   alias ForemanServer.Workflow.RunExecutor.ArtifactTemplate
 
@@ -158,7 +158,7 @@ defmodule ForemanServer.Workflow.JobsiteObserver do
 
   # The engine's `:commit` step reports `:committed`, `:nothing_to_commit`,
   # `:deferred` or `:no_worktree`. A clean tree is not a failure
-  # (`Jobsite.Git.commit_all/3`: AutoPR proposes commits only), so a run whose
+  # (`Exec.Git.commit_all/3`: AutoPR proposes commits only), so a run whose
   # agent changed nothing in its worktree still completes. These lines are what
   # tell that run apart from one that committed: without them the server log
   # says the same thing about both (foreman-2onq1). They mirror what
@@ -268,7 +268,7 @@ defmodule ForemanServer.Workflow.JobsiteObserver do
   end
 
   # Put a bounded, redacted message on the phase's span (the one
-  # `Jobsite.Engine` opened in this process), so a trace viewer shows what the
+  # `Exec.Engine` opened in this process), so a trace viewer shows what the
   # agent was asked and said. Text is redacted with the run's project secrets
   # first, via `Redact.redactor/1` (resolved once per call; it never raises, so
   # a refused project environment degrades to the built-in patterns). Anything

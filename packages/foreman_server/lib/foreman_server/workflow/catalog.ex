@@ -584,8 +584,16 @@ defmodule ForemanServer.Workflow.Catalog do
           _ -> base
         end
 
+      # `sandbox:` rides beside `worktree:`, verbatim and only when declared, so a
+      # workflow without it resolves exactly as before.
+      base =
+        case Map.get(workflow, "sandbox") do
+          name when is_binary(name) -> Map.put(base, :sandbox, name)
+          _ -> base
+        end
+
       resolved =
-        if Map.has_key?(workflow, "worktree") do
+        if Map.has_key?(workflow, "worktree") or Map.has_key?(workflow, "sandbox") do
           Map.put(base, :digest, canonical_digest(base))
         else
           Map.put(base, :digest, workflow["digest"])
@@ -601,12 +609,20 @@ defmodule ForemanServer.Workflow.Catalog do
   # so moving it to the workflow level would otherwise make a change to
   # `base`/`branch`/`cleanup` invisible to the digest.
   defp canonical_digest(resolved) do
-    serialized = %{
-      name: resolved.name,
-      description: resolved.description,
-      worktree: Map.get(resolved, :worktree),
-      phases: resolved.phases
-    }
+    serialized =
+      %{
+        name: resolved.name,
+        description: resolved.description,
+        worktree: Map.get(resolved, :worktree),
+        phases: resolved.phases
+      }
+      |> then(fn serialized ->
+        # Added only when declared, so the digest of every existing workflow is unchanged.
+        case Map.get(resolved, :sandbox) do
+          nil -> serialized
+          sandbox -> Map.put(serialized, :sandbox, sandbox)
+        end
+      end)
 
     :crypto.hash(:sha256, :erlang.term_to_binary(serialized))
     |> Base.encode16(case: :lower)
