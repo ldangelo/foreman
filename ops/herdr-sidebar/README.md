@@ -102,7 +102,8 @@ work that is waiting, in the order the server will start it:
 
 A run that is already listed as a run is not repeated here. A run the server resumed after a pause
 waits for a slot with its run record, so it shows under its status (`starting`) with the other runs
-and not as a queue row; only a run that was never started (no run record) is a queue row.
+and not as a queue row; only a run that was never started (no run record) is a queue row. `#N` stays
+the server's global position, so the rows that remain can have gaps (a lone row may read `#3`).
 
 Queue rows are display only: a queued run has no transcript or phases to open yet. The queue is read
 every 30 s (a manual refresh reads it at once), and if reading it fails the runs still show, with a
