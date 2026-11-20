@@ -4821,7 +4821,8 @@ defmodule ForemanServer.ProjectionStore do
       state.tasks
       |> Map.values()
       |> Enum.find(fn task ->
-        get(task, :run_id) == run_id and get(task, :status) == "in_progress"
+        get(task, :run_id) == run_id and get(task, :status) == "in_progress" and
+          not run_acknowledged?(task)
       end)
 
     if task != nil and not Map.has_key?(state.runs, run_id) do
@@ -4858,8 +4859,17 @@ defmodule ForemanServer.ProjectionStore do
         get(task, :status) == "in_progress",
         run_id = get(task, :run_id),
         is_binary(run_id) and run_id != "",
+        not run_acknowledged?(task),
         not Map.has_key?(state.runs, run_id),
         do: task_id
+  end
+
+  # `task.run_terminated` copied the bound run id into `acknowledged_run_id`: the run has ended (or, for
+  # a run cancelled while it waited for a slot, will never start), so it is neither pending nor a
+  # deferred task to re-admit. The task stays `in_progress` until it is retried.
+  defp run_acknowledged?(task) do
+    run_id = get(task, :run_id)
+    is_binary(run_id) and run_id != "" and get(task, :acknowledged_run_id) == run_id
   end
 
   defp project_projection(payload, path) do

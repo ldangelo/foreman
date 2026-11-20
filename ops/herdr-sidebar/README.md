@@ -85,6 +85,32 @@ Project headers show a `N failed` count and `active/total`; counters always
 describe all runs, even while the failed filter hides rows. The header shows the
 time of the last successful refresh (red while the latest refresh is failing).
 
+**The queue.** Under each project, above its running and finished runs, a `queued` group lists the
+work that is waiting, in the order the server will start it:
+
+- `#N … waiting for a slot`: a run the server has admitted but has no free run slot for yet, with its
+  place in the server's global slot queue (`GET /api/queue`, `waiting`). The title is its task's. `N`
+  is the server's own position, so it counts entries that can no longer start (see "stale"); the
+  group header counts only the live ones.
+- `… awaiting approval`: a task in the project that is still `open`, i.e. not yet approved and with no
+  run (`GET /api/tasks?status=open`), oldest first, with how long ago it was created. Not counted
+  as queued: the group header shows it separately as `N awaiting`.
+- `… stale`: an entry still in the server's slot queue whose run has ended or no longer exists, so it can
+  never start. It is shown dimmed and is not counted: the group header reads `N · M stale`. When the
+  server cannot say which project such an entry belonged to it is listed under "Unresolved queue
+  entries". The compact rail shows the total of the live ones as `⧖N`.
+
+A run that is already listed as a run is not repeated here. A run the server resumed after a pause
+waits for a slot with its run record, so it shows under its status (`starting`) with the other runs
+and not as a queue row; only a run that was never started (no run record) is a queue row. `#N` stays
+the server's global position, so the rows that remain can have gaps (a lone row may read `#3`).
+
+Queue rows are display only: a queued run has no transcript or phases to open yet. The queue is read
+every 30 s (a manual refresh reads it at once), and if reading it fails the runs still show, with a
+one-line "Queue unavailable: …" note under the header. The failed filter hides the queue. Work the
+server is holding back (daily thread cap, run limit, a paused project) is not in the slot queue and is
+not shown; `GET /api/projects/<id>/usage` reports it as `limits.deferred_tasks`.
+
 | Action | Mouse | Shortcut |
 |---|---|---|
 | Open a run in its detail tab | click the row | `⏎` while navigating |
@@ -131,6 +157,11 @@ Activity (31)   Changes (3)                                              followi
   verdict. Long turns fold to 8 lines (`… N more lines`). Scrolling up stops
   the auto-follow; `follow` turns it on again. The server's log window is
   bounded, so a very long run shows `N earlier turns are not shown`.
+  A ruled `phase` marker (`▶ name started`, plus `attempt N` after a retry) sits between the turns
+  where each started phase began, and a phase that is over gets an end marker (`✓ name done`, `✕`
+  failed with its reason, `–` cancelled). The server has no separate finish time: the end marker is
+  placed at the phase's last event (`last_event_at_ms`), which for a finished phase is its
+  completion. Markers need `GET /api/runs/:id/phases`; without it the feed has none.
 - **Changes.** For a run with a worktree: the commits since it branched, every
   changed file with `+added −removed` (uncommitted work and new files
   included), and a click on a file shows its patch. Once the worktree is gone,
@@ -192,6 +223,10 @@ The run-detail tab also reads `GET /api/runs/:id`, `/phases`, `/approvals`,
 `/api/projects/:id/questions`, `/api/threads/run:<id>` (`repo_path`, `title`,
 `branch`) and its `/transcript` (`turns`: `seq`, `at`, `kind`, `source`, `text`;
 `omitted_entries` invalidates cursors).
+
+The queue reads `GET /api/queue` (`capacity`, `running`, `waiting`) and `GET /api/tasks` (`status`,
+`task_id`, `project_id`, `title`, `run_id`, `created_at_ms`); a waiting run is matched to its task by
+`run_id`, and an unmatched one is looked up with `GET /api/runs/<id>`.
 
 Verification so far: the panel was exercised against a live server and against
 stub servers, and the commands behind each shortcut were driven with
