@@ -1,6 +1,6 @@
 defmodule ForemanServer.Events.RunSlotQueued do
   @moduledoc """
-  Typed event emitted when a run is enqueued in the global run-slot
+  Typed event emitted when a run is enqueued in the project's run-slot
   waiter list because all slots are occupied.
 
   Carries the `run_id`, the `position` (1-indexed FIFO position), and a

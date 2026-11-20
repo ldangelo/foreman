@@ -1,6 +1,6 @@
 defmodule ForemanServer.Events.RunSlotWaiterRemoved do
   @moduledoc """
-  Typed event emitted when a waiter is removed from the global
+  Typed event emitted when a waiter is removed from the project's
   run-slot queue (e.g. the queued run transitioned to a terminal
   state before being promoted).
   """

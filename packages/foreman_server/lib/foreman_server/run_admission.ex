@@ -196,7 +196,7 @@ defmodule ForemanServer.RunAdmission do
   end
 
   # ---------------------------------------------------------------------------
-  # Slot gate — global run-slot gate, outermost barrier.
+  # Slot gate — per-project run-slot gate, outermost barrier.
   # ---------------------------------------------------------------------------
 
   defp acquire_slot(project_id, capacity, payload, timeout) do

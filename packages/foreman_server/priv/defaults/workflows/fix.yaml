@@ -17,8 +17,8 @@ worktree:
 # whether that output becomes a commit is a per-phase question. `true` commits
 # the phase's work when the phase completes; absent defaults to `true`.
 #
-# This workflow has a single phase, so `commit: false` would leave its work
-# uncommitted with no later phase to absorb it. That is ALLOWED under the
+# A phase left with `commit: false` would leave its work uncommitted unless a
+# later phase commits it (the last phase has none to absorb it). That is ALLOWED under the
 # `cleanup: never` configured above — the work survives in the worktree for a
 # human to inspect, and `RunExecutor` warns at run end that the run left work
 # uncommitted. It is refused only if `cleanup:` were `always` or `on_success`,

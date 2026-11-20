@@ -4,7 +4,7 @@ defmodule ForemanServer.Events.RunResumed do
 
   Re-admits the run to `status: "awaiting_worker", terminal?: false` on
   the Run aggregate. `ForemanServer.Workflow.Dispatcher` reacts to this
-  event by re-acquiring the run's admission gates (global slot, and the
+  event by re-acquiring the run's admission gates (project slot, and the
   per-DB Beads lease when applicable — both released when the run was
   paused) and restarting `RunExecutor` at the first non-completed phase.
   """

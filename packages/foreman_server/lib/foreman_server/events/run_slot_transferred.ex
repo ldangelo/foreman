@@ -1,6 +1,6 @@
 defmodule ForemanServer.Events.RunSlotTransferred do
   @moduledoc """
-  Typed event emitted when a run releases a global run slot and
+  Typed event emitted when a run releases a per-project run slot and
   the FIFO head waiter is atomically promoted into it.
 
   Carries the `released_run_id`, the `acquired_run_id` of the promoted

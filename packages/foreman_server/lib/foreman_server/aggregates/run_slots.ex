@@ -84,7 +84,7 @@ defmodule ForemanServer.Aggregates.RunSlots do
   end
 
   defmodule State do
-    @moduledoc "Global run-slot state."
+    @moduledoc "Per-project run-slot state."
     @type t :: %__MODULE__{
             capacity: non_neg_integer() | nil,
             holders: %{optional(String.t()) => %{acquired_at_ms: integer()}},

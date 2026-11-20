@@ -1,6 +1,6 @@
 defmodule ForemanServer.Events.RunSlotReleased do
   @moduledoc """
-  Typed event emitted when a run releases a global run slot
+  Typed event emitted when a run releases a per-project run slot
   with no waiters present to promote.
   """
   @enforce_keys [:run_id]

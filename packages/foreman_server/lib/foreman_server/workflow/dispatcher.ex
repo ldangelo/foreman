@@ -1417,7 +1417,7 @@ defmodule ForemanServer.Workflow.Dispatcher do
     Enum.find(0..(total - 1)//1, total, &(&1 not in completed_0based))
   end
 
-  # Re-acquires the run's admission gates (global slot, and the per-DB
+  # Re-acquires the run's admission gates (project slot, and the per-DB
   # Beads lease when applicable) WITHOUT re-dispatching `run.start` — the
   # Run aggregate already re-entered a live state via `run.resume`/
   # `RunResumed`, and `RunAdmission.start/2` would reject a second

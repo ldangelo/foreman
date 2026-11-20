@@ -1,6 +1,6 @@
 defmodule ForemanServer.Events.RunSlotAcquired do
   @moduledoc """
-  Typed event emitted when a run acquires a global run slot.
+  Typed event emitted when a run acquires a per-project run slot.
 
   Carries the `run_id`, the slot `capacity` at time of acquisition,
   and a monotonic `acquired_at_ms` timestamp.
