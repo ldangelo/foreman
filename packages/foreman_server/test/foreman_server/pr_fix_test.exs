@@ -270,6 +270,50 @@ defmodule ForemanServer.PrFixTest do
     end
   end
 
+  # Characterization (docs/plans/retire-jobsites.md, PR0): the exact option set a fix hands
+  # the executor. The follow-up-run migration must reproduce every key and value.
+  describe "plan option contract" do
+    setup do
+      on_exit(fn -> Application.delete_env(:foreman_server, :pr_fix) end)
+      %{ctx: Fix.watched!()}
+    end
+
+    test "carries exactly these keys, with these values", %{ctx: ctx} do
+      opts = plan!("ci", ctx).jobsite_opts
+
+      required =
+        ~w(agent max_iterations name project_id prompt push repo_path strategy sync_remote)a
+
+      optional = ~w(bead_id path resume_session sandbox)a
+      keys = Keyword.keys(opts)
+
+      assert required -- keys == []
+      assert (keys -- (required ++ optional)) |> Enum.uniq() == []
+
+      assert opts[:project_id] == ctx.project_id
+      assert opts[:push] == true
+      assert opts[:sync_remote] == "origin"
+      assert opts[:strategy] == {:branch, ctx.status.head_branch}
+      assert opts[:max_iterations] == 1
+      assert opts[:name] == "pr-fix-ci-#{ctx.run_id}"
+      assert opts[:prompt] == plan!("ci", ctx).prompt
+
+      # A fix runs in Docker unless configured otherwise: the follow-up run must keep this default.
+      assert {ForemanServer.Jobsite.Sandboxes.Docker, %{}} = opts[:sandbox]
+    end
+
+    test "name carries the fix kind; a host sandbox is refused unless the server allows it", %{
+      ctx: ctx
+    } do
+      assert plan!("comments", ctx).jobsite_opts[:name] == "pr-fix-comments-#{ctx.run_id}"
+
+      Application.put_env(:foreman_server, :pr_fix, sandbox: "host")
+
+      assert {:error, %Error{code: :spec_sandbox_not_allowed}} =
+               PrFix.plan("ci", ctx.run_id, ctx.pr_url, fetch_fun: fn _ -> {:ok, ctx.status} end)
+    end
+  end
+
   describe "branch attach and provider session resume" do
     setup do
       ctx = Fix.watched!()
