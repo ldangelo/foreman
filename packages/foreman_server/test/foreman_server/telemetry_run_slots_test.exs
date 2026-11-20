@@ -89,7 +89,8 @@ defmodule ForemanServer.TelemetryRunSlotsTest do
                Telemetry.run_slots_acquired("run-1", 2, 3, project_id: "proj-a", waiting: 4)
 
       assert_receive {:telemetry, [:foreman_server, :run_slots, :acquired],
-                      %{holders: 2, capacity: 3, waiting: 4}, %{run_id: "run-1", project_id: "proj-a"}}
+                      %{holders: 2, capacity: 3, waiting: 4},
+                      %{run_id: "run-1", project_id: "proj-a"}}
     end
 
     test "aggregate: grant, queue and release each report project and counts" do
@@ -102,7 +103,8 @@ defmodule ForemanServer.TelemetryRunSlotsTest do
                )
 
       assert_receive {:telemetry, [:foreman_server, :run_slots, :acquired],
-                      %{holders: 2, capacity: 2, waiting: 0}, %{run_id: "r2", project_id: "proj-a"}}
+                      %{holders: 2, capacity: 2, waiting: 0},
+                      %{run_id: "r2", project_id: "proj-a"}}
 
       full = state(["h1", "h2"], [{"w1", 10}])
 

@@ -421,13 +421,20 @@ defmodule ForemanServer.Aggregates.RunSlots do
     with {:ok, capacity} <- required_non_neg_integer(Aggregate.get(payload, :capacity), :capacity) do
       case state.waiters do
         [head | _] when map_size(state.holders) < capacity ->
-          Telemetry.run_slots_acquired(head.run_id, map_size(state.holders) + 1, capacity)
+          project_id = optional_project_id(payload)
+
+          Telemetry.run_slots_acquired(head.run_id, map_size(state.holders) + 1, capacity,
+            project_id: project_id,
+            waiting: length(state.waiters) - 1,
+            queue_wait_ms: queue_wait_ms(head, System.system_time(:millisecond))
+          )
+
           {:ok,
            %RunSlotAcquired{
              run_id: head.run_id,
              capacity: capacity,
              acquired_at_ms: System.system_time(:millisecond),
-             project_id: optional_project_id(payload),
+             project_id: project_id,
              promoted: true
            }}
 
@@ -486,7 +493,10 @@ defmodule ForemanServer.Aggregates.RunSlots do
       # force: record a holder regardless of capacity; the fold drops the run
       # from waiters if it was queued, so it never ends up running AND queued.
       force? ->
-        Telemetry.run_slots_acquired(run_id, map_size(state.holders) + 1, capacity)
+        Telemetry.run_slots_acquired(run_id, map_size(state.holders) + 1, capacity,
+          project_id: project_id,
+          waiting: length(drop_waiter(state.waiters, run_id))
+        )
 
         {:ok,
          %RunSlotAcquired{
@@ -501,16 +511,31 @@ defmodule ForemanServer.Aggregates.RunSlots do
         {:ok, nil}
 
       not enqueue_only? and map_size(state.holders) < capacity ->
-        Telemetry.run_slots_acquired(run_id, map_size(state.holders) + 1, capacity)
-        {:ok, %RunSlotAcquired{run_id: run_id, capacity: capacity,
+        Telemetry.run_slots_acquired(run_id, map_size(state.holders) + 1, capacity,
+          project_id: project_id,
+          waiting: length(state.waiters)
+        )
+
+        {:ok,
+         %RunSlotAcquired{
+           run_id: run_id,
+           capacity: capacity,
            acquired_at_ms: now_ms,
            project_id: project_id
          }}
 
       true ->
         position = length(state.waiters) + 1
-        Telemetry.run_slots_queued(run_id, position, position)
-        {:ok, %RunSlotQueued{run_id: run_id, position: position,
+
+        Telemetry.run_slots_queued(run_id, position, position,
+          project_id: project_id,
+          holders: map_size(state.holders)
+        )
+
+        {:ok,
+         %RunSlotQueued{
+           run_id: run_id,
+           position: position,
            enqueued_at_ms: now_ms,
            project_id: project_id
          }}
@@ -532,11 +557,21 @@ defmodule ForemanServer.Aggregates.RunSlots do
           (not is_integer(effective_capacity) or map_size(state.holders) - 1 < effective_capacity)
 
       if not promote? do
-        Telemetry.run_slots_released(run_id, max(map_size(state.holders) - 1, 0), :aggregate)
-        {:ok, %RunSlotReleased{run_id: run_id, capacity: effective_capacity, project_id: project_id}}
+        Telemetry.run_slots_released(run_id, max(map_size(state.holders) - 1, 0), :aggregate,
+          project_id: project_id,
+          waiting: length(state.waiters)
+        )
+
+        {:ok,
+         %RunSlotReleased{run_id: run_id, capacity: effective_capacity, project_id: project_id}}
       else
         {promoted, remaining} = List.pop_at(state.waiters, 0)
-        Telemetry.run_slots_transferred(run_id, promoted.run_id, length(remaining))
+
+        Telemetry.run_slots_transferred(run_id, promoted.run_id, length(remaining),
+          project_id: project_id,
+          holders: map_size(state.holders),
+          queue_wait_ms: queue_wait_ms(promoted, now_ms)
+        )
 
         {:ok,
          %RunSlotTransferred{
@@ -551,6 +586,13 @@ defmodule ForemanServer.Aggregates.RunSlots do
       {:ok, nil}
     end
   end
+
+  # Time the promoted waiter spent queued, from its durable enqueue stamp.
+  defp queue_wait_ms(%Waiter{enqueued_at_ms: at}, now_ms)
+       when is_integer(at),
+       do: max(now_ms - at, 0)
+
+  defp queue_wait_ms(_waiter, _now_ms), do: nil
 
   defp optional_project_id(payload) do
     case Aggregate.get(payload, :project_id) do
