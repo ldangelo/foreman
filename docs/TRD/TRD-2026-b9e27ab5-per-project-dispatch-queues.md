@@ -242,14 +242,14 @@ implementation task.
 
 **Shippable State:** An operator-invisible but fully tested per-project slot aggregate exists beside the global one: two projects can each hold three slots and queue independently, a lowered limit never starts a waiter, and a raised limit promotes waiters in order. No running behaviour changes yet.
 
-- [ ] **TRD-001** Add optional `project_id` to the five `RunSlot*` event structs and optional `promoted` to `RunSlotAcquired` (none in `@enforce_keys`); add `RunSlots.stream_id/1` (`"run_slots:" <> project_id`); make `do_acquire`/`do_release` stamp `System.system_time(:millisecond)`; thread `project_id` from the command payload onto every emitted event. (3h) [satisfies REQ-001] [satisfies REQ-013]
+- [x] **TRD-001** Add optional `project_id` to the five `RunSlot*` event structs and optional `promoted` to `RunSlotAcquired` (none in `@enforce_keys`); add `RunSlots.stream_id/1` (`"run_slots:" <> project_id`); make `do_acquire`/`do_release` stamp `System.system_time(:millisecond)`; thread `project_id` from the command payload onto every emitted event. (3h) [satisfies REQ-001] [satisfies REQ-013]
   - Target Files: `packages/foreman_server/lib/foreman_server/events/run_slot_*.ex`, `packages/foreman_server/lib/foreman_server/aggregates/run_slots.ex`
   - Validates PRD ACs: AC-001-1, AC-013-1
   - Implementation AC:
     - Given a historical `RunSlotAcquired` without `project_id`, when decoded by `EventCodec`, then it decodes and folds exactly as before.
     - Given an acquire for project `a`, then the emitted event carries `project_id: "a"` and a wall-clock stamp.
 
-- [ ] **TRD-001-TEST** `run_slots_project_scoped_test.exs`: legacy-event decode; stream id; per-project isolation (two streams, each three holders, no interference); event stamps. (2h) [verifies TRD-001] [satisfies REQ-001] [satisfies REQ-013] [depends: TRD-001]
+- [x] **TRD-001-TEST** `run_slots_project_scoped_test.exs`: legacy-event decode; stream id; per-project isolation (two streams, each three holders, no interference); event stamps. (2h) [verifies TRD-001] [satisfies REQ-001] [satisfies REQ-013] [depends: TRD-001]
   - Target Files: `packages/foreman_server/test/foreman_server/aggregates/run_slots_project_scoped_test.exs`
   - Validates PRD ACs: AC-001-1, AC-001-2, AC-013-1
   - Test AC:
@@ -257,7 +257,7 @@ implementation task.
     - [ ] Scenario: a full project queues the next run -- Given project A holds three, When a fourth acquires, Then it is queued and B is unaffected. (AC-001-1)
     - [ ] Scenario: rebuild matches live state -- Given a sequence of acquire/queue/release events, When state is rebuilt from the stream, Then holders, waiters and capacity equal the live state. (AC-013-1)
 
-- [ ] **TRD-002** Change `do_release` to transfer to the head waiter only when `map_size(holders) - 1 < capacity`, else emit `RunSlotReleased`; the release command carries the effective capacity. Add the one shared builder `RunSlots.release_command(project_id, run_id, reason)` (reads the project's effective limit once, builds the `run_slots.release` envelope with a unique command id) that `RunAdmission`, `Dispatcher`, `RunLifecycleReconciler` and `BootReconciliation` all use instead of the four hand-built copies. (3h) [satisfies REQ-003] [satisfies REQ-006] [depends: TRD-001]
+- [x] **TRD-002** Change `do_release` to transfer to the head waiter only when `map_size(holders) - 1 < capacity`, else emit `RunSlotReleased`; the release command carries the effective capacity. Add the one shared builder `RunSlots.release_command(project_id, run_id, reason)` (reads the project's effective limit once, builds the `run_slots.release` envelope with a unique command id) that `RunAdmission`, `Dispatcher`, `RunLifecycleReconciler` and `BootReconciliation` all use instead of the four hand-built copies. (3h) [satisfies REQ-003] [satisfies REQ-006] [depends: TRD-001]
   - Target Files: `packages/foreman_server/lib/foreman_server/aggregates/run_slots.ex`
   - Validates PRD ACs: AC-003-4, AC-006-1, AC-006-2
   - Implementation AC:
@@ -265,7 +265,7 @@ implementation task.
     - Given holders at capacity and a waiter, when a holder releases, then the waiter is promoted.
     - Given the four callers, when grepped, then none builds a `run_slots.release` map by hand.
 
-- [ ] **TRD-002-TEST** Release/promote cases in `run_slots_release_test.exs` (extend the existing file), plus a source-contract case that only `RunSlots.release_command/3` builds the envelope. (2h) [verifies TRD-002] [satisfies REQ-003] [satisfies REQ-006] [depends: TRD-002]
+- [x] **TRD-002-TEST** Release/promote cases in `run_slots_release_test.exs` (extend the existing file), plus a source-contract case that only `RunSlots.release_command/3` builds the envelope. (2h) [verifies TRD-002] [satisfies REQ-003] [satisfies REQ-006] [depends: TRD-002]
   - Target Files: `packages/foreman_server/test/foreman_server/aggregates/run_slots_release_test.exs`
   - Validates PRD ACs: AC-003-4, AC-006-1, AC-006-2
   - Test AC:
@@ -273,7 +273,7 @@ implementation task.
     - [ ] Scenario: a freed slot goes to the same project -- Given A and B each have a waiter, When an A run releases, Then only A's waiter is promoted. (AC-006-1)
     - [ ] Scenario: every terminal reason releases -- Given a run completes, fails, is blocked, cancelled, flagged stuck or deleted, When the dispatcher handles it, Then its slot is released. (AC-006-2)
 
-- [ ] **TRD-003** Add system command `run_slots.promote` (one `RunSlotAcquired{promoted: true}` for the head waiter when `holders < capacity`, else `{:ok, nil}`); give `RunSlotAcquired`'s fold the waiter drop; add `acquire` payload flags `enqueue_only` and `force`. (3h) [satisfies REQ-003] [satisfies REQ-005] [satisfies REQ-009] [depends: TRD-001]
+- [x] **TRD-003** Add system command `run_slots.promote` (one `RunSlotAcquired{promoted: true}` for the head waiter when `holders < capacity`, else `{:ok, nil}`); give `RunSlotAcquired`'s fold the waiter drop; add `acquire` payload flags `enqueue_only` and `force`. (3h) [satisfies REQ-003] [satisfies REQ-005] [satisfies REQ-009] [depends: TRD-001]
   - Target Files: `packages/foreman_server/lib/foreman_server/aggregates/run_slots.ex`
   - Validates PRD ACs: AC-003-3, AC-005-1, AC-009-4
   - Implementation AC:
@@ -281,7 +281,7 @@ implementation task.
     - Given `force: true`, when capacity is full, then the run is recorded as a holder.
     - Given `enqueue_only: true` and free capacity, then the run is queued, not acquired.
 
-- [ ] **TRD-003-TEST** `run_slots_promote_test.exs` including a concurrency case (two simultaneous acquires for one free slot). (3h) [verifies TRD-003] [satisfies REQ-003] [satisfies REQ-005] [satisfies REQ-007] [satisfies REQ-009] [depends: TRD-003]
+- [x] **TRD-003-TEST** `run_slots_promote_test.exs` including a concurrency case (two simultaneous acquires for one free slot). (3h) [verifies TRD-003] [satisfies REQ-003] [satisfies REQ-005] [satisfies REQ-007] [satisfies REQ-009] [depends: TRD-003]
   - Target Files: `packages/foreman_server/test/foreman_server/aggregates/run_slots_promote_test.exs`
   - Validates PRD ACs: AC-003-3, AC-005-1, AC-005-2, AC-007-2, AC-007-3, AC-009-4
   - Test AC:
@@ -292,13 +292,13 @@ implementation task.
     - [ ] Scenario: no double entry -- Given a run already queued or holding, When requested again, Then it holds at most one slot or position. (AC-007-3)
     - [ ] Scenario: existing runs are never stopped -- Given `force` adoption over capacity, When new runs request, Then they wait until the count is below the limit. (AC-009-4)
 
-- [ ] **TRD-004** Register the new command shapes: `Dispatch` allowlist is unchanged (system only); confirm `run_slots.promote` is in no operator allowlist and extend `command_allowlist_parity_test.exs`. (1h) [satisfies REQ-007] [depends: TRD-003]
+- [x] **TRD-004** Register the new command shapes: `Dispatch` allowlist is unchanged (system only); confirm `run_slots.promote` is in no operator allowlist and extend `command_allowlist_parity_test.exs`. (1h) [satisfies REQ-007] [depends: TRD-003]
   - Target Files: `packages/foreman_server/lib/foreman_server/command_gateway.ex`
   - Validates PRD ACs: AC-007-2
   - Implementation AC:
     - Given an operator `POST /api/commands` of `run_slots.promote`, then it is rejected as an unknown or forbidden type.
 
-- [ ] **TRD-004-TEST** Extend `command_allowlist_parity_test.exs` with the three `run_slots.*` types. (1h) [verifies TRD-004] [satisfies REQ-007] [depends: TRD-004]
+- [x] **TRD-004-TEST** Extend `command_allowlist_parity_test.exs` with the three `run_slots.*` types. (1h) [verifies TRD-004] [satisfies REQ-007] [depends: TRD-004]
   - Target Files: `packages/foreman_server/test/foreman_server/command_allowlist_parity_test.exs`
   - Validates PRD ACs: AC-007-2
   - Test AC:
@@ -308,14 +308,14 @@ implementation task.
 
 **Shippable State:** Runs are admitted into their own project's queue: a project at its limit queues further runs in order without delaying any other project, a freed slot starts that project's next run, and a raised project limit starts waiting runs without operator action. Runs that were running or waiting under the global queue at upgrade continue or resume in their own project's queue in their original order, and nothing is written to the global stream. This PR is safe to merge on its own.
 
-- [ ] **TRD-005** `RunAdmission`: compute `capacity` from the loaded Project (`effective_run_limit/1`), target `RunSlots.stream_id(project_id)` in `acquire_slot/2`, `acquire_slot_for_resume/2`, `slot_decision/2` and `release_after_failed_slot/1` (all take `project_id`; the release goes through `RunSlots.release_command/3`); delete the `run_limit_refusal` call from `project_admission_gate/2`; add archived to the pre-gate (`Project.admission_refusal/2`); add `:run_limit_exceeded` and archived refusals to nothing compensable (they no longer occur after a slot is held). (4h) [satisfies REQ-001] [satisfies REQ-002] [satisfies REQ-007] [satisfies REQ-017] [depends: TRD-001, TRD-003]
+- [x] **TRD-005** `RunAdmission`: compute `capacity` from the loaded Project (`effective_run_limit/1`), target `RunSlots.stream_id(project_id)` in `acquire_slot/2`, `acquire_slot_for_resume/2`, `slot_decision/2` and `release_after_failed_slot/1` (all take `project_id`; the release goes through `RunSlots.release_command/3`); delete the `run_limit_refusal` call from `project_admission_gate/2`; add archived to the pre-gate (`Project.admission_refusal/2`); add `:run_limit_exceeded` and archived refusals to nothing compensable (they no longer occur after a slot is held). (4h) [satisfies REQ-001] [satisfies REQ-002] [satisfies REQ-007] [satisfies REQ-017] [depends: TRD-001, TRD-003]
   - Target Files: `packages/foreman_server/lib/foreman_server/run_admission.ex`, `packages/foreman_server/lib/foreman_server/aggregates/project.ex`
   - Validates PRD ACs: AC-001-1, AC-002-1, AC-007-1, AC-017-1
   - Implementation AC:
     - Given a project with no setting, when four runs are admitted, then three acquire and one is `:slot_queued`.
     - Given an archived project, when admission runs, then it is refused before any slot is touched.
 
-- [ ] **TRD-005-TEST** Rewrite `run_admission_slot_gate_test.exs` and `run_admission_project_refusal_test.exs` for per-project streams; adapt `RunSlotsReset` (`test/support/run_slots_reset.ex`) to reset every `run_slots:*` stream. (4h) [verifies TRD-005] [satisfies REQ-001] [satisfies REQ-002] [satisfies REQ-007] [satisfies REQ-017] [depends: TRD-005]
+- [x] **TRD-005-TEST** Rewrite `run_admission_slot_gate_test.exs` and `run_admission_project_refusal_test.exs` for per-project streams; adapt `RunSlotsReset` (`test/support/run_slots_reset.ex`) to reset every `run_slots:*` stream. (4h) [verifies TRD-005] [satisfies REQ-001] [satisfies REQ-002] [satisfies REQ-007] [satisfies REQ-017] [depends: TRD-005]
   - Target Files: `packages/foreman_server/test/foreman_server/run_admission_slot_gate_test.exs`, `packages/foreman_server/test/foreman_server/run_admission_project_refusal_test.exs`, `packages/foreman_server/test/support/run_slots_reset.ex`
   - Validates PRD ACs: AC-001-1, AC-002-1, AC-002-2, AC-003-1, AC-003-2, AC-007-1, AC-012-1, AC-012-2, AC-017-1
   - Test AC:
@@ -329,7 +329,7 @@ implementation task.
     - [ ] Scenario: archived project holds -- Given an archived project with waiting runs, When capacity is free, Then no run starts. (AC-017-1)
     - [ ] Scenario: abnormal death frees the slot -- Given a holder whose process dies abnormally, When the backstop sweep runs, Then the slot is released and the next waiter starts. (AC-007-1)
 
-- [ ] **TRD-006** Remove the ceiling from `Project`: delete `run_limit_refusal/2` and the `reject_at_run_limit` call in `project.reserve_run` (keep `reject_paused`, daily cap, archived, implementation-key checks and the reservation map); add `RunSlots.drop_project/1` (removes every waiter of a project; the single function a future project-delete command must call). (3h) [satisfies REQ-001] [satisfies REQ-017] [depends: TRD-005]
+- [x] **TRD-006** Remove the ceiling from `Project`: delete `run_limit_refusal/2` and the `reject_at_run_limit` call in `project.reserve_run` (keep `reject_paused`, daily cap, archived, implementation-key checks and the reservation map); add `RunSlots.drop_project/1` (removes every waiter of a project; the single function a future project-delete command must call). (3h) [satisfies REQ-001] [satisfies REQ-017] [depends: TRD-005]
   - Target Files: `packages/foreman_server/lib/foreman_server/aggregates/project.ex`, `packages/foreman_server/lib/foreman_server/aggregates/run_slots.ex`
   - Validates PRD ACs: AC-001-3
   - Not covered (see Known Gaps): AC-017-2. `drop_project/1` is groundwork only.
@@ -337,14 +337,14 @@ implementation task.
     - Given a project at its limit, when `project.reserve_run` is dispatched for a slot holder, then it succeeds (the slot stream already decided).
     - Given `drop_project/1`, then every waiter of that project is removed and no holder is touched.
 
-- [ ] **TRD-006-TEST** Update `project_run_limit_and_stream_gap_test.exs` and `project_limits_test.exs` for the removed ceiling; add `drop_project/1` unit cases (queue-side behaviour only; this does not validate AC-017-2). (3h) [verifies TRD-006] [satisfies REQ-001] [depends: TRD-006]
+- [x] **TRD-006-TEST** Update `project_run_limit_and_stream_gap_test.exs` and `project_limits_test.exs` for the removed ceiling; add `drop_project/1` unit cases (queue-side behaviour only; this does not validate AC-017-2). (3h) [verifies TRD-006] [satisfies REQ-001] [depends: TRD-006]
   - Target Files: `packages/foreman_server/test/foreman_server/aggregates/project_run_limit_and_stream_gap_test.exs`, `packages/foreman_server/test/foreman_server/aggregates/project_limits_test.exs`
   - Validates PRD ACs: AC-001-3
   - Test AC:
     - [ ] Scenario: queues are independent when both are full -- Given A and B at their limits, When an A run finishes, Then only A's queue advances. (AC-001-3)
     - [ ] Scenario: dropping a project's waiters (groundwork, not an AC) -- Given a project with waiters and holders, When `drop_project/1` runs, Then the waiters are removed and the holders remain. (AC-001-3)
 
-- [ ] **TRD-007** `Dispatcher`: resolve the run's project for `terminate_slot/2` (run projection, falling back to the task projection) and release on its project stream; handle `RunSlotTransferred` and `RunSlotAcquired` with `promoted: true` through `handle_slot_promoted`; on `ProjectUpdated` and `ProjectReactivated` run a `rebalance(project_id)` that loops `run_slots.promote` (capacity read from the project) until `{:ok, nil}`. The release goes through `RunSlots.release_command/3`; when the run's project cannot be resolved (legacy run, nil project) it logs a warning naming the run and does nothing, and the backstop sweep over every project stream releases the slot later. Adoption is TRD-017. (4h) [satisfies REQ-001] [satisfies REQ-003] [satisfies REQ-006] [satisfies REQ-012] [satisfies REQ-018] [depends: TRD-005, TRD-006]
+- [x] **TRD-007** `Dispatcher`: resolve the run's project for `terminate_slot/2` (run projection, falling back to the task projection) and release on its project stream; handle `RunSlotTransferred` and `RunSlotAcquired` with `promoted: true` through `handle_slot_promoted`; on `ProjectUpdated` and `ProjectReactivated` run a `rebalance(project_id)` that loops `run_slots.promote` (capacity read from the project) until `{:ok, nil}`. The release goes through `RunSlots.release_command/3`; when the run's project cannot be resolved (legacy run, nil project) it logs a warning naming the run and does nothing, and the backstop sweep over every project stream releases the slot later. Adoption is TRD-017. (4h) [satisfies REQ-001] [satisfies REQ-003] [satisfies REQ-006] [satisfies REQ-012] [satisfies REQ-018] [depends: TRD-005, TRD-006]
   - Target Files: `packages/foreman_server/lib/foreman_server/workflow/dispatcher.ex`
   - Validates PRD ACs: AC-003-3, AC-006-1, AC-006-2, AC-012-3, AC-018-2
   - Implementation AC:
@@ -352,7 +352,7 @@ implementation task.
     - Given a terminal event for a run of project `a`, then `run_slots.release` targets `run_slots:a` only.
     - Given a raised limit, when `ProjectUpdated` is handled, then waiting runs start up to the new limit.
 
-- [ ] **TRD-007-TEST** Extend `dispatcher_run_limit_readmission_test.exs` and add `dispatcher_slot_rebalance_test.exs`. (5h) [verifies TRD-007] [satisfies REQ-001] [satisfies REQ-003] [satisfies REQ-005] [satisfies REQ-006] [satisfies REQ-012] [satisfies REQ-018] [depends: TRD-007]
+- [x] **TRD-007-TEST** Extend `dispatcher_run_limit_readmission_test.exs` and add `dispatcher_slot_rebalance_test.exs`. (5h) [verifies TRD-007] [satisfies REQ-001] [satisfies REQ-003] [satisfies REQ-005] [satisfies REQ-006] [satisfies REQ-012] [satisfies REQ-018] [depends: TRD-007]
   - Target Files: `packages/foreman_server/test/foreman_server/workflow/dispatcher_run_limit_readmission_test.exs`, `packages/foreman_server/test/foreman_server/workflow/dispatcher_slot_rebalance_test.exs`
   - Validates PRD ACs: AC-003-3, AC-005-3, AC-006-1, AC-006-2, AC-012-3, AC-018-2
   - Test AC:
@@ -364,34 +364,34 @@ implementation task.
     - [ ] Scenario: freed slot is same-project -- Given waiters in A and B, When an A run ends, Then only A's waiter starts. (AC-006-1)
     - [ ] Scenario: a raised setting starts waiters -- Given a limit raised from 3 to 5, Then up to two waiters start without operator action. (AC-003-3)
 
-- [ ] **TRD-008** `RunLifecycleReconciler`: `dispatch_slot_release/3` takes the run's project and uses `RunSlots.release_command/3`; `run_slots_backstop_sweep/1` iterates `ProjectionStore.list_projects/0` and loads each `run_slots:<project_id>` stream. A multi-repo run holds exactly one slot (no change needed; asserted by test). (3h) [satisfies REQ-007] [satisfies REQ-018] [depends: TRD-005]
+- [x] **TRD-008** `RunLifecycleReconciler`: `dispatch_slot_release/3` takes the run's project and uses `RunSlots.release_command/3`; `run_slots_backstop_sweep/1` iterates `ProjectionStore.list_projects/0` and loads each `run_slots:<project_id>` stream. A multi-repo run holds exactly one slot (no change needed; asserted by test). (3h) [satisfies REQ-007] [satisfies REQ-018] [depends: TRD-005]
   - Target Files: `packages/foreman_server/lib/foreman_server/run_lifecycle_reconciler.ex`
   - Validates PRD ACs: AC-007-1, AC-018-1
   - Implementation AC:
     - Given a terminal holder in any project, when the sweep runs, then its slot is released on that project's stream.
 
-- [ ] **TRD-008-TEST** Update `run_lifecycle_reconciler_slot_test.exs`; add a multi-repo-run-holds-one-slot case. (2h) [verifies TRD-008] [satisfies REQ-007] [satisfies REQ-018] [depends: TRD-008]
+- [x] **TRD-008-TEST** Update `run_lifecycle_reconciler_slot_test.exs`; add a multi-repo-run-holds-one-slot case. (2h) [verifies TRD-008] [satisfies REQ-007] [satisfies REQ-018] [depends: TRD-008]
   - Target Files: `packages/foreman_server/test/foreman_server/run_lifecycle_reconciler_slot_test.exs`
   - Validates PRD ACs: AC-007-1, AC-018-1
   - Test AC:
     - [ ] Scenario: backstop frees a stale holder -- Given a holder whose run is terminal, When the sweep runs, Then the slot is released. (AC-007-1)
     - [ ] Scenario: one slot per run -- Given a run touching three repositories, Then it holds exactly one slot. (AC-018-1)
 
-- [ ] **TRD-017** Adoption of a waiting run (split from TRD-007). `Dispatcher` handles `ProjectSubjectAdopted` with `mode: "move"`: from the event's `moved.run_ids` and `moved.task_ids` it finds each run that is a waiter in the source project's stream (`from_project_id`), dispatches `run_slots.remove_waiter` to the source stream and `run_slots.acquire` with `enqueue_only: true` to the destination stream (command id `run-slots:adopt-waiter:<run_id>:<event id>`), then rebalances the destination. `Projects.Adoption` and the Project aggregate are not changed: they refuse an active subject, and whether a queued run counts as active is verified by the test (TRD-017-TEST), not assumed. A refused adoption emits no `ProjectSubjectAdopted`, so this handler never runs for it. (3h) [satisfies REQ-017] [depends: TRD-007, TRD-003]
+- [x] **TRD-017** Adoption of a waiting run (split from TRD-007). `Dispatcher` handles `ProjectSubjectAdopted` with `mode: "move"`: from the event's `moved.run_ids` and `moved.task_ids` it finds each run that is a waiter in the source project's stream (`from_project_id`), dispatches `run_slots.remove_waiter` to the source stream and `run_slots.acquire` with `enqueue_only: true` to the destination stream (command id `run-slots:adopt-waiter:<run_id>:<event id>`), then rebalances the destination. `Projects.Adoption` and the Project aggregate are not changed: they refuse an active subject, and whether a queued run counts as active is verified by the test (TRD-017-TEST), not assumed. A refused adoption emits no `ProjectSubjectAdopted`, so this handler never runs for it. (3h) [satisfies REQ-017] [depends: TRD-007, TRD-003]
   - Target Files: `packages/foreman_server/lib/foreman_server/workflow/dispatcher.ex`
   - Validates PRD ACs: AC-017-3
   - Implementation AC:
     - Given a `ProjectSubjectAdopted` event whose `moved.run_ids` contains a waiting run, when handled, then the run leaves the source queue and joins the back of the destination queue, keeping relative order among moved runs.
     - Given an adopted run that is not a waiter (running, finished), then no slot command is dispatched.
 
-- [ ] **TRD-017-TEST** `dispatcher_adoption_requeue_test.exs`. First step of the test: adopt a thread that has a queued run through `CommandGateway` and record whether the aggregate accepts it; assert whichever outcome is real, so the unverified assumption becomes a fact. (3h) [verifies TRD-017] [satisfies REQ-017] [depends: TRD-017]
+- [x] **TRD-017-TEST** `dispatcher_adoption_requeue_test.exs`. First step of the test: adopt a thread that has a queued run through `CommandGateway` and record whether the aggregate accepts it; assert whichever outcome is real, so the unverified assumption becomes a fact. (3h) [verifies TRD-017] [satisfies REQ-017] [depends: TRD-017]
   - Target Files: `packages/foreman_server/test/foreman_server/workflow/dispatcher_adoption_requeue_test.exs`
   - Validates PRD ACs: AC-017-3
   - Test AC:
     - [ ] Scenario: moved waiter rejoins behind -- Given a waiting run is adopted by another project that already has two waiters, When the adoption is accepted, Then the run queues third in the destination and no longer counts against the source. (AC-017-3)
     - [ ] Scenario: a refused adoption leaves both queues untouched -- Given the aggregate refuses to adopt an active subject, When adoption is attempted, Then neither queue changes and the refusal is the asserted result; the outcome is recorded in the TRD's Known Gaps if it makes AC-017-3 unreachable. (AC-017-3)
 
-- [ ] **TRD-018** Fix the stranded-queued-run defect (kata `teak`) in the code this TRD rebuilds. (a) `BootReconciliation`: a slot **waiter** is an orphan only when its run is terminal, or when it has no run projection AND no task is `in_progress` with that `run_id` (`ProjectionStore.tasks_by_run_id/1`); today `run_absent_or_terminal?/1` calls `ProjectionStore.run/1`, which is `nil` for every queued run (a queued run has no run projection yet), so boot removed every queued waiter. Holders keep the old predicate. The same waiter predicate is used by TRD-009's migration. (b) `RunAdmission.slot_decision/2`: when an acquire returns `{:ok, nil}` (deduplicated replay) and the run is neither holder nor waiter, re-issue the acquire once with a fresh command id (`workflow:run-admission:slot-reacquire:<run_id>:<ms>`, the resume path's scheme) and decide again; only a second miss returns `{:error, :slot_state_unknown}`. (c) `Dispatcher`: log one `error` per `{task_id, reason}` for a stranded admission and `debug` for repeats (a `MapSet` in state), not a `warning` per tick. Out of scope (recorded in Known Gaps): surfacing a run whose aggregate is missing but whose projection says queued as failed. (4h) [satisfies REQ-005] [satisfies REQ-007] [satisfies REQ-009] [depends: TRD-005]
+- [x] **TRD-018** Fix the stranded-queued-run defect (kata `teak`) in the code this TRD rebuilds. (a) `BootReconciliation`: a slot **waiter** is an orphan only when its run is terminal, or when it has no run projection AND no task is `in_progress` with that `run_id` (`ProjectionStore.tasks_by_run_id/1`); today `run_absent_or_terminal?/1` calls `ProjectionStore.run/1`, which is `nil` for every queued run (a queued run has no run projection yet), so boot removed every queued waiter. Holders keep the old predicate. The same waiter predicate is used by TRD-009's migration. (b) `RunAdmission.slot_decision/2`: when an acquire returns `{:ok, nil}` (deduplicated replay) and the run is neither holder nor waiter, re-issue the acquire once with a fresh command id (`workflow:run-admission:slot-reacquire:<run_id>:<ms>`, the resume path's scheme) and decide again; only a second miss returns `{:error, :slot_state_unknown}`. (c) `Dispatcher`: log one `error` per `{task_id, reason}` for a stranded admission and `debug` for repeats (a `MapSet` in state), not a `warning` per tick. Out of scope (recorded in Known Gaps): surfacing a run whose aggregate is missing but whose projection says queued as failed. (4h) [satisfies REQ-005] [satisfies REQ-007] [satisfies REQ-009] [depends: TRD-005]
   - Target Files: `packages/foreman_server/lib/foreman_server/workflow/boot_reconciliation.ex`, `packages/foreman_server/lib/foreman_server/run_admission.ex`, `packages/foreman_server/lib/foreman_server/workflow/dispatcher.ex`
   - Validates PRD ACs: AC-005-2, AC-007-1, AC-009-2
   - Implementation AC:
@@ -400,7 +400,7 @@ implementation task.
     - Given a run whose waiter was removed and whose original acquire command id was already processed, when admission is retried, then it ends as holder or waiter, never `:slot_state_unknown`.
     - Given the same stranded task fails admission on ten consecutive ticks, then exactly one `error` log names it.
 
-- [ ] **TRD-018-TEST** `boot_reconciliation_queued_waiter_test.exs` and a case in `run_admission_slot_gate_test.exs` (the test named in kata `teak`: queue a run, remove its waiter, retry admission, assert it ends as holder or waiter). Written before TRD-018 and seen to fail. (3h) [verifies TRD-018] [satisfies REQ-005] [satisfies REQ-007] [satisfies REQ-009] [depends: TRD-018]
+- [x] **TRD-018-TEST** `boot_reconciliation_queued_waiter_test.exs` and a case in `run_admission_slot_gate_test.exs` (the test named in kata `teak`: queue a run, remove its waiter, retry admission, assert it ends as holder or waiter). Written before TRD-018 and seen to fail. (3h) [verifies TRD-018] [satisfies REQ-005] [satisfies REQ-007] [satisfies REQ-009] [depends: TRD-018]
   - Target Files: `packages/foreman_server/test/foreman_server/workflow/boot_reconciliation_queued_waiter_test.exs`, `packages/foreman_server/test/foreman_server/run_admission_slot_gate_test.exs`
   - Validates PRD ACs: AC-005-2, AC-007-1, AC-009-2
   - Test AC:
@@ -409,13 +409,13 @@ implementation task.
     - [ ] Scenario: a deduplicated re-admission is not stranded -- Given a queued run whose waiter was removed, When admission is retried with the already-processed command id, Then the run ends as holder or waiter. (AC-009-2)
     - [ ] Scenario: one error per stranded task -- Given one task that fails admission repeatedly, When ten ticks pass, Then one error line names it and the rest are debug. (AC-007-1)
 
-- [ ] **TRD-009** New `Workflow.RunSlotsMigration.run/0` per the Migration section; `BootReconciliation.scan_run_slot_orphans/0` and `reconcile_run_slots_stream/0` iterate project streams and then call the migration; legacy stream is read-only; every release it issues uses `RunSlots.release_command/3`; it treats a waiter as an orphan only by TRD-018's predicate, so queued runs (no run projection yet) are carried over, not dropped. (6h) [satisfies REQ-008] [satisfies REQ-009] [depends: TRD-003, TRD-005, TRD-007, TRD-018]
+- [x] **TRD-009** New `Workflow.RunSlotsMigration.run/0` per the Migration section; `BootReconciliation.scan_run_slot_orphans/0` and `reconcile_run_slots_stream/0` iterate project streams and then call the migration; legacy stream is read-only; every release it issues uses `RunSlots.release_command/3`; it treats a waiter as an orphan only by TRD-018's predicate, so queued runs (no run projection yet) are carried over, not dropped. (6h) [satisfies REQ-008] [satisfies REQ-009] [depends: TRD-003, TRD-005, TRD-007, TRD-018]
   - Target Files: `packages/foreman_server/lib/foreman_server/workflow/run_slots_migration.ex`, `packages/foreman_server/lib/foreman_server/workflow/boot_reconciliation.ex`
   - Validates PRD ACs: AC-008-1, AC-009-1, AC-009-2, AC-009-3
   - Implementation AC:
     - Given legacy holders and waiters, when boot reconciliation runs twice, then each is carried over once (same command ids) and nothing is appended to `run_slots:global`.
 
-- [ ] **TRD-009-TEST** `run_slots_migration_test.exs`: seed a legacy stream with holders and ordered waiters across two projects, run the migration, assert adopted holders, waiter order per project, idempotency, and a byte-for-byte unchanged legacy stream. (5h) [verifies TRD-009] [satisfies REQ-008] [satisfies REQ-009] [depends: TRD-009]
+- [x] **TRD-009-TEST** `run_slots_migration_test.exs`: seed a legacy stream with holders and ordered waiters across two projects, run the migration, assert adopted holders, waiter order per project, idempotency, and a byte-for-byte unchanged legacy stream. (5h) [verifies TRD-009] [satisfies REQ-008] [satisfies REQ-009] [depends: TRD-009]
   - Target Files: `packages/foreman_server/test/foreman_server/workflow/run_slots_migration_test.exs`
   - Validates PRD ACs: AC-008-1, AC-009-1, AC-009-2, AC-009-3, AC-009-4
   - Test AC:
@@ -428,14 +428,14 @@ implementation task.
 
 **Shippable State:** The machine-wide concurrency setting no longer exists: a leftover `max_concurrent_runs` value is ignored with a logged warning, the default per-project limit is 3, and no production code names the global stream outside the migration module.
 
-- [ ] **TRD-010** Remove the global cap: delete `RunSlots.Config.max_concurrent_runs/0`, the `:max_concurrent_runs` lines in `config.exs`, and set `:max_concurrent_runs_per_project` to 3; add the boot warning (`Logger.warning` naming `:max_concurrent_runs` as retired and ignored) in `Application.start/2`; grep gate: no production reference to `"run_slots:global"` or `Config.max_concurrent_runs()` remains outside the migration module. (3h) [satisfies REQ-008] [satisfies REQ-002] [depends: TRD-005, TRD-009]
+- [x] **TRD-010** Remove the global cap: delete `RunSlots.Config.max_concurrent_runs/0`, the `:max_concurrent_runs` lines in `config.exs`, and set `:max_concurrent_runs_per_project` to 3; add the boot warning (`Logger.warning` naming `:max_concurrent_runs` as retired and ignored) in `Application.start/2`; grep gate: no production reference to `"run_slots:global"` or `Config.max_concurrent_runs()` remains outside the migration module. (3h) [satisfies REQ-008] [satisfies REQ-002] [depends: TRD-005, TRD-009]
   - Target Files: `packages/foreman_server/lib/foreman_server/aggregates/run_slots/config.ex`, `packages/foreman_server/config/config.exs`, `packages/foreman_server/config/test.exs`, `packages/foreman_server/lib/foreman_server/application.ex`
   - Validates PRD ACs: AC-008-2, AC-008-3, AC-002-1
   - Implementation AC:
     - Given `config :foreman_server, :max_concurrent_runs, 9` in the environment, when the server boots, then it logs the warning once and starts normally.
     - Given the source tree, when grepped, then `run_slots:global` appears only in the migration module and its test.
 
-- [ ] **TRD-010-TEST** `run_slots_config_test.exs` (rewrite), a boot-warning test using `capture_log`, and a source-contract test that greps `lib/` for the retired literals. (3h) [verifies TRD-010] [satisfies REQ-008] [satisfies REQ-002] [depends: TRD-010]
+- [x] **TRD-010-TEST** `run_slots_config_test.exs` (rewrite), a boot-warning test using `capture_log`, and a source-contract test that greps `lib/` for the retired literals. (3h) [verifies TRD-010] [satisfies REQ-008] [satisfies REQ-002] [depends: TRD-010]
   - Target Files: `packages/foreman_server/test/foreman_server/aggregates/run_slots_config_test.exs`, `packages/foreman_server/test/foreman_server/retired_global_slots_test.exs`
   - Validates PRD ACs: AC-008-2, AC-008-3, AC-002-1
   - Test AC:
@@ -447,14 +447,14 @@ implementation task.
 
 **Shippable State:** An operator can read, for any project, how many runs are running and waiting, its limit, and the waiting runs in order with how long each has waited; the un-scoped queue endpoint is refused; a project's reported limit is its own setting with no global clamp.
 
-- [ ] **TRD-011** `ProjectionStore`: fold `RunSlot*` events by `project_id` into `run_slots: %{project_id => %{capacity, holders, waiters}}` (events without `project_id` are ignored); `queue_status/1`; `project_limits/2` usage gains `running_runs` and `waiting_runs`; `ProjectLimits.build/3` drops the `min(.., Config.max_concurrent_runs())` clamp and reports `running_runs`/`waiting_runs`. Replace the `run_slots: %{capacity: 0, ...}` initial state. (5h) [satisfies REQ-010] [satisfies REQ-013] [depends: TRD-001]
+- [x] **TRD-011** `ProjectionStore`: fold `RunSlot*` events by `project_id` into `run_slots: %{project_id => %{capacity, holders, waiters}}` (events without `project_id` are ignored); `queue_status/1`; `project_limits/2` usage gains `running_runs` and `waiting_runs`; `ProjectLimits.build/3` drops the `min(.., Config.max_concurrent_runs())` clamp and reports `running_runs`/`waiting_runs`. Replace the `run_slots: %{capacity: 0, ...}` initial state. (5h) [satisfies REQ-010] [satisfies REQ-013] [depends: TRD-001]
   - Target Files: `packages/foreman_server/lib/foreman_server/projection_store.ex`, `packages/foreman_server/lib/foreman_server/project_limits.ex`
   - Validates PRD ACs: AC-010-1, AC-010-2, AC-010-3, AC-010-4, AC-013-2
   - Implementation AC:
     - Given a project with three holders and two waiters, then `queue_status/1` lists running 3, waiting 2 in order with `waited_ms` for each.
     - Given a project setting of 5, then `limits.max_concurrent_runs` is 5.
 
-- [ ] **TRD-011-TEST** Rewrite `projection_store_queue_status_test.exs` and `projection_store_run_slots_test.exs`; update `project_limits_test.exs`. (4h) [verifies TRD-011] [satisfies REQ-010] [satisfies REQ-013] [depends: TRD-011]
+- [x] **TRD-011-TEST** Rewrite `projection_store_queue_status_test.exs` and `projection_store_run_slots_test.exs`; update `project_limits_test.exs`. (4h) [verifies TRD-011] [satisfies REQ-010] [satisfies REQ-013] [depends: TRD-011]
   - Target Files: `packages/foreman_server/test/foreman_server/projection_store_queue_status_test.exs`, `packages/foreman_server/test/foreman_server/projection_store_run_slots_test.exs`
   - Validates PRD ACs: AC-010-1, AC-010-2, AC-010-3, AC-010-4, AC-013-2
   - Test AC:
@@ -464,13 +464,13 @@ implementation task.
     - [ ] Scenario: wait time shown -- Given a run waited, Then each waiter carries `waited_ms`. (AC-010-4)
     - [ ] Scenario: limit changes replay deterministically -- Given the limit changed over time, When history is replayed, Then each decision shows the limit in force. (AC-013-2)
 
-- [ ] **TRD-012** `QueueController.index/2`: require `project_id`; absent or blank answers 422 `project_required` ("name a project: GET /api/queue?project_id=<id>"); unknown project 404 `project_not_found`; body is the per-project status. Remove any combined view (MCP tool inventory check). (2h) [satisfies REQ-010] [satisfies REQ-011] [depends: TRD-011]
+- [x] **TRD-012** `QueueController.index/2`: require `project_id`; absent or blank answers 422 `project_required` ("name a project: GET /api/queue?project_id=<id>"); unknown project 404 `project_not_found`; body is the per-project status. Remove any combined view (MCP tool inventory check). (2h) [satisfies REQ-010] [satisfies REQ-011] [depends: TRD-011]
   - Target Files: `packages/foreman_server/lib/foreman_server_web/controllers/queue_controller.ex`
   - Validates PRD ACs: AC-010-2, AC-011-1, AC-011-2
   - Implementation AC:
     - Given `GET /api/queue` with no `project_id`, then 422 `project_required`.
 
-- [ ] **TRD-012-TEST** New `queue_controller_test.exs`; run `mcp/tool_inventory_test.exs` to confirm no combined queue tool. (2h) [verifies TRD-012] [satisfies REQ-010] [satisfies REQ-011] [depends: TRD-012]
+- [x] **TRD-012-TEST** New `queue_controller_test.exs`; run `mcp/tool_inventory_test.exs` to confirm no combined queue tool. (2h) [verifies TRD-012] [satisfies REQ-010] [satisfies REQ-011] [depends: TRD-012]
   - Target Files: `packages/foreman_server/test/foreman_server_web/controllers/queue_controller_test.exs`
   - Validates PRD ACs: AC-010-2, AC-011-1, AC-011-2
   - Test AC:
@@ -478,13 +478,13 @@ implementation task.
     - [ ] Scenario: no surface returns a combined queue -- Given the API, CLI and MCP tools, Then none returns runs of several projects. (AC-011-1)
     - [ ] Scenario: scoped read -- Given a project is named, Then only its runs are returned. (AC-010-2)
 
-- [ ] **TRD-013** Telemetry: add `project_id` and `waiting` to the slot events (`Telemetry.run_slots_*`: acquired, queued, released, transferred) and a `queue_wait_ms` measurement on promotion computed from the waiter's stamp. (2h) [satisfies REQ-014] [depends: TRD-002, TRD-003]
+- [x] **TRD-013** Telemetry: add `project_id` and `waiting` to the slot events (`Telemetry.run_slots_*`: acquired, queued, released, transferred) and a `queue_wait_ms` measurement on promotion computed from the waiter's stamp. (2h) [satisfies REQ-014] [depends: TRD-002, TRD-003]
   - Target Files: `packages/foreman_server/lib/foreman_server/telemetry.ex`, `packages/foreman_server/lib/foreman_server/aggregates/run_slots.ex`
   - Validates PRD ACs: AC-014-1, AC-014-2
   - Implementation AC:
     - Given a run is queued then promoted, then telemetry shows the project, running and waiting counts and a `queue_wait_ms`.
 
-- [ ] **TRD-013-TEST** Update `telemetry_run_slots_test.exs`. (1h) [verifies TRD-013] [satisfies REQ-014] [depends: TRD-013]
+- [x] **TRD-013-TEST** Update `telemetry_run_slots_test.exs`. (1h) [verifies TRD-013] [satisfies REQ-014] [depends: TRD-013]
   - Target Files: `packages/foreman_server/test/foreman_server/telemetry_run_slots_test.exs`
   - Validates PRD ACs: AC-014-1, AC-014-2
   - Test AC:
@@ -495,13 +495,13 @@ implementation task.
 
 **Shippable State:** The documentation, CLI reference and configuration reference describe per-project queues only (with no machine-wide ceiling stated), and a limit of 0 or below is refused with its valid range.
 
-- [ ] **TRD-014** Verification only: confirm the settings validator rejects 0, negatives and over-range (`Aggregates.Project.Settings`); if its error text does not name the range, make it do so; no other code. (1h) [satisfies REQ-016] [depends: TRD-010]
+- [x] **TRD-014** Verification only: confirm the settings validator rejects 0, negatives and over-range (`Aggregates.Project.Settings`); if its error text does not name the range, make it do so; no other code. (1h) [satisfies REQ-016] [depends: TRD-010]
   - Target Files: `packages/foreman_server/lib/foreman_server/aggregates/project/settings.ex`
   - Validates PRD ACs: AC-016-1, AC-016-2, AC-016-3
   - Implementation AC:
     - Given `max_concurrent_runs: 0`, when saved, then it is rejected naming 1..1000 and the previous value is kept.
 
-- [ ] **TRD-014-TEST** Extend `project_settings_test.exs` and `project_settings_live_test.exs`. (2h) [verifies TRD-014] [satisfies REQ-016] [depends: TRD-014]
+- [x] **TRD-014-TEST** Extend `project_settings_test.exs` and `project_settings_live_test.exs`. (2h) [verifies TRD-014] [satisfies REQ-016] [depends: TRD-014]
   - Target Files: `packages/foreman_server/test/foreman_server/aggregates/project_settings_test.exs`, `packages/foreman_server/test/foreman_server_web/live/project_settings_live_test.exs`
   - Validates PRD ACs: AC-016-1, AC-016-2, AC-016-3
   - Test AC:
@@ -509,13 +509,13 @@ implementation task.
     - [ ] Scenario: limit one serialises -- Given a limit of 1, Then runs go one at a time. (AC-016-2)
     - [ ] Scenario: pause is the stop -- Given a paused project, Then no run starts whatever the limit. (AC-016-3)
 
-- [ ] **TRD-016** Documentation (constitution section 8, a blocking gate): `docs/user-guide.md` (the project settings table row for `max_concurrent_runs`, the **Limits** paragraph, the daily-cap paragraph that mentions the global run slot, and the paragraph that lists `GET /api/queue`: per-project, no machine-wide ceiling, total concurrency is the sum of per-project limits); `docs/cli-reference.md` (the `foreman project settings` limits-block description: add `running_runs`, `waiting_runs`); new `CLAUDE.md` subsection "Per-project run slots" replacing nothing (it states the stream key, capacity source, promotion rule, migration, and that `run_slots.*` stay system-only); config comments in `config.exs`. (3h) [satisfies REQ-015] [depends: TRD-010, TRD-012]
+- [x] **TRD-016** Documentation (constitution section 8, a blocking gate): `docs/user-guide.md` (the project settings table row for `max_concurrent_runs`, the **Limits** paragraph, the daily-cap paragraph that mentions the global run slot, and the paragraph that lists `GET /api/queue`: per-project, no machine-wide ceiling, total concurrency is the sum of per-project limits); `docs/cli-reference.md` (the `foreman project settings` limits-block description: add `running_runs`, `waiting_runs`); new `CLAUDE.md` subsection "Per-project run slots" replacing nothing (it states the stream key, capacity source, promotion rule, migration, and that `run_slots.*` stay system-only); config comments in `config.exs`. (3h) [satisfies REQ-015] [depends: TRD-010, TRD-012]
   - Target Files: `docs/user-guide.md`, `docs/cli-reference.md`, `CLAUDE.md`, `packages/foreman_server/config/config.exs`
   - Validates PRD ACs: AC-015-1, AC-015-2
   - Implementation AC:
     - Given the four documents, when searched, then none describes the global queue as current behaviour and the operator guide says there is no machine-wide ceiling.
 
-- [ ] **TRD-016-TEST** Documentation contract test `docs_per_project_queue_test.exs`: greps the four documents for the retired phrases (`global run slot`, `global run-slot capacity`, `capped by the global`) and for the required statement. (1h) [verifies TRD-016] [satisfies REQ-015] [depends: TRD-016]
+- [x] **TRD-016-TEST** Documentation contract test `docs_per_project_queue_test.exs`: greps the four documents for the retired phrases (`global run slot`, `global run-slot capacity`, `capped by the global`) and for the required statement. (1h) [verifies TRD-016] [satisfies REQ-015] [depends: TRD-016]
   - Target Files: `packages/foreman_server/test/foreman_server/docs_per_project_queue_test.exs`
   - Validates PRD ACs: AC-015-1, AC-015-2
   - Test AC:
