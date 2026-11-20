@@ -345,6 +345,14 @@ export default class ForemanRuns extends View {
     cx.stop_propagation();
   }
 
+  // The queue entries that are not already listed as runs. A run the server resumed after a pause waits
+  // for a slot with its run record, so it is in GET /api/runs (shown under its status) and in the slot
+  // queue at once; a queued run that was never started has no run record and is shown only here.
+  queuedEntries() {
+    const listed = new Set(this.runs.map((r) => r.run_id));
+    return this.queue.entries.filter((e) => !(e.run_id && listed.has(e.run_id)));
+  }
+
   groups(applyFilter = true) {
     // Counters (header and per project) always describe ALL runs; only the listed rows are
     // filtered. `all` feeds the counters, `runs` is what the project lists.
@@ -355,7 +363,7 @@ export default class ForemanRuns extends View {
       byProject.get(key).all.push(r);
     }
     // A project with queued work but no run yet still gets a group.
-    for (const e of this.queue.entries) {
+    for (const e of this.queuedEntries()) {
       const key = e.project_id ?? "";
       if (!byProject.has(key)) byProject.set(key, { all: [], queued: [] });
       byProject.get(key).queued.push(e);
@@ -427,7 +435,7 @@ export default class ForemanRuns extends View {
   renderRail(t) {
     const failed = this.runs.filter((r) => r.status === "failed").length;
     const active = this.runs.filter(isActive).length;
-    const queuedN = this.queue.entries.filter((e) => e.kind === "slot" && !e.stale).length;
+    const queuedN = this.queuedEntries().filter((e) => e.kind === "slot" && !e.stale).length;
     const summary = (text, color) => div().text_size(11).text_color(color).child(text);
     const tile = (g) => {
       const f = g.all.filter((r) => r.status === "failed").length;
@@ -486,7 +494,11 @@ export default class ForemanRuns extends View {
       const n = g.queued.filter((e) => e.kind === "slot" && !e.stale).length;
       const awaitingN = g.queued.filter((e) => e.kind === "open").length;
       const staleN = g.queued.filter((e) => e.stale).length;
-      const counts = [`${n}`, ...(awaitingN > 0 ? [`${awaitingN} awaiting`] : []), ...(staleN > 0 ? [`${staleN} stale`] : [])];
+      const counts = [
+        ...(n > 0 || (awaitingN === 0 && staleN === 0) ? [`${n}`] : []),
+        ...(awaitingN > 0 ? [`${awaitingN} awaiting`] : []),
+        ...(staleN > 0 ? [`${staleN} stale`] : []),
+      ];
       return h_flex().id(`queue-head-${key}`).pl(22).pr(12).pt(4).pb(2).gap(6).items_center().cursor_pointer()
         .on_click((_e, cx) => this.toggle(key, cx))
         .child(div().w(10).text_size(10).text_color(t.dim).child(closed ? "▸" : "▾"))
