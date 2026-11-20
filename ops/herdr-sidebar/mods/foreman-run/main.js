@@ -324,6 +324,60 @@ export default class ForemanRun extends View {
           .child(open ? "show less" : `… ${lines.length - MAX_LINES} more lines`)));
   }
 
+  // A marker for a phase boundary, placed between the turns it falls between. A start marker is a ruled
+  // "started" row; an end marker carries the phase's outcome (the state the strip shows) and, for a
+  // failure, the reason.
+  renderPhaseMarker(m, th) {
+    const { p, at, i, end } = m;
+    const [glyph, color] = end ? PHASE_GLYPH[p.state] : PHASE_GLYPH.running;
+    return v_flex().id(`phase-${end ? "end" : "start"}-${i}`).mx(12).gap(1)
+      .when(!end, (el) => el.mt(8).pt(4).border_t(1).border_color(th.border))
+      .pb(2)
+      .child(h_flex().gap(8).items_center()
+        .child(div().w(54).text_size(10.5).text_color(th.dim).child(clock(at)))
+        .child(div().w(40).text_size(10.5).font_semibold().text_color(th.accent).child("phase"))
+        .child(div().text_size(12).text_color(th[color] ?? th.dim).child(glyph))
+        .child(div().text_size(12).font_semibold().text_color(th.foreground).child(p.name))
+        .when(!end && p.attempt > 1, (el) => el.child(div().text_size(11).text_color(th.idle).child(`attempt ${p.attempt}`)))
+        .child(div().text_size(11).text_color(th.dim).child(end ? p.state : "started")))
+      .when(end && p.reason, (el) => el.child(div().pl(102).text_size(11).text_color(th.blocked).child(oneLine(p.reason))));
+  }
+
+  // The Activity rows: transcript turns in order, with a start marker where each started phase began
+  // and, for a phase that is over, an end marker at its last event (GET /api/runs/:id/phases has
+  // started_at_ms and last_event_at_ms; there is no separate finish time, and for a finished phase the
+  // last event is its completion). A turn without a timestamp never moves a marker; markers that fall
+  // after the last turn follow it.
+  activityRows(r, th) {
+    const over = new Set(["done", "failed", "cancelled"]);
+    const marks = [];
+    phaseStrip(r, this.phases).slice(0, this.phases.length).forEach((p, i) => {
+      const started = this.phases[i].started_at_ms;
+      const last = this.phases[i].last_event_at_ms;
+      if (!Number.isFinite(started)) return;
+      marks.push({ p, i, at: started, end: false });
+      if (over.has(p.state) && Number.isFinite(last) && last >= started) marks.push({ p, i, at: last, end: true });
+    });
+    // At one instant one phase's end comes before the next phase's start, but a phase starts before it ends.
+    marks.sort((a, b) => a.at - b.at || (a.i === b.i ? Number(a.end) - Number(b.end) : Number(b.end) - Number(a.end)));
+    const rows = [];
+    let next = 0;
+    const flush = (until) => {
+      while (next < marks.length && marks[next].at <= until) rows.push(this.renderPhaseMarker(marks[next++], th));
+    };
+    for (const t of this.turns) {
+      const at = t.at ? Date.parse(t.at) : NaN;
+      if (Number.isFinite(at)) flush(at);
+      rows.push(this.renderTurn(t, th));
+    }
+    flush(Infinity);
+    if (this.turns.length === 0) {
+      rows.push(div().px(12).py(8).text_size(12).text_color(th.dim)
+        .child(isActive(r) ? "No output yet. The agent has not written anything." : "This run produced no output."));
+    }
+    return rows;
+  }
+
   renderFile(f, th) {
     const c = this.changes;
     const canDiff = c.source === "worktree" && c.base && !f.untracked;
@@ -414,9 +468,7 @@ export default class ForemanRun extends View {
     if (!this.loaded) rows = [note("Loading…", th.dim)];
     else if (!r) rows = [note(this.error ?? "Run not found", th.blocked)];
     else if (this.tab === "activity") {
-      rows = this.turns.length === 0
-        ? [note(isActive(r) ? "No output yet. The agent has not written anything." : "This run produced no output.", th.dim)]
-        : this.turns.map((t) => this.renderTurn(t, th));
+      rows = this.activityRows(r, th);
       if (this.dropped > 0) rows.unshift(note(`${this.dropped} earlier turns are not shown.`, th.dim));
     } else {
       const c = this.changes;
