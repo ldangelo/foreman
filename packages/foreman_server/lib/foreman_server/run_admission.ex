@@ -255,13 +255,40 @@ defmodule ForemanServer.RunAdmission do
     end
   end
 
-  defp slot_decision(project_id, run_id, _timeout),
-    do: slot_decision_retry(RunSlots.stream_id(project_id), run_id, 5)
+  # The project's slot decision for a run. An acquire answered `{:ok, nil}` (its command
+  # id was already processed) says nothing about the stream's CURRENT state: if the run
+  # was dropped as a waiter since (boot reconciliation, kata `teak`) it is neither holder
+  # nor waiter. Re-issue the acquire ONCE under a fresh command id (the resume path's
+  # scheme) and decide again; only a second miss is `:unknown`.
+  defp slot_decision(project_id, run_id, timeout) do
+    case slot_decision_retry(RunSlots.stream_id(project_id), run_id, 5) do
+      :unknown -> reacquire_slot(project_id, run_id, timeout)
+      decision -> decision
+    end
+  end
+
+  defp reacquire_slot(project_id, run_id, timeout) do
+    command = %{
+      type: "run_slots.acquire",
+      command_id:
+        "workflow:run-admission:slot-reacquire:#{run_id}:#{System.system_time(:millisecond)}",
+      aggregate_id: RunSlots.stream_id(project_id),
+      payload: %{
+        run_id: run_id,
+        capacity: project_capacity(project_id),
+        project_id: project_id
+      }
+    }
+
+    case CommandGateway.dispatch_system(command, timeout) do
+      {:ok, _event_spec_or_nil} -> slot_decision_retry(RunSlots.stream_id(project_id), run_id, 5)
+      {:error, _reason} -> :unknown
+    end
+  end
 
   defp slot_decision_retry(_aggregate_id, _run_id, 0), do: :unknown
 
   defp slot_decision_retry(aggregate_id, run_id, retries_left) do
-
     case Registry.lookup(ForemanServer.AggregateRegistry, aggregate_id) do
       [{pid, _}] ->
         case safe_get_state(pid) do

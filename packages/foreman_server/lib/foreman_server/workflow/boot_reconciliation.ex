@@ -840,7 +840,24 @@ defmodule ForemanServer.Workflow.BootReconciliation do
     end
   end
 
-  defp waiter_run_absent_or_terminal?(run_id), do: run_absent_or_terminal?(run_id)
+  # A slot WAITER is an orphan only when its run is terminal, or when it has no run
+  # projection AND no task is `in_progress` with that `run_id`. A queued run has no run
+  # projection yet (the slot gate runs before `run.start`), so `ProjectionStore.run/1`
+  # is `nil` for every healthy waiter; its task being in progress is what says the run
+  # is still wanted (kata `teak`). Holders keep `run_absent_or_terminal?/1`. TRD-009's
+  # legacy migration uses this same predicate.
+  defp waiter_run_absent_or_terminal?(run_id) do
+    case ProjectionStore.run(run_id) do
+      nil -> not queued_task_in_progress?(run_id)
+      _run -> run_terminal?(run_id)
+    end
+  end
+
+  defp queued_task_in_progress?(run_id) do
+    run_id
+    |> ProjectionStore.tasks_by_run_id()
+    |> Enum.any?(&(fetch_map_value(&1, :status) == "in_progress"))
+  end
 
   defp release_run_slot(run_id, reason) when is_binary(run_id) and run_id != "" do
     result =

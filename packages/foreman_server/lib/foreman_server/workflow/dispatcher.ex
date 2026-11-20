@@ -797,9 +797,7 @@ defmodule ForemanServer.Workflow.Dispatcher do
         {:noreply, state}
 
       {:error, reason} ->
-        Logger.warning(
-          "ForemanServer.Workflow.Dispatcher: admission failed for task #{task_id}: #{inspect(reason)}"
-        )
+        state = log_admission_failure(state, task_id, reason)
 
         Telemetry.run_dispatcher_admission_failed(
           task_id: task_id,
@@ -810,6 +808,28 @@ defmodule ForemanServer.Workflow.Dispatcher do
         note_deferral(run_payload.project_id, task_id, reason)
 
         {:noreply, state}
+    end
+  end
+
+  # A stranded task is re-admitted on every tick that touches it, so its refusal is
+  # logged at `error` ONCE per `{task_id, reason}` (kept in `state.logged_admission_failures`)
+  # and at `debug` for every repeat, instead of a `warning` per tick (kata `teak`).
+  defp log_admission_failure(state, task_id, reason) do
+    key = {task_id, reason}
+    seen = Map.get(state, :logged_admission_failures, MapSet.new())
+
+    if MapSet.member?(seen, key) do
+      Logger.debug(
+        "ForemanServer.Workflow.Dispatcher: admission still failing for task #{task_id}: #{inspect(reason)}"
+      )
+
+      state
+    else
+      Logger.error(
+        "ForemanServer.Workflow.Dispatcher: admission failed for task #{task_id}: #{inspect(reason)}"
+      )
+
+      Map.put(state, :logged_admission_failures, MapSet.put(seen, key))
     end
   end
 
@@ -955,9 +975,12 @@ defmodule ForemanServer.Workflow.Dispatcher do
             {:noreply, state}
 
           {:error, reason} ->
-            Logger.warning(
-              "handle_slot_promoted: admission failed for #{run_id}: #{inspect(reason)}"
-            )
+            state =
+              log_admission_failure(
+                state,
+                Map.get(payload, :task_id) || run_id,
+                reason
+              )
 
             {:noreply, state}
         end
@@ -1115,9 +1138,7 @@ defmodule ForemanServer.Workflow.Dispatcher do
             {:noreply, state}
 
           {:error, reason} ->
-            Logger.warning(
-              "ForemanServer.Workflow.Dispatcher: admission failed for task #{task_id}: #{inspect(reason)}"
-            )
+            state = log_admission_failure(state, task_id, reason)
 
             Telemetry.run_dispatcher_admission_failed(
               task_id: task_id,
