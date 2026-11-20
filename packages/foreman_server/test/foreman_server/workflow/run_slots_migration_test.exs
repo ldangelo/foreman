@@ -107,6 +107,14 @@ defmodule ForemanServer.Workflow.RunSlotsMigrationTest do
     assert waiters(a) == [x]
     assert count(events(RunSlots.stream_id(a)), "RunSlotAcquired") == 1
     assert count(events(RunSlots.stream_id(a)), "RunSlotQueued") == 1
+
+    # A holder whose slot was released since (a paused run is live but holds no slot) is not
+    # re-adopted by a later boot: the adopt command id was already processed.
+    {:ok, _} = CommandGateway.dispatch_system(RunSlots.release_command(a, a1, :paused))
+    refute a1 in holders(a)
+    scan!()
+    refute a1 in holders(a)
+    assert snapshot(@legacy) == snapshot
   end
 
   # AC-009-4
@@ -147,6 +155,30 @@ defmodule ForemanServer.Workflow.RunSlotsMigrationTest do
                aggregate_id: RunSlots.stream_id(a),
                payload: %{project_id: a, capacity: 1}
              })
+  end
+
+  # Supplementary (not a Test AC scenario): free capacity is filled FIFO by the carry-over.
+  test "free capacity of a project promotes the head waiter, in legacy order" do
+    :meck.new(ForemanServer.Workflow.RunSupervisor, [:no_link, :passthrough])
+    on_exit(fn -> :meck.unload(ForemanServer.Workflow.RunSupervisor) end)
+
+    :meck.expect(ForemanServer.Workflow.RunSupervisor, :start_run, fn _run, _task -> {:ok, :c} end)
+
+    :meck.expect(ForemanServer.Workflow.RunSupervisor, :start_run, fn _run, _task, _o ->
+      {:ok, :c}
+    end)
+
+    a = project(2)
+    [a1, x, y] = [unique("a1"), unique("x"), unique("y")]
+    seed_live_run!(a1, a)
+    for run <- [x, y], do: seed_in_progress_task!(run, a)
+    legacy_acquire!(a1, 1)
+    for run <- [x, y], do: legacy_acquire!(run, 0)
+
+    assert {:ok, %{adopted: 1, queued: 2, promoted: 1}} = RunSlotsMigration.run()
+
+    assert holders(a) == Enum.sort([a1, x])
+    assert waiters(a) == [y]
   end
 
   # -- helpers ---------------------------------------------------------------

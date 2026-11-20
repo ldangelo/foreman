@@ -40,6 +40,7 @@ defmodule ForemanServer.Workflow.BootReconciliation do
   alias ForemanServer.Incarnation
   alias ForemanServer.TaskProvider.Issue
   alias ForemanServer.TaskProvider.Registry, as: TaskProviderRegistry
+  alias ForemanServer.Workflow.RunSlotsMigration
   @orphan_reopen_event [:foreman_server, :workflow, :boot_reconciliation, :orphan_reopen]
   @matching_in_progress_event [
     :foreman_server,
@@ -59,9 +60,9 @@ defmodule ForemanServer.Workflow.BootReconciliation do
   @scan_retry_ms 50
   @json_schema_cache_name :foreman_server_json_schema_cache
   # Per-orphan dispatch-attempt counter for orphan slot releases and waiter
-  # removes. The `run_slots:global` aggregate actor can be force-killed by
-  # test reset helpers or operator intervention; `release_run_slot/2` and
-  # `remove_run_slot_waiter/2` apply the same 5-restart exponential backoff
+  # removes. A project's `run_slots:<project_id>` aggregate actor can be force-killed by
+  # test reset helpers or operator intervention; `release_run_slot/3` and
+  # `remove_run_slot_waiter/3` apply the same 5-restart exponential backoff
   # used by the agent crash-recovery loop (RTE-T004 / RestartBackoff).
   # After 5 consecutive failures the orphan is logged as BLOCKED with
   # operator-facing telemetry so operators can intervene. Attempt counts
@@ -160,11 +161,12 @@ defmodule ForemanServer.Workflow.BootReconciliation do
   end
 
   @doc """
-  Scan the `run_slots:global` stream for orphaned holders and waiters — a
-  holder or waiter whose `run_id` does not correspond to a non-terminal run
-  projection. Orphaned holders are dispatched as `run_slots.release` and
-  orphaned waiters as `run_slots.remove_waiter`, mirroring the
-  `scan_lease_orphans/0` pattern.
+  Scan every project's `run_slots:<project_id>` stream for orphaned holders and
+  waiters (see `slot_entry_orphan?/1`), then carry the legacy global slot
+  stream over to the project streams (`Workflow.RunSlotsMigration`, REQ-009).
+  Orphaned holders are dispatched as `run_slots.release` and orphaned waiters as
+  `run_slots.remove_waiter`, both on the run's own project stream, mirroring the
+  `scan_lease_orphans/0` pattern. Nothing is ever dispatched to the legacy stream.
 
   Dispatches as a cast so the actual scan runs inside the
   `BootReconciliation` process. Returns `:ok` once the cast is enqueued.
@@ -802,16 +804,42 @@ defmodule ForemanServer.Workflow.BootReconciliation do
   end
 
   defp reconcile_run_slots_stream do
-    {state, _version} = Aggregate.load(RunSlots, "run_slots:global")
+    {holders_dropped, waiters_dropped, scanned?} =
+      slot_project_ids()
+      |> Enum.reduce({0, 0, false}, fn project_id, {holders, waiters, scanned?} ->
+        case reconcile_project_slots(project_id) do
+          {:ok, :empty} -> {holders, waiters, scanned?}
+          {:ok, {dh, dw}} -> {holders + dh, waiters + dw, true}
+          :error -> {holders, waiters, scanned?}
+        end
+      end)
 
-    if state.capacity == nil and state.holders == %{} and state.waiters == [] do
+    migrate_legacy_run_slots()
+
+    if scanned? do
+      Telemetry.run_slots_reconciled(holders_dropped, waiters_dropped, :boot)
+    else
       :ok
+    end
+  end
+
+  # One project's stream. A failure of one project (an actor killed mid-scan, a
+  # stream that cannot be folded) must not stop the pass over the others, nor take
+  # this process down.
+  defp reconcile_project_slots(project_id) do
+    {state, _version} = Aggregate.load(RunSlots, RunSlots.stream_id(project_id))
+
+    if state.holders == %{} and state.waiters == [] do
+      {:ok, :empty}
     else
       holders_dropped =
         Enum.count(state.holders, fn {run_id, _holder} ->
-          if run_absent_or_terminal?(run_id) do
-            Logger.warning("BootReconciliation: dropping orphan slot holder #{run_id}")
-            release_run_slot(run_id, :boot_orphan_holder)
+          if slot_entry_orphan?(run_id) do
+            Logger.warning(
+              "BootReconciliation: dropping orphan slot holder #{run_id} of project #{project_id}"
+            )
+
+            release_run_slot(project_id, run_id, :boot_orphan_holder)
             true
           else
             false
@@ -820,56 +848,94 @@ defmodule ForemanServer.Workflow.BootReconciliation do
 
       waiters_dropped =
         Enum.count(state.waiters, fn waiter ->
-          if waiter_run_absent_or_terminal?(waiter.run_id) do
-            Logger.warning("BootReconciliation: removing orphan waiter #{waiter.run_id}")
-            remove_run_slot_waiter(waiter.run_id, :boot_orphan_waiter)
+          if slot_entry_orphan?(waiter.run_id) do
+            Logger.warning(
+              "BootReconciliation: removing orphan waiter #{waiter.run_id} of project #{project_id}"
+            )
+
+            remove_run_slot_waiter(project_id, waiter.run_id, :boot_orphan_waiter)
             true
           else
             false
           end
         end)
 
-      Telemetry.run_slots_reconciled(holders_dropped, waiters_dropped, :boot)
+      {:ok, {holders_dropped, waiters_dropped}}
+    end
+  catch
+    kind, reason when kind in [:exit, :error] ->
+      Logger.warning(
+        "BootReconciliation: run-slot scan of project #{project_id} failed (#{kind}): #{inspect(reason)}"
+      )
+
+      :error
+  end
+
+  defp migrate_legacy_run_slots do
+    case RunSlotsMigration.run() do
+      {:ok, summary} ->
+        if summary.adopted + summary.queued + summary.failed > 0 do
+          Logger.info("BootReconciliation: legacy run-slot carry-over #{inspect(summary)}")
+        end
+
+        :ok
+
+      {:error, reason} ->
+        Logger.error("BootReconciliation: legacy run-slot carry-over failed: #{inspect(reason)}")
+        :ok
     end
   end
 
-  defp run_absent_or_terminal?(run_id) do
+  defp slot_project_ids do
+    ProjectionStore.list_projects()
+    |> Enum.map(&fetch_map_value(&1, :project_id))
+    |> Enum.filter(&(is_binary(&1) and &1 != ""))
+    |> Enum.uniq()
+  catch
+    :exit, reason ->
+      Logger.warning(
+        "BootReconciliation: run-slot scan could not list projects: #{inspect(reason)}"
+      )
+
+      []
+  end
+
+  # A slot entry (holder OR waiter) is an orphan only when its run is terminal, or when
+  # it has no run projection AND no task is `in_progress` with that `run_id`. A queued run
+  # has no run projection yet (the slot gate runs before `run.start`), so
+  # `ProjectionStore.run/1` is `nil` for every healthy waiter; its task being in progress is
+  # what says the run is still wanted (kata `teak`). The same holds for a HOLDER during
+  # admission, which takes the slot before `RunStarted` is written, so a holder in that
+  # window is live too. `Workflow.RunSlotsMigration` and `RunLifecycleReconciler` use this
+  # one predicate. Plain function (no GenServer call): the scan runs inside this process.
+  @doc false
+  @spec slot_entry_orphan?(String.t()) :: boolean()
+  def slot_entry_orphan?(run_id) when is_binary(run_id) do
     case ProjectionStore.run(run_id) do
-      nil -> true
+      nil -> not task_in_progress_for_run?(run_id)
       _run -> run_terminal?(run_id)
     end
   end
 
-  # A slot WAITER is an orphan only when its run is terminal, or when it has no run
-  # projection AND no task is `in_progress` with that `run_id`. A queued run has no run
-  # projection yet (the slot gate runs before `run.start`), so `ProjectionStore.run/1`
-  # is `nil` for every healthy waiter; its task being in progress is what says the run
-  # is still wanted (kata `teak`). Holders keep `run_absent_or_terminal?/1`. TRD-009's
-  # legacy migration uses this same predicate.
-  defp waiter_run_absent_or_terminal?(run_id) do
-    case ProjectionStore.run(run_id) do
-      nil -> not queued_task_in_progress?(run_id)
-      _run -> run_terminal?(run_id)
-    end
-  end
-
-  defp queued_task_in_progress?(run_id) do
+  # True when a task is `in_progress` with this `run_id`: the run was dispatched and is still
+  # wanted, whether or not a run projection exists yet.
+  @doc false
+  @spec task_in_progress_for_run?(String.t()) :: boolean()
+  def task_in_progress_for_run?(run_id) when is_binary(run_id) do
     run_id
     |> ProjectionStore.tasks_by_run_id()
     |> Enum.any?(&(fetch_map_value(&1, :status) == "in_progress"))
   end
 
-  defp release_run_slot(run_id, reason) when is_binary(run_id) and run_id != "" do
+  defp release_run_slot(project_id, run_id, reason) when is_binary(run_id) and run_id != "" do
     result =
       try do
         _ =
-          CommandGateway.dispatch_system(
-            ForemanServer.Aggregates.RunSlots.release_command(nil, run_id, reason)
-          )
+          CommandGateway.dispatch_system(RunSlots.release_command(project_id, run_id, reason))
 
         :ok
       catch
-        # The `run_slots:global` actor is shared across the application and
+        # A project's run-slot actor is shared across the application and
         # any process (test reset, operator intervention, runtime supervisor)
         # can force-kill it between BootReconciliation's load and dispatch.
         # Without this rescue the synchronous `GenServer.call` exits with
@@ -889,7 +955,8 @@ defmodule ForemanServer.Workflow.BootReconciliation do
     :ok
   end
 
-  defp remove_run_slot_waiter(run_id, reason) when is_binary(run_id) and run_id != "" do
+  defp remove_run_slot_waiter(project_id, run_id, reason)
+       when is_binary(run_id) and run_id != "" do
     ms = System.system_time(:millisecond)
 
     result =
@@ -898,9 +965,10 @@ defmodule ForemanServer.Workflow.BootReconciliation do
           CommandGateway.dispatch_system(%{
             type: "run_slots.remove_waiter",
             command_id: "foreman:boot-slot-remove-waiter:#{run_id}:#{ms}",
-            aggregate_id: "run_slots:global",
+            aggregate_id: RunSlots.stream_id(project_id),
             payload: %{
               run_id: run_id,
+              project_id: project_id,
               removed_at_ms: ms,
               reason: reason
             }

@@ -412,6 +412,54 @@ defmodule ForemanServer.RunLifecycleReconcilerSlotTest do
 
       assert Process.alive?(pid)
     end
+
+    test "a project whose slot stream raises does not crash the sweep or stop the others" do
+      pid =
+        sweep_reconciler(
+          list_projects_fun: fn -> [%{project_id: "project-bad"}, %{project_id: "project-ok"}] end,
+          slot_state_loader_fun: fn
+            "project-bad" -> raise CaseClauseError, term: :unfoldable
+            "project-ok" -> %{holders: %{"run-1" => %{}}}
+          end
+        )
+
+      send(pid, :scheduled)
+
+      assert_receive {:dispatch, %{aggregate_id: "run_slots:project-ok"}, _}, 1_000
+      assert Process.alive?(pid)
+    end
+
+    test "a failing list of projects does not crash the sweep" do
+      pid = sweep_reconciler(list_projects_fun: fn -> raise "projection restarting" end)
+
+      send(pid, :scheduled)
+      _ = :sys.get_state(pid)
+
+      assert Process.alive?(pid)
+    end
+
+    test "a holder whose run does not exist yet but whose task is in progress is live" do
+      # RunAdmission takes the slot before RunStarted is written.
+      in_flight = "run-in-flight-#{System.unique_integer([:positive])}"
+      gone = "run-gone-#{System.unique_integer([:positive])}"
+      seed_in_progress_task!(in_flight, "project-1")
+
+      pid =
+        sweep_reconciler(
+          list_projects_fun: fn -> [%{project_id: "project-1"}] end,
+          slot_state_loader_fun: fn "project-1" ->
+            %{holders: %{in_flight => %{}, gone => %{}}}
+          end,
+          run_loader_fun: fn _run_id -> %Run.State{exists?: false} end
+        )
+
+      send(pid, :scheduled)
+
+      assert_receive {:dispatch, %{type: "run_slots.release", payload: %{run_id: ^gone}}, _},
+                     1_000
+
+      refute_receive {:dispatch, %{payload: %{run_id: ^in_flight}}, _}, 200
+    end
   end
 
   describe "one slot per run (AC-018-1)" do
@@ -527,6 +575,36 @@ defmodule ForemanServer.RunLifecycleReconcilerSlotTest do
       worker_status: %{},
       retry_history: []
     }
+  end
+
+  defp seed_in_progress_task!(run_id, project_id) do
+    task_id = "task-#{System.unique_integer([:positive])}"
+
+    :ok =
+      ForemanServer.ProjectionStore.apply_events([
+        %{
+          event_type: "TaskCreated",
+          payload: %{
+            task_id: task_id,
+            project_id: project_id,
+            title: "t",
+            status: "open",
+            task_type: "implementation"
+          }
+        },
+        %{
+          event_type: "TaskApproved",
+          payload: %{
+            task_id: task_id,
+            approval_id: "a-#{task_id}",
+            approved_by: "alice",
+            approved_at: "2026-08-10T00:00:00Z",
+            run_id: run_id,
+            workflow_snapshot: %{run_id: run_id, phases: []}
+          }
+        },
+        %{event_type: "TaskUpdated", payload: %{task_id: task_id, status: "in_progress"}}
+      ])
   end
 
   defp terminal_run_state(run_id, project_id) do

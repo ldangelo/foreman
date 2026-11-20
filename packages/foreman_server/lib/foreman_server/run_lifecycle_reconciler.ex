@@ -21,6 +21,7 @@ defmodule ForemanServer.RunLifecycleReconciler do
   }
 
   alias ForemanServer.Aggregates.{Project, Run, RunSlots}
+  alias ForemanServer.Workflow.BootReconciliation
 
   @default_interval_ms 30_000
   @default_timeout_ms 5_000
@@ -149,9 +150,11 @@ defmodule ForemanServer.RunLifecycleReconciler do
   end
 
   def handle_info(:scheduled, state) do
+    # Schedule the next pass FIRST: whatever the sweeps below do, this always-on process keeps
+    # its cadence.
+    schedule_next_pass(state.interval_ms)
     reconcile_scheduled(state)
     run_slots_backstop_sweep(state)
-    schedule_next_pass(state.interval_ms)
     {:noreply, state}
   end
 
@@ -351,16 +354,18 @@ defmodule ForemanServer.RunLifecycleReconciler do
         try do
           sweep_project_slots(project_id, state)
         catch
-          :exit, reason ->
+          # `:error` too: `Aggregate.load/2` can raise (a `CaseClauseError` on a stream it
+          # cannot fold), and one bad project must not abort the pass or crash this process.
+          kind, reason when kind in [:exit, :error] ->
             Logger.warning(
-              "RunLifecycleReconciler: backstop sweep of project #{project_id} exited: #{inspect(reason)}"
+              "RunLifecycleReconciler: backstop sweep of project #{project_id} failed (#{kind}): #{inspect(reason)}"
             )
         end
       end)
     catch
-      :exit, reason ->
+      kind, reason when kind in [:exit, :error] ->
         Logger.warning(
-          "RunLifecycleReconciler: backstop sweep could not list projects: #{inspect(reason)}"
+          "RunLifecycleReconciler: backstop sweep could not list projects (#{kind}): #{inspect(reason)}"
         )
     end
 
@@ -374,11 +379,22 @@ defmodule ForemanServer.RunLifecycleReconciler do
       if valid_id?(run_id) do
         run_state = state.run_loader_fun.(run_id)
 
-        if run_terminal?(run_state) or run_absent?(run_state) do
+        if run_terminal?(run_state) or
+             (run_absent?(run_state) and not admission_in_flight?(run_id)) do
           dispatch_slot_release(project_id, run_id, "backstop_sweep", state)
         end
       end
     end)
+  end
+
+  # `RunAdmission` takes the slot BEFORE `RunStarted` is written, so a holder whose run does
+  # not exist yet is live while a task is `in_progress` with that run id (the same rule as a
+  # queued waiter, TRD-018). It is not leaked: re-admission of that task is a no-op acquire for
+  # a run that already holds the slot, and a task that ends releases it through the terminal path.
+  defp admission_in_flight?(run_id) do
+    BootReconciliation.task_in_progress_for_run?(run_id)
+  catch
+    :exit, _ -> false
   end
 
   defp project_id_of(%{project_id: project_id}), do: project_id

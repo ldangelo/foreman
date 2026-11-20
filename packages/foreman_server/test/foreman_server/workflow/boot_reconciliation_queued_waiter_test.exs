@@ -3,17 +3,16 @@ defmodule ForemanServer.Workflow.BootReconciliationQueuedWaiterTest do
   # `run_id` but NO run projection yet. Boot reconciliation must keep such a waiter
   # (AC-005-2), and still remove the waiter of a terminal run (AC-007-1).
   #
-  # These observe the legacy `run_slots:global` stream, the one the boot scan reads
-  # until TRD-009 makes it scan every project stream with the same waiter predicate.
+  # These observe the project's own `run_slots:<project_id>` stream, which the boot scan reads
+  # with the one slot-entry predicate (`BootReconciliation.slot_entry_orphan?/1`).
   use ExUnit.Case, async: false
 
   alias ForemanServer.{Aggregate, CommandGateway, ProjectionStore}
   alias ForemanServer.Aggregates.RunSlots
   alias ForemanServer.EventStore, as: Store
+  alias ForemanServer.TestSupport.CoordinatorHelpers, as: H
   alias ForemanServer.TestSupport.RunSlotsReset
   alias ForemanServer.Workflow.BootReconciliation
-
-  @stream "run_slots:global"
 
   setup_all do
     case Process.whereis(BootReconciliation) do
@@ -27,6 +26,8 @@ defmodule ForemanServer.Workflow.BootReconciliationQueuedWaiterTest do
   setup do
     RunSlotsReset.reset!()
     on_exit(fn -> RunSlotsReset.reset!() end)
+    project = H.register_project(System.tmp_dir!(), config: %{})
+    Process.put(:project, project)
     :ok
   end
 
@@ -97,8 +98,10 @@ defmodule ForemanServer.Workflow.BootReconciliationQueuedWaiterTest do
     :ok
   end
 
+  defp project, do: Process.get(:project)
+
   defp slot_state do
-    {state, _} = Aggregate.load(RunSlots, @stream)
+    {state, _} = Aggregate.load(RunSlots, RunSlots.stream_id(project()))
     state
   end
 
@@ -110,9 +113,10 @@ defmodule ForemanServer.Workflow.BootReconciliationQueuedWaiterTest do
       CommandGateway.dispatch_system(%{
         type: "run_slots.acquire",
         command_id: "seed:#{run_id}",
-        aggregate_id: @stream,
+        aggregate_id: RunSlots.stream_id(project()),
         payload: %{
           run_id: run_id,
+          project_id: project(),
           capacity: capacity,
           acquired_at_ms: System.system_time(:millisecond)
         }
@@ -122,7 +126,7 @@ defmodule ForemanServer.Workflow.BootReconciliationQueuedWaiterTest do
   defp unique(prefix), do: "#{prefix}-qw-#{System.unique_integer([:positive])}"
 
   defp seed_in_progress_task!(task_id, run_id) do
-    project_id = unique("project")
+    project_id = project()
 
     append("task:" <> task_id, 0, "TaskCreated", %{
       task_id: task_id,
@@ -148,7 +152,7 @@ defmodule ForemanServer.Workflow.BootReconciliationQueuedWaiterTest do
     append("run:#{run_id}", 0, "RunStarted", %{
       run_id: run_id,
       task_id: unique("task"),
-      project_id: unique("project"),
+      project_id: project(),
       workflow_snapshot: %{},
       sequence: 0
     })
