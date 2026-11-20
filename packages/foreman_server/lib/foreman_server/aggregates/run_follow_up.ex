@@ -56,7 +56,12 @@ defmodule ForemanServer.Aggregates.RunFollowUp do
          {:ok, fix_kind} <- optional(payload, :fix_kind),
          {:ok, prompt} <- optional(payload, :prompt),
          {:ok, note} <- optional(payload, :note),
-         {:ok, {provider, session_id}} <- validate_session(payload),
+         {:ok, provider} <- optional(payload, :provider),
+         {:ok, model} <- optional(payload, :model),
+         {:ok, effort} <- optional(payload, :effort),
+         {:ok, approval_mode} <- optional(payload, :approval_mode),
+         {:ok, sandbox} <- optional(payload, :sandbox),
+         {:ok, {resume_provider, session_id}} <- validate_session(payload),
          {:ok, push} <- validate_push(Aggregate.get(payload, :push), attach_branch) do
       {:ok,
        %{
@@ -73,9 +78,14 @@ defmodule ForemanServer.Aggregates.RunFollowUp do
            fix_kind: fix_kind,
            attach_branch: attach_branch,
            push: push,
-           resume_session_provider: provider,
+           resume_session_provider: resume_provider,
            resume_session_id: session_id,
            prompt: prompt,
+           provider: provider,
+           model: model,
+           effort: effort,
+           approval_mode: approval_mode,
+           sandbox: sandbox,
            note: note
          }
        }}

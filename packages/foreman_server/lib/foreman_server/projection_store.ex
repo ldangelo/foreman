@@ -718,6 +718,16 @@ defmodule ForemanServer.ProjectionStore do
     GenServer.call(__MODULE__, {:thread_flags, thread_id})
   end
 
+  @doc """
+  The recorded follow-up run request (`RunFollowUpRequested`) of a run id as a map, or nil when the
+  run is not a follow-up run. The Dispatcher reads it to admit, re-admit after a slot promotion and
+  resume a task-less run.
+  """
+  @spec followup_request(String.t()) :: map() | nil
+  def followup_request(run_id) when is_binary(run_id) and run_id != "" do
+    GenServer.call(__MODULE__, {:followup_request, run_id})
+  end
+
   @typedoc """
   Projected schedule. `status` is `"active" | "paused" | "deleted"`;
   `active_since` is unix seconds (creation, last resume or last spec change);
@@ -1454,6 +1464,10 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   @impl true
+  def handle_call({:followup_request, run_id}, _from, state) do
+    {:reply, Map.get(state.followup_requests, run_id), state}
+  end
+
   def handle_call({:thread_flags, thread_id}, _from, state) do
     {:reply, Map.get(state.thread_flags, thread_id), state}
   end
@@ -2233,6 +2247,7 @@ defmodule ForemanServer.ProjectionStore do
       project_library: %{},
       project_secrets: %{},
       thread_flags: %{},
+      followup_requests: %{},
       schedules: %{},
       tool_calls: %{},
       questions: %{},
@@ -3880,6 +3895,19 @@ defmodule ForemanServer.ProjectionStore do
 
       _ ->
         Logger.warning("ProjectionStore skipped malformed ThreadReopened")
+        state
+    end
+  end
+
+  # A follow-up run request, keyed by the run it asks for. Malformed payloads are logged and skipped.
+  defp apply_event_by_type(state, "RunFollowUpRequested", payload) do
+    case decode_or_skip("RunFollowUpRequested", payload) do
+      {:ok, %ForemanServer.Events.RunFollowUpRequested{run_id: id} = event}
+      when is_binary(id) and id != "" ->
+        %{state | followup_requests: Map.put(state.followup_requests, id, Map.from_struct(event))}
+
+      _ ->
+        Logger.warning("ProjectionStore skipped malformed RunFollowUpRequested")
         state
     end
   end

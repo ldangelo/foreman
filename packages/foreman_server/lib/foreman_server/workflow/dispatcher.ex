@@ -230,6 +230,17 @@ defmodule ForemanServer.Workflow.Dispatcher do
     end
   end
 
+  for event_type <- ~w(RunFollowUpRequested) do
+    @impl true
+    def handle_info({:projection_event, %{"event_type" => unquote(event_type)} = envelope}, state) do
+      handle_followup_requested(envelope, state)
+    end
+
+    def handle_info({:projection_event, %{event_type: unquote(event_type)} = envelope}, state) do
+      handle_followup_requested(envelope, state)
+    end
+  end
+
   @impl true
   def handle_info({:projection_event, _envelope}, state) do
     {:noreply, state}
@@ -261,6 +272,54 @@ defmodule ForemanServer.Workflow.Dispatcher do
 
   @impl true
   def handle_info(_msg, state), do: {:noreply, state}
+
+  # A follow-up run (`run.followup.request`): admitted through the same `RunAdmission.start/2` as
+  # every run, so the global slot gate, the project limits and the pause/archive refusals apply. The
+  # request is read back from the projection by run id (it has no task), which is also how a slot
+  # promotion and a restart find it again.
+  defp handle_followup_requested(envelope, state) do
+    payload =
+      case unwrap_data(envelope) do
+        %_{} = struct -> Map.from_struct(struct)
+        map -> map
+      end
+
+    run_id = payload[:run_id] || payload["run_id"]
+    admit_followup(run_id, state)
+  end
+
+  defp admit_followup(run_id, state) when is_binary(run_id) and run_id != "" do
+    with request when is_map(request) <- ProjectionStore.followup_request(run_id),
+         false <- followup_terminal?(run_id) do
+      run_payload = ForemanServer.Workflow.FollowUp.run_payload(request)
+      task_proj = ForemanServer.Workflow.FollowUp.task_projection(request)
+
+      case crash_resume_opts(run_id, run_payload.phase_specs) do
+        :paused ->
+          {:noreply, state}
+
+        [] ->
+          admit_and_start_run(
+            run_payload,
+            task_proj,
+            nil,
+            state,
+            ForemanServer.Workflow.FollowUp.resume_opts(request)
+          )
+
+        resume_opts ->
+          admit_and_start_run(run_payload, task_proj, nil, state, resume_opts)
+      end
+    else
+      _ -> {:noreply, state}
+    end
+  end
+
+  defp admit_followup(_run_id, state), do: {:noreply, state}
+
+  defp followup_terminal?(run_id) do
+    match?(%{terminal?: true}, ProjectionStore.run(run_id))
+  end
 
   # Only reservation releases that mean "a run finished" free capacity for a
   # deferred task. A release after a failed start (`command_router`) or a
@@ -932,8 +991,14 @@ defmodule ForemanServer.Workflow.Dispatcher do
     # A run is associated with exactly one task during dispatch.
     case ProjectionStore.tasks_by_run_id(run_id) do
       [] ->
-        Logger.warning("handle_slot_promoted: no task found for run #{run_id}")
-        {:noreply, state}
+        case ProjectionStore.followup_request(run_id) do
+          nil ->
+            Logger.warning("handle_slot_promoted: no task found for run #{run_id}")
+            {:noreply, state}
+
+          _request ->
+            admit_followup(run_id, state)
+        end
 
       [task | _] ->
         phase_specs = extract_phase_specs(task)

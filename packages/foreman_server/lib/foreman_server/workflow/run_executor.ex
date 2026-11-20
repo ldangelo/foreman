@@ -2452,7 +2452,25 @@ defmodule ForemanServer.Workflow.RunExecutor do
     }
   end
 
+  # A follow-up run (`Workflow.FollowUp`) carries its already-redacted prompt in the task map; it is
+  # used as it stands, never run through the template renderer (its PR text is untrusted data).
   defp read_phase_prompt(state, phase_spec, index, context) do
+    case followup_prompt(state) do
+      prompt when is_binary(prompt) -> prompt
+      nil -> read_catalog_phase_prompt(state, phase_spec, index, context)
+    end
+  end
+
+  defp followup_prompt(%{task: task}) when is_map(task) do
+    case Map.get(task, :followup) do
+      %{prompt: prompt} when is_binary(prompt) and prompt != "" -> prompt
+      _ -> nil
+    end
+  end
+
+  defp followup_prompt(_state), do: nil
+
+  defp read_catalog_phase_prompt(state, phase_spec, index, context) do
     content =
       case Map.get(phase_spec, :prompt_path) do
         nil ->

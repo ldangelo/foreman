@@ -105,6 +105,11 @@ defmodule ForemanServer.Aggregates.RunFollowUpTest do
                payload: payload(%{run_id: run_id})
              })
 
+    assert %{run_id: ^run_id, kind: "pr_fix", attach_branch: "feature/x", push: true} =
+             ForemanServer.ProjectionStore.followup_request(run_id)
+
+    assert ForemanServer.ProjectionStore.followup_request(run_id <> "-other") == nil
+
     assert {:error, {:already_exists, :run_followup, ^run_id}} =
              CommandGateway.dispatch_system(%{
                type: "run.followup.request",
