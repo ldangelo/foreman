@@ -331,6 +331,89 @@ defmodule ForemanServer.RunLifecycleReconcilerSlotTest do
     end
   end
 
+  describe "backstop sweep edge cases (TRD-008 review follow-ups)" do
+    defp sweep_reconciler(extra) do
+      parent = self()
+
+      opts =
+        [
+          name: unique_name(),
+          interval_ms: 60_000,
+          subscribe_fun: fn -> :ok end,
+          list_active_runs_fun: fn -> [] end,
+          run_loader_fun: fn run_id -> terminal_run_state(run_id, "project-x") end,
+          dispatch_fun: fn command, timeout ->
+            send(parent, {:dispatch, command, timeout})
+            {:ok, %{}}
+          end
+        ]
+        |> Keyword.merge(extra)
+
+      start_supervised!({RunLifecycleReconciler, opts})
+    end
+
+    test "an archived project's stale holder is still released" do
+      pid =
+        sweep_reconciler(
+          list_projects_fun: fn -> [%{project_id: "project-arch", status: "archived"}] end,
+          slot_state_loader_fun: fn "project-arch" -> %{holders: %{"run-1" => %{}}} end
+        )
+
+      send(pid, :scheduled)
+
+      assert_receive {:dispatch,
+                      %{type: "run_slots.release", aggregate_id: "run_slots:project-arch"}, _},
+                     1_000
+    end
+
+    test "a project missing from the projection is not swept and does not stop the others" do
+      pid =
+        sweep_reconciler(
+          list_projects_fun: fn -> [%{project_id: "project-kept"}] end,
+          slot_state_loader_fun: fn
+            "project-kept" -> %{holders: %{"run-1" => %{}}}
+            "project-gone" -> flunk("a project outside the projection must not be loaded")
+          end
+        )
+
+      send(pid, :scheduled)
+
+      assert_receive {:dispatch, %{aggregate_id: "run_slots:project-kept"}, _}, 1_000
+      refute_receive {:dispatch, %{aggregate_id: "run_slots:project-gone"}, _}, 200
+      assert Process.alive?(pid)
+    end
+
+    test "a release dispatch that exits does not crash the sweep or skip later holders" do
+      parent = self()
+
+      pid =
+        sweep_reconciler(
+          list_projects_fun: fn -> [%{project_id: "project-1"}] end,
+          slot_state_loader_fun: fn "project-1" ->
+            %{holders: %{"run-a" => %{}, "run-b" => %{}}}
+          end,
+          dispatch_fun: fn
+            %{payload: %{run_id: "run-a"}}, _timeout ->
+              send(parent, :run_a_attempted)
+              exit({:timeout, {GenServer, :call, [:run_slots, :release, 5_000]}})
+
+            command, timeout ->
+              send(parent, {:dispatch, command, timeout})
+              {:ok, %{}}
+          end
+        )
+
+      send(pid, :scheduled)
+
+      assert_receive :run_a_attempted, 1_000
+
+      assert_receive {:dispatch, %{type: "run_slots.release", payload: %{run_id: "run-b"}}, _},
+                     1_000
+
+      assert Process.alive?(pid)
+    end
+  end
+
   describe "one slot per run (AC-018-1)" do
     test "a run touching three repositories holds exactly one slot" do
       project_id = "multi-repo-#{System.unique_integer([:positive])}"
