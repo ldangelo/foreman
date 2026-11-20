@@ -948,6 +948,16 @@ defmodule ForemanServer.Workflow.Dispatcher do
         Logger.warning("handle_slot_promoted: no task found for run #{run_id}")
         {:noreply, state}
 
+      # The task already acknowledged this run as ended (an operator cancelled it while it waited
+      # for the slot): promoting it must not start it. The slot it was just handed is released.
+      [%{acknowledged_run_id: ^run_id} | _] ->
+        Logger.info(
+          "handle_slot_promoted: not starting #{run_id}: its task acknowledged it as ended"
+        )
+
+        terminate_slot(run_id, "run_cancelled")
+        {:noreply, state}
+
       [task | _] ->
         phase_specs = extract_phase_specs(task)
         project_id = Map.get(task, :project_id) || Map.get(task, "project_id")

@@ -53,6 +53,7 @@ defmodule ForemanServer.CommandGateway do
   """
 
   alias ForemanServer.{Aggregate, CommandRouter, PrEvidence, PrGate, ProjectionStore, Telemetry}
+  alias ForemanServer.Aggregates.RunSlots
   alias ForemanServer.Projects.RepoValidation
   alias ForemanServer.TaskProvider.Registry
   alias ForemanServer.Workflow.Approval
@@ -137,11 +138,114 @@ defmodule ForemanServer.CommandGateway do
          :ok <- validate_aggregate_id(prepared),
          {:ok, enriched} <- enrich_operator_command(prepared),
          {:ok, effected} <- perform_operator_side_effects(enriched) do
-      case dispatch_and_emit_project_telemetry(effected, timeout) do
-        {:ok, _} = result -> maybe_auto_approve(effected, result, timeout)
-        other -> other
+      case cancel_queued_run(effected, timeout) do
+        {:cancelled_queued, result} -> result
+        :not_queued -> dispatch_effected_operator_command(effected, timeout)
       end
     end
+  end
+
+  defp dispatch_effected_operator_command(effected, timeout) do
+    case dispatch_and_emit_project_telemetry(effected, timeout) do
+      {:ok, _} = result -> maybe_auto_approve(effected, result, timeout)
+      other -> other
+    end
+  end
+
+  # `run.cancel` for a run that is waiting for a run slot. Such a run has no `Run` aggregate yet
+  # (`RunAdmission` answers `:slot_queued` before `run.start`), so the aggregate would refuse the
+  # cancel as not found and the run would stay in the global waiting list until the next boot. The
+  # waiter is removed and the bound task acknowledged exactly as for a terminal run
+  # (`task.run_terminated`, the same command id `BootReconciliation` uses, so the two converge), so
+  # the task is not left bound to a run that will never start. Both command ids are per run: a replay
+  # is a no-op, and removing a run that is not (or no longer) waiting is one too.
+  defp cancel_queued_run(%{type: "run.cancel", payload: payload}, timeout) do
+    run_id = get_value(payload, :run_id) || get_value(payload, "run_id")
+    reason = get_value(payload, :reason) || get_value(payload, "reason") || "run_cancelled"
+
+    if queued_for_slot?(run_id) do
+      {:cancelled_queued, remove_slot_waiter_and_ack_task(run_id, to_string(reason), timeout)}
+    else
+      :not_queued
+    end
+  end
+
+  defp cancel_queued_run(_command, _timeout), do: :not_queued
+
+  defp queued_for_slot?(run_id) do
+    case Aggregate.load(Run, "run:#{run_id}") do
+      {%Run.State{exists?: false}, _version} ->
+        Enum.any?(slot_state().waiters, &(&1.run_id == run_id))
+
+      _run_exists ->
+        false
+    end
+  end
+
+  defp slot_state do
+    {slots, _version} = Aggregate.load(RunSlots, "run_slots:global")
+    slots
+  end
+
+  # The waiter goes first, then the task: acknowledging the task first would leave a window in which
+  # a promotion starts a run whose task is already closed. A waiter promoted to holder between the
+  # check and the removal makes the removal a no-op; the slot it now holds is then released, the same
+  # command `Dispatcher.terminate_slot/2` sends for an ended run, so the cancel is not lost to the
+  # promotion (the Dispatcher also refuses to start a run whose task is acknowledged).
+  defp remove_slot_waiter_and_ack_task(run_id, reason, timeout) do
+    removal = %{
+      type: "run_slots.remove_waiter",
+      command_id: "foreman:cancel-slot-remove-waiter:#{run_id}",
+      aggregate_id: "run_slots:global",
+      payload: %{run_id: run_id, removed_at_ms: System.system_time(:millisecond), reason: reason}
+    }
+
+    with {:ok, _} <- dispatch_system(removal, timeout),
+         :ok <- release_if_promoted(run_id, reason, timeout),
+         :ok <- ack_cancelled_queued_tasks(run_id, reason, timeout) do
+      {:ok, nil}
+    end
+  end
+
+  defp release_if_promoted(run_id, reason, timeout) do
+    if Map.has_key?(slot_state().holders, run_id) do
+      release = %{
+        type: "run_slots.release",
+        command_id: "foreman:cancel-slot-release:#{run_id}",
+        aggregate_id: "run_slots:global",
+        payload: %{run_id: run_id, reason: reason}
+      }
+
+      with {:ok, _} <- dispatch_system(release, timeout), do: :ok
+    else
+      :ok
+    end
+  end
+
+  defp ack_cancelled_queued_tasks(run_id, reason, timeout) do
+    run_id
+    |> ProjectionStore.tasks_by_run_id()
+    |> Enum.reduce_while(:ok, fn task, :ok ->
+      task_id = get_value(task, :task_id) || get_value(task, "task_id")
+
+      ack = %{
+        type: "task.run_terminated",
+        command_id: "foreman:task-ack:#{task_id}:#{run_id}",
+        aggregate_id: "task:#{task_id}",
+        payload: %{
+          task_id: task_id,
+          run_id: run_id,
+          reason: reason,
+          acknowledged_at:
+            DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
+        }
+      }
+
+      case dispatch_system(ack, timeout) do
+        {:ok, _} -> {:cont, :ok}
+        error -> {:halt, error}
+      end
+    end)
   end
 
   @doc """

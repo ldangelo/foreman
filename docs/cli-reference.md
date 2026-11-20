@@ -759,6 +759,8 @@ Prints the run projection as JSON (`GET /api/runs/<id>`: `{"run": {...}}`; a run
 
 `run cancel` posts `run.cancel` (default reason `operator_cancel`): the run is terminal as soon as the agent has been signalled with `SIGINT`; the harness escalates to `SIGTERM` then `SIGKILL` (5 s per step by default), Foreman waits for the agent to exit (up to 15 s) and `OrphanReaper` then terminates the tool processes it left in the run's worktree (`SIGTERM`, then `SIGKILL`). `run reset` posts `run.reset`, accepted for a run in `failed`, `stuck`, `blocked` or `paused` status; any other status is rejected with `{:run_not_resettable, "<status>"}`. A blocked run (an unresolved external effect) is reset after the operator has checked the real state of the push, PR or tracker change.
 
+A run that is still waiting for a run slot (listed in `waiting` of `GET /api/queue`) has no run record and no agent yet. `run cancel` on it removes it from the waiting list and acknowledges its task (`task.run_terminated`, with the cancel's reason) rather than answering `run_not_found`; the run stops reading as `queued` and is not re-admitted when a slot frees, and the task stays `in_progress` until it is retried. The run holding the slot is not touched.
+
 ### `foreman run remove --id <run-id>`
 
 Remove a run and clean up its worktree/branch. Issues `POST /api/commands` with a `run.remove` envelope. The server terminates the run, releases its run slot and per-DB Beads lease, and best-effort cleans the projected worktree plus the local branch.

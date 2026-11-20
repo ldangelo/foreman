@@ -1087,6 +1087,12 @@ foreman run merge --id <run-id>
   processes whose cwd is inside the worktree and whose parent is pid 1
   are touched). A server shutdown does the same for live agents, and a
   restarted server reaps what an agent left in a worktree before reusing it.
+  A run still waiting for a run slot (listed in `waiting` of `GET /api/queue`) has no run
+  record and no agent yet: `run cancel` removes it from the waiting list and acknowledges its
+  task (`task.run_terminated`, with the cancel's `reason`) instead of failing with
+  `run_not_found`. The run stops reading as `queued` and is not re-admitted when a slot frees;
+  the task stays `in_progress` until it is retried, like the task of any ended run. The run
+  holding the slot is untouched.
 - `run pause` interrupts the current phase the same way, but first commits
   the phase's partial work to the run branch and leaves the run resumable
   (`paused`) rather than terminal — it releases the run's slot and Beads
@@ -2312,7 +2318,9 @@ The catch-all is a known limit: the typed code lives only in `data.code`.
   least one field to update.
 - `foreman_run_cancel` dispatches `run.cancel` with `run_id` and
   `reason`; the dispatched agent, including its OS-level process, is
-  killed via `RunControl`.
+  killed via `RunControl`. A run still waiting for a run slot has no agent
+  to kill: it is removed from the waiting list and its task acknowledged
+  (see `run cancel` above).
 - `foreman_run_pause` dispatches `run.pause` with `run_id` and `reason`,
   interrupting the current phase after committing its partial work and
   leaving the run resumable.
