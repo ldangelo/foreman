@@ -1,0 +1,40 @@
+#!/bin/sh
+# SIMULATED `pi` for the Docker-sandbox PR-fix stage. It is NOT an agent: it recognises the two prompts the
+# harness sends and edits /workspace's files the way the task asks, from INSIDE the container, then reports a
+# normal `pi --mode json` event stream. Every edit leaves a proof file recording whether /.dockerenv exists.
+#
+#   task prompt  ("Create a new file named note_<tag>.txt ... whose only content is the single line: note <tag>")
+#   fix prompt   (Foreman's PR-fix template, which says it is fixing a failing CI run)
+case "${1:-}" in
+  --version|-v) echo "fake-pi 0.0.0 (docker sandbox PR fix)"; exit 0 ;;
+  --help|-h) echo "usage: pi [--mode json] [--session ID] [prompt]   (simulated)"; exit 0 ;;
+esac
+session=""
+prev=""
+for a in "$@"; do
+  if [ "$prev" = "--session" ]; then session=$a; fi
+  prev=$a
+done
+# pi runs in `--mode rpc`: the prompt arrives as JSON on stdin, not in the arguments. Take what arrives in 3 s.
+in=$(timeout 3 cat 2>/dev/null || true)
+all="$* $in"
+[ -n "$session" ] || session="fake-pi-$(date +%s)-$$"
+printf '{"type":"session","version":3,"id":"%s","timestamp":"%s","cwd":"%s"}\n' "$session" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(pwd)"
+printf '{"type":"agent_start"}\n{"type":"turn_start"}\n'
+if [ -e /.dockerenv ]; then env=yes; else env=no; fi
+case "$all" in
+  *"failing CI run"*)
+    sed -i 's/return a - b/return a + b/' app.py
+    printf 'fix applied in container; dockerenv=%s; uid=%s\nargs: %s\n' "$env" "$(id -u)" "$(printf '%s' "$all" | cut -c1-200)" > docker-fix-proof.txt
+    msg="fixed app.add" ;;
+  *)
+    file=$(printf '%s' "$all" | sed -n 's/.*named \(note_[A-Za-z0-9_-]*\.txt\).*/\1/p' | head -n 1)
+    [ -n "$file" ] || file=$(printf '%s' "$all" | sed -n 's/.*[ :]note \(docker[A-Za-z0-9_-]*\).*/note_\1.txt/p' | head -n 1)
+    [ -n "$file" ] || file=note_docker.txt
+    printf '%s\n' "$(basename "$file" .txt | sed 's/_/ /')" > "$file"
+    printf 'task done in container; dockerenv=%s; uid=%s\nargs: %s\n' "$env" "$(id -u)" "$(printf '%s' "$all" | cut -c1-200)" > docker-run-proof.txt
+    msg="done" ;;
+esac
+printf '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"%s"}],"stopReason":"stop"}}\n' "$msg"
+printf '{"type":"turn_end"}\n'
+printf '{"type":"agent_end","willRetry":false,"messages":[{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"%s"}]}]}\n' "$msg"

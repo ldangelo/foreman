@@ -480,8 +480,26 @@ defmodule ForemanServer.PrWatcher do
     result
   end
 
+  # The run's push precedes its completion by moments, and GitHub's read side can still answer with the OLD
+  # head right after it (seen live: a fix that pushed was recorded `no_change`, which the loop guard counts
+  # as no progress). An unchanged head is therefore re-read a few times before it is believed.
   defp completed_outcome(meta, fetch) do
+    cfg = Application.get_env(:foreman_server, :pr_watcher, [])
+
+    observe_completed(
+      meta,
+      fetch,
+      Keyword.get(cfg, :no_change_rechecks, 3),
+      Keyword.get(cfg, :no_change_recheck_ms, 3_000)
+    )
+  end
+
+  defp observe_completed(meta, fetch, rechecks, wait_ms) do
     case Observer.observe(meta.pr_url, fetch_fun: fetch, auto_fix: false) do
+      {:ok, %{status: %{head_sha: head}}} when head == meta.head_sha and rechecks > 0 ->
+        Process.sleep(wait_ms)
+        observe_completed(meta, fetch, rechecks - 1, wait_ms)
+
       {:ok, %{status: status} = observed} ->
         outcome = if status.head_sha == meta.head_sha, do: "no_change", else: "pushed"
         {%{outcome: outcome, new_head_sha: status.head_sha}, observed}

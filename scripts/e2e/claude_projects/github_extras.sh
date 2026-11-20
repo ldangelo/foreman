@@ -672,6 +672,76 @@ gh_x_claude_fix_ci() {
   return 0
 }
 
+
+# ---------------------------------------------------------------- 9k2: the Docker sandbox PR fix
+
+# The same PR-fix flow as 9k, but BOTH the run (workflow `dockeredit`, `sandbox: docker`) and the fix (the PrFix
+# default sandbox) execute through the Docker sandbox, with a SIMULATED pi baked into the image (docker_agent/):
+# it proves the sandbox plumbing end to end (image, worktree mount, agent in the container, commit and push from the
+# host, container cleanup) with no real agent and no provider session resume. Run it with FOREMAN_PR_FIX_SANDBOX=docker
+# in the environment of `serve`.
+GH_DOCKER_BEAD_TYPE=docker-e2e
+gh_x_docker_fix_ci() {
+  say "9k2. the PR fix of a Docker-sandboxed run runs in Docker too (simulated agent, no provider session)"
+  note "EXPECTED: the run's agent ran in a container (proof file dockerenv=yes); the fix is a follow-up run with sandbox docker whose agent also ran in a container and fixed app.add; the head moved by a fast-forward, CI is green, the fix finished as pushed, no container is left"
+  if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
+    unverified "the Docker sandbox PR fix" "docker is not available"; return 0
+  fi
+  assert_eq "the server was started with FOREMAN_PR_FIX_SANDBOX=docker" "${FOREMAN_PR_FIX_SANDBOX:-unset}" "docker"
+  gd_image="foreman-jobsite:$(basename "$GH_CLONE")"
+  if docker build -q -t "$gd_image" "$ASSETS/docker_agent" >/dev/null 2>&1; then pass "the sandbox image $gd_image was built"; else fail "docker build of $gd_image failed"; return 1; fi
+  sed "s|__E2E_MODEL__|$E2E_MODEL|" "$ASSETS/workflows/dockeredit.yaml" > "$WORK/workflows/dockeredit.yaml"
+  gd_start=$(date +%s)
+  while :; do
+    gd_out=$(rpc "IO.puts(\"CATALOG \" <> inspect(ForemanServer.Workflow.Catalog.type_to_workflow(\"$GH_DOCKER_BEAD_TYPE\")))" 2>/dev/null | grep '^CATALOG ')
+    case "$gd_out" in *'{:ok, "dockeredit"}'*) pass "the catalog maps issue type $GH_DOCKER_BEAD_TYPE to dockeredit"; break ;; esac
+    [ "$(elapsed "$gd_start")" -lt 60 ] || { fail "the catalog never mapped $GH_DOCKER_BEAD_TYPE to dockeredit: ${gd_out:-no answer}"; return 1; }
+    gh_server_alive || return 1
+    sleep 3
+  done
+
+  gh_new_pr docker1 PRD "$GH_DOCKER_BEAD_TYPE" || return 1
+  gd_run_proof=$(gh api "repos/$GH_REPO/contents/docker-run-proof.txt?ref=$GH_BRANCH" --jq '.content' 2>/dev/null | base64 -d 2>/dev/null)
+  note "the run's proof file: ${gd_run_proof:-none}"
+  assert_has "the run's agent ran INSIDE a container" "$gd_run_proof" "dockerenv=yes"
+  gh_x_ready || return 1
+  gh_inject_code_bug || { fail "could not push the regression to $GH_BRANCH"; return 1; }
+  if gh_wait 300 "ci failure" gh_ci_head_is failure; then pass "GitHub Actions reports the check FAILED on $BROKEN"; else fail "the regression never showed as failed"; return 1; fi
+  if gh_wait_card "$GH_THREAD" '.reason == "ci_failing"' 420; then pass "Foreman observed it: $(gh_card_line "$GH_CARD")"; else fail "Foreman never showed the failing check"; return 1; fi
+
+  gd_mark=$(gh_events_mark "$GH_RUN")
+  gh_trigger_fix_ci docker-fix-ci || return 1
+  if gh_wait 300 "PrFixStarted" gh_prfix_has PrFixStarted; then pass "the fix started: PrFixStarted is recorded"; else fail "no PrFixStarted within 300s"; gh_events_note "$GH_RUN" "$gd_mark"; return 1; fi
+  gd_started=$(gh_prfix_field PrFixStarted .data)
+  gd_fixrun=$(printf '%s' "$gd_started" | jq -r '.fix_run_id')
+  assert_has "the fix is a follow-up run" "$gd_fixrun" "run-"
+  if gh_wait 300 "follow-up request" gh_prfix_has RunFollowUpRequested; then pass "RunFollowUpRequested is recorded for $gd_fixrun"; else fail "no RunFollowUpRequested"; return 1; fi
+  assert_eq "the follow-up request asks for the docker sandbox (the PrFix default)" "$(gh_prfix_field RunFollowUpRequested .data.sandbox)" "docker"
+  assert_eq "the follow-up is attached to the PR head branch" "$(gh_prfix_field RunFollowUpRequested .data.attach_branch)" "$GH_BRANCH"
+  assert_eq "the follow-up pushes" "$(gh_prfix_field RunFollowUpRequested .data.push)" "true"
+  if gh_wait 300 "follow-up RunStarted" gh_prfix_has RunStarted; then :; fi
+  assert_eq "the follow-up run's frozen workflow snapshot says sandbox docker" "$(gh_prfix_field RunStarted .data.workflow_snapshot.sandbox)" "docker"
+
+  if gh_wait 900 "fix commit" gh_head_moved_from "$BROKEN"; then pass "the fix pushed a commit: $BROKEN -> $(gh_head)"; else fail "no fix commit within 900s"; gh_events_note "$GH_RUN" "$gd_mark"; gh_prfix_evidence "$GH_RUN"; return 1; fi
+  gd_fixed=$(gh_head)
+  if gh_wait 300 "ci green" gh_ci_head_is success; then pass "CI is green again on $gd_fixed"; else fail "CI not green after the fix ($(gh_ci_state "$gd_fixed"))"; fi
+  gh_clone_sync
+  if git -C "$GH_OP" merge-base --is-ancestor "$BROKEN" "$gd_fixed"; then pass "the fix is a new commit on top of the regression (no force push)"; else fail "the new head does not descend from the regression"; fi
+  assert_has "the fix repaired the code (app.add adds again)" "$(git -C "$GH_OP" show "$gd_fixed:app.py" 2>/dev/null)" "return a + b"
+  gd_fix_proof=$(git -C "$GH_OP" show "$gd_fixed:docker-fix-proof.txt" 2>/dev/null)
+  note "the fix's proof file: ${gd_fix_proof:-none}"
+  assert_has "the fix's agent ran INSIDE a container" "$gd_fix_proof" "dockerenv=yes"
+  if gh_wait 300 "PrFixFinished" gh_prfix_has PrFixFinished; then pass "the fix was recorded as finished"; else fail "no PrFixFinished"; fi
+  assert_eq "the fix finished as pushed" "$(gh_prfix_field PrFixFinished .data.outcome)" "pushed"
+  if gh_wait 300 "fix run completed" gh_prfix_has RunCompleted; then pass "the follow-up run completed"; else fail "the follow-up run never completed"; fi
+  gd_left=$(docker ps -aq --filter "ancestor=$gd_image" 2>/dev/null | grep -c .)
+  assert_eq "no sandbox container is left behind" "$gd_left" "0"
+  gh_prfix_evidence "$GH_RUN"
+  gh_events_note "$GH_RUN" "$gd_mark"
+  note "kept in $EVID: prfix-evidence-$GH_RUN.jsonl, events-$GH_RUN.txt"
+  return 0
+}
+
 # ---------------------------------------------------------------- 9i: branch protection
 
 # What a PUBLIC repository exposes outlives the flip: every commit of every branch, every refs/pull/* ref (a PR keeps its head

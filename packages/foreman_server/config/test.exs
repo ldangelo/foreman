@@ -84,7 +84,10 @@ config :foreman_server, :start_jobsite_boot_recovery?, false
 config :foreman_server, :start_beads_orphan_janitor?, false
 config :foreman_server, :pr_monitor_enabled, false
 # E9: tests start the PR watcher explicitly with start_supervised!.
-config :foreman_server, :pr_watcher, enabled: false
+config :foreman_server, :pr_watcher,
+  enabled: false,
+  no_change_rechecks: 1,
+  no_change_recheck_ms: 0
 # Tests start the ticker explicitly with start_supervised!.
 config :foreman_server, :schedule, ticker_enabled: false
 config :foreman_server, :trigger_poll_enabled, false

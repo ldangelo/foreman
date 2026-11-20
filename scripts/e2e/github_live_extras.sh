@@ -13,6 +13,8 @@
 #   claude_fix_ci the fix thread of a run done by a REAL claude (haiku, workflow claudeedit) resumes THAT run's
 #                claude session: PrFixStarted.resumed_session, the fix jobsite's resumed_session_id, the PR head and
 #                CI, claude's own transcript of the session (foreman-nufr9). UNVERIFIED without a logged-in claude
+#   docker_fix_ci the PR fix of a Docker-sandboxed run runs in Docker too (a simulated pi baked into the sandbox image; start
+#                `serve` with FOREMAN_PR_FIX_SANDBOX=docker). No real agent, no provider session resume
 #   protection   operator merge under GitHub branch protection (a required review, required checks, and linear history
 #                set on the rule): the refusal text and the merge once every rule is met; the one-parent result of
 #                the squash is asserted, a refusal by required_linear_history itself is not exercised
@@ -57,7 +59,7 @@ MODE=${1:-all}
 export E2E_REVIEW_ANALYSIS=0
 E2E_TRANSCRIPT=${E2E_TRANSCRIPT:-$E2E_EVIDENCE_DIR/transcript-$MODE.txt}
 
-STAGES_ALL="pr_a ui_baseline policy_off_and_fix_ci ui_address ui_conflicts claude_fix_ci autofix createpr postapproval merge_refusal prot_prepare protection"
+STAGES_ALL="pr_a ui_baseline policy_off_and_fix_ci ui_address ui_conflicts claude_fix_ci docker_fix_ci autofix createpr postapproval merge_refusal prot_prepare protection"
 STATE_FILE="$WORK/state.env"
 STATE_VARS="WORK ROOT SUFFIX NODE COOKIE API E2E_PORT E2E_HOOK_PORT E2E_DB_NAME DATABASE_URL E2E_API_TOKEN E2E_MODEL
   SERVER_PID HOOK_PID SERVER_LOG HOOK_CAPTURE FOREMAN PROJECT REPO DB_CREATED GH_REPO GH_CLONE GH_OP GH_PROJECT

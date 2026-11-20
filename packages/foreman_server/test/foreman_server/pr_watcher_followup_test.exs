@@ -178,4 +178,44 @@ defmodule ForemanServer.PrWatcherFollowUpTest do
     assert finished.error_code == "followup_runs_disabled"
     refute "PrFixStarted" in Support.run_event_types(ctx.run_id)
   end
+
+  test "a head GitHub still reports as old right after the run is re-read before the fix is `no_change`",
+       %{ctx: ctx} do
+    :ok = stop_supervised(PrWatcher)
+    old = ctx.status
+    new = %{old | head_sha: "sha-pushed", checks_state: :passing, checks: []}
+    {:ok, calls} = Agent.start_link(fn -> 0 end)
+    test_pid = self()
+
+    # the observation the run's completion triggers sees the old head once (GitHub's read lag), then the new one;
+    # the plan's own read (before the run exists) is a separate fetch function
+    fetch = fn _url ->
+      n = Agent.get_and_update(calls, &{&1, &1 + 1})
+      if n >= 1, do: {:ok, new}, else: {:ok, old}
+    end
+
+    start_supervised!(
+      {PrWatcher,
+       [
+         fetch_fun: fn url ->
+           send(test_pid, :fetched)
+           fetch.(url)
+         end,
+         followup_starter: fn request -> {:ok, request.run_id} end,
+         plan_opts: [
+           fetch_fun: fn _ -> {:ok, old} end,
+           log_fetcher: fn _url, _check -> {:error, :none} end
+         ]
+       ]}
+    )
+
+    request_fix!(ctx)
+    %{fix_run_id: fix_run_id} = await_event("PrFixStarted", ctx.run_id)
+    await_registered(fix_run_id)
+    end_run!("RunCompleted", fix_run_id)
+
+    finished = await_event("PrFixFinished", ctx.run_id)
+    assert finished.outcome == "pushed"
+    assert finished.new_head_sha == "sha-pushed"
+  end
 end

@@ -304,7 +304,9 @@ config :foreman_server, :review,
 # (FOREMAN_PR_MONITOR_ENABLED=true -> ForemanServer.PrMonitor). The fix-thread jobsite
 # runs `agent` unless the run's own provider session names one; `max_iterations`
 # bounds one fix agent invocation; `log_tail_bytes` caps the failing-CI log excerpt.
-config :foreman_server, :pr_watcher, enabled: true
+# no_change_rechecks / no_change_recheck_ms: an unchanged PR head after a fix run is re-read this many times,
+# this far apart, before the fix is recorded `no_change` (GitHub's read side lags a push by moments).
+config :foreman_server, :pr_watcher, enabled: true, no_change_rechecks: 3, no_change_recheck_ms: 3_000
 
 config :foreman_server, :pr_fix,
   agent: %{"provider" => "claude"},

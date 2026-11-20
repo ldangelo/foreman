@@ -57,7 +57,7 @@ github_prepare() {
   GH_HOOK_SECRET="e2e-$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')"
   export FOREMAN_GITHUB_WEBHOOK_SECRET="$GH_HOOK_SECRET"
   export FOREMAN_PR_MONITOR_ENABLED=true
-  export FOREMAN_PR_FIX_SANDBOX=host
+  export FOREMAN_PR_FIX_SANDBOX="${FOREMAN_PR_FIX_SANDBOX:-host}"
 }
 
 github_cleanup() {
