@@ -8,6 +8,9 @@ defmodule ForemanServer.Workflow.BootReconciliationSlotOrphanTest do
 
   @run_slots_stream "run_slots:global"
 
+  # These tests observe the legacy global run_slots stream (not the per-project
+  # ProjectionStore.queue_status/1) until TRD-009 replaces the boot scan.
+
   setup_all do
     case Process.whereis(ForemanServer.Workflow.BootReconciliation) do
       nil -> start_supervised!({ForemanServer.Workflow.BootReconciliation, []})
@@ -116,7 +119,7 @@ defmodule ForemanServer.Workflow.BootReconciliationSlotOrphanTest do
         end
       end)
 
-      assert ProjectionStore.queue_status().waiting == [live_waiter_run_id]
+      assert global_waiter_ids() == [live_waiter_run_id]
     end
 
     test "waiter list order is preserved after reconciliation" do
@@ -138,12 +141,19 @@ defmodule ForemanServer.Workflow.BootReconciliationSlotOrphanTest do
       assert :ok = BootReconciliation.scan_run_slot_orphans()
 
       assert_eventually(fn ->
-        case ProjectionStore.queue_status() do
-          %{waiting: [^waiter_two_run_id, ^waiter_three_run_id]} -> :ok
+        case global_waiter_ids() do
+          [^waiter_two_run_id, ^waiter_three_run_id] -> :ok
           other -> {:still_waiting, other}
         end
       end)
     end
+  end
+
+  defp global_waiter_ids do
+    {state, _version} =
+      ForemanServer.Aggregate.load(ForemanServer.Aggregates.RunSlots, @run_slots_stream)
+
+    Enum.map(state.waiters, & &1.run_id)
   end
 
   defp unique_id(prefix) do
