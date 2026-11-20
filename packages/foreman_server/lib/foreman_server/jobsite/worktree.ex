@@ -140,7 +140,11 @@ defmodule ForemanServer.Jobsite.Worktree do
     end
   end
 
-  defp sync_branch(repo_path, remote, name) do
+  # Also the attach primitive of a follow-up run (`Workflow.AttachBranch`): fetch the remote branch and
+  # make the local one equal to its tip, creating it or fast-forwarding it, never discarding commits.
+  @doc false
+  @spec sync_branch(String.t(), String.t(), String.t()) :: {:ok, String.t()} | {:error, Error.t()}
+  def sync_branch(repo_path, remote, name) do
     remote_ref = "refs/remotes/#{remote}/#{name}"
 
     with :ok <- Git.fetch_branch(repo_path, remote, name),

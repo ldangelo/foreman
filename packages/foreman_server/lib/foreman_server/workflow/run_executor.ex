@@ -48,6 +48,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   alias ForemanServer.ProjectContext
   alias ForemanServer.ProjectionStore
   alias ForemanServer.Workflow.CommitDeferral
+  alias ForemanServer.Workflow.AttachBranch
   alias ForemanServer.Workflow.AutoPR
   alias ForemanServer.Workflow.PhasePR
   alias ForemanServer.Workflow.PhaseSpec
@@ -2051,9 +2052,9 @@ defmodule ForemanServer.Workflow.RunExecutor do
   defp finalize_run(state) do
     Logger.info("RunExecutor #{state.run_id} finalize_run: maybe_complete_task")
 
-    case maybe_complete_task(state) do
-      :ok ->
-        Logger.info("RunExecutor #{state.run_id} finalize_run: attempting auto-pr")
+    with :ok <- maybe_complete_task(state),
+         :ok <- publish_followup(state) do
+      Logger.info("RunExecutor #{state.run_id} finalize_run: attempting auto-pr")
 
         # After AutoPR, never before: the worktree is the checkout AutoPR pushes
         # from. Reclaiming it earlier is what the old per-phase `after` clause
@@ -2075,17 +2076,34 @@ defmodule ForemanServer.Workflow.RunExecutor do
             err
         end
 
+    else
       {:error, reason} = err ->
         Logger.error(
-          "RunExecutor #{state.run_id} finalize_run: maybe_complete_task returned: #{inspect(reason)}"
+          "RunExecutor #{state.run_id} finalize_run: completion or publish returned: #{inspect(reason)}"
         )
 
         err
     end
   end
 
+  # A follow-up run publishes its work by pushing the branch it is attached to: a plain `git push`
+  # of that one branch, which the remote refuses unless it is a fast-forward, so nothing is ever
+  # forced. It opens no PR (the PR exists) and any other run is untouched.
+  defp publish_followup(state) do
+    with branch when is_binary(branch) <- followup_attach_branch(state),
+         %{push: true} <- Map.get(state.task, :followup),
+         %{worktree_path: path, branch: ^branch} <- Map.get(state, :run_worktree) do
+      case ForemanServer.Jobsite.Git.push(path, "origin", branch) do
+        :ok -> :ok
+        {:error, error} -> {:error, {:followup_push_failed, branch, error.message}}
+      end
+    else
+      _ -> :ok
+    end
+  end
+
   defp finalize_repo_prs_and_cleanup(state) do
-    results = finalize_repo_prs(state)
+    results = if followup_attach_branch(state), do: [], else: finalize_repo_prs(state)
     _ = cleanup_run_worktree(state, :success, pr_failed_repo_ids(results))
     results
   end
@@ -3194,6 +3212,88 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # only in where those two values came from, never in what a manifest was
   # allowed to say.
   defp create_run_worktree(state, phase_index) do
+    case followup_attach_branch(state) do
+      nil -> create_new_run_worktree(state, phase_index)
+      branch -> create_attached_run_worktree(state, phase_index, branch)
+    end
+  end
+
+  # The branch a follow-up run is attached to (`Workflow.FollowUp`), or nil for every other run.
+  defp followup_attach_branch(%{task: task}) when is_map(task) do
+    case Map.get(task, :followup) do
+      %{attach_branch: branch} when is_binary(branch) and branch != "" -> branch
+      _ -> nil
+    end
+  end
+
+  defp followup_attach_branch(_state), do: nil
+
+  # A follow-up run works ON an existing branch (a PR's head) instead of cutting a new one:
+  # `AttachBranch` brings the local branch to the remote tip (fast-forward only, never discarding a
+  # commit) and says whether a linked worktree already holds it (reused as it stands, which keeps the
+  # provider session's working directory) or one is created. A single-repository run only: a
+  # repository other than the project's primary needs the multi-repo layout this does not build.
+  defp create_attached_run_worktree(state, phase_index, branch) do
+    spec = state.worktree_spec || %{}
+    followup = Map.get(state.task, :followup, %{})
+
+    with {:ok, project_id} <- fetch_project_id(state),
+         :ok <- assert_safe_path_identifier(project_id),
+         :ok <- assert_safe_path_identifier(state.run_id),
+         {:ok, project_root, _base_ref, implementation_key, trd_scope} <-
+           resolve_run_base(state, spec),
+         {:ok, repo_root} <- followup_repo_root(project_id, project_root, followup),
+         {:ok, cleanup} <- worktree_cleanup(spec),
+         default_path = run_worktree_path(project_id, state, spec),
+         {:ok, plan} <-
+           AttachBranch.prepare(repo_root, branch, "origin",
+             default_path: default_path,
+             hint_path: Map.get(followup, :worktree_path)
+           ),
+         phase_id = Identity.phase_id(state.run_id, phase_index),
+         operation_id = Worktree.operation_id(state.run_id, nil),
+         :ok <- ensure_worktree_parent_dir(plan.path),
+         {:ok, _path} <-
+           Worktree.create(%{
+             operation_id: operation_id,
+             project_id: project_id,
+             run_id: state.run_id,
+             phase_id: phase_id,
+             repo_path: repo_root,
+             worktree_path: plan.path,
+             base_ref: plan.tip,
+             branch: branch,
+             reuse_existing: plan.mode == :reuse
+           }) do
+      record = %{
+        operation_id: operation_id,
+        worktree_path: plan.path,
+        branch: branch,
+        base_ref: plan.tip,
+        project_root: repo_root,
+        project_id: project_id,
+        implementation_key: implementation_key,
+        trd_scope: trd_scope,
+        cleanup: cleanup
+      }
+
+      # A reused worktree was set up by the run that made it; only a fresh one runs the setup script.
+      if plan.mode == :reuse, do: {:ok, record}, else: run_project_setup(state, record)
+    end
+  end
+
+  defp followup_repo_root(project_id, project_root, followup) do
+    case Map.get(followup, :repo_path) do
+      path when path in [nil, ""] or path == project_root ->
+        {:ok, project_root}
+
+      path when is_binary(path) ->
+        registered = Enum.map(ProjectionStore.project_repositories(project_id) || [], & &1.path)
+        if path in registered, do: {:ok, path}, else: {:error, {:unknown_followup_repo, path}}
+    end
+  end
+
+  defp create_new_run_worktree(state, phase_index) do
     spec = state.worktree_spec || %{}
 
     with {:ok, project_id} <- fetch_project_id(state),
@@ -4899,6 +4999,9 @@ defmodule ForemanServer.Workflow.RunExecutor do
   def __finalize_repo_prs_for_test__(state), do: finalize_repo_prs(state)
 
   @doc false
+  def __publish_followup_for_test__(state), do: publish_followup(state)
+
+  @doc false
   def __finalize_repo_prs_and_cleanup_for_test__(state), do: finalize_repo_prs_and_cleanup(state)
 
   @doc false
@@ -5157,7 +5260,12 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
   end
 
+  # A follow-up run has no task: there is no `task:` stream to move, so nothing is dispatched.
   defp dispatch_task_execution_complete(state) do
+    if task_id(state) == "", do: :ok, else: do_dispatch_task_execution_complete(state)
+  end
+
+  defp do_dispatch_task_execution_complete(state) do
     dispatch_system_command(
       "task.execution_complete",
       Identity.task_complete_command_id(state.run_id),
@@ -5168,6 +5276,12 @@ defmodule ForemanServer.Workflow.RunExecutor do
   end
 
   defp dispatch_task_execution_fail(state, reason) do
+    if task_id(state) == "",
+      do: :ok,
+      else: do_dispatch_task_execution_fail(state, reason)
+  end
+
+  defp do_dispatch_task_execution_fail(state, reason) do
     dispatch_system_command(
       "task.execution_fail",
       Identity.task_fail_command_id(state.run_id),

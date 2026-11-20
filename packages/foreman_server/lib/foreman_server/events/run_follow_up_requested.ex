@@ -10,7 +10,9 @@ defmodule ForemanServer.Events.RunFollowUpRequested do
   the only branch it may push; `resume_session_provider` / `resume_session_id`
   name a provider session the first phase resumes (both or neither); `note` is
   the operator's note. `prompt` is the already-redacted fix prompt; `provider`, `model`, `effort`,
-  `approval_mode` and `sandbox` (`"docker"`) describe the agent the single phase runs.
+  `approval_mode` and `sandbox` (`"docker"`) describe the agent the single phase runs. `repo_path` is the
+  registered repository the PR lives in (absent: the project's primary); `worktree_path` is the
+  original run's worktree path, where the session being resumed was keyed.
 
   Written ONLY while `config :foreman_server, :followup_runs` is on (default
   off), so a build without this struct can be rolled back to until the first
@@ -38,6 +40,8 @@ defmodule ForemanServer.Events.RunFollowUpRequested do
           effort: String.t() | nil,
           approval_mode: String.t() | nil,
           sandbox: String.t() | nil,
+          repo_path: String.t() | nil,
+          worktree_path: String.t() | nil,
           note: String.t() | nil
         }
   @derive Jason.Encoder
@@ -60,6 +64,8 @@ defmodule ForemanServer.Events.RunFollowUpRequested do
     :effort,
     :approval_mode,
     :sandbox,
+    :repo_path,
+    :worktree_path,
     :note
   ]
 end

@@ -61,6 +61,8 @@ defmodule ForemanServer.Aggregates.RunFollowUp do
          {:ok, effort} <- optional(payload, :effort),
          {:ok, approval_mode} <- optional(payload, :approval_mode),
          {:ok, sandbox} <- optional(payload, :sandbox),
+         {:ok, repo_path} <- optional(payload, :repo_path),
+         {:ok, worktree_path} <- optional(payload, :worktree_path),
          {:ok, {resume_provider, session_id}} <- validate_session(payload),
          {:ok, push} <- validate_push(Aggregate.get(payload, :push), attach_branch) do
       {:ok,
@@ -86,6 +88,8 @@ defmodule ForemanServer.Aggregates.RunFollowUp do
            effort: effort,
            approval_mode: approval_mode,
            sandbox: sandbox,
+           repo_path: repo_path,
+           worktree_path: worktree_path,
            note: note
          }
        }}

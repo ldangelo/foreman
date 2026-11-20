@@ -96,16 +96,25 @@ defmodule ForemanServer.Workflow.Worktree do
     started_ms = System.monotonic_time(:millisecond)
     repo_id = Map.get(args, :repo_id)
 
-    case run_create_git(
-           op_id,
-           repo_path,
-           worktree_path,
-           base_ref,
-           branch,
-           project_id,
-           run_id,
-           phase_id
-         ) do
+    # `reuse_existing: true` (a follow-up run attaching to a branch a linked worktree already holds)
+    # records that worktree for the run without touching git: nothing is created.
+    git_result =
+      if Map.get(args, :reuse_existing) == true do
+        {:ok, %{path: worktree_path, reused: true}}
+      else
+        run_create_git(
+          op_id,
+          repo_path,
+          worktree_path,
+          base_ref,
+          branch,
+          project_id,
+          run_id,
+          phase_id
+        )
+      end
+
+    case git_result do
       {:ok, _git_result} ->
         case dispatch_worktree_created(
                op_id,

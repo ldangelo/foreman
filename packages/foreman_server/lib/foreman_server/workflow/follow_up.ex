@@ -55,7 +55,18 @@ defmodule ForemanServer.Workflow.FollowUp do
   def resume_opts(_request), do: []
 
   defp followup(request) do
-    Map.take(request, [:kind, :parent_run_id, :pr_url, :fix_kind, :attach_branch, :push, :prompt, :note])
+    Map.take(request, [
+      :kind,
+      :parent_run_id,
+      :pr_url,
+      :fix_kind,
+      :attach_branch,
+      :push,
+      :prompt,
+      :note,
+      :repo_path,
+      :worktree_path
+    ])
   end
 
   defp workflow_snapshot(request) do
