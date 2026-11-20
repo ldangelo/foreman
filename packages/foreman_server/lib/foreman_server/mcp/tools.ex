@@ -2240,22 +2240,36 @@ defmodule ForemanServer.MCP.Tools do
 
   defp tool_foreman_queue_status(%{project_id: project_id}) do
     start_us = System.monotonic_time(:microsecond)
+    project_id = if is_binary(project_id), do: String.trim(project_id), else: ""
 
     result =
-      if is_binary(project_id) and String.trim(project_id) != "",
-        do: ProjectionStore.queue_status(String.trim(project_id)),
-        else: nil
+      cond do
+        project_id == "" -> :project_required
+        ProjectionStore.project_projection(project_id) == nil -> :not_found
+        true -> {:ok, ProjectionStore.queue_status(project_id)}
+      end
 
     duration_us = System.monotonic_time(:microsecond) - start_us
-    outcome = if result, do: :ok, else: :invalid
+
+    outcome =
+      case result do
+        {:ok, _} -> :ok
+        other -> other
+      end
 
     Telemetry.mcp_tool_call(duration_us, "foreman_queue_status", outcome)
 
-    if result,
-      do: {:ok, result},
-      else:
+    case result do
+      {:ok, _} = ok ->
+        ok
+
+      :project_required ->
         {:error,
          %ToolError{code: "INVALID_PARAMS", message: "name a project: project_id is required"}}
+
+      :not_found ->
+        {:error, %ToolError{code: "NOT_FOUND", message: "Project not found"}}
+    end
   end
 
   defp tool_foreman_overview(args) do

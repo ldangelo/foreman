@@ -1593,7 +1593,7 @@ when a Foreman server is already running.
 
 ### Tools
 
-Read tools are always advertised: `foreman_doctor`, `foreman_queue_status`,
+Read tools are always advertised: `foreman_doctor`, `foreman_queue_status` (takes a required `project_id`),
 `foreman_project_list`, `foreman_project_get`, `foreman_workflow_list`,
 `foreman_workflow_get`, `foreman_workflow_validate`, `foreman_prompt_get`,
 `foreman_run_get`, `foreman_run_status`,

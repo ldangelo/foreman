@@ -362,7 +362,7 @@ defmodule ForemanServer.MCP.ToolsTest do
 
   describe "foreman_queue_status" do
     test "returns one project's queue status" do
-      replace_state(%{})
+      replace_state(%{projects: %{"p" => %{project_id: "p"}}})
 
       assert Tools.call_tool("foreman_queue_status", %{project_id: "p"}) ==
                {:ok, ProjectionStore.queue_status("p")}

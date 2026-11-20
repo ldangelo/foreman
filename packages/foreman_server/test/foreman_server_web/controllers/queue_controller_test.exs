@@ -129,6 +129,11 @@ defmodule ForemanServerWeb.QueueControllerTest do
       refute inspect(status) =~ "p2-"
     end
 
+    test "the MCP queue tool answers NOT_FOUND for an unknown project" do
+      assert {:error, %{code: "NOT_FOUND"}} =
+               Tools.call_tool("foreman_queue_status", %{project_id: "nope"})
+    end
+
     test "no other MCP tool is a queue tool" do
       queue_tools =
         for %{name: name} <- Tools.list_tools(), name =~ "queue", do: name
