@@ -201,12 +201,18 @@ defmodule ForemanServer.Aggregates.RunSlotsPromoteTest do
       assert waiter_ids(state) == ~w(w1)
     end
 
-    test "a queued run requesting with enqueue_only or force again is still single" do
+    test "a queued run requesting with enqueue_only again is still single" do
       state = fill(~w(h1), ~w(w1), 1)
       assert {nil, ^state} = acquire(state, "w1", 1, %{enqueue_only: true})
-      assert {nil, ^state} = acquire(state, "w1", 1, %{force: true})
       assert waiter_ids(state) == ~w(w1)
-      refute Map.has_key?(state.holders, "w1")
+    end
+
+    test "force on a queued run makes it a holder and removes it from the queue" do
+      state = fill(~w(h1), ~w(w1 w2), 1)
+      {event, state} = acquire(state, "w1", 1, %{force: true})
+      assert %RunSlotAcquired{run_id: "w1"} = event
+      assert Map.has_key?(state.holders, "w1")
+      assert waiter_ids(state) == ~w(w2)
     end
   end
 

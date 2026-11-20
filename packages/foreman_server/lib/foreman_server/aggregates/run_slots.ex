@@ -378,11 +378,8 @@ defmodule ForemanServer.Aggregates.RunSlots do
       Map.has_key?(state.holders, run_id) ->
         {:ok, nil}
 
-      # A queued run keeps its single position; force from the queue is
-      # deliberately a no-op here (promotion/adoption goes through the head).
-      waiting? ->
-        {:ok, nil}
-
+      # force: record a holder regardless of capacity; the fold drops the run
+      # from waiters if it was queued, so it never ends up running AND queued.
       force? ->
         Telemetry.run_slots_acquired(run_id, map_size(state.holders) + 1, capacity)
 
@@ -393,6 +390,10 @@ defmodule ForemanServer.Aggregates.RunSlots do
            acquired_at_ms: now_ms,
            project_id: project_id
          }}
+
+      # A queued run keeps its single position.
+      waiting? ->
+        {:ok, nil}
 
       not enqueue_only? and map_size(state.holders) < capacity ->
         Telemetry.run_slots_acquired(run_id, map_size(state.holders) + 1, capacity)
