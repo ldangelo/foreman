@@ -85,6 +85,21 @@ Project headers show a `N failed` count and `active/total`; counters always
 describe all runs, even while the failed filter hides rows. The header shows the
 time of the last successful refresh (red while the latest refresh is failing).
 
+**The queue.** Under each project, above its running and finished runs, a `queued` group lists the
+work that is waiting, in the order the server will start it:
+
+- `#N … waiting for a slot`: a run the server has admitted but has no free run slot for yet, with its
+  place in the server's global slot queue (`GET /api/queue`, `waiting`). The title is its task's.
+- `… not started`: a task that exists in the project but has no run yet (`GET /api/tasks?status=open`),
+  oldest first, with how long ago it was created.
+- `… stale`: an entry still in the server's queue whose run has ended or no longer exists, so it can
+  never start. It is shown dimmed (under "No project" when the server cannot say which project it
+  belonged to) and is not counted. The header shows the total of the live ones as `N queued`.
+
+Queue rows are display only: a queued run has no transcript or phases to open yet. The queue is read
+every 30 s (a manual refresh reads it at once), and if reading it fails the runs still show, with a
+one-line "Queue unavailable: …" note. The failed filter hides the queue.
+
 | Action | Mouse | Shortcut |
 |---|---|---|
 | Open a run in its detail tab | click the row | `⏎` while navigating |
@@ -192,6 +207,10 @@ The run-detail tab also reads `GET /api/runs/:id`, `/phases`, `/approvals`,
 `/api/projects/:id/questions`, `/api/threads/run:<id>` (`repo_path`, `title`,
 `branch`) and its `/transcript` (`turns`: `seq`, `at`, `kind`, `source`, `text`;
 `omitted_entries` invalidates cursors).
+
+The queue reads `GET /api/queue` (`capacity`, `running`, `waiting`) and `GET /api/tasks` (`status`,
+`task_id`, `project_id`, `title`, `run_id`, `created_at_ms`); a waiting run is matched to its task by
+`run_id`, and an unmatched one is looked up with `GET /api/runs/<id>`.
 
 Verification so far: the panel was exercised against a live server and against
 stub servers, and the commands behind each shortcut were driven with

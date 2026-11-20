@@ -1,13 +1,35 @@
-// Foreman runs grouped by project, from `foreman run list` ({"runs": [...]}).
-// Click a run to open a tab running `foreman run get <run_id>`; click a project or status header to collapse it.
+// Foreman runs grouped by project, from `foreman run list` ({"runs": [...]}), and each project's queue
+// (work waiting for a run slot, and open tasks not started yet). Click a run to open its detail tab;
+// click a project, status or queue header to collapse it.
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, ScrollHandle } from "gpui-base";
 import { theme, checking, run, focused, nextCommand, notify, keys, layout, shared, setShared, exec, window } from "herdr";
-import { info, isActive, ago, clock, foreman, workflowName, prUrl, openUrlArgv } from "./common.js";
+import { info, isActive, ago, clock, foreman, api, workflowName, prUrl, openUrlArgv } from "./common.js";
 
 const POLL_MS = 10000;
 const LIMIT = 40;
 const PROJECT_RETRY_MS = 60000;
+const QUEUE_EVERY_MS = 30000; // the queue changes slowly and its lookups are heavier than the run list
+const TERMINAL_RUN = new Set(["completed", "failed", "cancelled"]);
+
+// The queue of every project, from three server reads.
+//   q        GET /api/queue: {capacity, running: [run_id], waiting: [run_id]}; waiting is in slot order,
+//            runs the server admitted but has no free slot for yet.
+//   open     GET /api/tasks?status=open: tasks created but not started (no run).
+//   resolved Map run_id -> {project_id, task_id, title, stale}: what each waiting run is for.
+// A waiting id that resolves to nothing, or to a run that has already ended, is a leftover in the
+// server's queue; it is kept (never hidden) but marked stale, and not counted as queued.
+function buildQueue(q, open, resolved) {
+  const slot = (q.waiting ?? []).map((run_id, i) => {
+    const r = resolved.get(run_id);
+    return { kind: "slot", pos: i + 1, run_id, project_id: r?.project_id ?? null, task_id: r?.task_id ?? null, title: r?.title ?? null, stale: !r || r.stale === true };
+  });
+  const notStarted = open
+    .filter((t) => t.run_id == null)
+    .map((t) => ({ kind: "open", task_id: t.task_id, project_id: t.project_id ?? null, title: t.title ?? null, created: t.created_at_ms ?? 0, stale: false }))
+    .sort((a, b) => a.created - b.created);
+  return [...slot, ...notStarted];
+}
 
 // The sidebar is narrowed to a rail by its width, not a flag (dragging its edge narrows it too),
 // the same test the shipped agents mod uses. The hint footer would stack one hint per line there.
@@ -65,6 +87,9 @@ export default class ForemanRuns extends View {
     this.cursor = null; // run_id selected for keyboard navigation
     this.scroll = ScrollHandle.new(); // brings the selected row into view
     this.updatedAt = 0; // ms of the last successful refresh
+    this.queue = { capacity: null, running: 0, entries: [] }; // see buildQueue()
+    this.queueAt = 0; // ms of the last queue read (the poll reads it every QUEUE_EVERY_MS)
+    this.queueError = null; // the last queue read failed: the runs still show, the queue says why it is missing
     cx.timer.every(POLL_MS, (cx) => this.refresh(cx));
     this.refresh(cx);
     // Key commands from keys.json ("<mod>.<command>"): "foreman-runs.toggle-failed" flips the
@@ -108,6 +133,36 @@ export default class ForemanRuns extends View {
     }
   }
 
+  // Reads the queue. Its own try/catch: a queue problem must never take the run list down with it.
+  async loadQueue(force) {
+    if (!force && Date.now() - this.queueAt < QUEUE_EVERY_MS) return;
+    this.queueAt = Date.now();
+    try {
+      const q = await api("/api/queue");
+      const open = (await api("/api/tasks?status=open")).tasks ?? [];
+      const waiting = q.waiting ?? [];
+      const resolved = new Map();
+      if (waiting.length > 0) {
+        // A waiting run belongs to a task that is in progress: its run_id names it.
+        const want = new Set(waiting);
+        for (const t of (await api("/api/tasks?status=in_progress")).tasks ?? []) {
+          if (t.run_id && want.has(t.run_id)) resolved.set(t.run_id, { project_id: t.project_id, task_id: t.task_id, title: t.title, stale: false });
+        }
+        // The rest are looked up one by one (rare): an ended run is a stale entry, an unknown one stays unresolved.
+        await Promise.all(waiting.filter((id) => !resolved.has(id)).map(async (id) => {
+          try {
+            const r = (await api(`/api/runs/${id}`)).run;
+            resolved.set(id, { project_id: r.project_id, task_id: r.task_id, title: null, stale: TERMINAL_RUN.has(r.status) });
+          } catch { /* stays unresolved: shown as stale, with its run id */ }
+        }));
+      }
+      this.queue = { capacity: q.capacity ?? null, running: (q.running ?? []).length, entries: buildQueue(q, open, resolved) };
+      this.queueError = null;
+    } catch (e) {
+      this.queueError = String(e?.message ?? e).split("\n")[0];
+    }
+  }
+
   refresh(cx, manual = false) {
     if (this.busy || checking()) return;
     this.busy = true;
@@ -123,6 +178,7 @@ export default class ForemanRuns extends View {
         this.error = null;
         this.updatedAt = Date.now();
         await this.loadProjects();
+        await this.loadQueue(manual);
       } catch (e) {
         this.error = String(e?.message ?? e).split("\n")[0];
       } finally {
@@ -295,19 +351,28 @@ export default class ForemanRuns extends View {
     const byProject = new Map();
     for (const r of this.runs) {
       const key = r.project_id ?? "";
-      if (!byProject.has(key)) byProject.set(key, []);
-      byProject.get(key).push(r);
+      if (!byProject.has(key)) byProject.set(key, { all: [], queued: [] });
+      byProject.get(key).all.push(r);
     }
-    const latest = (rs) => Math.max(...rs.map((r) => r.last_event_at_ms ?? 0));
+    // A project with queued work but no run yet still gets a group.
+    for (const e of this.queue.entries) {
+      const key = e.project_id ?? "";
+      if (!byProject.has(key)) byProject.set(key, { all: [], queued: [] });
+      byProject.get(key).queued.push(e);
+    }
+    const latest = (rs) => (rs.length > 0 ? Math.max(...rs.map((r) => r.last_event_at_ms ?? 0)) : 0);
     const byRank = (a, b) => info(a.status).rank - info(b.status).rank || (b.last_event_at_ms ?? 0) - (a.last_event_at_ms ?? 0);
+    const filtering = applyFilter && this.onlyFailed;
     return [...byProject.entries()]
-      .map(([id, all]) => ({
+      .map(([id, { all, queued }]) => ({
         id,
         name: id ? (this.projectNames.get(id) ?? id) : "No project",
         all,
-        runs: (applyFilter && this.onlyFailed ? all.filter((r) => r.status === "failed") : all).sort(byRank),
+        queued,
+        runs: (filtering ? all.filter((r) => r.status === "failed") : all).sort(byRank),
       }))
-      .filter((g) => g.runs.length > 0)
+      // The failed filter shows failed runs only, so it hides queue-only projects too.
+      .filter((g) => g.runs.length > 0 || (!filtering && g.queued.length > 0))
       .sort((a, b) => Number(b.runs.some(isActive)) - Number(a.runs.some(isActive)) || latest(b.runs) - latest(a.runs));
   }
 
@@ -319,6 +384,11 @@ export default class ForemanRuns extends View {
     for (const g of this.groups()) {
       out.push({ kind: "project", g });
       if (this.collapsed.has(g.id)) continue;
+      // The queue comes first: it is what is about to run. Hidden while the failed filter is on.
+      if (g.queued.length > 0 && !this.onlyFailed) {
+        out.push({ kind: "queue", g });
+        if (!this.collapsed.has(`${g.id}::queued`)) for (const e of g.queued) out.push({ kind: "queued", e });
+      }
       const byStatus = new Map();
       for (const r of g.runs) {
         if (!byStatus.has(r.status)) byStatus.set(r.status, []);
@@ -383,6 +453,7 @@ export default class ForemanRuns extends View {
     if (narrow()) return this.renderRail(t);
     const active = this.runs.filter(isActive).length;
     const failed = this.runs.filter((r) => r.status === "failed").length;
+    const queuedN = this.queue.entries.filter((e) => !e.stale).length;
 
     const row = (r) => {
       return v_flex().id(`run-${r.run_id}`).pl(38).pr(12).py(4).gap(1).cursor_pointer().hover((s) => s.bg(t.hover))
@@ -407,6 +478,32 @@ export default class ForemanRuns extends View {
         .child(div().text_size(11).text_color(t.dim).child(`${rs.length}`));
     };
 
+    // The queue subgroup: waiting work, collapsible like a status group.
+    const queueHead = (g) => {
+      const key = `${g.id}::queued`;
+      const closed = this.collapsed.has(key);
+      const n = g.queued.filter((e) => !e.stale).length;
+      return h_flex().id(`queue-head-${key}`).pl(22).pr(12).pt(4).pb(2).gap(6).items_center().cursor_pointer()
+        .on_click((_e, cx) => this.toggle(key, cx))
+        .child(div().w(10).text_size(10).text_color(t.dim).child(closed ? "▸" : "▾"))
+        .child(div().size(7).rounded(4).bg(t.idle ?? t.dim))
+        .child(div().flex_1().truncate().text_size(11.5).text_color(t.idle ?? t.dim).child("queued"))
+        .child(div().text_size(11).text_color(t.dim).child(`${n}`));
+    };
+
+    // A queued item. Display only: a queued run has no transcript or phases to open yet.
+    const queuedRow = (e) => {
+      const what = e.title ?? e.task_id ?? e.run_id ?? "unknown";
+      const sub = e.stale ? `${e.task_id ?? e.run_id ?? "?"} · stale: ${e.task_id ? "its run has ended" : "the server has no such run"}`
+        : e.kind === "slot" ? `${e.task_id ?? e.run_id} · waiting for a slot`
+        : `${e.task_id} · not started${e.created ? ` · ${ago(e.created)}` : ""}`;
+      return v_flex().id(`queued-${e.run_id ?? e.task_id}`).pl(38).pr(12).py(4).gap(1)
+        .child(h_flex().gap(8).items_center()
+          .child(div().flex_1().truncate().text_size(12.5).text_color(e.stale ? t.dim : t.foreground).child(what))
+          .child(div().text_size(11).text_color(t.dim).child(e.kind === "slot" ? `#${e.pos}` : "")))
+        .child(div().truncate().text_size(11).text_color(t.dim).child(sub));
+    };
+
     const projectHead = (g) => {
       const n = g.all.filter(isActive).length;
       const failedN = g.all.filter((r) => r.status === "failed").length;
@@ -421,10 +518,15 @@ export default class ForemanRuns extends View {
 
     const note = (text, color) => div().px(12).py(8).text_size(12).text_color(color).child(text);
     // Direct children of the scroll area, flat, so scroll_to_item(index) can reveal any row.
+    const items = this.items();
     const elements = !this.loaded ? [note("Loading…", t.dim)]
       : this.error ? [note(`foreman: ${this.error}`, t.blocked)]
-      : this.shownRuns().length === 0 ? [note(this.onlyFailed ? "No failed runs" : "No runs", t.dim)]
-      : this.items().map((it) => it.kind === "project" ? projectHead(it.g) : it.kind === "status" ? statusHead(it.g, it.status, it.rs) : row(it.r));
+      : items.length === 0 ? [note(this.onlyFailed ? "No failed runs" : "No runs or queued work", t.dim)]
+      : [
+        ...(this.queueError ? [note(`Queue unavailable: ${this.queueError}`, t.dim)] : []),
+        ...items.map((it) => it.kind === "project" ? projectHead(it.g) : it.kind === "status" ? statusHead(it.g, it.status, it.rs)
+          : it.kind === "queue" ? queueHead(it.g) : it.kind === "queued" ? queuedRow(it.e) : row(it.r)),
+      ];
 
     // Hint footer: navigation keys while the panel holds the keyboard, then the bound chords.
     const hints = [
@@ -447,6 +549,7 @@ export default class ForemanRuns extends View {
             .on_click((_e, cx) => this.toggleFailedFilter(cx))
             .child(`${failed} failed`)))
         .child(div().text_size(11).text_color(active > 0 ? t.working : t.dim).child(`${active} active`))
+        .when(queuedN > 0, (el) => el.child(div().text_size(11).text_color(t.idle ?? t.dim).child(`${queuedN} queued`)))
         .when(this.updatedAt > 0, (el) => el.child(
           div().text_size(11).text_color(this.error ? t.blocked : t.dim).child(clock(this.updatedAt))))
         .child(div().id("foreman-refresh").px(5).rounded(4).cursor_pointer().text_size(13)
