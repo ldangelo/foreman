@@ -9,6 +9,10 @@ Design Readiness Score: 4.5 (PASS, self-scored; was 4.25 at create-trd)
 kind: trd
 test_approach: standard
 Constitution compliance: passed
+ensemble_implement_trd_beads:
+  branch_name: dispatch-queue
+  use_proposed: false
+  stacked_prs: false
 ---
 
 # TRD: Per-project dispatch queues (retire the global run-slot queue)
