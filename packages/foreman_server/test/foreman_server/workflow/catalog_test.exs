@@ -311,6 +311,46 @@ defmodule ForemanServer.Workflow.CatalogTest do
     end
   end
 
+  describe "workflow-level sandbox" do
+    test "is carried when declared, and changes the digest", %{tmp: tmp, server_name: name} do
+      File.write!(Path.join(tmp, "prompts/p.md"), "p")
+
+      for {file, sandbox} <- [{"plain.yaml", nil}, {"boxed.yaml", "sandbox: docker\n"}] do
+        File.write!(Path.join(tmp, file), """
+        name: #{Path.rootname(file)}
+        #{sandbox}worktree:
+          enabled: true
+        phases:
+          - name: p1
+            prompt: p.md
+        """)
+      end
+
+      start_catalog(tmp, name)
+
+      assert {:ok, plain} = Catalog.load("plain.yaml")
+      assert {:ok, boxed} = Catalog.load("boxed.yaml")
+      refute Map.has_key?(plain, :sandbox)
+      assert boxed.sandbox == "docker"
+      assert plain.digest != boxed.digest
+    end
+
+    test "a manifest without it resolves with no :sandbox key", %{tmp: tmp, server_name: name} do
+      File.write!(Path.join(tmp, "prompts/p.md"), "p")
+
+      File.write!(Path.join(tmp, "none.yaml"), """
+      name: none
+      phases:
+        - name: p1
+          prompt: p.md
+      """)
+
+      start_catalog(tmp, name)
+      assert {:ok, workflow} = Catalog.load("none.yaml")
+      refute Map.has_key?(workflow, :sandbox)
+    end
+  end
+
   describe "workflow-level worktree block" do
     test "legacy manifest without worktree block leaves resolved shape unchanged", %{
       tmp: tmp,

@@ -11,7 +11,7 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 
 > ## Read this first: most of this file documents commands that do not exist
 >
-> The Go CLI dispatches exactly eleven top-level verbs (`project`, `usage`, `approvals`, `questions`, `commands`, `run`, `thread`, `jobsite`, `workflow`, `init`, `doctor`) (`packages/foreman_cli/cmd/foreman/main.go`); every other verb
+> The Go CLI dispatches exactly ten top-level verbs (`project`, `usage`, `approvals`, `questions`, `commands`, `run`, `thread`, `workflow`, `init`, `doctor`) (`packages/foreman_cli/cmd/foreman/main.go`); every other verb
 > returns `foreman: unknown command`. The complete real surface, taken from the
 > subcommand switches and flag sets in that package, is:
 >
@@ -82,8 +82,6 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 > foreman thread reopen     (no flags)
 > foreman thread steer      --message --message-id --no-resume
 > foreman thread rereview   (no flags)
->
-> foreman jobsite template  --project-id --prompt --name --provider --model --iterations --signal --branch --sandbox --push --dir --format
 >
 > foreman workflow install  --remote --retries --retry-delay-ms --source --target
 > foreman workflow remove   --all
@@ -202,86 +200,23 @@ Legacy TS delegation and Node daemon start/restart were removed after the Elixir
 
 ### `foreman init`
 
-> **PARTLY INCORRECT — including what the command does.** `foreman init`
-> (no `--template`) does not initialize a project: it POSTs an empty body to
-> `/api/admin/workflows/install` and prints the response (`init.go`). It
-> does not create `.foreman/`, install Pi skills, or register the project. It
-> declares `--force`, which is **required** for this path — bare
-> `foreman init` returns `--force is required to refresh the installed
-> runtime copy`. `-n`/`--name` and `--wizard` do not exist, and `init` takes
-> no positional name. What it DOES take is `--template` and `--dir`
-> (`init.go:44-45`), neither of which reaches the HTTP path.
+`foreman init --force` POSTs an empty body to `/api/admin/workflows/install` and prints the response: it
+refreshes the installed runtime prompts and workflows from the server's bundled source. `--force` is required
+(bare `foreman init` returns `--force is required to refresh the installed runtime copy`). It does not create
+`.foreman/`, register a project or install skills (bundled skills are installed by
+`ForemanServer.Skills.Installer` when the server boots; see `docs/user-guide.md` §7.4), and the CLI does not run
+Postgres migrations or open a database connection. `init` takes no project name and has no wizard.
 
-Initializes Foreman in a project. Which half runs depends on `--template`: with
-it, the verb writes a repo-local `.foreman/` scaffold entirely client-side,
-with no HTTP request at all; without it, it POSTs the asset refresh the note
-above describes. Either way it does **not** install or refresh skills --
-bundled skills are installed by `ForemanServer.Skills.Installer` to
-`~/.foreman/skills/` when the server boots (see `docs/user-guide.md` §7.4), so
-after editing a bundled skill you delete the installed copy and restart the
-server; re-running `init` changes nothing there. The CLI does not run Postgres
-migrations or open a database connection.
+`--template` and `--dir` (a client-side scaffold of Jobsite scripts) were removed with the jobsite dispatch
+path; passing them is now a usage error.
 
 ```bash
-foreman init                      # REFUSED: --force is required to refresh the runtime copy
-foreman init --force              # POSTs /api/admin/workflows/install (asset refresh only)
-foreman init --template NAME      # Client-side repo-local .foreman/ scaffold, no HTTP -- see below
-foreman init --template NAME --dir PATH   # Same, scaffolded into PATH instead of the cwd
-```
-
-Two of the verbs this section previously listed never existed. `foreman init -n my-project` and
-`foreman init --wizard` have no route: `init.go:43-45` declares exactly three flags — `--force`,
-`--template` and `--dir` — with no project-name flag and no positional name, and there is no
-wizard code path anywhere in `packages/foreman_cli`. `--wizard` additionally carried a table row
-describing interactive behaviour it does not have. `docs/lessons/documentation-discipline-history.md` names both of these as known-bad
-claims, so they are annotated rather than left to read as intended design.
-
-| Option | Description |
-|--------|-------------|
-| `-n, --name <name>` | **Does not exist.** `init.go:43-45` declares `--force`, `--template` and `--dir` only; there is no project-name flag and no positional name. |
-| `--force` | Overwrite existing prompt and workflow files. Run this after editing bundled source prompts/workflows so installed runtime copies do not drift. It has no effect on skills: `foreman init` never reads or writes `~/.foreman/skills`, which the server installs at boot via `ForemanServer.Skills.Installer`. |
-| `--wizard` | **Does not exist** — never has; no wizard code path is present anywhere in the Go CLI. |
-
-#### `foreman init --template <name>` (real, current)
-
-This flag **is** implemented and does what its name says — it is the one
-piece of the inaccurate prose above that is now literally true, for the
-scaffold it produces. `--template <name>` (`basic`, `iterate`, `parallel`,
-`review`, or `triage`) scaffolds a repo-local `<dir>/.foreman/` (default
-`<dir>` is `.`): shared `README.md`/`Dockerfile`/`.gitignore`
-plus the named template's runnable `.exs` script and its `prompts/*.md` file(s). It is a
-pure local file write — no HTTP request, no running server required — and
-never overwrites an existing file (a second invocation reports every file
-`skipped`). Combine with `--force` to also run the asset-refresh POST in the
-same invocation; `--force` still never overwrites a scaffold file either.
-
-```bash
-foreman init --template basic                       # scaffold .foreman/ in the current directory
-foreman init --template iterate --dir /path/to/repo  # scaffold into a different repo
-foreman init --template review --force               # scaffold AND refresh installed runtime prompts/workflows
+foreman init --force    # POSTs /api/admin/workflows/install (asset refresh only)
 ```
 
 | Option | Description |
 |--------|-------------|
-| `--template <name>` | Scaffold `.foreman/` from a bundled template: `basic`, `iterate`, `parallel`, `review`, `triage`. Unknown name is a usage error. |
-| `--dir <path>` | Directory to scaffold `.foreman/` into (default `.`) |
-
-The scaffolded scripts come in two kinds. `basic`, `iterate` and `parallel`
-drive a **running** `foreman_server` over HTTP through the `foreman_client`
-package (`packages/foreman_client`, loaded by the script with `Mix.install`;
-nothing is copied into the project); they run with plain `elixir` (Erlang/OTP 27+, no Foreman
-checkout or database) after `FOREMAN_API_TOKEN` and `FOREMAN_PROJECT_ID` are set
-(see the user guide's Remote Jobsite API section for the server-side config).
-`iterate` also reads optional `FOREMAN_AGENT_MODEL`, `FOREMAN_MAX_ITERATIONS` (positive integer, default 20) and `FOREMAN_AGENT_ENV` (comma-separated names of shell variables passed to the agent; the server must allowlist them, see the user guide).
-`parallel` additionally reads `FOREMAN_MERGE_INTO` — the branch the merge step
-targets, which must be the branch currently checked out in the *server's* copy of
-the repo, since `Jobsite.merge_into/2` refuses any other target (409). Unlike
-`FOREMAN_PROJECT_ID` it has no default, so an unset value fails the script only
-after the fan-out completes, not at start.
-
-`review` and `triage` call `ForemanServer.Jobsite` directly and must run inside
-a booted `foreman_server` app (`mix run`, not `mix run --no-start`), e.g. from a
-Foreman checkout: `cd packages/foreman_server && mix run ../../.foreman/review.exs`.
+| `--force` | Overwrite existing prompt and workflow files. Run this after editing bundled source prompts/workflows so installed runtime copies do not drift. |
 
 ### `foreman project`
 
@@ -385,7 +320,7 @@ foreman project update --task-provider kata project-123
 | `--instructions-file <path>` | Read the instructions from a file |
 | `--thread-model <model>`, `--thread-effort <low\|medium\|high>` | Default model/effort for threads |
 | `--coordinator-provider <pi\|claude>`, `--coordinator-model <model>`, `--coordinator-effort <low\|medium\|high>` | Coordinator settings |
-| `--max-concurrent-runs <n>` | Concurrent runs limit (1..1000) |
+| `--max-concurrent-runs <n>` | This project's concurrent runs limit (1..1000; default 3 when unset). Total concurrency is the sum of per-project limits; there is no machine-wide ceiling |
 | `--daily-thread-cap <n>` | Threads started per UTC day (1..10000) |
 | `--library-collect-produced[=false]` | Register each run's artifacts and session-archive files in the project library (opt-in, default off) |
 | `--coordinator-propose-before-start=<true\|false>`, `--coordinator-max-active-threads <n>` (1..50), `--coordinator-reuse-threads=<true\|false>` | Coordinator tuning, enforced by the server |
@@ -428,7 +363,7 @@ foreman project adopt --kind run --id RUN --new-project --project-id my-app --pa
 
 ### `foreman project settings <id>`
 
-Print a project's status, settings and live limits (`GET /api/projects/<id>/settings`): effective `max_concurrent_runs`, `active_runs`, `daily_thread_cap`, `threads_started_today`, `remaining_today`, `cap_reached?`, `resets_at`, `deferred_tasks`, `deferred_today` (tasks refused today by the cap, run limit or pause; `deferred_by_reason` in `--format json`), the containment settings `repo_allowlist` and `max_repos_per_run` and `required_checks` (printed as JSON, `(unset)` while the gate is off). `--format json` prints the raw response. `config.env` values are never shown.
+Print a project's status, settings and live limits (`GET /api/projects/<id>/settings`): effective `max_concurrent_runs`, `active_runs`, `running_runs` (runs holding one of the project's run slots), `waiting_runs` (runs queued in the project's own FIFO queue), `daily_thread_cap`, `threads_started_today`, `remaining_today`, `cap_reached?`, `resets_at`, `deferred_tasks`, `deferred_today` (tasks refused today by the cap, run limit or pause; `deferred_by_reason` in `--format json`) and the containment settings `repo_allowlist` and `max_repos_per_run` and `required_checks` (printed as JSON, `(unset)` while the gate is off). `--format json` prints the raw response. `config.env` values are never shown. The run queue is per project: `GET /api/queue` requires `project_id` (422 `project_required` without it) and returns only that project's own run-slot queue.
 
 ### `foreman usage --project <id>`
 
@@ -759,7 +694,7 @@ Prints the run projection as JSON (`GET /api/runs/<id>`: `{"run": {...}}`; a run
 
 `run cancel` posts `run.cancel` (default reason `operator_cancel`): the run is terminal as soon as the agent has been signalled with `SIGINT`; the harness escalates to `SIGTERM` then `SIGKILL` (5 s per step by default), Foreman waits for the agent to exit (up to 15 s) and `OrphanReaper` then terminates the tool processes it left in the run's worktree (`SIGTERM`, then `SIGKILL`). `run reset` posts `run.reset`, accepted for a run in `failed`, `stuck`, `blocked` or `paused` status; any other status is rejected with `{:run_not_resettable, "<status>"}`. A blocked run (an unresolved external effect) is reset after the operator has checked the real state of the push, PR or tracker change.
 
-A run that is still waiting for a run slot (listed in `waiting` of `GET /api/queue`) has no run record and no agent yet. `run cancel` on it removes it from the waiting list and acknowledges its task (`task.run_terminated`, with the cancel's reason) rather than answering `run_not_found`; the run stops reading as `queued` and is not re-admitted when a slot frees, and the task stays `in_progress` until it is retried. The run holding the slot is not touched.
+A run that is still waiting for a run slot (listed in `waiting` of `GET /api/queue?project_id=<id>`) has no run record and no agent yet. `run cancel` on it removes it from the waiting list and acknowledges its task (`task.run_terminated`, with the cancel's reason) rather than answering `run_not_found`; the run stops reading as `queued` and is not re-admitted when a slot frees, and the task stays `in_progress` until it is retried. The run holding the slot is not touched.
 
 ### `foreman run remove --id <run-id>`
 
@@ -898,7 +833,7 @@ Re-opens the PR of one repository of a multi-repository run whose PR could not b
 
 ### `foreman thread list|get|stop|steer|resolve|reopen|rereview`
 
-A thread is the operator-facing unit of work: a workflow run (`run:<id>`) or a jobsite (`jobsite:<id>`). All verbs print the server's JSON.
+A thread is the operator-facing unit of work: a workflow run (`run:<id>`), or a legacy jobsite (`jobsite:<id>`, read-only history: the jobsite door is retired). All verbs print the server's JSON.
 
 | Verb | Request |
 |------|---------|
@@ -925,53 +860,6 @@ Not exposed as CLI verbs (HTTP/MCP only): thread transcript, the live stream and
 **Overview.** There is no `foreman overview` CLI verb. `GET /api/projects/:project_id/overview[?include_resolved=true|false&resolved_limit=0..200]` (and the MCP read tool `foreman_overview`) groups threads into `ready_for_review`, `waiting_on_you`, `working`, `landing`, `idle`, `resolved` with `counts`, `attention` (`needed`, `count`, `reasons`), `truncated` (`true` when the project has more than 500 threads and the older ones are left out) and `tabs` (`pull_requests`, `library` and `scheduled` are all live; `pull_requests` has one row per PR, and a row of a non-primary repository's PR also carries its `repo_id`; `scheduled` is `{available: true, rows: [schedule DTOs]}`, the rows of `GET /api/projects/:id/schedules`). A run with PRs in several repositories is classified over all of them. Read-only: merging is still `merge_approve` then `run.pr.merge`, operator only.
 
 **Transcript caveats.** The workflow transcript is built from `run_logs`, which keep a bounded tail: when entries were dropped `omitted_entries` > 0 and `truncated` is true. Jobsite turns carry no timestamps (`at: null`, ordered by iteration) and jobsite threads have no operator turns, because jobsite resume prompts are not persisted as events.
-
-### `foreman jobsite template --project-id <id> --prompt <text>`
-
-Asks the running server to author a Jobsite template from a natural-language prompt and writes it into the local repo as `<dir>/.foreman/<name>.exs` plus `<dir>/.foreman/prompts/<name>.md`. It calls `POST /api/jobsites/template`, which uses the same fail-closed bearer auth as the rest of `/api/jobsites`. The route only generates and validates the files: it starts no jobsite and spends no agent credits. Run the generated script yourself (the `next:` line prints the command), exactly as for a `foreman init --template` scaffold.
-
-The server derives the template from the prompt by a deterministic keyword match (no model is called) and validates the completed spec with `Jobsite.Spec.from_json/2` against the registered project; what it infers from the prompt, and what it never infers (the provider, the model, the `host` sandbox), is in the user guide's [Remote Jobsite API](./user-guide.md#remote-jobsite-api) section.
-
-```bash
-foreman jobsite template --project-id proj-1 --provider claude --prompt "Fix the failing tests, loop until green, push the branch"
-foreman jobsite template --project-id proj-1 --provider pi --name nightly-docs --iterations 10 --push=false --dir /path/to/repo --prompt "Refresh the docs"
-foreman jobsite template --project-id proj-1 --provider claude --prompt "..." --format json
-```
-
-| Option | Description |
-|--------|-------------|
-| `--project-id <id>` | Registered project the spec is validated against (required). |
-| `--prompt <text>` | The natural-language description; sent verbatim (required). |
-| `--name <name>` | Template name; file names and the default branch derive from it. The server picks a default when omitted. |
-| `--provider <claude\|pi>` | Agent provider. **No default**: a missing provider is the server's 422 `spec_provider_invalid`. |
-| `--model <model>` | Agent model. No CLI default; the server may fall back to the project's `thread_model`. |
-| `--iterations <n>` | `max_iterations`. An explicit value, including `0`, is sent as given and validated by the server. |
-| `--signal <text>` | `completion_signal`. |
-| `--branch <name>` | Strategy branch name. |
-| `--sandbox <docker\|host>` | Sandbox; `host` is refused unless the server allows it. |
-| `--push` / `--push=false` | Sets `push` to `true` / `false`; the flag absent sends no `push` key. |
-| `--dir <path>` | Directory that receives `.foreman/` (default `.`). |
-| `--format json` | Machine-readable output (default is text); any other value is a usage error. |
-
-Only the flags you set are sent; unset flags are omitted from the request rather than sent as zero values, so the server's own defaults apply. A missing or empty `--project-id` or `--prompt`, or any positional argument, is a usage error before any request is made. A non-2xx response is printed as the server's error (for example 422 `spec_provider_invalid`) and nothing is written.
-
-**Files are never overwritten.** Before writing anything the CLI checks every returned path (non-empty, relative, no `..` escape, no NUL byte, no duplicates) and refuses the whole response, writing nothing, if any path is unsafe or the file list is empty. Each file is then created exclusively (`O_EXCL`), so an existing file, or an existing or dangling symlink, is reported as `kept` and left alone; a run in which every file already exists still exits 0.
-
-Text output:
-
-```
-wrote .foreman/fix-tests.exs
-wrote .foreman/prompts/fix-tests.md
-features read from the prompt: loop, push-to-origin
-notes:
-  * <note from the server>
-next: FOREMAN_API_TOKEN=... FOREMAN_PROJECT_ID=proj-1 elixir .foreman/fix-tests.exs
-```
-
-Files that already existed print `kept <path> (already exists; not overwritten)` instead of `wrote`; `features read from the prompt: none` is printed when the server read no features, and the `notes:` block only when there are notes. With `--format json` the output is `{"name", "written": [...], "skipped": [...], "features": [...], "notes": [...], "spec": {...}}` (arrays are `[]`, never `null`, and `spec` is the server's generated spec, echoed unchanged); files are still written.
-
-
----
 
 ## Monitoring
 
@@ -1662,7 +1550,7 @@ when a Foreman server is already running.
 
 ### Tools
 
-Read tools are always advertised: `foreman_doctor`, `foreman_queue_status`,
+Read tools are always advertised: `foreman_doctor`, `foreman_queue_status` (takes a required `project_id`),
 `foreman_project_list`, `foreman_project_get`, `foreman_workflow_list`,
 `foreman_workflow_get`, `foreman_workflow_validate`, `foreman_prompt_get`,
 `foreman_run_get`, `foreman_run_status`,

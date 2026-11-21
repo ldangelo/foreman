@@ -139,6 +139,7 @@ defmodule ForemanServer.Threads do
     } = inputs
 
     thread_flags = Map.get(inputs, :thread_flags, %{})
+    followup_requests = Map.get(inputs, :followup_requests, %{})
 
     # A task entry without `:task_id` is a fragment a lifecycle event (e.g.
     # `TaskExecutionCompleted`) left for a task whose `TaskCreated` was never
@@ -162,14 +163,15 @@ defmodule ForemanServer.Threads do
 
     run_threads =
       Enum.map(groups, fn [run | _] = group ->
-        Thread.from_run(
-          run,
+        run
+        |> Thread.from_run(
           run.task_id && Map.get(tasks_by_id, run.task_id),
           Map.get(worktrees_by_run, run.run_id, []),
           pr_association(pr_associations, run.run_id),
           Map.get(reviews, {"run", run.run_id}),
           Enum.map(group, & &1.run_id)
         )
+        |> label_followup(Map.get(followup_requests, run.run_id))
       end)
 
     # A bead-linked jobsite whose task already has a run is that run's thread.
@@ -194,6 +196,21 @@ defmodule ForemanServer.Threads do
     (run_threads ++ jobsite_threads)
     |> Enum.map(&apply_flags(&1, thread_flags))
     |> Enum.sort_by(&{&1.updated_at || 0, &1.id}, :desc)
+  end
+
+  # A follow-up run (`run.followup.request`) has no task to title it: it is named for what it does, and
+  # carries the PR it works on.
+  defp label_followup(thread, nil), do: thread
+
+  defp label_followup(%Thread{} = thread, request) do
+    kind = Map.get(request, :fix_kind) || "fix"
+    branch = Map.get(request, :attach_branch)
+
+    %Thread{
+      thread
+      | title: "PR fix (#{kind})" <> if(branch, do: ": " <> branch, else: ""),
+        pr_url: thread.pr_url || Map.get(request, :pr_url)
+    }
   end
 
   defp apply_flags(%Thread{id: id} = thread, thread_flags) do

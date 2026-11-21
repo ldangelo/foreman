@@ -17,7 +17,7 @@ defmodule ForemanServer.Workflow.RunExecutorSkillPreflightTest do
   @moduletag :capture_log
 
   alias ForemanServer.{CommandGateway, EventStore, Identity, ProjectionStore}
-  alias ForemanServer.Jobsite.ExecutionProfile
+  alias ForemanServer.Exec.ExecutionProfile
   alias ForemanServer.RunAdmission
   alias ForemanServer.TaskProvider.Registry
   alias ForemanServer.TestSupport.{FakeTaskProvider, KeyStoreReset, TestApplication, UniqueIds}

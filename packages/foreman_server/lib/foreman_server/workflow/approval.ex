@@ -116,6 +116,7 @@ defmodule ForemanServer.Workflow.Approval do
         snapshot =
           base_snapshot
           |> maybe_put_worktree(workflow)
+          |> maybe_put_sandbox(workflow)
           |> maybe_put_prompt(payload[:prompt])
 
         {:ok, workflow.name, workflow.digest, snapshot}
@@ -129,6 +130,15 @@ defmodule ForemanServer.Workflow.Approval do
   # because the run it describes has exactly one worktree. Absent when the
   # manifest declares none, so `WorktreeSpec.normalize/1` can still tell
   # "declared nothing" (every default applies) from "declared disabled".
+  # The workflow's `sandbox:` travels on the snapshot beside `worktree`, and is
+  # absent when the manifest declares none (the run executes on the host).
+  defp maybe_put_sandbox(snapshot, workflow) do
+    case Map.get(workflow, :sandbox) do
+      name when is_binary(name) -> Map.put(snapshot, :sandbox, name)
+      _ -> snapshot
+    end
+  end
+
   defp maybe_put_worktree(snapshot, workflow) do
     case Map.get(workflow, :worktree) do
       block when is_map(block) -> Map.put(snapshot, :worktree, block)

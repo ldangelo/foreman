@@ -302,7 +302,7 @@ evidence_keep() {
     ev_get "/api/projects/$PROJECT" "$ek/api/project.json"
     ev_get "/api/projects/$PROJECT/overview?include_resolved=true" "$ek/api/overview.json"
     ev_get "/api/runs?project_id=$PROJECT&limit=500" "$ek/api/runs.json"
-    ev_get "/api/queue" "$ek/api/queue.json"
+    ev_get "/api/queue?project_id=$PROJECT" "$ek/api/queue.json"
     for ek_t in $(jq -r '.threads[]?.id // empty' "$ek/api/threads.json" 2>/dev/null | head -n 40); do
       ek_n=$(printf '%s' "$ek_t" | tr -c 'A-Za-z0-9._-' '_')
       ev_get "/api/threads/$ek_t" "$ek/api/thread-$ek_n.json"
@@ -505,7 +505,7 @@ start_server() {
       PATH="${E2E_PATH_PREFIX:+$E2E_PATH_PREFIX:}$PATH" PI_CODING_AGENT_DIR="$WORK/pi-agent" \
       E2E_PORT="$E2E_PORT" E2E_WORKFLOW_ROOT="$WORK/workflows" \
       FOREMAN_VFS_ALLOWED_ROOT="$WORK" FOREMAN_API_TOKEN="$E2E_API_TOKEN" \
-      FOREMAN_START_BEADS_WATCHER=true FOREMAN_JOBSITES_ALLOW_HOST_SANDBOX=true \
+      FOREMAN_START_BEADS_WATCHER=true FOREMAN_PR_FIX_ALLOW_HOST_SANDBOX=true \
       FOREMAN_NOTIFY_WEBHOOK_URL="http://127.0.0.1:$E2E_HOOK_PORT/hook" \
       FOREMAN_NOTIFY_WEBHOOK_ALLOW_INSECURE_HTTP=true FOREMAN_NOTIFY_WEBHOOK_ALLOW_PRIVATE_HOSTS=true \
       ${E2E_REVIEW_ENV:-FOREMAN_REVIEW_PROVIDER=pi} FOREMAN_REVIEW_MODEL="$E2E_MODEL" \

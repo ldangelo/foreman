@@ -67,6 +67,73 @@ defmodule ForemanServer.Aggregates.ProjectSettingsTest do
     end
   end
 
+  describe "max_concurrent_runs range (TRD-014, REQ-016)" do
+    alias ForemanServer.Aggregates.RunSlots
+
+    test "AC-016-1: 0, negatives and over-range are refused naming the range; old value kept" do
+      {:ok, spec} = update(registered(), %{max_concurrent_runs: 2})
+      state = Project.apply_event(registered(), spec)
+      assert Project.effective_run_limit(state) == 2
+
+      for bad <- [0, -1, -50, 1001] do
+        assert {:error, {:max_concurrent_runs_invalid, ^bad, 1..1000}} =
+                 update(state, %{max_concurrent_runs: bad})
+      end
+
+      # a refused command appends nothing, so the folded state keeps the previous value
+      assert Project.effective_run_limit(state) == 2
+    end
+
+    test "the range edges 1 and 1000 are accepted" do
+      assert {:ok, _} = update(registered(), %{max_concurrent_runs: 1})
+      assert {:ok, _} = update(registered(), %{max_concurrent_runs: 1000})
+    end
+
+    test "AC-016-2: a limit of one runs one at a time (the second run queues)" do
+      {:ok, spec} = update(registered(), %{max_concurrent_runs: 1})
+      limit = Project.effective_run_limit(Project.apply_event(registered(), spec))
+      assert limit == 1
+
+      acquire = fn state, run ->
+        {:ok, ev} =
+          RunSlots.handle_command(state, %{
+            type: "run_slots.acquire",
+            payload: %{project_id: "p1", run_id: run, capacity: limit}
+          })
+
+        {ev, RunSlots.apply_event(state, ev)}
+      end
+
+      {first, s} = acquire.(RunSlots.initial_state(), "r1")
+      assert %ForemanServer.Events.RunSlotAcquired{} = first
+      {second, s} = acquire.(s, "r2")
+      assert %ForemanServer.Events.RunSlotQueued{} = second
+      assert map_size(s.holders) == 1
+    end
+
+    test "AC-016-3: pausing is the stop: a paused project reserves no run, whatever the limit" do
+      {:ok, spec} = update(registered(), %{max_concurrent_runs: 1000})
+      state = Project.apply_event(registered(), spec)
+
+      {:ok, pause} =
+        Project.handle_command(state, %{type: "project.pause", payload: %{project_id: "p1"}})
+
+      paused = Project.apply_event(state, pause)
+
+      assert {:error, {:project_paused, "p1"}} =
+               Project.handle_command(paused, %{
+                 type: "project.reserve_run",
+                 payload: %{
+                   project_id: "p1",
+                   run_id: "r1",
+                   command_id: "c1",
+                   sequence: 1,
+                   run_start_payload: %{run_id: "r1", task_id: "t1", project_id: "p1"}
+                 }
+               })
+    end
+  end
+
   describe "other settings" do
     test "limits and model/effort validate with distinct tuples" do
       state = registered()

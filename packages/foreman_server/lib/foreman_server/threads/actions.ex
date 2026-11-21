@@ -7,19 +7,16 @@ defmodule ForemanServer.Threads.Actions do
   aggregate command is introduced here.
 
     * `stop/3` - workflow door: `run.cancel` through
-      `CommandGateway.dispatch_operator/1`. Jobsite door: `Jobsite.cancel/2`
-      when an executor is alive (it records the intent and the executor emits
-      `JobsiteCancelled`); a paused jobsite has no executor, so the existing
-      `jobsite.cancel` command is dispatched directly.
+      `CommandGateway.dispatch_operator/1`. The jobsite door is retired: a jobsite thread answers
+      `{:error, :jobsite_retired}`.
     * `steer/3` - workflow door: operator `run.steer` (queue, pause, resume with
-      the message in the next prompt). Jobsite door: `Jobsite.steer/3`.
+      the message in the next prompt). A jobsite thread answers `{:error, :jobsite_retired}`.
     * `rereview/1` - re-run an `undetermined` review of the thread's run or jobsite
       through `ForemanServer.Review.Analyzer.rerun/2`; the verdict it records
       supersedes the undetermined one.
   """
 
   alias ForemanServer.CommandGateway
-  alias ForemanServer.Jobsite
   alias ForemanServer.Review.Analyzer
   alias ForemanServer.Threads
   alias ForemanServer.Threads.Thread
@@ -27,12 +24,11 @@ defmodule ForemanServer.Threads.Actions do
   @default_stop_reason "operator_stop"
 
   @stoppable_run_statuses ~w(awaiting_worker in_progress paused blocked stuck needs_recovery)
-  @stoppable_jobsite_statuses ~w(starting running paused)
 
   @type stop_error ::
           :thread_not_found
           | {:not_stoppable, String.t() | nil}
-          | {:no_executor, String.t() | nil}
+          | :jobsite_retired
           | {:cancel_failed, term()}
 
   @doc """
@@ -42,8 +38,7 @@ defmodule ForemanServer.Threads.Actions do
 
   Returns `{:ok, :stopping}`, `{:error, :thread_not_found}`,
   `{:error, {:not_stoppable, status}}` for a terminal thread (nothing is
-  dispatched), `{:error, {:no_executor, status}}` for a starting/running
-  jobsite whose executor is gone, or `{:error, {:cancel_failed, reason}}` when
+  dispatched), `{:error, :jobsite_retired}` for a thread of the retired jobsite door, or `{:error, {:cancel_failed, reason}}` when
   the underlying cancel is rejected.
   """
   @spec stop(String.t(), String.t() | nil, keyword()) :: {:ok, :stopping} | {:error, stop_error()}
@@ -71,39 +66,8 @@ defmodule ForemanServer.Threads.Actions do
     end
   end
 
-  defp do_stop(
-         %Thread{door: :jobsite, id: "jobsite:" <> jobsite_id, status: status},
-         reason,
-         opts
-       )
-       when status in @stoppable_jobsite_statuses do
-    cond do
-      Jobsite.Executor.pid_for(jobsite_id) != nil ->
-        case Jobsite.cancel(jobsite_id, reason) do
-          :ok -> {:ok, :stopping}
-          {:error, %Jobsite.Error{} = error} -> {:error, {:cancel_failed, error.code}}
-        end
-
-      status == "paused" ->
-        # A paused jobsite's executor has exited, so nothing would honor an
-        # intent; cancel the aggregate itself.
-        command = %{
-          type: "jobsite.cancel",
-          command_id: Keyword.get_lazy(opts, :idempotency_key, &fresh_command_id/0),
-          aggregate_id: "jobsite:" <> jobsite_id,
-          payload: %{jobsite_id: jobsite_id, reason: reason}
-        }
-
-        case CommandGateway.dispatch_system(command) do
-          {:ok, _} -> {:ok, :stopping}
-          {:error, cause} -> {:error, {:cancel_failed, cause}}
-          {:error, cause, _detail} -> {:error, {:cancel_failed, cause}}
-        end
-
-      true ->
-        {:error, {:no_executor, status}}
-    end
-  end
+  # The jobsite door is retired: its open jobsites are closed at boot, so there is nothing to stop.
+  defp do_stop(%Thread{door: :jobsite}, _reason, _opts), do: {:error, :jobsite_retired}
 
   defp do_stop(%Thread{status: status}, _reason, _opts), do: {:error, {:not_stoppable, status}}
 
@@ -216,12 +180,8 @@ defmodule ForemanServer.Threads.Actions do
     end
   end
 
-  defp do_steer(%Thread{door: :jobsite, id: "jobsite:" <> jobsite_id}, text, _message_id, _resume) do
-    case Jobsite.steer(jobsite_id, text) do
-      {:ok, _} -> :ok
-      {:error, cause} -> steer_error(cause)
-    end
-  end
+  defp do_steer(%Thread{door: :jobsite}, _text, _message_id, _resume),
+    do: {:error, :jobsite_retired}
 
   defp steer_error({:run_terminal, status}), do: {:error, {:not_steerable, status}}
   defp steer_error({:not_steerable, _status} = cause), do: {:error, cause}

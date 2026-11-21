@@ -91,7 +91,7 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.SkillResolver do
       in a user-scoped source.
   """
 
-  alias ForemanServer.Jobsite.ExecutionProfile
+  alias ForemanServer.Exec.ExecutionProfile
 
   @type verdict :: :available | :missing | :unverifiable
 

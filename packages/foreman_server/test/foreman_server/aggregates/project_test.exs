@@ -394,10 +394,10 @@ defmodule ForemanServer.Aggregates.ProjectTest do
       assert event_spec.payload.implementation_key == nil
     end
 
-    test "rejects with :run_limit_exceeded when reservations reach the project ceiling" do
+    test "does not refuse a reservation when reservations reach the project ceiling (TRD-006)" do
       state = run_limit_saturated_state()
 
-      assert {:error, :run_limit_exceeded} =
+      assert {:ok, %{event_type: "ProjectRunReserved"}} =
                Project.handle_command(state, %{
                  type: "project.reserve_run",
                  payload: reservation_payload("run-overflow")

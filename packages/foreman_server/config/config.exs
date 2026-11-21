@@ -76,11 +76,11 @@ config :foreman_server, :task_provider,
 # Application.put_env/3 at boot (or a release config that uses
 # REPLACE_OS_VARS / runtime env var substitution). Leave `false` for tests.
 config :foreman_server, :start_beads_watcher?, false
-# RunSlots: global and per-project concurrent run caps (TRD-005).
-# max_concurrent_runs: total runs across all projects (default: 3)
-# max_concurrent_runs_per_project: per-project cap (default: 100)
-config :foreman_server, :max_concurrent_runs, 3
-config :foreman_server, :max_concurrent_runs_per_project, 100
+# RunSlots: per-project concurrent run cap (TRD-005, TRD-010). A project with no
+# `max_concurrent_runs` setting of its own runs at most this many runs at once; the rest wait
+# in its own FIFO queue. There is no global cap: total concurrency is the sum of per-project
+# limits (the retired `:max_concurrent_runs` key is ignored with a boot warning).
+config :foreman_server, :max_concurrent_runs_per_project, 3
 # Multi-repository runs (E12). Open since E12-S12 (`scripts/e2e/multi_repo.sh`, 110
 # assertions against a real agent, see docs/lessons/multi-repo-e2e-2026-10-21.md).
 # `runs: false` is the operator's kill switch: it refuses, at run start, any run whose
@@ -88,6 +88,13 @@ config :foreman_server, :max_concurrent_runs_per_project, 100
 # not the project's primary (`{:error, :multi_repo_runs_disabled}`). Tests state the
 # gate they need with `ForemanServer.MultiRepoRuns.enable!/0` and `disable!/0`.
 config :foreman_server, :multi_repo, runs: true
+# Follow-up runs (docs/plans/retire-jobsites.md): a task-less run attached to a PR head branch. It is
+# how a PR fix runs now that the jobsite door is retired, so the gate is ON. `enabled: false` is the
+# operator's kill switch: `run.followup.request` is refused and a PR fix is finished as failed. The
+# first `RunFollowUpRequested` event writes keys an older build cannot decode: after it, rolling back
+# to a build without this event is NOT safe. Tests state the gate they need with
+# `ForemanServer.FollowUpRuns.enable!/0` and `disable!/0`.
+config :foreman_server, :followup_runs, enabled: true
 # Anubis MCP server (TRD-036)
 config :foreman_server, :mcp,
   enabled: false,
@@ -322,7 +329,9 @@ config :foreman_server, :review,
 # (FOREMAN_PR_MONITOR_ENABLED=true -> ForemanServer.PrMonitor). The fix-thread jobsite
 # runs `agent` unless the run's own provider session names one; `max_iterations`
 # bounds one fix agent invocation; `log_tail_bytes` caps the failing-CI log excerpt.
-config :foreman_server, :pr_watcher, enabled: true
+# no_change_rechecks / no_change_recheck_ms: an unchanged PR head after a fix run is re-read this many times,
+# this far apart, before the fix is recorded `no_change` (GitHub's read side lags a push by moments).
+config :foreman_server, :pr_watcher, enabled: true, no_change_rechecks: 3, no_change_recheck_ms: 3_000
 
 config :foreman_server, :pr_fix,
   agent: %{"provider" => "claude"},

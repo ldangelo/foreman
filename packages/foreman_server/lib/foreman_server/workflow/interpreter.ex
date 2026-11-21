@@ -48,6 +48,7 @@ defmodule ForemanServer.Workflow.Interpreter do
     validate_task_types!(workflow, path)
     validate_no_phase_worktree!(workflow, path)
     validate_worktree!(workflow, path)
+    validate_sandbox!(workflow, path)
     validate_phase_prs!(workflow, path)
     validate_phase_providers!(workflow, path)
     validate_phase_approval_modes!(workflow, path)
@@ -302,6 +303,32 @@ defmodule ForemanServer.Workflow.Interpreter do
     :ok
   end
 
+  # `sandbox:` is WORKFLOW-level like `worktree:` (a run has one worktree, so one
+  # sandbox over it). Only `docker` is a sandbox: runs execute on the host by default,
+  # and a typo must not silently run the agent unsandboxed (AGENTS.md 5.2).
+  @sandboxes ~w(docker)
+
+  defp validate_sandbox!(workflow, path) do
+    case Map.get(workflow, "sandbox") do
+      nil ->
+        :ok
+
+      value when is_binary(value) ->
+        if value in @sandboxes do
+          :ok
+        else
+          raise Workflow.MissingRequiredPhaseError,
+            message:
+              "workflow template #{path} \"sandbox\" #{inspect(value)} is not supported; " <>
+                "supported: #{Enum.join(@sandboxes, ", ")}"
+        end
+
+      _other ->
+        raise Workflow.MissingRequiredPhaseError,
+          message: "workflow template #{path} \"sandbox\" must be a string"
+    end
+  end
+
   defp validate_worktree!(workflow, path) do
     case Map.get(workflow, "worktree") do
       nil ->
@@ -488,7 +515,7 @@ defmodule ForemanServer.Workflow.Interpreter do
   # unattended run cannot write files and reports itself blocked. The allowed
   # values are exactly `Jido.Harness.Run.Request`'s normalized set, and
   # `RunExecutor.maybe_put_approval_mode/2` is the one place that maps them to atoms.
-  @approval_modes ForemanServer.Jobsite.Agent.approval_mode_names()
+  @approval_modes ForemanServer.Exec.Agent.approval_mode_names()
 
   defp validate_phase_approval_modes!(workflow, path) do
     workflow

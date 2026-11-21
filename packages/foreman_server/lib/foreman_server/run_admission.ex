@@ -9,9 +9,10 @@ defmodule ForemanServer.RunAdmission do
 
   ## Slot gate (outermost)
 
-  The global run-slot gate is the outermost admission barrier. It consults
-  `RunSlots.Config.max_concurrent_runs/0` for capacity and dispatches
-  `run_slots.acquire` to the `run_slots:global` aggregate. A run that
+  The project's run-slot gate is the outermost admission barrier. Capacity is
+  the loaded project's `Project.effective_run_limit/1` (its setting, else the
+  per-project default) and `run_slots.acquire` goes to the project's own
+  `RunSlots.stream_id(project_id)` aggregate. A run that
   cannot acquire a slot immediately is durably enqueued; subsequent attempts
   with the same run_id return `:slot_queued` without reaching the lease gate.
 
@@ -56,7 +57,7 @@ defmodule ForemanServer.RunAdmission do
   """
   alias ForemanServer.{Aggregate, EventStore}
   alias ForemanServer.{Aggregate.Actor, CommandGateway, CommandRouter, Telemetry}
-  alias ForemanServer.RunSlots.Config
+  alias ForemanServer.Aggregates.RunSlots
 
   @type start_result ::
           {:ok, map() | nil | :queued | :slot_queued} | {:error, any()}
@@ -73,15 +74,16 @@ defmodule ForemanServer.RunAdmission do
     )
 
     # ── Project gate (before any slot is touched) ───────────────────────────
-    # A paused project, an exhausted daily thread cap or a full per-project run
-    # ceiling refuses the admission
-    # BEFORE the global slot is acquired. Acquiring first would leave the
-    # refused run holding a slot (and it cannot be handed back and re-acquired:
-    # the slot-acquire command id is per run id on purpose, so a replayed
-    # admission can never re-take a finished run's slot). The project
-    # aggregate re-checks authoritatively at `project.reserve_run`.
-    with :ok <- project_admission_gate(project_id, payload) do
-      admit_through_slot(project_id, payload, timeout)
+    # An archived or paused project or an exhausted daily thread cap refuses the
+    # admission BEFORE the project's slot stream is touched. Acquiring first
+    # would leave the refused run holding a slot (and it cannot be handed back
+    # and re-acquired: the slot-acquire command id is per run id on purpose, so
+    # a replayed admission can never re-take a finished run's slot). The
+    # project's run ceiling is not a refusal: it is the slot stream's capacity,
+    # so a run over it waits. The project aggregate re-checks authoritatively
+    # at `project.reserve_run`.
+    with {:ok, capacity} <- project_admission_gate(project_id, payload) do
+      admit_through_slot(project_id, capacity, payload, timeout)
     end
   end
 
@@ -92,14 +94,18 @@ defmodule ForemanServer.RunAdmission do
     {state, _version} = Aggregate.load(ForemanServer.Aggregates.Project, "project:#{project_id}")
     run_id = Map.get(payload, :run_id)
 
-    with :ok <- ForemanServer.Aggregates.Project.admission_refusal(state, run_id) do
-      ForemanServer.Aggregates.Project.run_limit_refusal(state, run_id)
+    # Archived keeps the normalized `:project_archived` shape this module has
+    # always returned for it (the Project aggregate's tuple is flattened).
+    case ForemanServer.Aggregates.Project.admission_refusal(state, run_id) do
+      :ok -> {:ok, ForemanServer.Aggregates.Project.effective_run_limit(state)}
+      {:error, {:project_archived, _id}} -> {:error, :project_archived}
+      {:error, _reason} = refusal -> refusal
     end
   end
 
-  defp admit_through_slot(project_id, payload, timeout) do
+  defp admit_through_slot(project_id, capacity, payload, timeout) do
     # ── Slot gate (outermost) ───────────────────────────────────────────────
-    case acquire_slot(payload, timeout) do
+    case acquire_slot(project_id, capacity, payload, timeout) do
       {:error, _reason} = err ->
         err
 
@@ -117,25 +123,25 @@ defmodule ForemanServer.RunAdmission do
 
               {:error, reason} = err ->
                 if compensable_admission_error?(reason) do
-                  release_after_failed_start(payload, timeout)
+                  release_after_failed_start(project_id, payload, timeout)
                 end
 
                 err
             end
 
           :queued ->
-            release_after_failed_slot(payload)
+            release_after_failed_slot(project_id, payload)
             {:ok, :queued}
 
           {:error, _reason} = err ->
-            release_after_failed_slot(payload)
+            release_after_failed_slot(project_id, payload)
             err
         end
     end
   end
 
   @doc """
-  Re-acquires the global run-slot and (if applicable) the per-DB Beads
+  Re-acquires the project's run slot and (if applicable) the per-DB Beads
   lease for a run being resumed after a pause, WITHOUT dispatching
   `run.start` — the Run aggregate already re-entered a live state via
   `run.resume`/`RunResumed`, and a `run.start` against an existing run
@@ -156,7 +162,17 @@ defmodule ForemanServer.RunAdmission do
   def resume(payload, timeout \\ 5_000)
 
   def resume(payload, timeout) when is_map(payload) do
-    case acquire_slot_for_resume(payload, timeout) do
+    project_id = Map.get(payload, :project_id) || Map.get(payload, "project_id")
+
+    if is_binary(project_id) and project_id != "" do
+      resume_in_project(project_id, payload, timeout)
+    else
+      {:error, {:missing_or_invalid, :project_id, project_id}}
+    end
+  end
+
+  defp resume_in_project(project_id, payload, timeout) do
+    case acquire_slot_for_resume(project_id, payload, timeout) do
       {:error, _reason} = err ->
         err
 
@@ -169,31 +185,31 @@ defmodule ForemanServer.RunAdmission do
             {:ok, :resumed}
 
           :queued ->
-            release_after_failed_slot(payload)
+            release_after_failed_slot(project_id, payload)
             {:ok, :queued}
 
           {:error, _reason} = err ->
-            release_after_failed_slot(payload)
+            release_after_failed_slot(project_id, payload)
             err
         end
     end
   end
 
   # ---------------------------------------------------------------------------
-  # Slot gate — global run-slot gate, outermost barrier.
+  # Slot gate — per-project run-slot gate, outermost barrier.
   # ---------------------------------------------------------------------------
 
-  defp acquire_slot(payload, timeout) do
+  defp acquire_slot(project_id, capacity, payload, timeout) do
     run_id = Map.get(payload, :run_id)
-    capacity = Config.max_concurrent_runs()
 
     command = %{
       type: "run_slots.acquire",
       command_id: "workflow:run-admission:slot-acquire:#{run_id}",
-      aggregate_id: "run_slots:global",
+      aggregate_id: RunSlots.stream_id(project_id),
       payload: %{
         run_id: run_id,
-        capacity: capacity
+        capacity: capacity,
+        project_id: project_id
       }
     }
 
@@ -202,7 +218,7 @@ defmodule ForemanServer.RunAdmission do
         {:error, {:slot_acquire_failed, reason}}
 
       {:ok, _event_spec_or_nil} ->
-        case slot_decision(run_id, timeout) do
+        case slot_decision(project_id, run_id, timeout) do
           :slot_acquired -> :slot_acquired
           :slot_queued -> :slot_queued
           :unknown -> {:error, :slot_state_unknown}
@@ -210,18 +226,19 @@ defmodule ForemanServer.RunAdmission do
     end
   end
 
-  defp acquire_slot_for_resume(payload, timeout) do
+  defp acquire_slot_for_resume(project_id, payload, timeout) do
     run_id = Map.get(payload, :run_id)
-    capacity = Config.max_concurrent_runs()
+    capacity = project_capacity(project_id)
 
     command = %{
       type: "run_slots.acquire",
       command_id:
         "workflow:run-admission:slot-reacquire:#{run_id}:#{System.system_time(:millisecond)}",
-      aggregate_id: "run_slots:global",
+      aggregate_id: RunSlots.stream_id(project_id),
       payload: %{
         run_id: run_id,
-        capacity: capacity
+        capacity: capacity,
+        project_id: project_id
       }
     }
 
@@ -230,7 +247,7 @@ defmodule ForemanServer.RunAdmission do
         {:error, {:slot_acquire_failed, reason}}
 
       {:ok, _event_spec_or_nil} ->
-        case slot_decision(run_id, timeout) do
+        case slot_decision(project_id, run_id, timeout) do
           :slot_acquired -> :slot_acquired
           :slot_queued -> :slot_queued
           :unknown -> {:error, :slot_state_unknown}
@@ -238,13 +255,40 @@ defmodule ForemanServer.RunAdmission do
     end
   end
 
-  defp slot_decision(run_id, _timeout), do: slot_decision_retry(run_id, 5)
+  # The project's slot decision for a run. An acquire answered `{:ok, nil}` (its command
+  # id was already processed) says nothing about the stream's CURRENT state: if the run
+  # was dropped as a waiter since (boot reconciliation, kata `teak`) it is neither holder
+  # nor waiter. Re-issue the acquire ONCE under a fresh command id (the resume path's
+  # scheme) and decide again; only a second miss is `:unknown`.
+  defp slot_decision(project_id, run_id, timeout) do
+    case slot_decision_retry(RunSlots.stream_id(project_id), run_id, 5) do
+      :unknown -> reacquire_slot(project_id, run_id, timeout)
+      decision -> decision
+    end
+  end
 
-  defp slot_decision_retry(_run_id, 0), do: :unknown
+  defp reacquire_slot(project_id, run_id, timeout) do
+    command = %{
+      type: "run_slots.acquire",
+      command_id:
+        "workflow:run-admission:slot-reacquire:#{run_id}:#{System.system_time(:millisecond)}",
+      aggregate_id: RunSlots.stream_id(project_id),
+      payload: %{
+        run_id: run_id,
+        capacity: project_capacity(project_id),
+        project_id: project_id
+      }
+    }
 
-  defp slot_decision_retry(run_id, retries_left) do
-    aggregate_id = "run_slots:global"
+    case CommandGateway.dispatch_system(command, timeout) do
+      {:ok, _event_spec_or_nil} -> slot_decision_retry(RunSlots.stream_id(project_id), run_id, 5)
+      {:error, _reason} -> :unknown
+    end
+  end
 
+  defp slot_decision_retry(_aggregate_id, _run_id, 0), do: :unknown
+
+  defp slot_decision_retry(aggregate_id, run_id, retries_left) do
     case Registry.lookup(ForemanServer.AggregateRegistry, aggregate_id) do
       [{pid, _}] ->
         case safe_get_state(pid) do
@@ -257,18 +301,18 @@ defmodule ForemanServer.RunAdmission do
 
           :retry ->
             Process.sleep(20)
-            slot_decision_retry(run_id, retries_left - 1)
+            slot_decision_retry(aggregate_id, run_id, retries_left - 1)
         end
 
       [] ->
-        # The run_slots:global actor can be mid-restart (e.g. a test's
+        # The project's run_slots actor can be mid-restart (e.g. a test's
         # force-kill reset, or a crash/restart under load) in the brief
         # window between the earlier `run_slots.acquire` dispatch (which
         # would have restarted it via Aggregator.start_aggregate) and
         # this lookup. Retry briefly instead of surfacing a false
         # "unknown" admission failure that nothing else retries.
         Process.sleep(20)
-        slot_decision_retry(run_id, retries_left - 1)
+        slot_decision_retry(aggregate_id, run_id, retries_left - 1)
     end
   end
 
@@ -278,21 +322,23 @@ defmodule ForemanServer.RunAdmission do
     :exit, _reason -> :retry
   end
 
-  defp release_after_failed_slot(payload) do
+  # Capacity of a project's slot stream: the loaded Project's effective run limit.
+  # Public for `Workflow.Dispatcher.rebalance/1`, which promotes against the same number.
+  @doc false
+  @spec project_capacity(String.t()) :: non_neg_integer()
+  def project_capacity(project_id) do
+    {state, _version} = Aggregate.load(ForemanServer.Aggregates.Project, "project:#{project_id}")
+    ForemanServer.Aggregates.Project.effective_run_limit(state)
+  end
+
+  defp release_after_failed_slot(project_id, payload) do
     run_id = Map.get(payload, :run_id)
 
     if is_binary(run_id) and run_id != "" do
-      ms = System.system_time(:millisecond)
-
       _ =
-        CommandGateway.dispatch_system(%{
-          type: "run_slots.release",
-          command_id: "workflow:run-admission:slot-release:#{run_id}:#{ms}",
-          aggregate_id: "run_slots:global",
-          payload: %{
-            run_id: run_id
-          }
-        })
+        CommandGateway.dispatch_system(
+          RunSlots.release_command(project_id, run_id, "admission_failed")
+        )
 
       :ok
     else
@@ -382,9 +428,9 @@ defmodule ForemanServer.RunAdmission do
   defp compensable_admission_error?({:command_rejected, _reason}), do: true
   defp compensable_admission_error?(_other), do: false
 
-  defp release_after_failed_start(payload, _timeout) do
+  defp release_after_failed_start(project_id, payload, _timeout) do
     # Release the slot first so capacity is restored.
-    release_after_failed_slot(payload)
+    release_after_failed_slot(project_id, payload)
 
     # Then release the lease if present.
     snapshot =

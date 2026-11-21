@@ -114,6 +114,26 @@ defmodule ForemanServer.Aggregates.RunSlotsCommandTest do
     end
   end
 
+  describe "a waiter that acquires again behind an older waiter (per-project FIFO)" do
+    test "it does not jump the queue when a slot is free: still one place, not a holder" do
+      state = %State{
+        capacity: 2,
+        holders: %{"run-1" => %{acquired_at_ms: 1_000_000}},
+        waiters: [
+          %Waiter{run_id: "run-2", enqueued_at_ms: 1_000_002},
+          %Waiter{run_id: "run-3", enqueued_at_ms: 1_000_003}
+        ]
+      }
+
+      result = RunSlots.handle_command(state, %RunSlotsAcquire{run_id: "run-3", capacity: 2})
+      after_state = apply_result(state, result)
+
+      assert {:ok, nil} = result
+      refute Map.has_key?(after_state.holders, "run-3")
+      assert Enum.map(after_state.waiters, & &1.run_id) == ["run-2", "run-3"]
+    end
+  end
+
   defp apply_result(state, {:ok, nil}), do: state
   defp apply_result(state, {:ok, event}), do: RunSlots.apply_event(state, event)
 end

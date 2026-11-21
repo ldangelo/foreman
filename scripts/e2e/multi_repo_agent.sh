@@ -3,7 +3,7 @@
 #
 # Live proof, with a REAL agent, of the multi-repository paths that scripts/e2e/multi_repo.sh does not drive
 # (bead foreman-he4yf): per-phase repository selection, a thread adding a repository to its own run, and goal
-# fan-out; plus the typed refusal of a multi-repository jobsite. The agent is claude (haiku) by default, or
+# fan-out; The agent is claude (haiku) by default, or
 # pi + MiniMax with E2E_PROVIDER=pi. It reaches Foreman the way an operator's agent does: through Foreman's own
 # HTTP MCP endpoint (/mcp), configured as a user-scope MCP server of the agent (claude: $WORK/home/.claude.json;
 # pi: $WORK/pi-agent/mcp.json). Nothing is simulated except GitHub: a recording fake `gh`
@@ -11,7 +11,7 @@
 # the way every live harness boots it (`mix run --no-start --no-halt`, not `mix phx.server`), which is exactly
 # what foreman-cnn1l broke (/mcp answered HTTP 500 there): setup asserts `initialize` answers 200 first.
 #
-# Stages (E2E_STAGES, space separated, default "phases fanout jobsite"; `setup` and the closing `strays` always run):
+# Stages (E2E_STAGES, space separated, default "phases fanout"; `setup` and the closing `strays` always run):
 #
 #   phases  ONE task over the project's primary repository (no repo_ids). Phase 1's agent records its own
 #           $FOREMAN_REPOS, then calls the MCP tool foreman_run_request_repo twice (the registered repository b by
@@ -25,8 +25,6 @@
 #           fan-out source, and no duplicate (the repeat returns the same task ids: the tool's own answers are
 #           read from the agent's transcript); then the operator approves them and every single-repository
 #           run completes with its own branch and PR.
-#   jobsite POST /api/jobsites with a `repositories` key is refused: 403 spec_forbidden_key, "multi-repo
-#           jobsites unsupported" (by design, docs/spikes/S3.md), and no jobsite starts.
 #
 # Run it from a devbox shell:
 #
@@ -47,7 +45,7 @@ E2E_NAME=${E2E_NAME:-mra}
 E2E_WORK_DIR=${E2E_WORK_DIR:-$ROOT/tmp/e2e-multi-repo-agent}
 E2E_DB_NAME=${E2E_DB_NAME:-foreman_e2e_multi_repo_agent}
 E2E_PROVIDER=${E2E_PROVIDER:-claude}
-E2E_STAGES=${E2E_STAGES:-"phases fanout jobsite"}
+E2E_STAGES=${E2E_STAGES:-"phases fanout"}
 # shellcheck source=claude_projects/lib.sh
 . "$HERE/claude_projects/lib.sh"
 # shellcheck source=claude_projects/claude_home.sh
@@ -58,9 +56,9 @@ case "$E2E_PROVIDER" in
   pi) E2E_AGENT_MODEL=${E2E_AGENT_MODEL:-minimax/MiniMax-M2.7-highspeed} ;;
   *) die "E2E_PROVIDER must be claude or pi (got '$E2E_PROVIDER')" 1 ;;
 esac
-case "$E2E_STAGES" in *[!a-z\ ]*) die "E2E_STAGES may only name stages (phases fanout jobsite)" 1 ;; esac
+case "$E2E_STAGES" in *[!a-z\ ]*) die "E2E_STAGES may only name stages (phases fanout)" 1 ;; esac
 for stage in $E2E_STAGES; do
-  case "$stage" in phases|fanout|jobsite) ;; *) die "unknown stage '$stage'" 1 ;; esac
+  case "$stage" in phases|fanout) ;; jobsite) die "stage 'jobsite' is retired with the jobsite dispatch path" 1 ;; *) die "unknown stage '$stage'" 1 ;; esac
 done
 
 REPO_B="$WORK/repo-b"
@@ -307,8 +305,7 @@ check_mcp_endpoint() {
 setup_all() {
   E2E_PATH_PREFIX="$FAKEBIN"
   # No review analysis: it would start a second agent per terminal run (and may file gap beads).
-  # Remote jobsite start on: the `jobsite` stage needs the request to reach spec validation (it never starts one).
-  E2E_EXTRA_ENV="E2E_GH_STATE=$GH_STATE E2E_REVIEW_ANALYSIS=0 FOREMAN_JOBSITES_ALLOW_REMOTE_START=true"
+  E2E_EXTRA_ENV="E2E_GH_STATE=$GH_STATE E2E_REVIEW_ANALYSIS=0"
   setup_stack
   setup_repos_and_gh
   write_workflows
@@ -478,20 +475,6 @@ stage_fanout() {
     assert_eq "fan-out run in repository '$id': exactly one PR, from that repository's checkout" \
       "$(api_get "/api/runs/$run/prs" | jq '[.prs[]] | length')" "1"
   done
-}
-
-# ---------------------------------------------------------------- stage: jobsite
-
-# A multi-repository jobsite is out of v1 by design (docs/spikes/S3.md): the remote spec refuses a
-# `repositories` key with a typed error, before anything is validated further or started.
-stage_jobsite() {
-  say "jobsite: a multi-repository jobsite is refused with its typed error, and nothing starts"
-  js_code=$(curl -sS -o "$WORK/jobsite.body" -w '%{http_code}' --max-time 30 -X POST "$API/api/jobsites" \
-    -H "authorization: Bearer $E2E_API_TOKEN" -H 'content-type: application/json' \
-    -d "$(jq -nc --arg p "$PROJECT" '{project_id: $p, prompt: "never runs", repositories: [{id: "b"}]}')")
-  assert_eq "POST /api/jobsites with \`repositories\`: HTTP status and typed error" "$js_code $(jq -r '.error // empty' "$WORK/jobsite.body")" "403 spec_forbidden_key"
-  assert_has "the refusal names the reason" "$(jq -r '.message // empty' "$WORK/jobsite.body")" "multi-repo jobsites unsupported"
-  assert_eq "no jobsite was started" "$(api_get /api/jobsites | jq '[.jobsites[]?] | length')" "0"
 }
 
 # ---------------------------------------------------------------- closing checks

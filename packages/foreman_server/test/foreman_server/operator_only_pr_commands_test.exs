@@ -17,7 +17,7 @@ defmodule ForemanServer.OperatorOnlyPrCommandsTest do
   # `run.pr.rehold` voids a stale approval (foreman-ehxy6): automation sends it after a PR head
   # observation, and it can only ever make the gate stricter - but no operator, agent or tool may
   # dispatch it.
-  @system_only ~w(run.repo_pr_failed run.pr.rehold)
+  @system_only ~w(run.repo_pr_failed run.pr.rehold run.followup.request)
 
   test "the operator envelope accepts them (and rejects the system-only failure record)" do
     for type <- @operator_only do

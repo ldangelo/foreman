@@ -4,7 +4,6 @@ defmodule ForemanServerWeb.ThreadStopControllerTest do
   import Plug.Conn
   import Phoenix.ConnTest
 
-  alias ForemanServer.Jobsite.Control
   alias ForemanServer.ProjectionStore
   alias ForemanServer.TestSupport.ProjectionStoreReset
 
@@ -49,7 +48,7 @@ defmodule ForemanServerWeb.ThreadStopControllerTest do
              json_response(post_stop("run:done"), 409)
   end
 
-  test "stoppable jobsite with an executor is 200 and records the cancel intent" do
+  test "a jobsite thread is 410 jobsite_retired" do
     id = "js-http-stop-#{System.unique_integer([:positive])}"
 
     :ok =
@@ -60,28 +59,9 @@ defmodule ForemanServerWeb.ThreadStopControllerTest do
         }
       ])
 
-    {:ok, _} = Registry.register(ForemanServer.Jobsite.Registry, id, nil)
-    on_exit(fn -> Control.clear(id) end)
-
-    assert %{"thread_id" => thread_id, "requested" => "stopping"} =
-             json_response(post_stop("jobsite:#{id}", %{"reason" => "http"}), 200)
+    assert %{"error" => "jobsite_retired", "thread_id" => thread_id} =
+             json_response(post_stop("jobsite:#{id}"), 410)
 
     assert thread_id == "jobsite:#{id}"
-    assert Control.intent(id) == {:cancel, "http"}
-  end
-
-  test "starting jobsite with no executor is 409 no_executor" do
-    id = "js-http-orphan-#{System.unique_integer([:positive])}"
-
-    :ok =
-      ProjectionStore.apply_events([
-        %{
-          event_type: "JobsiteStarted",
-          payload: %{jobsite_id: id, repo_path: "/r", strategy: "head", project_id: "p"}
-        }
-      ])
-
-    assert %{"error" => "no_executor", "status" => "starting"} =
-             json_response(post_stop("jobsite:#{id}"), 409)
   end
 end

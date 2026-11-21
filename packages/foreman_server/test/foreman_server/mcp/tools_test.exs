@@ -31,7 +31,7 @@ defmodule ForemanServer.MCP.ToolsTest do
       project_active_runs: %{},
       worktrees: %{},
       worktree_create_orphans: %{},
-      run_slots: %{capacity: 0, holders: %{}, waiters: []},
+      run_slots: %{},
       works: %{},
       inbox_threads: %{},
       jobsites: %{},
@@ -362,11 +362,11 @@ defmodule ForemanServer.MCP.ToolsTest do
   end
 
   describe "foreman_queue_status" do
-    test "returns queue status" do
-      replace_state(%{})
+    test "returns one project's queue status" do
+      replace_state(%{projects: %{"p" => %{project_id: "p"}}})
 
-      assert Tools.call_tool("foreman_queue_status", %{}) ==
-               {:ok, ProjectionStore.queue_status()}
+      assert Tools.call_tool("foreman_queue_status", %{project_id: "p"}) ==
+               {:ok, ProjectionStore.queue_status("p")}
     end
   end
 

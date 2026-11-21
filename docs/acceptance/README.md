@@ -86,8 +86,8 @@ it is unreadable the read is repeated for up to 30 s, a file that only appears a
 after `completed` is a server defect the wait must not hide), and an unconfirmed file prints the `foreman-2onq1` diagnostics: git's own
 error, the thread projection, the branch tip, its commits ahead of the main checkout and its files, the foreman branches, the main
 checkout's status, where the file is on disk, the task prompt, what the agent said and the run's commit lines of the server log.
-Parallelism needs a project `max_concurrent_runs` and a global RunSlots `max_concurrent_runs` of at least 3 (the flow sets
-the project to 3 in step 1; the global default is 3) and no `coordinator_max_active_threads` below 3 (unset). The assertion can fail:
+Parallelism needs a project `max_concurrent_runs` of at least 3 (the flow sets
+the project to 3 in step 1; the per-project default is also 3 and there is no global cap) and no `coordinator_max_active_threads` below 3 (unset). The assertion can fail:
 `bash scripts/e2e/claude_projects/overlap.sh` runs its stack-free self-test (serial, touching, overlapping and unfinished intervals, the
 exact-file-content comparison, the paste/nudge branch against a stubbed coordinator, and the branch read against a throwaway repository
 and a stubbed thread projection: exact, wrong, missing, no branch, late; `sh scripts/e2e/exact_content.sh` runs the

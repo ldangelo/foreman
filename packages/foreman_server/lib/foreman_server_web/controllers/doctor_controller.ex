@@ -4,7 +4,7 @@ defmodule ForemanServerWeb.DoctorController do
   perform, composed from existing seams:
 
     * `server` - the request itself reached the server;
-    * `event_store` - the read model answers (`ProjectionStore.queue_status/0`);
+    * `event_store` - the read model answers (`ProjectionStore.list_tasks/0`);
     * `provider.<name>` - one row per jido_harness provider
       (`MCP.Tools.Doctor.rows/0`, the same data as the `foreman_doctor` MCP tool);
     * `workflows` - the workflow catalog has manifests installed;
@@ -70,7 +70,7 @@ defmodule ForemanServerWeb.DoctorController do
   end
 
   defp event_store_check do
-    ProjectionStore.queue_status()
+    ProjectionStore.list_tasks()
     check("event_store", :ok, "Read model reachable", "The projection store answered.")
   catch
     :exit, reason ->

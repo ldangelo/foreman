@@ -251,8 +251,8 @@ project_runs_active() {
 }
 
 # The user's paste: a to-do list of three distinct small tasks in ONE message. Concurrency comes from
-# the project cap (`max_concurrent_runs`, 3 here, set in step 1) and the global RunSlots cap
-# (default 3): neither is below 3. `coordinator_max_active_threads` is left unset, so the coordinator
+# the project cap (`max_concurrent_runs`, 3 here, set in step 1) and the per-project
+# run-slot default (3): neither is below 3. `coordinator_max_active_threads` is left unset, so the coordinator
 # imposes no cap of its own. E2E_THREE_TASK_MAX_RUNS=1 forces serial execution and must make the
 # overlap assertion FAIL.
 #

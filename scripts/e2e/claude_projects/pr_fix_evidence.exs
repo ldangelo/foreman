@@ -60,6 +60,23 @@ jobsite_ids =
       is_binary(id),
       do: id
 
+# A fix that ran as a follow-up run (`PrFixStarted.fix_run_id`): the request and the run's own events.
+fix_run_ids =
+  for event <- run_stream,
+      event.event_type == "PrFixStarted",
+      id = ForemanServer.Aggregate.get(event.data, :fix_run_id),
+      is_binary(id),
+      do: id
+
+for id <- Enum.uniq(fix_run_ids) do
+  for stream <- ["run_followup:" <> id, "run:" <> id, "vcs:wt-" <> id] do
+    case ForemanServer.EventStore.read_stream_forward(stream, 0, 99_999_999) do
+      {:ok, events} -> print.(stream, events, fn _type -> true end)
+      _unreadable -> :ok
+    end
+  end
+end
+
 for id <- Enum.uniq(jobsite_ids) do
   case ForemanServer.EventStore.read_stream_forward("jobsite:" <> id, 0, 99_999_999) do
     {:ok, events} -> print.("jobsite:" <> id, events, &(&1 in jobsite_events))

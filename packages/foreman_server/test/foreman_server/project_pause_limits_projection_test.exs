@@ -77,18 +77,36 @@ defmodule ForemanServer.ProjectPauseLimitsProjectionTest do
     assert %{cap_reached?: true, remaining_today: 0} = ProjectionStore.project_limits("p1", @now)
   end
 
-  test "the effective run limit is capped by the global slot gate" do
-    previous = Application.get_env(:foreman_server, :max_concurrent_runs)
-    Application.put_env(:foreman_server, :max_concurrent_runs, 3)
+  test "the effective run limit is the project's setting, not clamped by any global value" do
+    apply!([
+      register("p1", %{max_concurrent_runs: 50}),
+      register("p2", %{max_concurrent_runs: 5})
+    ])
 
-    on_exit(fn ->
-      if previous,
-        do: Application.put_env(:foreman_server, :max_concurrent_runs, previous),
-        else: Application.delete_env(:foreman_server, :max_concurrent_runs)
-    end)
+    assert %{max_concurrent_runs: 50} = ProjectionStore.project_limits("p1", @now)
+    assert %{max_concurrent_runs: 5} = ProjectionStore.project_limits("p2", @now)
+  end
 
-    apply!([register("p1", %{max_concurrent_runs: 50})])
-    assert %{max_concurrent_runs: 3} = ProjectionStore.project_limits("p1", @now)
+  test "limits report running_runs and waiting_runs from the project's own slot stream" do
+    apply!([
+      register("p1"),
+      register("p2"),
+      %{
+        event_type: "RunSlotAcquired",
+        payload: %{project_id: "p1", run_id: "a", capacity: 3, acquired_at_ms: 1}
+      },
+      %{
+        event_type: "RunSlotAcquired",
+        payload: %{project_id: "p1", run_id: "b", capacity: 3, acquired_at_ms: 2}
+      },
+      %{
+        event_type: "RunSlotQueued",
+        payload: %{project_id: "p1", run_id: "c", position: 1, enqueued_at_ms: 3}
+      }
+    ])
+
+    assert %{running_runs: 2, waiting_runs: 1} = ProjectionStore.project_limits("p1", @now)
+    assert %{running_runs: 0, waiting_runs: 0} = ProjectionStore.project_limits("p2", @now)
   end
 
   test "a replayed thread is counted once and only 8 days are retained" do
@@ -134,6 +152,8 @@ defmodule ForemanServer.ProjectPauseLimitsProjectionTest do
                project,
                %{
                  active_runs: 0,
+                 running_runs: 0,
+                 waiting_runs: 0,
                  threads_started_today: 99,
                  deferred_tasks: 0,
                  deferred_by_reason: %{}

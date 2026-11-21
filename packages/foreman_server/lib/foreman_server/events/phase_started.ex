@@ -11,7 +11,7 @@ defmodule ForemanServer.Events.PhaseStarted do
   recorded before the field existed carries none.
 
   `execution_profile` is optional: what the launch's backend enforces, as
-  `Jobsite.ExecutionProfile.to_map/1` builds it (`backend` string and a
+  `Exec.ExecutionProfile.to_map/1` builds it (`backend` string and a
   `%{state, reason}` map per property). Its nested keys keep the form their
   writer used (atom or string); the projection normalises them. A stream
   recorded before the field existed carries none.
