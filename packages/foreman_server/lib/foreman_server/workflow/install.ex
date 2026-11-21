@@ -70,7 +70,7 @@ defmodule ForemanServer.WorkflowTemplate.Installer do
     quick release review small smoke task tdd trd verify)
   # Flat `prompts/<name>.md` files ever shipped under
   # priv/defaults/workflows/prompts (the installed `<target>/prompts` layout).
-  @ever_shipped_prompt_names ~w(assess create-pr discover fix implement plan release
+  @ever_shipped_prompt_names ~w(assess create-pr discover fix fix-plan implement plan release
     review-coderabbit review-repo-rules verify)
   @legacy_workflow_names @ever_shipped_workflow_names
                          |> Kernel.--(@bundled_workflow_names)

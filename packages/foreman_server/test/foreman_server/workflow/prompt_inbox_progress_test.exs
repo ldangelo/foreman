@@ -37,7 +37,7 @@ defmodule ForemanServer.Workflow.PromptInboxProgressTest do
     end
   end
 
-  defp fix_phase_names("fix.yaml"), do: ~w(fix)
+  defp fix_phase_names("fix.yaml"), do: ~w(plan fix)
   defp fix_phase_names(_workflow_file), do: []
 
   test "command phase sidecar matches prompt progress cadence, safety, and non-blocking terms" do

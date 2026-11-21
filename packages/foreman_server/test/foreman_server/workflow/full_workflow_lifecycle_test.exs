@@ -507,23 +507,29 @@ defmodule ForemanServer.Workflow.FullWorkflowLifecycleTest do
       assert final_phase["name"] == "repo-rules-review"
     end
 
-    test "fix.yaml runs the bundled fix.md prompt, not an external skill" do
+    test "fix.yaml plans with fix-plan.md then implements with fix.md, with no external skill" do
       path =
         Path.join(Application.app_dir(:foreman_server, "priv/defaults/workflows"), "fix.yaml")
 
       assert {:ok, manifest} = ForemanServer.Workflow.Interpreter.load(path)
 
       assert manifest["name"] == "fix"
-      [fix_phase | _review_phases] = Map.get(manifest, "phases", [])
-      assert fix_phase["prompt"] == "fix.md"
-      refute Map.has_key?(fix_phase, "command")
+      phases = Map.get(manifest, "phases", [])
+      plan_phase = Enum.find(phases, &(&1["name"] == "plan"))
+      fix_phase = Enum.find(phases, &(&1["name"] == "fix"))
 
-      assert File.exists?(
-               Path.join(
-                 Application.app_dir(:foreman_server, "priv/defaults/workflows/prompts"),
-                 "fix.md"
+      assert plan_phase["prompt"] == "fix-plan.md"
+      assert fix_phase["prompt"] == "fix.md"
+      refute Enum.any?(phases, &Map.has_key?(&1, "command"))
+
+      for prompt <- ~w(fix-plan.md fix.md) do
+        assert File.exists?(
+                 Path.join(
+                   Application.app_dir(:foreman_server, "priv/defaults/workflows/prompts"),
+                   prompt
+                 )
                )
-             )
+      end
     end
   end
 
