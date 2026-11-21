@@ -26,7 +26,9 @@ defmodule ForemanServer.RetiredGlobalSlotsTest do
   end
 
   test "nothing reads the retired :max_concurrent_runs application key (no global setting is read)" do
-    reads = ~r/(get_env|fetch_env!?|get_all_env|put_env)\(\s*:foreman_server,\s*:max_concurrent_runs\s*[,)]/
+    reads =
+      ~r/(get_env|fetch_env!?|get_all_env|put_env)\(\s*:foreman_server,\s*:max_concurrent_runs\s*[,)]/
+
     assert offenders(reads) == []
   end
 

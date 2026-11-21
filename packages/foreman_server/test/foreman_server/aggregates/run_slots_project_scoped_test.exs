@@ -88,7 +88,7 @@ defmodule ForemanServer.Aggregates.RunSlotsProjectScopedTest do
         {evs ++ [e], st}
       end)
 
-    rebuilt = Enum.reduce(events, RunSlots.initial_state(), &(RunSlots.apply_event(&2, &1)))
+    rebuilt = Enum.reduce(events, RunSlots.initial_state(), &RunSlots.apply_event(&2, &1))
     assert rebuilt == live
   end
 end

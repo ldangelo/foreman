@@ -23,7 +23,9 @@ defmodule ForemanServer.RunSlots.ConfigTest do
     end
 
     test "the shipped config.exs sets the per-project default to three (AC-002-1)" do
-      config = Elixir.Config.Reader.read!(Path.expand("../../../config/config.exs", __DIR__), env: :test)
+      config =
+        Elixir.Config.Reader.read!(Path.expand("../../../config/config.exs", __DIR__), env: :test)
+
       assert get_in(config, [:foreman_server, :max_concurrent_runs_per_project]) == 3
     end
 
@@ -41,7 +43,9 @@ defmodule ForemanServer.RunSlots.ConfigTest do
 
     test "no shipped config sets the retired :max_concurrent_runs key" do
       for file <- ["config.exs", "test.exs"] do
-        config = Elixir.Config.Reader.read!(Path.expand("../../../config/#{file}", __DIR__), env: :test)
+        config =
+          Elixir.Config.Reader.read!(Path.expand("../../../config/#{file}", __DIR__), env: :test)
+
         refute Keyword.has_key?(config[:foreman_server] || [], :max_concurrent_runs), file
       end
     end

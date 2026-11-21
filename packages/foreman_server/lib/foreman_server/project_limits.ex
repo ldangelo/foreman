@@ -52,7 +52,8 @@ defmodule ForemanServer.ProjectLimits do
     started = usage.threads_started_today
 
     %{
-      max_concurrent_runs: settings.max_concurrent_runs || Config.max_concurrent_runs_per_project(),
+      max_concurrent_runs:
+        settings.max_concurrent_runs || Config.max_concurrent_runs_per_project(),
       active_runs: usage.active_runs,
       running_runs: usage.running_runs,
       waiting_runs: usage.waiting_runs,

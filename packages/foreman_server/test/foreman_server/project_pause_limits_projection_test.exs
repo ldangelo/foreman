@@ -78,7 +78,11 @@ defmodule ForemanServer.ProjectPauseLimitsProjectionTest do
   end
 
   test "the effective run limit is the project's setting, not clamped by any global value" do
-    apply!([register("p1", %{max_concurrent_runs: 50}), register("p2", %{max_concurrent_runs: 5})])
+    apply!([
+      register("p1", %{max_concurrent_runs: 50}),
+      register("p2", %{max_concurrent_runs: 5})
+    ])
+
     assert %{max_concurrent_runs: 50} = ProjectionStore.project_limits("p1", @now)
     assert %{max_concurrent_runs: 5} = ProjectionStore.project_limits("p2", @now)
   end

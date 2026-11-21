@@ -368,7 +368,8 @@ defmodule ForemanServer.Aggregates.RunSlotsReleaseTest do
     end
 
     test "the dispatcher routes all six terminal event types to slot release" do
-      source = File.read!(Path.expand("../../../lib/foreman_server/workflow/dispatcher.ex", __DIR__))
+      source =
+        File.read!(Path.expand("../../../lib/foreman_server/workflow/dispatcher.ex", __DIR__))
 
       [_, list] = Regex.run(~r/@run_terminated_event_types ~w\(([^)]*)\)/, source)
       types = String.split(list)

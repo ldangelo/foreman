@@ -77,7 +77,9 @@ defmodule ForemanServer.Aggregates.RunSlotsPromoteTest do
       assert waiter_ids(state) == ~w(w1 w2)
 
       {e1, state} = promote(state, 5)
-      assert %RunSlotAcquired{run_id: "w1", promoted: true, capacity: 5, project_id: @project} = e1
+
+      assert %RunSlotAcquired{run_id: "w1", promoted: true, capacity: 5, project_id: @project} =
+               e1
 
       {e2, state} = promote(state, 5)
       assert %RunSlotAcquired{run_id: "w2", promoted: true} = e2
