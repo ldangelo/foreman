@@ -140,7 +140,7 @@ defmodule ForemanServer.Workflow.CatalogTest do
   end
 
   describe "fix workflow (WFD-T006 / TRD-069)" do
-    test "loading fix.yaml yields the fix phase followed by the two review phases", %{
+    test "loading fix.yaml yields the plan phase, the fix phase, then the two review phases", %{
       tmp: tmp,
       server_name: name
     } do
@@ -149,9 +149,16 @@ defmodule ForemanServer.Workflow.CatalogTest do
       assert {:ok, wf} = Catalog.load("fix.yaml")
       assert wf.name == "fix"
       assert is_list(wf.phases)
-      assert length(wf.phases) == 3
+      assert length(wf.phases) == 4
 
-      [fix_phase, coderabbit_phase, repo_rules_phase] = wf.phases
+      [plan_phase, fix_phase, coderabbit_phase, repo_rules_phase] = wf.phases
+
+      # The plan phase is a bundled Foreman prompt that writes PLAN.md and changes no code.
+      assert plan_phase["name"] == "plan"
+      assert plan_phase.action == :prompt
+      assert plan_phase.command in [nil, ""]
+      assert Path.basename(plan_phase.prompt_path) == "fix-plan.md"
+      assert File.exists?(plan_phase.prompt_path)
 
       assert fix_phase["name"] == "fix"
       # The fix phase is a bundled Foreman prompt, not the external `ensemble-fix-issue`
