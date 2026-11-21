@@ -135,4 +135,42 @@ defmodule ForemanServer.EventCodecRunSlotsTest do
       assert round_trip == original
     end
   end
+
+  describe "RunSlotRecoveryAttempted" do
+    setup do
+      %{
+        event_type: "RunSlotRecoveryAttempted",
+        data: %{
+          "run_id" => "run-orphan",
+          "attempt" => 3,
+          "outcome" => "failed",
+          "kind" => "slot_release",
+          "reason" => "exit :killed",
+          "elapsed_since_boot_ms" => 4_200
+        }
+      }
+    end
+
+    test "encodes and decodes without data loss", %{event_type: type, data: data} do
+      decoded = EventCodec.decode!(type, data)
+
+      assert decoded.__struct__ == ForemanServer.Events.RunSlotRecoveryAttempted
+      assert decoded.run_id == "run-orphan"
+      assert decoded.attempt == 3
+      assert decoded.outcome == "failed"
+      assert decoded.kind == "slot_release"
+      assert decoded.reason == "exit :killed"
+      assert decoded.elapsed_since_boot_ms == 4_200
+    end
+
+    test "reason is optional", %{event_type: type, data: data} do
+      decoded = EventCodec.decode!(type, Map.delete(data, "reason"))
+      assert decoded.reason == nil
+    end
+
+    test "pass-through when already typed", %{event_type: type, data: data} do
+      original = EventCodec.decode!(type, data)
+      assert EventCodec.decode!(type, original) == original
+    end
+  end
 end

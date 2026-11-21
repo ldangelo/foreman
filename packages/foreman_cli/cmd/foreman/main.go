@@ -30,7 +30,6 @@
 //	run remove          Remove a run and clean worktree/branch
 //	run reset           Reset a failed or stuck run projection
 //	thread list|get|stop|resolve|reopen|steer|rereview  Inspect and act on threads
-//	jobsite template    POST /api/jobsites/template (generate a runnable Jobsite script from a prompt)
 //	workflow install    Install workflow assets from --source or --remote
 //	init --force        Refresh the installed runtime copy of bundled prompts/workflows
 //	doctor              GET /api/doctor
@@ -94,9 +93,11 @@ Commands:
   run remove          Remove a run and clean worktree/branch
   run reset           Reset a failed or stuck run projection
   run submit          Submit an ad-hoc run (--project-id --workflow --prompt --work-id --backend)
-  run approve-merge   Record the operator's merge approval for a run (--id --approver --identity --head-sha [--repo-id])
+  run approve-merge   Record the operator's merge approval for a run (--id --approver --identity --head-sha [--repo-id] [--acknowledge-gate-off])
+  run waive-evidence  Waive named PR evidence reasons for a run (--id --approver --identity --head-sha --waive --reason [--repo-id])
   run merge           Merge an approved run's PR (--id [--repo-id])
   run prs <id>        List the run's pull requests
+  run phases <id>     List the run's phases with their status
   run fix-ci <id>     Request a CI-fix thread for a watched PR (--pr --note)
   run address-comments <id> Request a thread to address PR review comments (--pr --note)
   run resolve-conflicts <id> Request a thread to resolve PR merge conflicts (--pr --note)
@@ -104,14 +105,14 @@ Commands:
   run retry-pr        Re-open the PR of one repository of a multi-repo run (--id --repo-id)
   run watch-start <id> Start watching a run's PR (--pr)
   run watch-stop <id>  Stop watching a run's PR (--pr)
+  run publish-report <id> Publish a run's PR risk report again (--pr --repo-id)
   thread list         List a project's threads (--project <id>)
   thread get <id>     Fetch a thread
-  thread stop <id>    Stop a thread (workflow run or jobsite)
+  thread stop <id>    Stop a thread (workflow run)
   thread resolve <id> Mark a thread resolved
   thread reopen <id>  Reopen a resolved thread
   thread steer <id>   Send an operator message to a thread (--message)
-  thread rereview <id> Re-run an undetermined review (workflow run or jobsite)
-  jobsite template    Generate a runnable Jobsite script from a prompt (--project-id --prompt [--name --provider --model --iterations --signal --branch --sandbox --push --dir --format])
+  thread rereview <id> Re-run an undetermined review (workflow run)
   workflow install    Install workflow assets
   workflow remove     Remove installed workflow assets (--all)
   init --force        Refresh the installed runtime copy of bundled prompts/workflows
@@ -153,8 +154,6 @@ func main() {
 		err = runRun(c, args)
 	case "thread":
 		err = runThread(c, args)
-	case "jobsite":
-		err = runJobsite(c, args)
 	case "workflow":
 		err = runWorkflow(c, args)
 	case "init":

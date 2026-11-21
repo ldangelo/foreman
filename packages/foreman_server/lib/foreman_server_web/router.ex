@@ -19,15 +19,6 @@ defmodule ForemanServerWeb.Router do
     plug(ForemanServerWeb.Plugs.RequireAuthenticated)
   end
 
-  # Fail-closed JSON pipeline with no local opt-in: `RequireAuthenticated` answers
-  # 401 until an operator sets a token. `:api` (BearerAuth) is also fail-closed
-  # when no token is configured, but honours `:api, allow_insecure_local: true`
-  # (on in dev/test) to let local development call it without one.
-  pipeline :jobsite_api do
-    plug(:accepts, ["json"])
-    plug(ForemanServerWeb.Plugs.RequireAuthenticated)
-  end
-
   # GitHub authenticates a delivery with an HMAC over the raw body rather than a
   # bearer token. Fails closed: with no secret configured, nothing is accepted.
   pipeline :github_webhook do
@@ -42,19 +33,6 @@ defmodule ForemanServerWeb.Router do
   scope "/agent-permission", ForemanServerWeb do
     post("/:run_id", AgentPermissionController, :rpc)
     get("/:run_id", AgentPermissionController, :stream_unsupported)
-  end
-
-  scope "/api/jobsites", ForemanServerWeb do
-    pipe_through(:jobsite_api)
-
-    post("/", JobsiteController, :create)
-    post("/template", JobsiteController, :template)
-    get("/", JobsiteController, :index)
-    get("/:id", JobsiteController, :show)
-    post("/:id/pause", JobsiteController, :pause)
-    post("/:id/cancel", JobsiteController, :cancel)
-    post("/:id/resume", JobsiteController, :resume)
-    post("/:id/merge", JobsiteController, :merge)
   end
 
   scope "/api", ForemanServerWeb do
@@ -97,6 +75,7 @@ defmodule ForemanServerWeb.Router do
     get("/runs", RunController, :index)
     get("/runs/:id", RunController, :show)
     get("/runs/:id/prs", RunController, :prs)
+    get("/runs/:id/phases", RunController, :phases)
     get("/runs/:run_id/approvals", ApprovalController, :index_for_run)
     get("/projects/:project_id/threads", ThreadController, :index)
     get("/projects/:project_id/threads/find", ThreadController, :find)

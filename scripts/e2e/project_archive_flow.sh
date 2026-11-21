@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+
+# RETIRED (docs/plans/retire-jobsites.md, PR 7): this script drives `POST /api/jobsites`, which no longer
+# exists. It needs rewriting against a run (`sandbox: docker` workflow, or a follow-up run) before it can
+# prove anything again; until then it refuses to run instead of failing halfway with a 404.
+echo "$0: retired with the jobsite dispatch path; see docs/plans/retire-jobsites.md" >&2
+exit 2
 # scripts/e2e/project_archive_flow.sh
 #
 # Live proof (foreman-5fqso) of what `foreman project delete` (soft delete = archive) does against a REAL

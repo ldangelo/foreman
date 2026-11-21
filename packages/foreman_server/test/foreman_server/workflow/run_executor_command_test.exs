@@ -726,6 +726,34 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
     end
   end
 
+  test "a workflow phase launch never sets no_skills, so a skill reported available is loadable" do
+    # TRD-021: only the coordinator profile sets `no_skills`, and it runs no
+    # workflow phase. The preflight's `:available` verdict is a promise that the
+    # harness will load the skill; `--no-skills` would break it.
+    state = %{
+      run_id: unique_id("run-no-skills"),
+      plan_context: %{},
+      task: %{task_id: "t1", project_id: nil},
+      completed: [],
+      phase_specs: [],
+      artifact_base: System.tmp_dir!(),
+      project_settings: nil
+    }
+
+    for phase_spec <- [
+          %{name: :implement, command: "/skill:fix-issue --foreman"},
+          %{name: :implement, prompt: "do it"},
+          %{name: :implement, command: "/skill:fix-issue", provider: :pi}
+        ] do
+      assert {:ok, launch} =
+               RunExecutor.__prepare_agent_launch_for_test__(state, phase_spec, 0, 1, nil)
+
+      refute Keyword.has_key?(launch.driver_opts.(60_000), :no_skills)
+      refute Keyword.has_key?(launch.launch_opts, :no_skills)
+      refute Map.has_key?(launch.phase, :no_skills)
+    end
+  end
+
   test "a project env value that cannot be stringified is a typed error, not a raise" do
     previous = Application.get_env(:foreman_server, :worker_environment)
     project_id = unique_id("legacy-env-project")
@@ -1273,6 +1301,21 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
     head_sha = run_git!(["-C", repo_dir, "rev-parse", "HEAD"]) |> String.trim()
     on_exit(fn -> File.rm_rf(repo_dir) end)
 
+    # The project is registered at the tmp dir, so pi's project skill directory
+    # for it is `<tmp>/.pi/skills`. The name is built at run time so the suite's
+    # skill seeding (which scans test sources for `/skill:<name>`) does not also
+    # put it in the default home, where it would be `:available`.
+    resume_skill = "resume-project-only-#{System.unique_integer([:positive])}"
+    resume_skill_dir = Path.join([System.tmp_dir!(), ".pi", "skills", resume_skill])
+    File.mkdir_p!(resume_skill_dir)
+
+    File.write!(
+      Path.join(resume_skill_dir, "SKILL.md"),
+      "---\nname: #{resume_skill}\ndescription: test skill\n---\n"
+    )
+
+    on_exit(fn -> File.rm_rf(resume_skill_dir) end)
+
     phase = fn index, command ->
       %{
         name: String.to_atom("resume_phase_#{index}"),
@@ -1299,7 +1342,7 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
       worktree: %{enabled: true, path: "implement-trd-beads", cleanup: "always"},
       phases: [
         phase.(1, "/skill:resume-phase-one --foreman"),
-        phase.(2, "/skill:resume-phase-two --foreman")
+        phase.(2, "/skill:#{resume_skill} --foreman")
       ]
     }
 
@@ -1334,7 +1377,7 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
     assert is_pid(run_pid)
 
     assert_receive {:adapter_execute, prompt, context}, @poll_timeout_ms
-    assert prompt =~ "resume-phase-two"
+    assert prompt =~ resume_skill
     assert context["script_key"] == "#{script_key}-2"
 
     assert {:ok, %{status: "completed"}} =
@@ -1347,6 +1390,13 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
                end,
                "resumed phase 2 completed"
              )
+
+    # The skill preflight runs again at the resumed kickoff for the phases still
+    # to run, so the phase it launches carries the verdict: the skill is only in
+    # the project's own skill directory (project-scoped), which pi trusts at run
+    # time, so it is unverifiable.
+    assert %{execution_profile: %{skill: %{state: "unverifiable"}}} =
+             ProjectionStore.phase_projection(Identity.phase_id(run_id, 2))
 
     # Phase 1 belongs to the attempt before the resume: this run never started it.
     assert ProjectionStore.phase_projection(Identity.phase_id(run_id, 1)) == nil

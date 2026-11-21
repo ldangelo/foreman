@@ -70,6 +70,364 @@ defmodule ForemanServer.ProjectionStoreTest do
     assert %{project_id: ^project_id} = ProjectionStore.project(project_id)
   end
 
+  test "a resumed PhaseRetried keeps the phase in_progress and advances attempt; others do not" do
+    suffix = System.unique_integer([:positive])
+    run_id = "run-retry-#{suffix}"
+    phase_id = "phase-retry-#{suffix}"
+
+    started = %{
+      event_type: "PhaseStarted",
+      payload: %{
+        phase_id: phase_id,
+        run_id: run_id,
+        index: 1,
+        name: "dev",
+        attempt: 1,
+        artifact_template: "t"
+      }
+    }
+
+    retried = fn reason, attempt ->
+      %{
+        event_type: "PhaseRetried",
+        payload: %{
+          phase_id: phase_id,
+          run_id: run_id,
+          index: 1,
+          attempt: attempt,
+          reason: reason
+        }
+      }
+    end
+
+    assert :ok = ProjectionStore.apply_events([started, retried.("failed", 2)])
+    assert %{status: "in_progress", attempt: 1} = ProjectionStore.phase_projection(phase_id)
+
+    assert :ok = ProjectionStore.apply_events([retried.("resumed", 2)])
+    assert %{status: "in_progress", attempt: 2} = ProjectionStore.phase_projection(phase_id)
+
+    # A retry recorded before the typed event existed is tolerated and changes nothing.
+    assert :ok =
+             ProjectionStore.apply_events([
+               %{event_type: "PhaseRetried", payload: %{phase_id: phase_id, run_id: run_id}}
+             ])
+
+    assert %{status: "in_progress", attempt: 2} = ProjectionStore.phase_projection(phase_id)
+  end
+
+  test "RunRecoveryAttempted folds into run.recovery as the latest record; a stream without one has none" do
+    run_id = "run-recovery-#{System.unique_integer([:positive])}"
+
+    started = %{
+      event_type: "RunStarted",
+      payload: %{run_id: run_id, project_id: "p", task_id: "t", workflow_snapshot: %{}}
+    }
+
+    assert :ok = ProjectionStore.apply_events([started])
+    refute Map.has_key?(ProjectionStore.run(run_id), :recovery)
+
+    recorded = fn payload ->
+      %{
+        event_type: "RunRecoveryAttempted",
+        payload: Map.merge(%{run_id: run_id, elapsed_since_boot_ms: 700}, payload)
+      }
+    end
+
+    assert :ok = ProjectionStore.apply_events([recorded.(%{outcome: "resumed"})])
+
+    assert ProjectionStore.run(run_id).recovery == %{
+             outcome: "resumed",
+             elapsed_since_boot_ms: 700
+           }
+
+    # A replayed event carries string keys and folds to the same shape; the latest wins.
+    assert :ok =
+             ProjectionStore.apply_events([
+               %{
+                 event_type: "RunRecoveryAttempted",
+                 payload: %{
+                   "run_id" => run_id,
+                   "outcome" => "effect_blocked",
+                   "elapsed_since_boot_ms" => 900,
+                   "effect_class" => "push",
+                   "effect_key" => "k",
+                   "effect_verdict" => "unknown"
+                 }
+               }
+             ])
+
+    assert ProjectionStore.run(run_id).recovery == %{
+             outcome: "effect_blocked",
+             elapsed_since_boot_ms: 900,
+             effect_class: "push",
+             effect_key: "k",
+             effect_verdict: "unknown"
+           }
+  end
+
+  describe "PhaseStarted input_artifacts" do
+    @sha String.duplicate("e", 64)
+
+    defp started_payload(run_id, key_form, entries) do
+      base = %{
+        run_id: run_id,
+        phase_id: run_id <> "-p002",
+        index: 2,
+        name: "second",
+        attempt: 1,
+        artifact_template: %{},
+        input_artifacts: entries
+      }
+
+      case key_form do
+        :atom -> base
+        :string -> base |> Jason.encode!() |> Jason.decode!()
+      end
+    end
+
+    defp seed_run!(run_id) do
+      assert :ok =
+               ProjectionStore.apply_events([
+                 %{
+                   event_type: "RunStarted",
+                   payload: %{
+                     run_id: run_id,
+                     project_id: "p",
+                     task_id: "t",
+                     workflow_snapshot: %{}
+                   }
+                 }
+               ])
+    end
+
+    for {form, unknown_key} <- [atom: :bytes, string: "bytes"] do
+      test "#{form}-keyed entries decode and fold to the same four atom-keyed fields" do
+        run_id = "run-inputs-#{System.unique_integer([:positive])}"
+        seed_run!(run_id)
+
+        entry = %{
+          index: 0,
+          source_phase: run_id <> "-p001",
+          path: "artifacts/one.md",
+          sha256: @sha
+        }
+
+        # `bytes` is a key outside the four: the codec keeps it, the fold drops it.
+        payload = started_payload(run_id, unquote(form), [Map.put(entry, :bytes, 12)])
+
+        assert %ForemanServer.Events.PhaseStarted{input_artifacts: [decoded]} =
+                 ForemanServer.EventCodec.decode!("PhaseStarted", payload)
+
+        assert Map.has_key?(decoded, unquote(unknown_key))
+
+        assert :ok =
+                 ProjectionStore.apply_events([%{event_type: "PhaseStarted", payload: payload}])
+
+        assert [%{input_artifacts: [folded]}] = ProjectionStore.phases_for_run(run_id)
+        assert folded == entry
+      end
+    end
+
+    test "an entry key outside the four never becomes an atom" do
+      run_id = "run-inputs-#{System.unique_integer([:positive])}"
+      seed_run!(run_id)
+      unknown = "novel_key_#{System.unique_integer([:positive])}"
+
+      payload =
+        started_payload(run_id, :string, [
+          %{"index" => 0, "source_phase" => "s", "path" => "p", "sha256" => @sha}
+        ])
+
+      payload = put_in(payload, ["input_artifacts", Access.at(0), unknown], "x")
+
+      assert_raise ArgumentError, fn -> String.to_existing_atom(unknown) end
+      assert :ok = ProjectionStore.apply_events([%{event_type: "PhaseStarted", payload: payload}])
+      assert_raise ArgumentError, fn -> String.to_existing_atom(unknown) end
+
+      assert [%{input_artifacts: [%{index: 0, source_phase: "s", path: "p", sha256: @sha} = f]}] =
+               ProjectionStore.phases_for_run(run_id)
+
+      assert map_size(f) == 4
+    end
+
+    test "an empty list is kept, and a non-map entry is dropped" do
+      run_id = "run-inputs-#{System.unique_integer([:positive])}"
+      seed_run!(run_id)
+
+      assert :ok =
+               ProjectionStore.apply_events([
+                 %{event_type: "PhaseStarted", payload: started_payload(run_id, :atom, [])}
+               ])
+
+      assert [%{input_artifacts: []}] = ProjectionStore.phases_for_run(run_id)
+
+      assert :ok =
+               ProjectionStore.apply_events([
+                 %{
+                   event_type: "PhaseStarted",
+                   payload: started_payload(run_id, :atom, ["junk", 7])
+                 }
+               ])
+
+      assert [%{input_artifacts: []}] = ProjectionStore.phases_for_run(run_id)
+    end
+
+    test "a PhaseStarted recorded before the field existed decodes and folds with no inputs" do
+      run_id = "run-inputs-#{System.unique_integer([:positive])}"
+      seed_run!(run_id)
+
+      old =
+        started_payload(run_id, :atom, nil) |> Map.delete(:input_artifacts)
+
+      assert %ForemanServer.Events.PhaseStarted{input_artifacts: nil} =
+               ForemanServer.EventCodec.decode!("PhaseStarted", old)
+
+      assert :ok = ProjectionStore.apply_events([%{event_type: "PhaseStarted", payload: old}])
+      assert [entry] = ProjectionStore.phases_for_run(run_id)
+      refute Map.has_key?(entry, :input_artifacts)
+    end
+  end
+
+  describe "PhaseStarted execution_profile" do
+    @profile %{
+      backend: "host_workflow",
+      filesystem: %{state: "unenforced", reason: "runs on the host"},
+      network: %{state: "unenforced", reason: "no enforcement point"},
+      credentials: %{state: "unenforced", reason: "see PRD-2026-aba4b79c"},
+      cleanup: %{state: "enforced", reason: nil}
+    }
+
+    defp profile_payload(run_id, key_form, profile) do
+      base = %{
+        run_id: run_id,
+        phase_id: run_id <> "-p001",
+        index: 1,
+        name: "first",
+        attempt: 1,
+        artifact_template: %{},
+        execution_profile: profile
+      }
+
+      case key_form do
+        :atom -> base
+        :string -> base |> Jason.encode!() |> Jason.decode!()
+      end
+    end
+
+    for {form, unknown_key} <- [atom: :bytes, string: "bytes"] do
+      test "#{form}-keyed profile decodes, then folds to the same atom-keyed shape with unknown keys dropped" do
+        run_id = "run-profile-#{System.unique_integer([:positive])}"
+        seed_run!(run_id)
+
+        profile =
+          @profile
+          |> Map.put(:bytes, 12)
+          |> Map.update!(:filesystem, &Map.put(&1, :bytes, 3))
+
+        payload = profile_payload(run_id, unquote(form), profile)
+
+        assert %ForemanServer.Events.PhaseStarted{execution_profile: decoded} =
+                 ForemanServer.EventCodec.decode!("PhaseStarted", payload)
+
+        assert Map.has_key?(decoded, unquote(unknown_key))
+
+        assert :ok =
+                 ProjectionStore.apply_events([%{event_type: "PhaseStarted", payload: payload}])
+
+        assert [%{execution_profile: folded}] = ProjectionStore.phases_for_run(run_id)
+        assert folded == @profile
+      end
+    end
+
+    test "a key outside the declared set never becomes an atom" do
+      run_id = "run-profile-#{System.unique_integer([:positive])}"
+      seed_run!(run_id)
+      top = "novel_top_#{System.unique_integer([:positive])}"
+      inner = "novel_inner_#{System.unique_integer([:positive])}"
+
+      payload =
+        run_id
+        |> profile_payload(:string, @profile)
+        |> put_in(["execution_profile", top], %{"state" => "enforced"})
+        |> put_in(["execution_profile", "network", inner], "x")
+
+      for key <- [top, inner] do
+        assert_raise ArgumentError, fn -> String.to_existing_atom(key) end
+      end
+
+      assert :ok = ProjectionStore.apply_events([%{event_type: "PhaseStarted", payload: payload}])
+
+      for key <- [top, inner] do
+        assert_raise ArgumentError, fn -> String.to_existing_atom(key) end
+      end
+
+      assert [%{execution_profile: folded}] = ProjectionStore.phases_for_run(run_id)
+      assert folded == @profile
+    end
+
+    test "the skill verdict TRD-022 adds is kept; a malformed property is dropped, not guessed" do
+      run_id = "run-profile-#{System.unique_integer([:positive])}"
+      seed_run!(run_id)
+
+      profile =
+        @profile
+        |> Map.put(:skill, %{"state" => "unverifiable", "reason" => "claude has no skill dir"})
+        |> Map.put(:network, "unenforced")
+        |> Map.put(:cleanup, %{state: "maybe", reason: nil})
+
+      assert :ok =
+               ProjectionStore.apply_events([
+                 %{event_type: "PhaseStarted", payload: profile_payload(run_id, :atom, profile)}
+               ])
+
+      assert [%{execution_profile: folded}] = ProjectionStore.phases_for_run(run_id)
+
+      assert folded ==
+               @profile
+               |> Map.drop([:network, :cleanup])
+               |> Map.put(:skill, %{state: "unverifiable", reason: "claude has no skill dir"})
+    end
+
+    for {state, kept?} <- [
+          {"available", true},
+          {"unverifiable", true},
+          {"missing", false},
+          {"enforced", false}
+        ] do
+      test "a skill entry in state #{state} is #{if kept?, do: "kept", else: "dropped"}" do
+        run_id = "run-profile-#{System.unique_integer([:positive])}"
+        seed_run!(run_id)
+        profile = Map.put(@profile, :skill, %{state: unquote(state), reason: nil})
+
+        assert :ok =
+                 ProjectionStore.apply_events([
+                   %{event_type: "PhaseStarted", payload: profile_payload(run_id, :atom, profile)}
+                 ])
+
+        assert [%{execution_profile: folded}] = ProjectionStore.phases_for_run(run_id)
+
+        if unquote(kept?) do
+          assert folded.skill == %{state: unquote(state), reason: nil}
+        else
+          refute Map.has_key?(folded, :skill)
+        end
+      end
+    end
+
+    test "a PhaseStarted with no profile (an old stream) leaves the entry without one" do
+      run_id = "run-profile-#{System.unique_integer([:positive])}"
+      seed_run!(run_id)
+      payload = run_id |> profile_payload(:atom, nil) |> Map.delete(:execution_profile)
+
+      assert %ForemanServer.Events.PhaseStarted{execution_profile: nil} =
+               ForemanServer.EventCodec.decode!("PhaseStarted", payload)
+
+      assert :ok = ProjectionStore.apply_events([%{event_type: "PhaseStarted", payload: payload}])
+      assert [entry] = ProjectionStore.phases_for_run(run_id)
+      refute Map.has_key?(entry, :execution_profile)
+    end
+  end
+
   test "projects are registered and updated from state.projects" do
     project_id = "project-1"
 

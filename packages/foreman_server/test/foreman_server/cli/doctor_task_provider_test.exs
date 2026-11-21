@@ -7,8 +7,12 @@ defmodule ForemanServer.CLI.DoctorTaskProviderTest do
   alias ForemanServer.CLI
   alias ForemanServer.ProjectionStore
   alias ForemanServer.TaskProvider.Registry, as: TaskProviderRegistry
-  alias ForemanServer.TaskProviders.{BeadsAdapter, BrRunnerMock}
+  alias ForemanServer.TaskProviders.{BeadsAdapter, BrRunnerMock, KataAdapter, KataRunnerMock}
+  alias ForemanServer.TaskProviders.BeadsAdapter.CodeMap.ProviderErrorInput
+  alias ForemanServer.TaskProviders.KataAdapter.BuildProviderError
   alias ForemanServer.TestSupport.ProjectionStoreReset
+
+  @kata_banner "kata v0.23.0\n  commit:  unknown\n  built:   2026-11-09T11:49:11Z\n"
 
   @cache_name :foreman_server_json_schema_cache
   @project_prefix "doctor-task-provider-"
@@ -345,6 +349,351 @@ defmodule ForemanServer.CLI.DoctorTaskProviderTest do
     refute Map.has_key?(report, "error")
   end
 
+  describe "Kata projects (AC-016-1, AC-016-2)" do
+    test "reports provider id, contract version, kata --version and a sample listing", %{
+      temp_dir: temp_dir,
+      original_path: original_path
+    } do
+      configure_kata!()
+      project_id = unique_project_id("kata-healthy")
+      seed_project!(project_id, kata_task_provider("kata", temp_dir))
+      put_fake_kata_on_path!(temp_dir, original_path)
+
+      expect_kata_version(@kata_banner)
+      expect_kata_version(@kata_banner)
+      expect_kata_sample_list(temp_dir, ~s({"kata_api_version":1,"issues":[{"short_id":"abc4"}]}))
+
+      output = capture_io(fn -> assert :ok = CLI.run(["doctor", "task_provider"]) end)
+      report = decode_single_report(output)
+
+      assert report["project_id"] == project_id
+      assert report["healthy"] == true
+      assert report["provider_id"] == "kata"
+      assert report["contract_version"] == "kata.capabilities.v1"
+      assert report["kata_version"] == %{"exit_code" => 0, "stdout" => String.trim(@kata_banner)}
+      assert report["warnings"] == []
+      assert report["sample_list"] == %{"outcome" => "ok", "issue_count" => 1}
+      assert report["schema_validation_failures"] == []
+      refute Map.has_key?(report, "error")
+
+      # Beads-only fields never appear in a Kata report.
+      for beads_key <- ["br_version", "capabilities", "sample_ready", "janitor_enabled"] do
+        refute Map.has_key?(report, beads_key)
+      end
+    end
+
+    test "an empty sample listing is healthy", %{temp_dir: temp_dir, original_path: original_path} do
+      configure_kata!()
+      seed_project!(unique_project_id("kata-empty"), kata_task_provider(KataAdapter, temp_dir))
+      put_fake_kata_on_path!(temp_dir, original_path)
+
+      expect_kata_version(@kata_banner)
+      expect_kata_version(@kata_banner)
+      expect_kata_sample_list(temp_dir, ~s({"kata_api_version":1,"issues":[]}))
+
+      report = decode_single_report(run_doctor())
+
+      assert report["healthy"] == true
+      assert report["sample_list"] == %{"outcome" => "ok", "issue_count" => 0}
+    end
+
+    test "a version outside accepted_kata_versions is a warning, not unhealthy", %{
+      temp_dir: temp_dir,
+      original_path: original_path
+    } do
+      configure_kata!(accepted_kata_versions: [">= 0.19.0"])
+      seed_project!(unique_project_id("kata-old"), kata_task_provider("kata", temp_dir))
+      put_fake_kata_on_path!(temp_dir, original_path)
+      old_banner = "kata v0.18.2\n  commit:  unknown\n"
+
+      expect_kata_version(old_banner)
+      expect_kata_version(old_banner)
+      expect_kata_sample_list(temp_dir, ~s({"kata_api_version":1,"issues":[]}))
+
+      report = decode_single_report(run_doctor())
+
+      assert report["healthy"] == true
+      refute Map.has_key?(report, "error")
+      assert report["sample_list"]["outcome"] == "ok"
+
+      assert [%{"code" => "KATA_VERSION_OUT_OF_RANGE", "message" => message}] =
+               report["warnings"]
+
+      assert message =~ "0.18.2"
+      assert message =~ ">= 0.19.0"
+    end
+
+    test "a version matching any accepted_kata_versions entry has no warning", %{
+      temp_dir: temp_dir,
+      original_path: original_path
+    } do
+      configure_kata!(accepted_kata_versions: ["~> 0.1.0", "~> 0.23.0"])
+      seed_project!(unique_project_id("kata-any"), kata_task_provider("kata", temp_dir))
+      put_fake_kata_on_path!(temp_dir, original_path)
+
+      expect_kata_version(@kata_banner)
+      expect_kata_version(@kata_banner)
+      expect_kata_sample_list(temp_dir, ~s({"kata_api_version":1,"issues":[]}))
+
+      report = decode_single_report(run_doctor())
+
+      assert report["healthy"] == true
+      assert report["warnings"] == []
+    end
+
+    test "a non-semver development build is a warning quoting the raw value", %{
+      temp_dir: temp_dir,
+      original_path: original_path
+    } do
+      configure_kata!()
+      seed_project!(unique_project_id("kata-dev"), kata_task_provider("kata", temp_dir))
+      put_fake_kata_on_path!(temp_dir, original_path)
+      dev_banner = "kata dev-4f2a9c\n  commit:  4f2a9c\n"
+
+      expect_kata_version(dev_banner)
+      expect_kata_version(dev_banner)
+      expect_kata_sample_list(temp_dir, ~s({"kata_api_version":1,"issues":[]}))
+
+      report = decode_single_report(run_doctor())
+
+      assert report["healthy"] == true
+      assert [%{"code" => "KATA_VERSION_UNPARSEABLE", "message" => message}] = report["warnings"]
+      assert message =~ ~s("dev-4f2a9c")
+    end
+
+    test "an invalid accepted_kata_versions entry is a warning, never a crash", %{
+      temp_dir: temp_dir,
+      original_path: original_path
+    } do
+      configure_kata!(accepted_kata_versions: ["not a requirement"])
+      seed_project!(unique_project_id("kata-bad-req"), kata_task_provider("kata", temp_dir))
+      put_fake_kata_on_path!(temp_dir, original_path)
+
+      expect_kata_version(@kata_banner)
+      expect_kata_version(@kata_banner)
+      expect_kata_sample_list(temp_dir, ~s({"kata_api_version":1,"issues":[]}))
+
+      report = decode_single_report(run_doctor())
+
+      assert report["healthy"] == true
+      assert [%{"code" => "KATA_VERSION_REQUIREMENT_INVALID"}] = report["warnings"]
+    end
+
+    test "a missing kata binary is unhealthy and never DATABASE_PATH_MISSING", %{
+      temp_dir: temp_dir
+    } do
+      configure_kata!()
+      project_id = unique_project_id("kata-missing")
+      seed_project!(project_id, kata_task_provider("kata", temp_dir))
+      empty_bin = Path.join(temp_dir, "empty-bin")
+      File.mkdir_p!(empty_bin)
+      System.put_env("PATH", empty_bin)
+      refute KataAdapter.available?()
+
+      output =
+        capture_io(fn ->
+          assert {:error, 1, "one or more unhealthy task_provider projects"} =
+                   CLI.run(["doctor", "task_provider"])
+        end)
+
+      report = decode_single_report(output)
+      error = report["error"]
+
+      assert report["project_id"] == project_id
+      assert report["healthy"] == false
+      assert report["provider_id"] == "kata"
+      assert error["code"] == "PROVIDER_MISSING"
+      assert error["message"] == "kata not installed"
+      assert error["stderr_byte_count"] == 0
+      refute output =~ "DATABASE_PATH_MISSING"
+    end
+
+    test "a non-zero kata --version exit is unhealthy with the stderr byte count only", %{
+      temp_dir: temp_dir,
+      original_path: original_path
+    } do
+      configure_kata!()
+      seed_project!(unique_project_id("kata-version-fail"), kata_task_provider("kata", temp_dir))
+      put_fake_kata_on_path!(temp_dir, original_path)
+
+      expect(KataRunnerMock, :cmd, 2, fn ["--version"], _cwd, _opts ->
+        kata_runner_exit(2, 57)
+      end)
+
+      output =
+        capture_io(fn ->
+          assert {:error, 1, _message} = CLI.run(["doctor", "task_provider"])
+        end)
+
+      error = output |> decode_single_report() |> Map.fetch!("error")
+
+      assert error["code"] == "PROVIDER_MISSING"
+      assert error["message"] == "kata --version failed"
+      assert error["exit_code"] == 2
+      assert error["stderr_byte_count"] == 57
+      # Names of the redacted fields only (AC-017-4), never their values.
+      assert error["redacted_fields"] == ["assignee", "description"]
+    end
+
+    test "a failing sample listing is unhealthy with a non-sensitive diagnostic", %{
+      temp_dir: temp_dir,
+      original_path: original_path
+    } do
+      configure_kata!()
+      seed_project!(unique_project_id("kata-list-fail"), kata_task_provider("kata", temp_dir))
+      put_fake_kata_on_path!(temp_dir, original_path)
+
+      expect_kata_version(@kata_banner)
+      expect_kata_version(@kata_banner)
+
+      expect(KataRunnerMock, :cmd, fn ["list", "--limit", "1", "--json"], cwd, _opts ->
+        assert cwd == temp_dir
+        kata_runner_exit(7, 41)
+      end)
+
+      output =
+        capture_io(fn ->
+          assert {:error, 1, _message} = CLI.run(["doctor", "task_provider"])
+        end)
+
+      report = decode_single_report(output)
+
+      assert report["healthy"] == false
+      assert report["kata_version"]["exit_code"] == 0
+      assert report["sample_list"] == nil
+      assert report["error"]["code"] == "BR_ERROR_ENVELOPE"
+      assert report["error"]["exit_code"] == 7
+      assert report["error"]["stderr_byte_count"] == 41
+    end
+
+    test "a sample listing that is not a kata issue envelope marks the project unhealthy", %{
+      temp_dir: temp_dir,
+      original_path: original_path
+    } do
+      configure_kata!()
+      seed_project!(unique_project_id("kata-list-shape"), kata_task_provider("kata", temp_dir))
+      put_fake_kata_on_path!(temp_dir, original_path)
+
+      expect_kata_version(@kata_banner)
+      expect_kata_version(@kata_banner)
+      expect_kata_sample_list(temp_dir, ~s({"kata_api_version":1,"issues":"nope"}))
+
+      output =
+        capture_io(fn ->
+          assert {:error, 1, _message} = CLI.run(["doctor", "task_provider"])
+        end)
+
+      report = decode_single_report(output)
+
+      assert report["healthy"] == false
+      assert report["sample_list"] == nil
+
+      assert [%{"probe" => "list", "schema" => "list_envelope", "path" => ["issues"]}] =
+               report["schema_validation_failures"]
+    end
+
+    test "a sample listing that is not JSON marks the project unhealthy", %{
+      temp_dir: temp_dir,
+      original_path: original_path
+    } do
+      configure_kata!()
+      seed_project!(unique_project_id("kata-list-json"), kata_task_provider("kata", temp_dir))
+      put_fake_kata_on_path!(temp_dir, original_path)
+
+      expect_kata_version(@kata_banner)
+      expect_kata_version(@kata_banner)
+      expect_kata_sample_list(temp_dir, "super secret raw stdout")
+
+      output =
+        capture_io(fn ->
+          assert {:error, 1, _message} = CLI.run(["doctor", "task_provider"])
+        end)
+
+      report = decode_single_report(output)
+
+      assert report["healthy"] == false
+      assert [%{"probe" => "list", "path" => []}] = report["schema_validation_failures"]
+      refute output =~ "super secret raw stdout"
+    end
+
+    test "a Kata project without a working directory reports CWD_MISSING", %{
+      temp_dir: temp_dir,
+      original_path: original_path
+    } do
+      configure_kata!()
+      seed_project!(unique_project_id("kata-no-cwd"), %{provider: "kata", config: %{}})
+      put_fake_kata_on_path!(temp_dir, original_path)
+
+      output =
+        capture_io(fn ->
+          assert {:error, 1, _message} = CLI.run(["doctor", "task_provider"])
+        end)
+
+      error = output |> decode_single_report() |> Map.fetch!("error")
+
+      assert error["code"] == "CWD_MISSING"
+      assert error["message"] == "task_provider.config.cwd is missing"
+      refute output =~ "DATABASE_PATH_MISSING"
+    end
+
+    test "a Kata project and a Beads project are reported independently", %{
+      temp_dir: temp_dir,
+      original_path: original_path
+    } do
+      configure_kata!()
+      kata_project_id = unique_project_id("mixed-kata")
+      beads_project_id = unique_project_id("mixed-beads")
+      database_path = unique_database_path("mixed-beads")
+      ready_issue = ready_issue_payload(%{"id" => "ready-mixed", "title" => "Mixed"})
+      capabilities_payload = %{"commands" => [%{"name" => "ready"}]}
+
+      seed_project!(kata_project_id, kata_task_provider("kata", temp_dir))
+      seed_project!(beads_project_id, project_task_provider(database_path))
+      put_fake_kata_on_path!(temp_dir, original_path)
+      write_fake_br!(temp_dir, "printf 'br\\n'")
+
+      assert :ok =
+               TaskProviderRegistry.register_for_project(beads_project_id, BeadsAdapter, %{
+                 "database_path" => database_path
+               })
+
+      expect_schema_boot_fetches()
+      expect_kata_version(@kata_banner)
+      expect_kata_version(@kata_banner)
+      expect_kata_sample_list(temp_dir, ~s({"kata_api_version":1,"issues":[]}))
+
+      expect(BrRunnerMock, :cmd, 1, fn {:where, %{database_path: ^database_path}},
+                                       _config,
+                                       _opts ->
+        {:ok,
+         %{stdout: Jason.encode!(%{"database_path" => database_path}), stderr: "", exit_code: 0}}
+      end)
+
+      expect(BrRunnerMock, :cmd, 1, fn {:version, %{}}, _config, _opts ->
+        {:ok, %{stdout: "br 1.2.3\n", stderr: "", exit_code: 0}}
+      end)
+
+      expect(BrRunnerMock, :cmd, 1, fn {:capabilities, %{}}, _config, _opts ->
+        {:ok, %{stdout: Jason.encode!(capabilities_payload), stderr: "", exit_code: 0}}
+      end)
+
+      expect(BrRunnerMock, :cmd, 1, fn {:ready, %{flags: ["--limit", "1"]}}, _config, _opts ->
+        {:ok, %{stdout: Jason.encode!([ready_issue]), stderr: "", exit_code: 0}}
+      end)
+
+      reports =
+        run_doctor()
+        |> decode_reports()
+        |> Map.new(fn report -> {report["project_id"], report} end)
+
+      assert reports[kata_project_id]["provider_id"] == "kata"
+      assert reports[beads_project_id]["provider_id"] == "beads"
+      assert reports[beads_project_id]["br_version"] == "br 1.2.3"
+      assert reports[beads_project_id]["janitor_enabled"] == false
+      refute Map.has_key?(reports[kata_project_id], "br_version")
+    end
+  end
+
   defp ensure_started(child_spec, name) do
     case Process.whereis(name) do
       nil -> start_supervised!(child_spec)
@@ -378,6 +727,66 @@ defmodule ForemanServer.CLI.DoctorTaskProviderTest do
     expect(BrRunnerMock, :cmd, 4, fn {:schema, %{schema: schema_name}}, %{}, [] ->
       {:ok, %{stdout: Jason.encode!(schema_document(schema_name)), stderr: "", exit_code: 0}}
     end)
+  end
+
+  # A project's `task_provider` as the Go CLI emits it for Kata: the provider name and the
+  # workspace directory as `config.cwd`.
+  defp kata_task_provider(provider, cwd) do
+    %{provider: provider, config: %{"cwd" => cwd}}
+  end
+
+  defp configure_kata!(overrides \\ []) do
+    Application.put_env(
+      :foreman_server,
+      :task_provider,
+      Keyword.merge(
+        [
+          actor: "foreman-runner",
+          accepted_contract_versions: ["br.capabilities.v1", "kata.capabilities.v1"],
+          accepted_kata_versions: [">= 0.19.0"],
+          providers: [BeadsAdapter, KataAdapter]
+        ],
+        overrides
+      )
+    )
+
+    restart_registry()
+  end
+
+  defp put_fake_kata_on_path!(temp_dir, original_path) do
+    script_path = Path.join(temp_dir, "kata")
+    File.write!(script_path, "#!/bin/sh\nexit 0\n")
+    File.chmod!(script_path, 0o755)
+    System.put_env("PATH", temp_dir <> ":" <> original_path)
+  end
+
+  defp expect_kata_version(banner) do
+    expect(KataRunnerMock, :cmd, fn ["--version"], _cwd, _opts -> {:ok, banner} end)
+  end
+
+  defp expect_kata_sample_list(cwd, stdout) do
+    expect(KataRunnerMock, :cmd, fn ["list", "--limit", "1", "--json"], run_cwd, _opts ->
+      assert run_cwd == cwd
+      {:ok, stdout}
+    end)
+  end
+
+  defp kata_runner_exit(exit_code, stderr_byte_count) do
+    {:error,
+     BuildProviderError.build_provider_error(
+       ProviderErrorInput.from_local(
+         "BR_ERROR_ENVELOPE",
+         "Kata CLI exited with a non-zero status.",
+         nil,
+         false
+       ),
+       exit_code,
+       stderr_byte_count
+     )}
+  end
+
+  defp run_doctor do
+    capture_io(fn -> assert :ok = CLI.run(["doctor", "task_provider"]) end)
   end
 
   defp put_fake_br_on_path!(temp_dir, original_path) do

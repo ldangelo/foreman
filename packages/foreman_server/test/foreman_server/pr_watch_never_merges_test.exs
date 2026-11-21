@@ -149,6 +149,7 @@ defmodule ForemanServer.PrWatchNeverMergesTest do
         run_id: run_id,
         approver: "leo",
         approver_identity: @approver,
+        acknowledge_gate_off: true,
         head_sha: head_sha
       }
     })
@@ -226,16 +227,15 @@ defmodule ForemanServer.PrWatchNeverMergesTest do
     {github, fetch, fetches} = start_github(failing_ci())
     test_pid = self()
 
-    starter = fn opts ->
-      id = "js-fix-#{System.unique_integer([:positive])}"
-      send(test_pid, {:jobsite_start, id, opts})
-      {:ok, id}
+    starter = fn request ->
+      send(test_pid, {:fix_start, request.run_id, request})
+      {:ok, request.run_id}
     end
 
     start_supervised!(
       {PrWatcher,
        fetch_fun: fetch,
-       jobsite_starter: starter,
+       followup_starter: starter,
        plan_opts: [fetch_fun: fetch, log_fetcher: fn _url, _check -> {:error, :none} end]}
     )
 
@@ -243,18 +243,19 @@ defmodule ForemanServer.PrWatchNeverMergesTest do
     start_supervised!(PrMonitor)
 
     # 1. The auto-fix loop, up to the PR being fixed, green and approved. The actors really work:
-    #    they request a fix, start its jobsite and record it finished.
+    #    they request a fix, start its follow-up run and record it finished.
     {commands, events} =
       watch(run_id, fn ->
         assert {:ok, %{requested: ["run.pr.fix_ci"]}} = PrWatcher.refresh_now(pr_url)
-        assert_receive {:jobsite_start, jobsite_id, _opts}, 10_000
+        assert_receive {:fix_start, fix_run_id, _request}, 10_000
         await_projection("PrFixStarted", run_id)
 
         Agent.update(github, fn _ -> merge_ready(@pushed_sha) end)
 
         :ok =
           ProjectionStore.apply_events([
-            %{event_type: "JobsiteCompleted", payload: %{jobsite_id: jobsite_id}}
+            %{event_type: "RunStarted", payload: %{run_id: fix_run_id, project_id: "p"}},
+            %{event_type: "RunCompleted", payload: %{run_id: fix_run_id}}
           ])
 
         assert %{outcome: "pushed"} = await_projection("PrFixFinished", run_id)
@@ -313,7 +314,7 @@ defmodule ForemanServer.PrWatchNeverMergesTest do
       end)
 
     assert_nothing_merges(pending_window)
-    refute_received {:jobsite_start, _, _}
+    refute_received {:fix_start, _, _}
     assert gate_events(run_id) == []
 
     # 3. The operator's approval is the one thing that moves the gate, and the window can see it.
@@ -325,7 +326,7 @@ defmodule ForemanServer.PrWatchNeverMergesTest do
     approved_window = watch(run_id, fn -> observe_everywhere(pr_url, fetches) end)
 
     assert_nothing_merges(approved_window)
-    refute_received {:jobsite_start, _, _}
+    refute_received {:fix_start, _, _}
     assert gate_events(run_id) == ["MergeGateApproved"]
     refute "PrMerged" in PrWatchSupport.run_event_types(run_id)
     assert ProjectionStore.pr_watch(run_id) |> Enum.all?(& &1.watching)

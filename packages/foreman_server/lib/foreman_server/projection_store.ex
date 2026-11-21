@@ -12,6 +12,13 @@ defmodule ForemanServer.ProjectionStore do
   event log via `read_all_streams_forward`. This ensures the projection is always
   consistent with the event store at startup.
 
+  A log that cannot be read at startup is not an empty log: `init/1` reads once, stops at
+  once with `{:event_log_read_failed, reason}` and registers nothing. The application supervisor
+  restarts the store within its budget (`Application.supervisor_opts/0`) and then stops the
+  application, so the store never serves an empty model after a failed read. A log that reads
+  but is empty starts an empty model. Start options (tests): `:event_reader` (a
+  `(start, count -> {:ok, events} | {:error, reason})` function), `:name` and `:now_ms`.
+
   ## Command path
 
   After `CommandRouter.append_events` succeeds, it calls
@@ -44,6 +51,7 @@ defmodule ForemanServer.ProjectionStore do
 
   alias ForemanServer.Usage
   alias ForemanServer.Usage.Ledger, as: UsageLedger
+  alias ForemanServer.Workflow.WorktreeDiscard
 
   @pr_fold_events ForemanServer.Overview.PrFold.events()
   @pr_watch_only_events ForemanServer.PrWatchFold.events() -- @pr_fold_events
@@ -51,7 +59,8 @@ defmodule ForemanServer.ProjectionStore do
 
   @spec start_link(term()) :: GenServer.on_start()
   def start_link(init_arg) do
-    GenServer.start_link(__MODULE__, init_arg, name: __MODULE__)
+    name = if is_list(init_arg), do: Keyword.get(init_arg, :name, __MODULE__), else: __MODULE__
+    GenServer.start_link(__MODULE__, init_arg, name: name)
   end
 
   @doc "Return the projected state for a project, or nil if not found."
@@ -109,6 +118,13 @@ defmodule ForemanServer.ProjectionStore do
       added_by: nil,
       added_at: Map.get(project, :registered_at)
     }
+  end
+
+  defp drop_recovery(slots, run_ids) do
+    case Map.get(slots, :recovery) do
+      nil -> slots
+      recovery -> Map.put(slots, :recovery, Map.drop(recovery, run_ids))
+    end
   end
 
   @doc "Return the active run ids."
@@ -718,6 +734,16 @@ defmodule ForemanServer.ProjectionStore do
     GenServer.call(__MODULE__, {:thread_flags, thread_id})
   end
 
+  @doc """
+  The recorded follow-up run request (`RunFollowUpRequested`) of a run id as a map, or nil when the
+  run is not a follow-up run. The Dispatcher reads it to admit, re-admit after a slot promotion and
+  resume a task-less run.
+  """
+  @spec followup_request(String.t()) :: map() | nil
+  def followup_request(run_id) when is_binary(run_id) and run_id != "" do
+    GenServer.call(__MODULE__, {:followup_request, run_id})
+  end
+
   @typedoc """
   Projected schedule. `status` is `"active" | "paused" | "deleted"`;
   `active_since` is unix seconds (creation, last resume or last spec change);
@@ -1108,7 +1134,8 @@ defmodule ForemanServer.ProjectionStore do
           running: [String.t()],
           waiting: [
             %{run_id: String.t(), position: integer() | nil, waited_ms: non_neg_integer()}
-          ]
+          ],
+          orphan_recovery: [map()]
         }
 
   @doc """
@@ -1238,7 +1265,12 @@ defmodule ForemanServer.ProjectionStore do
 
   @impl true
   def init(init_arg) do
-    {:ok, init_now_ms_fun(init_arg) |> rebuild_from_event_log() |> restore_subscribers()}
+    reader = init_event_reader(init_arg)
+    Process.put(:projection_event_reader, reader)
+
+    with {:ok, rebuilt} <- rebuild_from_event_log(init_now_ms_fun(init_arg), reader) do
+      {:ok, restore_subscribers(rebuilt)}
+    end
   end
 
   @impl true
@@ -1466,6 +1498,10 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   @impl true
+  def handle_call({:followup_request, run_id}, _from, state) do
+    {:reply, Map.get(state.followup_requests, run_id), state}
+  end
+
   def handle_call({:thread_flags, thread_id}, _from, state) do
     {:reply, Map.get(state.thread_flags, thread_id), state}
   end
@@ -1712,7 +1748,8 @@ defmodule ForemanServer.ProjectionStore do
       worktrees: state.worktrees |> Map.values() |> Enum.sort_by(&get(&1, :operation_id, "")),
       pr_associations: state.pr_associations,
       reviews: state.reviews,
-      thread_flags: state.thread_flags
+      thread_flags: state.thread_flags,
+      followup_requests: state.followup_requests
     }
 
     {:reply, inputs, state}
@@ -2168,15 +2205,38 @@ defmodule ForemanServer.ProjectionStore do
   # Projection logic
   # -------------------------------------------------------------------------
 
-  defp rebuild_from_event_log(now_ms_fun) when is_function(now_ms_fun, 0) do
-    case rebuild_state_from_event_log(now_ms_fun) do
-      {:ok, rebuilt_state} -> rebuilt_state
-      {:error, _reason} -> initial_state()
+  # The boot read (TRD-031, AC-005-3). A log that cannot be read is NOT an empty log: an
+  # empty model would show every run as absent and every PR as unwatched. The store reads
+  # once and, on failure, stops at once (no sleep: a stalled `init/1` would stall the
+  # supervisor too); the application supervisor restarts it within its budget and then stops
+  # the application (`Application.supervisor_opts/0`), so nothing serves an empty model.
+  defp rebuild_from_event_log(now_ms_fun, reader) when is_function(now_ms_fun, 0) do
+    case rebuild_state_from_event_log(now_ms_fun, reader) do
+      {:ok, rebuilt_state} ->
+        {:ok, rebuilt_state}
+
+      {:error, reason} ->
+        Logger.error(
+          "ProjectionStore: the event log could not be read: " <>
+            inspect(reason, limit: 5, printable_limit: 120)
+        )
+
+        {:stop, {:event_log_read_failed, reason}}
     end
   end
 
+  # A runtime `{:rebuild}` reads through the reader this process booted with, so a failed read
+  # replies the error and keeps the current state (the store is serving; it must not go empty).
   defp rebuild_state_from_event_log(now_ms_fun) when is_function(now_ms_fun, 0) do
-    case EventStore.read_all_streams_forward(0, 99_999_999) do
+    rebuild_state_from_event_log(
+      now_ms_fun,
+      Process.get(:projection_event_reader, &EventStore.read_all_streams_forward/2)
+    )
+  end
+
+  defp rebuild_state_from_event_log(now_ms_fun, reader)
+       when is_function(now_ms_fun, 0) and is_function(reader, 2) do
+    case reader.(0, 99_999_999) do
       {:ok, events} ->
         {:ok,
          Enum.reduce(events, initial_state(), fn event, acc ->
@@ -2240,6 +2300,7 @@ defmodule ForemanServer.ProjectionStore do
       project_library: %{},
       project_secrets: %{},
       thread_flags: %{},
+      followup_requests: %{},
       schedules: %{},
       tool_calls: %{},
       questions: %{},
@@ -2781,30 +2842,55 @@ defmodule ForemanServer.ProjectionStore do
     end)
   end
 
+  # The latest recovery record of the run (`run.recovery`). Effect fields exist
+  # only on the two effect outcomes, so an absent one is left out.
+  defp apply_event_by_type(state, "RunRecoveryAttempted", payload) do
+    %ForemanServer.Events.RunRecoveryAttempted{run_id: run_id} =
+      event = decode_for_projection("RunRecoveryAttempted", payload)
+
+    update_run_projection(state, run_id, payload_event_at_ms(payload), fn run ->
+      recovery =
+        %{outcome: event.outcome, elapsed_since_boot_ms: event.elapsed_since_boot_ms}
+        |> maybe_put(:reason, event.reason)
+        |> maybe_put(:effect_class, event.effect_class)
+        |> maybe_put(:effect_key, event.effect_key)
+        |> maybe_put(:effect_verdict, event.effect_verdict)
+
+      Map.put(run, :recovery, recovery)
+    end)
+  end
+
   defp apply_event_by_type(state, "PhaseStarted", payload) do
     case decode_for_projection("PhaseStarted", payload) do
       %ForemanServer.Events.PhaseStarted{phase_id: phase_id, run_id: run_id} = event
       when not is_nil(phase_id) and phase_id != "" and not is_nil(run_id) and run_id != "" ->
-        phase = %{
-          phase_id: phase_id,
-          run_id: run_id,
-          index: event.index,
-          name: event.name,
-          attempt: event.attempt,
-          status: "in_progress",
-          artifact_template: event.artifact_template,
-          artifact: nil,
-          failure_reason: nil,
-          last_sequence: event.sequence,
-          started_at_ms: payload_event_at_ms(payload),
-          last_event_at_ms: payload_event_at_ms(payload),
-          output_activity_at_ms: payload_event_at_ms(payload),
-          messaging_activity_at_ms: payload_event_at_ms(payload),
-          stall_detection_kind: event.stall_detection_kind,
-          stall_threshold_ms: event.stall_threshold_ms,
-          stall_policy: event.stall_policy,
-          latest_stall: nil
-        }
+        phase =
+          %{
+            phase_id: phase_id,
+            run_id: run_id,
+            index: event.index,
+            name: event.name,
+            attempt: event.attempt,
+            status: "in_progress",
+            artifact_template: event.artifact_template,
+            artifact: nil,
+            failure_reason: nil,
+            last_sequence: event.sequence,
+            started_at_ms: payload_event_at_ms(payload),
+            last_event_at_ms: payload_event_at_ms(payload),
+            output_activity_at_ms: payload_event_at_ms(payload),
+            messaging_activity_at_ms: payload_event_at_ms(payload),
+            stall_detection_kind: event.stall_detection_kind,
+            stall_threshold_ms: event.stall_threshold_ms,
+            stall_policy: event.stall_policy,
+            latest_stall: nil
+          }
+          |> maybe_put(
+            :prior_worktree_discarded,
+            discarded_worktree(event.prior_worktree_discarded)
+          )
+          |> maybe_put(:input_artifacts, input_artifacts(event.input_artifacts))
+          |> maybe_put(:execution_profile, execution_profile(event.execution_profile))
 
         state
         |> touch_run_for_payload(payload)
@@ -2865,7 +2951,50 @@ defmodule ForemanServer.ProjectionStore do
   end
 
   defp apply_event_by_type(state, "PhaseRetried", payload) do
-    touch_run_for_payload(state, payload)
+    # Only a resumed retry changes the phase entry. Retries recorded before the
+    # typed event existed carry no `reason`, so they are never decoded.
+    if get(payload, :reason) == "resumed" do
+      %ForemanServer.Events.PhaseRetried{phase_id: phase_id} =
+        event = decode_for_projection("PhaseRetried", payload)
+
+      state
+      |> touch_run_for_payload(payload)
+      |> update_existing(:phases, phase_id, "PhaseRetried", fn phase ->
+        phase
+        |> Map.put(:status, "in_progress")
+        |> Map.delete(:context)
+        |> Map.put(:attempt, event.attempt)
+        |> Map.put(:last_sequence, event.sequence)
+        |> Map.put(:last_event_at_ms, payload_event_at_ms(payload))
+        |> maybe_put(
+          :prior_worktree_discarded,
+          discarded_worktree(event.prior_worktree_discarded)
+        )
+        |> maybe_put(:input_artifacts, input_artifacts(event.input_artifacts))
+      end)
+    else
+      touch_run_for_payload(state, payload)
+    end
+  end
+
+  # The context a phase launch delivered. The phase entry holds the LATEST launch's
+  # record: a resumed retry clears the previous attempt's (see `PhaseRetried`), so a
+  # launch that delivered no context leaves none.
+  defp apply_event_by_type(state, "PhaseContextRecorded", payload) do
+    %ForemanServer.Events.PhaseContextRecorded{phase_id: phase_id} =
+      event = decode_for_projection("PhaseContextRecorded", payload)
+
+    state
+    |> touch_run_for_payload(payload)
+    |> update_existing(:phases, phase_id, "PhaseContextRecorded", fn phase ->
+      phase
+      |> Map.put(:context, phase_context(event))
+      |> Map.put(:last_sequence, event.sequence)
+      # How many records this phase has taken. Internal (the status DTO does not carry
+      # it): `RunExecutor` keys the next `phase.context` command id on it, and it
+      # outlives the resumed retry that clears `:context`.
+      |> Map.update(:context_records, 1, &(&1 + 1))
+    end)
   end
 
   defp apply_event_by_type(state, "TaskCreated", payload) do
@@ -3699,7 +3828,11 @@ defmodule ForemanServer.ProjectionStore do
         enqueued_at_ms: get(payload, :enqueued_at_ms)
       }
 
-      %{slots | waiters: Enum.reject(slots.waiters, &(&1.run_id == run_id)) ++ [waiter]}
+      # A run already waiting keeps its place (history written before the acquire
+      # guard can hold the same run twice).
+      if Enum.any?(slots.waiters, &(&1.run_id == run_id)),
+        do: slots,
+        else: %{slots | waiters: slots.waiters ++ [waiter]}
     end)
   end
 
@@ -3707,7 +3840,7 @@ defmodule ForemanServer.ProjectionStore do
     run_id = get(payload, :run_id)
 
     update_run_slots(state, payload, valid_id?(run_id), fn slots ->
-      %{slots | holders: Map.delete(slots.holders, run_id)}
+      %{slots | holders: Map.delete(slots.holders, run_id)} |> drop_recovery([run_id])
     end)
   end
 
@@ -3722,6 +3855,7 @@ defmodule ForemanServer.ProjectionStore do
           holders: slots.holders |> Map.delete(released) |> Map.put(acquired, :held),
           waiters: Enum.reject(slots.waiters, &(&1.run_id == acquired))
       }
+      |> drop_recovery([released, acquired])
     end)
   end
 
@@ -3730,6 +3864,34 @@ defmodule ForemanServer.ProjectionStore do
 
     update_run_slots(state, payload, valid_id?(run_id), fn slots ->
       %{slots | waiters: Enum.reject(slots.waiters, &(&1.run_id == run_id))}
+      |> drop_recovery([run_id])
+    end)
+  end
+
+  # Boot cleanup budget of an orphan slot entry (TRD-003), folded per project. Read and written
+  # with Map.get/Map.put: tests replace a project's slots with a map that has no `recovery` key.
+  defp apply_event_by_type(state, "RunSlotRecoveryAttempted", payload) do
+    run_id = get(payload, :run_id)
+
+    update_run_slots(state, payload, valid_id?(run_id), fn slots ->
+      recovery = Map.get(slots, :recovery, %{})
+
+      recovery =
+        case get(payload, :outcome) do
+          "dispatched" ->
+            Map.delete(recovery, run_id)
+
+          outcome ->
+            Map.put(recovery, run_id, %{
+              attempt: get(payload, :attempt),
+              outcome: outcome,
+              kind: get(payload, :kind),
+              reason: get(payload, :reason),
+              elapsed_since_boot_ms: get(payload, :elapsed_since_boot_ms)
+            })
+        end
+
+      Map.put(slots, :recovery, recovery)
     end)
   end
 
@@ -3875,6 +4037,19 @@ defmodule ForemanServer.ProjectionStore do
 
       _ ->
         Logger.warning("ProjectionStore skipped malformed ThreadReopened")
+        state
+    end
+  end
+
+  # A follow-up run request, keyed by the run it asks for. Malformed payloads are logged and skipped.
+  defp apply_event_by_type(state, "RunFollowUpRequested", payload) do
+    case decode_or_skip("RunFollowUpRequested", payload) do
+      {:ok, %ForemanServer.Events.RunFollowUpRequested{run_id: id} = event}
+      when is_binary(id) and id != "" ->
+        %{state | followup_requests: Map.put(state.followup_requests, id, Map.from_struct(event))}
+
+      _ ->
+        Logger.warning("ProjectionStore skipped malformed RunFollowUpRequested")
         state
     end
   end
@@ -4271,6 +4446,13 @@ defmodule ForemanServer.ProjectionStore do
 
   defp build_queue_status(state, project_id) do
     slots = Map.get(state.run_slots, project_id, empty_run_slots())
+
+    orphan_recovery =
+      slots
+      |> Map.get(:recovery, %{})
+      |> Enum.map(fn {run_id, entry} -> Map.put(entry, :run_id, run_id) end)
+      |> Enum.sort_by(& &1.run_id)
+
     now_ms = resolve_now_ms_fun().()
 
     waiting =
@@ -4289,7 +4471,8 @@ defmodule ForemanServer.ProjectionStore do
       running_runs: map_size(slots.holders),
       waiting_runs: length(waiting),
       running: Map.keys(slots.holders),
-      waiting: waiting
+      waiting: waiting,
+      orphan_recovery: orphan_recovery
     }
   end
 
@@ -4318,7 +4501,7 @@ defmodule ForemanServer.ProjectionStore do
 
   defp update_run_slots(state, _payload, false, _fun), do: state
 
-  defp empty_run_slots, do: %{capacity: nil, holders: %{}, waiters: []}
+  defp empty_run_slots, do: %{capacity: nil, holders: %{}, waiters: [], recovery: %{}}
 
   defp slot_capacity(_slots, capacity) when is_integer(capacity) and capacity >= 0, do: capacity
   defp slot_capacity(slots, _capacity), do: slots.capacity
@@ -4712,7 +4895,8 @@ defmodule ForemanServer.ProjectionStore do
       state.tasks
       |> Map.values()
       |> Enum.find(fn task ->
-        get(task, :run_id) == run_id and get(task, :status) == "in_progress"
+        get(task, :run_id) == run_id and get(task, :status) == "in_progress" and
+          not run_acknowledged?(task)
       end)
 
     if task != nil and not Map.has_key?(state.runs, run_id) do
@@ -4749,8 +4933,17 @@ defmodule ForemanServer.ProjectionStore do
         get(task, :status) == "in_progress",
         run_id = get(task, :run_id),
         is_binary(run_id) and run_id != "",
+        not run_acknowledged?(task),
         not Map.has_key?(state.runs, run_id),
         do: task_id
+  end
+
+  # `task.run_terminated` copied the bound run id into `acknowledged_run_id`: the run has ended (or, for
+  # a run cancelled while it waited for a slot, will never start), so it is neither pending nor a
+  # deferred task to re-admit. The task stays `in_progress` until it is retried.
+  defp run_acknowledged?(task) do
+    run_id = get(task, :run_id)
+    is_binary(run_id) and run_id != "" and get(task, :acknowledged_run_id) == run_id
   end
 
   defp project_projection(payload, path) do
@@ -5599,6 +5792,18 @@ defmodule ForemanServer.ProjectionStore do
 
   defp init_now_ms_fun(_init_arg), do: resolve_now_ms_fun()
 
+  # The boot read of the event log. Production passes nothing and reads the real log; a test
+  # injects a reader (`fn start, count -> {:ok, events} | {:error, reason} end`) to prove the
+  # failed-read path without touching the global store.
+  defp init_event_reader(init_arg) when is_list(init_arg) do
+    case Keyword.get(init_arg, :event_reader) do
+      reader when is_function(reader, 2) -> reader
+      _ -> &EventStore.read_all_streams_forward/2
+    end
+  end
+
+  defp init_event_reader(_init_arg), do: &EventStore.read_all_streams_forward/2
+
   # An ABSENT declaration reads as the empty list, because "declared nothing"
   # and "declared an empty list" mean the same thing to the approval guard. A
   # non-list is passed through UNCHANGED so the guard can refuse it: collapsing
@@ -5714,6 +5919,147 @@ defmodule ForemanServer.ProjectionStore do
 
   defp maybe_put(project, _key, nil), do: project
   defp maybe_put(project, key, value), do: Map.put(project, key, value)
+
+  # The discard record arrives as an atom-keyed map from a live dispatch and as a
+  # string-keyed map from a replayed event; `WorktreeDiscard.from_event/1` makes
+  # that one struct and the phase entry holds one shape.
+  defp discarded_worktree(nil), do: nil
+
+  defp discarded_worktree(%{} = discard) do
+    %{name: name, path: path} = WorktreeDiscard.from_event(discard)
+    %{name: name, path: path}
+  end
+
+  # The inputs a phase started from, `[%{index, source_phase, path, sha256}]`.
+  # `EventCodec` normalises only an event's top-level keys, so the entries arrive
+  # atom-keyed from a live dispatch and string-keyed from a replayed JSON event;
+  # `normalise_fields/2` makes them one atom-keyed shape. An absent field stays
+  # absent (an old stream); an entry that is not a map is dropped.
+  #
+  # Not validated by the aggregate at `phase.start` / `phase.retry` (unlike
+  # `phase.context`): a partial entry is kept as it came and a non-map entry is
+  # dropped here. Latent: the only producer, `RunExecutor.phase_input_artifacts/2`,
+  # builds well-formed lists.
+  @input_artifact_fields [
+    {:index, "index"},
+    {:source_phase, "source_phase"},
+    {:path, "path"},
+    {:sha256, "sha256"}
+  ]
+
+  defp input_artifacts(nil), do: nil
+
+  defp input_artifacts(entries) when is_list(entries) do
+    for %{} = entry <- entries, do: normalise_fields(entry, @input_artifact_fields)
+  end
+
+  defp input_artifacts(_other), do: nil
+
+  # What the launch's backend enforces (`Jobsite.ExecutionProfile.to_map/1`): the
+  # `backend` string and one `%{state, reason}` map per property. `EventCodec`
+  # normalises only top-level keys, so the nested maps arrive atom-keyed from a
+  # live dispatch and string-keyed from a replayed JSON event; this makes them
+  # one atom-keyed shape from a fixed table (AGENTS.md 5.4, 5.4b: no atom is
+  # built from input, a key outside the table is dropped). `skill` is the entry
+  # TRD-022 adds. A property that is not a map with a known `state` is dropped,
+  # never guessed; an absent profile stays absent (an old stream).
+  @execution_profile_fields [
+    {:backend, "backend"},
+    {:filesystem, "filesystem"},
+    {:network, "network"},
+    {:credentials, "credentials"},
+    {:cleanup, "cleanup"},
+    {:skill, "skill"}
+  ]
+  @execution_property_fields [{:state, "state"}, {:reason, "reason"}]
+
+  defp execution_profile(%{} = profile) do
+    for {key, value} <- normalise_fields(profile, @execution_profile_fields),
+        {:ok, folded} <- [execution_profile_entry(key, value)],
+        into: %{},
+        do: {key, folded}
+  end
+
+  defp execution_profile(_other), do: nil
+
+  defp execution_profile_entry(:backend, backend) when is_binary(backend), do: {:ok, backend}
+  defp execution_profile_entry(:backend, _other), do: :error
+
+  # The `skill` entry is a preflight verdict, not an enforcement property: its
+  # states are `available` and `unverifiable` (a `missing` skill ends the run
+  # before any phase), so the enforced/unenforced table does not apply to it.
+  defp execution_profile_entry(:skill, %{} = property) do
+    folded = normalise_fields(property, @execution_property_fields)
+
+    with state when state in ["available", "unverifiable"] <- Map.get(folded, :state),
+         {:ok, reason} <- execution_reason(Map.get(folded, :reason)) do
+      {:ok, %{state: state, reason: reason}}
+    else
+      _ -> :error
+    end
+  end
+
+  defp execution_profile_entry(_property, %{} = property) do
+    folded = normalise_fields(property, @execution_property_fields)
+
+    with {:ok, state} <- execution_state(Map.get(folded, :state)),
+         {:ok, reason} <- execution_reason(Map.get(folded, :reason)) do
+      {:ok, %{state: state, reason: reason}}
+    end
+  end
+
+  defp execution_profile_entry(_property, _other), do: :error
+
+  defp execution_state(state) when state in ["enforced", "unenforced"], do: {:ok, state}
+  defp execution_state(_other), do: :error
+
+  defp execution_reason(reason) when is_binary(reason) or is_nil(reason), do: {:ok, reason}
+  defp execution_reason(_other), do: :error
+
+  # What a launch delivered, as the phase entry and the status DTO carry it. The
+  # nested maps arrive atom-keyed from a live dispatch and string-keyed from a replayed
+  # event, so each is normalised to one atom-keyed shape (AGENTS.md 5.4, 5.4b); an
+  # entry that is not a map is dropped.
+  @context_section_fields [{:id, "id"}, {:bytes, "bytes"}]
+  @context_truncation_fields [
+    {:section, "section"},
+    {:omitted_bytes, "omitted_bytes"},
+    {:omitted_lines, "omitted_lines"}
+  ]
+
+  defp phase_context(%ForemanServer.Events.PhaseContextRecorded{} = event) do
+    %{
+      sections: normalise_entries(event.sections, @context_section_fields),
+      sha256: event.sha256,
+      bytes: event.bytes,
+      truncated: normalise_entries(event.truncated, @context_truncation_fields),
+      redactions: event.redactions,
+      redaction_scope: event.redaction_scope
+    }
+  end
+
+  defp normalise_entries(entries, table) when is_list(entries),
+    do: for(%{} = entry <- entries, do: normalise_fields(entry, table))
+
+  defp normalise_entries(_other, _table), do: []
+
+  # Keeps only the fields of `table` (`[{atom_key, string_key}]`), reading either
+  # key form and writing the atom key from the table, never from the input
+  # (AGENTS.md 5.4, 5.4b). A field absent in both forms is left out. The shared
+  # step for every per-field normaliser of a nested map.
+  defp normalise_fields(%{} = map, table) do
+    for {atom_key, string_key} <- table,
+        {:ok, value} <- [fetch_either(map, atom_key, string_key)],
+        into: %{},
+        do: {atom_key, value}
+  end
+
+  defp fetch_either(map, atom_key, string_key) do
+    case Map.fetch(map, atom_key) do
+      {:ok, _value} = found -> found
+      :error -> Map.fetch(map, string_key)
+    end
+  end
 
   # -- usage ledger (E14) ------------------------------------------------------
 

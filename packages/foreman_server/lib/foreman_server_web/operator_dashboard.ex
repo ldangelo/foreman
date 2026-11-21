@@ -165,7 +165,10 @@ defmodule ForemanServerWeb.OperatorDashboard do
       },
       abandon: %{enabled: normalized not in ["deleted", "removed"], command: "run.remove"},
       resume: %{enabled: normalized == "paused", command: "run.resume"},
-      reset: %{enabled: normalized in ["failed", "stuck", "needs_recovery"], command: "run.reset"}
+      reset: %{
+        enabled: normalized in ["failed", "stuck", "needs_recovery", "blocked", "paused"],
+        command: "run.reset"
+      }
     }
   end
 

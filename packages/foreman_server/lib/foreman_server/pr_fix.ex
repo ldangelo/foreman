@@ -1,32 +1,31 @@
 defmodule ForemanServer.PrFix do
   @moduledoc """
   Plans a PR fix thread (E9-S3): from the run, its watched PR and the requested kind
-  (`ci | comments | conflicts`) it builds the options of the follow-up jobsite and its
-  prompt. Pure planning plus read-only reads (`ProjectionStore`, `git worktree list`,
-  `gh`): nothing here starts a process - `ForemanServer.PrWatcher` does that.
+  (`ci | comments | conflicts`) it builds the FOLLOW-UP RUN request (`run.followup.request`,
+  `Workflow.FollowUp`) and its prompt. Pure planning plus read-only reads (`ProjectionStore`,
+  `git worktree list`, `gh`): nothing here starts a process - `ForemanServer.PrWatcher` does that.
 
-  The jobsite attaches to the PR's head branch at its tip on `origin`
-  (`strategy: {:branch, head}`, `sync_remote: "origin"`), runs with `push: true`
-  (publishing exactly that branch to `origin`), carries the originating bead id, and
-  uses the agent the run used:
+  The run attaches to the PR's head branch at its tip on `origin` (`Workflow.AttachBranch`,
+  fast-forward only, never force), pushes exactly that branch (`push: true`), mints no Bead and
+  uses the agent the original run used:
 
     * provider, model and approval mode: the run's last persisted provider session
       (`WorkerSessionBound`, E0-S1), else `config :foreman_server, :pr_fix, agent:` (which names no
-      approval mode); the model falls back to the project's `thread_model` (via `Jobsite.Spec`).
-      The approval mode is the harness mode the run's agent ran with, because a resumed headless
-      Claude otherwise runs in its default, interactive permission mode and cannot edit a file or run
-      a command (the fix ends `no_change`, live: `docs/acceptance/live-claude-prfix-resume.md`). A
-      session whose phase set none, or `prompt` (a jobsite has nobody to answer a per-call approval,
-      and `--permission-mode default` would override what the host's own Claude settings allow),
-      leaves the harness default;
+      approval mode); the model falls back to the project's `thread_model` (the phase's model
+      resolution). The approval mode is the harness mode the run's agent ran with, because a
+      resumed headless Claude otherwise runs in its default, interactive permission mode and cannot
+      edit a file or run a command (the fix ends `no_change`, live:
+      `docs/acceptance/live-claude-prfix-resume.md`). A session whose phase set none, or `prompt`
+      (nobody answers a per-call approval, and `--permission-mode default` would override what the
+      host's own Claude settings allow), leaves the harness default;
     * `resume_session`: that session's id, only when the fix will run at the SAME
       working-directory path as the original run (provider sessions are cwd-bound; spike
       E9-SP2 proved pi refuses to resume from another directory) AND the PR is the primary
       repository's (the run's agent works in the primary's worktree, so a session never fits another
-      repository's directory). The original worktree is
-      gone after cleanup, so the jobsite recreates it at that path (`path:`). When the path
-      is taken by something else, or no session id was persisted, no session is resumed and
-      the prompt carries the context instead - `resumed_session: false`.
+      repository's directory). The original worktree is gone after cleanup, so the follow-up
+      recreates it at that path (`worktree_path`). When the path is taken by something else, or no
+      session id was persisted, no session is resumed and the prompt carries the context instead -
+      `resumed_session: false`.
 
   The prompt is redacted with the run's project's secret values (`Coordinator.Redact`: every
   stored secret of 8 or more characters whatever its name, plus the env values whose names
@@ -34,19 +33,18 @@ defmodule ForemanServer.PrFix do
   operator note, resolved once per plan. A run with no resolvable project keeps the patterns.
 
   Typed errors: `{:pr_not_watched, url}`, `{:pr_not_open, status}`, `:branch_unknown`,
-  `{:branch_unsafe, name}`, `{:project_unresolved, id}`, `{:fetch_failed, reason}`,
-  and whatever `Jobsite.Spec.from_json/2` rejects (`%Jobsite.Error{}`).
+  `{:branch_unsafe, name}`, `{:project_unresolved, id}`, `{:fetch_failed, reason}`, `{:sandbox_not_allowed, "host"}`, `{:sandbox_invalid, name}`.
   """
 
   alias ForemanServer.Coordinator.Redact
   alias ForemanServer.GitHub.PrStatus
-  alias ForemanServer.Jobsite.{Error, Git, Spec}
+  alias ForemanServer.Exec.{Error, Git}
   alias ForemanServer.PrFix.Prompt
   alias ForemanServer.ProjectionStore
 
   @type kind :: String.t()
   @type plan :: %{
-          jobsite_opts: keyword(),
+          followup: map(),
           prompt: String.t(),
           resumed_session: boolean(),
           head_branch: String.t()
@@ -83,10 +81,12 @@ defmodule ForemanServer.PrFix do
          agent = agent(run, attach.resume? and primary_repo?(record)),
          redact = Redact.redactor(run.project_id),
          prompt = render(kind, record, status, head, base, pr_url, redact, opts),
-         {:ok, spec_opts} <- spec_opts(run, repo_path, head, prompt, agent, attach, kind) do
+         {:ok, sandbox} <- sandbox(),
+         followup =
+           followup_request(run, repo_path, head, prompt, agent, attach, kind, pr_url, sandbox) do
       {:ok,
        %{
-         jobsite_opts: spec_opts,
+         followup: followup,
          prompt: prompt,
          resumed_session: attach.resume? and not is_nil(agent.session_id),
          head_branch: head
@@ -369,51 +369,58 @@ defmodule ForemanServer.PrFix do
 
   defp truncate(text, _max), do: text
 
-  # -- jobsite options -----------------------------------------------------------------
+  # -- follow-up request ---------------------------------------------------------------
 
-  defp spec_opts(run, repo_path, head, prompt, agent, attach, kind) do
+  # A fix reads untrusted PR text and runs an agent on it, so it runs in Docker unless the operator
+  # configures otherwise (`config :foreman_server, :pr_fix, sandbox: "host"`), and the host sandbox
+  # needs `allow_host_sandbox: true` in the same config as well. `nil` = host.
+  defp sandbox do
     cfg = Application.get_env(:foreman_server, :pr_fix, [])
 
-    spec =
-      %{
-        "project_id" => run.project_id,
-        "prompt" => prompt,
-        "agent" => agent_map(agent),
-        "strategy" => %{"branch" => head},
-        "push" => true,
-        "max_iterations" => Keyword.get(cfg, :max_iterations, 1),
-        "name" => "pr-fix-#{kind}-#{run.run_id}"
-      }
-      |> put_if("sandbox", Keyword.get(cfg, :sandbox))
-      |> put_if("resume_session", agent.session_id)
-      |> put_if("bead_id", bead_id(run))
+    case Keyword.get(cfg, :sandbox, "docker") do
+      docker when docker in [nil, "docker"] ->
+        {:ok, "docker"}
 
-    with {:ok, opts} <- Spec.from_json(spec) do
-      {:ok,
-       opts
-       |> Keyword.put(:repo_path, repo_path)
-       |> Keyword.put(:sync_remote, "origin")
-       |> put_path(attach.path)}
+      "host" ->
+        if host_sandbox_allowed?(cfg),
+          do: {:ok, nil},
+          else: {:error, {:sandbox_not_allowed, "host"}}
+
+      other ->
+        {:error, {:sandbox_invalid, other}}
     end
   end
 
-  defp agent_map(agent) do
-    %{"provider" => agent.provider}
-    |> put_if("model", agent.model)
-    |> put_if("effort", agent.effort)
-    |> put_if("approval_mode", agent.approval_mode)
+  defp host_sandbox_allowed?(cfg) do
+    Keyword.get(cfg, :allow_host_sandbox, false) == true
   end
 
-  defp bead_id(run) do
-    case ProjectionStore.task_projection(run.task_id) do
-      %{external_id: id} when is_binary(id) and id != "" -> id
-      _ -> nil
-    end
+  # The same fix as a follow-up run request (`run.followup.request`, docs/plans/retire-jobsites.md):
+  # attach to the PR's head branch, push it (fast-forward only), the run's agent and its session.
+  # `worktree_path` is where the original run's session was keyed: used again when it is free, so a
+  # session resumes (the rule `attach/3` decides).
+  defp followup_request(run, repo_path, head, prompt, agent, attach, kind, pr_url, sandbox) do
+    %{
+      project_id: run.project_id,
+      kind: "pr_fix",
+      requested_by: "pr_watcher",
+      parent_run_id: run.run_id,
+      pr_url: pr_url,
+      fix_kind: kind,
+      attach_branch: head,
+      push: true,
+      prompt: prompt,
+      provider: agent.provider,
+      model: agent.model,
+      approval_mode: agent.approval_mode,
+      sandbox: sandbox,
+      repo_path: repo_path,
+      worktree_path: attach.path
+    }
+    |> put_if(:resume_session_provider, agent.session_id && agent.provider)
+    |> put_if(:resume_session_id, agent.session_id)
   end
 
   defp put_if(map, _key, nil), do: map
   defp put_if(map, key, value), do: Map.put(map, key, value)
-
-  defp put_path(opts, nil), do: opts
-  defp put_path(opts, path), do: Keyword.put(opts, :path, path)
 end

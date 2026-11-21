@@ -1,0 +1,11 @@
+{
+  "cmd-shift-f": "foreman-runs.toggle-failed",
+  "cmd-shift-r": "foreman-runs.refresh",
+  "cmd-shift-e": "foreman-runs.toggle-all",
+  "cmd-shift-s": "foreman-runs.toggle-statuses",
+  "cmd-shift-j": "foreman-runs.focus-panel",
+  "cmd-shift-o": "foreman-runs.open-pr",
+  "cmd-shift-y": "foreman-runs.copy-id",
+  "cmd-shift-u": "foreman-runs.copy-pr",
+  "cmd-shift-b": "foreman-runs.toggle-sidebar"
+}

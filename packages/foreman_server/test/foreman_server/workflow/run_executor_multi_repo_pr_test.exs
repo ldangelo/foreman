@@ -7,12 +7,13 @@ defmodule ForemanServer.Workflow.RunExecutorMultiRepoPrTest do
   use ExUnit.Case, async: false
 
   alias ForemanServer.{Identity, MultiRepoRuns, PrAssociate, ProjectionStore}
-  alias ForemanServer.TestSupport.ProjectionStoreReset
+  alias ForemanServer.TestSupport.{PrReadyGithub, ProjectionStoreReset}
   alias ForemanServer.Workflow.{RepoPr, RepoPrContext, RunExecutor}
 
   setup do
     ProjectionStoreReset.reset!()
     MultiRepoRuns.enable!()
+    PrReadyGithub.install!(&PrReadyGithub.sha/1)
 
     root = Path.join(System.tmp_dir!(), "multi-repo-pr-#{System.unique_integer([:positive])}")
     File.mkdir_p!(root)
@@ -145,6 +146,58 @@ defmodule ForemanServer.Workflow.RunExecutorMultiRepoPrTest do
       assert ready_b["repo_id"] == "b"
     end
 
+    test "findings are recorded for the primary PR only, once, even when finalised again", ctx do
+      touch!(ctx, "a")
+      touch!(ctx, "b")
+      tip_a = git!(ctx.wt_a, ["rev-parse", "HEAD"])
+
+      assert [{"main", {:ok, a_url}}, {"b", {:ok, _b_url}}] =
+               RunExecutor.__finalize_repo_prs_for_test__(ctx.state)
+
+      findings = fn ->
+        {:ok, events} = ForemanServer.EventStore.read_stream_forward("run:#{ctx.run_id}")
+        for e <- events, e.event_type == "ReviewFindingsRecorded", do: decode(e)
+      end
+
+      # No completion artifact: the primary PR is recorded as absent, the secondary has none.
+      assert [%{"pr_url" => ^a_url, "head_sha" => ^tip_a, "status" => "absent", "repo_id" => nil}] =
+               findings.()
+
+      # The auto-PR really pushed: the recorded head is the commit now on the remote branch.
+      origin = git!(ctx.repos["a"], ["remote", "get-url", "origin"])
+      branch = ctx.state.last_worktree.branch
+      assert git!(origin, ["rev-parse", "refs/heads/" <> branch]) == tip_a
+
+      # Finalised again with the primary PR already on record: a no-op repeat, still one record.
+      Process.sleep(2)
+      RunExecutor.__finalize_repo_prs_for_test__(ctx.state)
+      assert [_one] = findings.()
+    end
+
+    test "an unresolvable local tip on the re-finalise branch records nothing and logs an error",
+         ctx do
+      touch!(ctx, "a")
+      touch!(ctx, "b")
+
+      assert [{"main", {:ok, a_url}}, {"b", {:ok, _}}] =
+               RunExecutor.__finalize_repo_prs_for_test__(ctx.state)
+
+      {:ok, before} = ForemanServer.EventStore.read_stream_forward("run:#{ctx.run_id}")
+      bad = put_in(ctx.state, [:last_worktree, :branch], "no/such/branch")
+
+      log =
+        ExUnit.CaptureLog.capture_log([level: :error], fn ->
+          assert [{"main", {:ok, ^a_url}}, {"b", {:ok, _}}] =
+                   RunExecutor.__finalize_repo_prs_for_test__(bad)
+        end)
+
+      assert log =~ "findings of PR #{a_url} NOT recorded"
+      {:ok, after_} = ForemanServer.EventStore.read_stream_forward("run:#{ctx.run_id}")
+
+      assert Enum.count(after_, &(&1.event_type == "ReviewFindingsRecorded")) ==
+               Enum.count(before, &(&1.event_type == "ReviewFindingsRecorded"))
+    end
+
     test "an untouched repo opens no PR and records no association", ctx do
       touch!(ctx, "a")
 
@@ -163,8 +216,12 @@ defmodule ForemanServer.Workflow.RunExecutorMultiRepoPrTest do
       touch!(ctx, "b")
       git!(ctx.repos["b"], ["remote", "set-url", "origin", "/nonexistent/origin.git"])
 
-      assert [{"main", {:ok, a_url}}, {"b", {:error, {:git_push_failed, _, _}}}] =
+      # An origin that cannot be read means the push's intent (the remote head, TRD-013) cannot
+      # be recorded: the push does not run, and the error says why.
+      assert [{"main", {:ok, a_url}}, {"b", {:error, {:intent_not_recorded, reason}}}] =
                RunExecutor.__finalize_repo_prs_for_test__(ctx.state)
+
+      assert {:remote_head_unreadable, _} = reason
 
       assert [%{repo_id: "main", pr_url: ^a_url}] =
                ProjectionStore.pr_associations_for_run(ctx.run_id)
@@ -198,6 +255,94 @@ defmodule ForemanServer.Workflow.RunExecutorMultiRepoPrTest do
 
       {:ok, run_events} = ForemanServer.EventStore.read_stream_forward("run:#{ctx.run_id}")
       assert Enum.count(run_events, &(&1.event_type == "PrReady")) == 2
+    end
+  end
+
+  describe "the head of record comes from GitHub (TRD-008)" do
+    defp ready_events(run_id) do
+      {:ok, events} = ForemanServer.EventStore.read_stream_forward("run:#{run_id}")
+      for e <- events, e.event_type == "PrReady", do: decode(e)
+    end
+
+    test "each repository's PrReady names the head GitHub shows, not its local tip", ctx do
+      touch!(ctx, "a")
+      touch!(ctx, "b")
+      local_a = git!(ctx.wt_a, ["rev-parse", "HEAD"])
+      local_b = git!(ctx.wt_b, ["rev-parse", "HEAD"])
+
+      # GitHub names H2 for each PR: a rewritten branch is not the local tip H1.
+      h2 = %{
+        "https://github.com/o/repo-a/pull/1" => PrReadyGithub.sha("a force-pushed"),
+        "https://github.com/o/repo-b/pull/2" => PrReadyGithub.sha("b force-pushed")
+      }
+
+      PrReadyGithub.install!(h2)
+
+      assert [{"main", {:ok, a_url}}, {"b", {:ok, b_url}}] =
+               RunExecutor.__finalize_repo_prs_for_test__(ctx.state)
+
+      assert [
+               %{"pr_url" => ^a_url, "head_sha" => head_a},
+               %{"pr_url" => ^b_url, "head_sha" => head_b}
+             ] =
+               ready_events(ctx.run_id)
+
+      assert head_a == h2[a_url] and head_a != local_a
+      assert head_b == h2[b_url] and head_b != local_b
+    end
+
+    test "a failed GitHub read signals nothing for that repository and the run goes on", ctx do
+      touch!(ctx, "a")
+      touch!(ctx, "b")
+
+      PrReadyGithub.install!(fn url ->
+        if String.contains?(url, "repo-b"), do: {:error, 1}, else: PrReadyGithub.sha(url)
+      end)
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert [{"main", {:ok, a_url}}, {"b", {:ok, b_url}}] =
+                   RunExecutor.__finalize_repo_prs_for_test__(ctx.state)
+
+          send(self(), {:urls, a_url, b_url})
+        end)
+
+      assert_received {:urls, a_url, b_url}
+
+      assert log =~ "repository b: PR #{b_url} created but run.pr.ready was NOT signalled"
+      assert log =~ "head_read_failed"
+      assert [%{"pr_url" => ^a_url}] = ready_events(ctx.run_id)
+
+      # the PR itself is open and associated: only its merge gate never engaged
+      assert [%{repo_id: "main"}, %{repo_id: "b", pr_url: ^b_url}] =
+               ProjectionStore.pr_associations_for_run(ctx.run_id)
+    end
+
+    test "a repeated finalisation after the read recovered signals once, with GitHub's head",
+         ctx do
+      touch!(ctx, "a")
+      touch!(ctx, "b")
+      healthy = PrReadyGithub.sha("b healthy")
+
+      PrReadyGithub.install!(fn url ->
+        if String.contains?(url, "repo-b"), do: {:error, 1}, else: PrReadyGithub.sha(url)
+      end)
+
+      ExUnit.CaptureLog.capture_log(fn ->
+        RunExecutor.__finalize_repo_prs_for_test__(ctx.state)
+      end)
+
+      PrReadyGithub.install!(fn url ->
+        if String.contains?(url, "repo-b"), do: healthy, else: PrReadyGithub.sha(url)
+      end)
+
+      RunExecutor.__finalize_repo_prs_for_test__(ctx.state)
+      RunExecutor.__finalize_repo_prs_for_test__(ctx.state)
+
+      assert [%{"repo_id" => "b", "head_sha" => ^healthy}] =
+               Enum.filter(ready_events(ctx.run_id), &(&1["repo_id"] == "b"))
+
+      assert [_, _] = ready_events(ctx.run_id)
     end
   end
 

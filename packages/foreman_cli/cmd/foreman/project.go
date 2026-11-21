@@ -18,7 +18,7 @@ import (
 )
 
 // runProject dispatches `foreman project <subcommand>`.
-const projectUsageText = "Usage:\n  foreman project create [flags]\n  foreman project get [--format=json] <id>\n  foreman project open <id>   (open the project's browser workspace in the default browser; needs FOREMAN_API_TOKEN)\n  foreman project update [flags] <id>   (settings flags: --goal --instructions --instructions-file --thread-model --thread-effort --coordinator-provider --coordinator-model --coordinator-effort --max-concurrent-runs --daily-thread-cap --coordinator-propose-before-start --coordinator-max-active-threads --coordinator-reuse-threads --library-collect-produced --repo-allowlist <abs-path-prefix> --max-repos-per-run <n> --pr-auto-fix <json> --notification-preference --clear <setting>; provider flags: --task-provider --task-provider-database-path)\n  foreman project settings [--format=json] <id>\n  foreman project repo add --id ID --path ABS_PATH [--default-branch B] <project-id> | remove --id ID <project-id> | list [--format=json] <project-id>\n  foreman project context [--format=json] <id>   (the standing context an agent launch would receive)\n  foreman project recommend [--format=json] [--fail-on warn|action] <id>\n  foreman project adopt --kind run|jobsite|task --id ID (--into PROJECT | --new-project [--project-id X --path P --goal G]) [--continue --prompt TEXT [--fork] [--from-source-branch]] [--add-repo (move only)] [--format=json]\n  foreman project env list|set|unset <id> [NAME=value ... | NAME ...]   (set: --replace starts from an empty set)\n  foreman project secret list|set|unset <id> [NAME]   (set reads the value from stdin or --from-env VAR, never a flag value)\n  foreman project setup-script show|set|clear <id> [--file F]\n  foreman project network show|set <id> [--mode default|none|allowlist] [--allow host ...]\n  pause [--reason=<text>] [--idempotency-key=<key>] <id>\n  foreman project resume [--idempotency-key=<key>] <id>\n  foreman project reactivate [--idempotency-key=<key>] <id>\n  foreman project delete [--force] [--idempotency-key=<key>] <id>   (soft delete = archive)\n  foreman project list [--include-archived] [--format=json|ndjson]\n  foreman project memory list|read|write|forget|sync [flags] <project-id>\n  foreman project library list|add|replace|remove [flags] <project-id> ...   (project files for agents; see `foreman project library`)\n  foreman project schedule list|create|update|pause|resume|delete --project-id <id> ...   (scheduled tasks; see `foreman project schedule`)\n  foreman project chat [flags] <project-id> [message...]   (flags: -m --no-wait --since --history --format=text|json|ndjson --restart --timeout)"
+const projectUsageText = "Usage:\n  foreman project create [flags]\n  foreman project get [--format=json] <id>\n  foreman project open <id>   (open the project's browser workspace in the default browser; needs FOREMAN_API_TOKEN)\n  foreman project update [flags] <id>   (settings flags: --goal --instructions --instructions-file --thread-model --thread-effort --coordinator-provider --coordinator-model --coordinator-effort --max-concurrent-runs --daily-thread-cap --coordinator-propose-before-start --coordinator-max-active-threads --coordinator-reuse-threads --library-collect-produced --repo-allowlist <abs-path-prefix> --max-repos-per-run <n> --pr-auto-fix <json> --required-checks <json-array> --notification-preference --clear <setting>; provider flags: --task-provider --task-provider-database-path)\n  foreman project settings [--format=json] <id>\n  foreman project repo add --id ID --path ABS_PATH [--default-branch B] <project-id> | remove --id ID <project-id> | list [--format=json] <project-id>\n  foreman project context [--format=json] <id>   (the standing context an agent launch would receive)\n  foreman project recommend [--format=json] [--fail-on warn|action] <id>\n  foreman project adopt --kind run|jobsite|task --id ID (--into PROJECT | --new-project [--project-id X --path P --goal G]) [--continue --prompt TEXT [--fork] [--from-source-branch]] [--add-repo (move only)] [--format=json]\n  foreman project env list|set|unset <id> [NAME=value ... | NAME ...]   (set: --replace starts from an empty set)\n  foreman project secret list|set|unset <id> [NAME]   (set reads the value from stdin or --from-env VAR, never a flag value)\n  foreman project setup-script show|set|clear <id> [--file F]\n  foreman project network show|set <id> [--mode default|none|allowlist] [--allow host ...]\n  pause [--reason=<text>] [--idempotency-key=<key>] <id>\n  foreman project resume [--idempotency-key=<key>] <id>\n  foreman project reactivate [--idempotency-key=<key>] <id>\n  foreman project delete [--force] [--idempotency-key=<key>] <id>   (soft delete = archive)\n  foreman project list [--include-archived] [--format=json|ndjson]\n  foreman project memory list|read|write|forget|sync [flags] <project-id>\n  foreman project library list|add|replace|remove [flags] <project-id> ...   (project files for agents; see `foreman project library`)\n  foreman project schedule list|create|update|pause|resume|delete --project-id <id> ...   (scheduled tasks; see `foreman project schedule`)\n  foreman project chat [flags] <project-id> [message...]   (flags: -m --no-wait --since --history --format=text|json|ndjson --restart --timeout)"
 
 // runProject dispatches `foreman project <subcommand>`.
 func runProject(c *client.Client, args []string) error {
@@ -97,6 +97,9 @@ func projectCreate(c *client.Client, args []string) error {
 	if *projectID == "" || *path == "" || *taskProvider == "" {
 		return usageError(fs, "foreman project create: --id, --path, and --task-provider are required")
 	}
+	if *taskProvider == "kata" && !filepath.IsAbs(*path) {
+		return usageError(fs, "foreman project create: --path must be absolute with --task-provider=kata")
+	}
 	switch *format {
 	case "", "json":
 	default:
@@ -112,7 +115,7 @@ func projectCreate(c *client.Client, args []string) error {
 		Payload: map[string]any{
 			"project_id":    *projectID,
 			"path":          *path,
-			"task_provider": taskProviderPayload(*taskProvider, *taskProviderDatabasePath),
+			"task_provider": taskProviderPayload(*taskProvider, *taskProviderDatabasePath, *path),
 		},
 	}
 
@@ -192,6 +195,7 @@ func projectUpdate(c *client.Client, args []string) error {
 	coordinatorMaxActiveThreads := fs.Int("coordinator-max-active-threads", 0, "Coordinator's maximum active threads (1..50; enforced by the server)")
 	coordinatorReuseThreads := fs.Bool("coordinator-reuse-threads", false, "Coordinator reuses existing threads (true|false; enforced by the server)")
 	prAutoFix := fs.String("pr-auto-fix", "", `PR auto-fix policy as a JSON object, e.g. '{"kinds":["ci"],"max_attempts":2,"cooldown_seconds":300}' (enforced by the server)`)
+	requiredChecks := fs.String("required-checks", "", `Required PR checks as a JSON array, e.g. '[{"name":"build","kind":"check_run"}]' ('[]' turns the gate on with no checks; --clear required_checks turns it off; operator-only; enforced by the server)`)
 	notificationPreference := fs.String("notification-preference", "", "Notifications for this project (every_turn|blocked_only|off; default blocked_only)")
 	var clear repeatedFlag
 	fs.Var(&clear, "clear", "Clear a setting back to its default (repeatable)")
@@ -231,7 +235,19 @@ func projectUpdate(c *client.Client, args []string) error {
 		if err := validateTaskProviderConfig(fs, *taskProvider, *taskProviderDatabasePath, "foreman project update"); err != nil {
 			return err
 		}
-		payload["task_provider"] = taskProviderPayload(*taskProvider, *taskProviderDatabasePath)
+		projectPath := ""
+		if *taskProvider == "kata" {
+			var existing map[string]any
+			if err := c.GetJSON(client.JoinPath("/api/projects", fs.Arg(0)), &existing); err != nil {
+				return err
+			}
+			project, _ := existing["project"].(map[string]any)
+			projectPath = projectStringField(project, "path")
+			if !filepath.IsAbs(projectPath) {
+				return usageError(fs, "foreman project update: cannot switch to --task-provider=kata: registered project path %q is not an absolute path", projectPath)
+			}
+		}
+		payload["task_provider"] = taskProviderPayload(*taskProvider, *taskProviderDatabasePath, projectPath)
 		changes++
 	}
 
@@ -296,6 +312,14 @@ func projectUpdate(c *client.Client, args []string) error {
 			return usageError(fs, "foreman project update: --pr-auto-fix must be a JSON object")
 		}
 		payload["pr_auto_fix"] = policy
+		changes++
+	}
+	if set["required-checks"] {
+		var checks []any
+		if err := json.Unmarshal([]byte(*requiredChecks), &checks); err != nil || checks == nil {
+			return usageError(fs, "foreman project update: --required-checks must be a JSON array")
+		}
+		payload["required_checks"] = checks
 		changes++
 	}
 	if len(clear) > 0 {
@@ -460,7 +484,7 @@ var projectSettingNames = []string{
 	"max_concurrent_runs", "daily_thread_cap",
 	"coordinator_propose_before_start", "coordinator_max_active_threads", "coordinator_reuse_threads",
 	"library_collect_produced", "repo_allowlist", "max_repos_per_run",
-	"notification_preference", "pr_auto_fix",
+	"notification_preference", "pr_auto_fix", "required_checks",
 }
 
 var projectLimitNames = []string{
@@ -693,10 +717,12 @@ func printProject(out map[string]any) error {
 	// Task provider info
 	taskProvider := ""
 	databasePath := ""
+	cwd := ""
 	if tp, ok := project["task_provider"].(map[string]any); ok {
 		taskProvider = projectStringField(tp, "provider")
 		if cfg, ok := tp["config"].(map[string]any); ok {
 			databasePath = projectStringField(cfg, "database_path")
+			cwd = projectStringField(cfg, "cwd")
 		}
 	}
 
@@ -724,6 +750,9 @@ func printProject(out map[string]any) error {
 	if databasePath != "" {
 		fmt.Printf("database_path: %s\n", databasePath)
 	}
+	if cwd != "" {
+		fmt.Printf("cwd: %s\n", cwd)
+	}
 
 	return nil
 }
@@ -740,9 +769,16 @@ func projectStringField(project map[string]any, key string) string {
 	return value
 }
 
-func taskProviderPayload(provider, databasePath string) map[string]any {
+// taskProviderPayload builds the task_provider payload. Kata projects carry
+// config.cwd (the absolute project path) and never database_path; project update
+// fetches the registered path first and passes it here.
+func taskProviderPayload(provider, databasePath, projectPath string) map[string]any {
 	payload := map[string]any{"provider": provider}
-	if databasePath != "" {
+	if provider == "kata" {
+		if projectPath != "" {
+			payload["config"] = map[string]any{"cwd": projectPath}
+		}
+	} else if databasePath != "" {
 		payload["config"] = map[string]any{"database_path": databasePath}
 	}
 	return payload
@@ -751,6 +787,9 @@ func taskProviderPayload(provider, databasePath string) map[string]any {
 func validateTaskProviderConfig(fs *flagSet, provider, databasePath, command string) error {
 	if provider == "beads" && databasePath == "" {
 		return usageError(fs, "%s", command+": --task-provider-database-path is required when --task-provider=beads")
+	}
+	if provider == "kata" && databasePath != "" {
+		return usageError(fs, "%s", command+": --task-provider-database-path is not supported with --task-provider=kata (Kata projects use --path as their working directory)")
 	}
 	if databasePath != "" && !filepath.IsAbs(databasePath) {
 		return usageError(fs, "%s", command+": --task-provider-database-path must be absolute")

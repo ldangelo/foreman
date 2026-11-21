@@ -4,8 +4,8 @@ defmodule ForemanServer.Workflow.LoweringTest do
   # these assert its structural output against every bundled manifest.
   use ExUnit.Case, async: true
 
-  alias ForemanServer.Jobsite.{Agent, Error, Program, Step}
-  alias ForemanServer.Jobsite.Runners.Overwatch
+  alias ForemanServer.Exec.{Agent, Error, Program, Step}
+  alias ForemanServer.Exec.Runners.Overwatch
   alias ForemanServer.Workflow.{Interpreter, Lowering, PhaseSpec}
 
   @manifests_dir Path.join([:code.priv_dir(:foreman_server), "defaults", "workflows"])
@@ -209,6 +209,52 @@ defmodule ForemanServer.Workflow.LoweringTest do
         ])
 
       assert {:ok, %Program{}} = Lowering.lower(phase_specs, ctx(%{start_index: 1}))
+    end
+  end
+
+  describe "sandbox" do
+    @phases [%{"name" => "build", "prompt" => "x"}, %{"name" => "check", "prompt" => "y"}]
+    @sandbox %{provider: ForemanServer.Exec.Sandboxes.Docker, config: %{}}
+
+    test "no :sandbox ctx emits no sandbox or release step" do
+      steps = lower!(@phases)
+      refute Enum.any?(steps, &(&1.kind in [:sandbox, :release]))
+    end
+
+    test "a sandbox follows the worktree step and a release closes only the sandbox, last" do
+      steps = lower!(@phases, %{sandbox: @sandbox})
+
+      assert Enum.take(kinds(steps), 2) == [:worktree, :sandbox]
+      assert List.last(steps).kind == :release
+      assert length(Enum.filter(steps, &(&1.kind == :sandbox))) == 1
+
+      sandbox_step = Enum.at(steps, 1)
+      assert sandbox_step.opts.provider == @sandbox.provider
+      assert sandbox_step.opts.config == %{}
+      assert sandbox_step.opts.phase_idx == 0
+
+      release = List.last(steps)
+
+      assert %{sandbox?: true, worktree?: false, uninterruptible: true, phase_idx: 1} =
+               release.opts
+    end
+
+    test "on resume the sandbox is created for the first lowered phase" do
+      steps = lower!(@phases, %{sandbox: @sandbox, start_index: 1})
+
+      assert Enum.at(steps, 1).kind == :sandbox
+      assert Enum.at(steps, 1).opts.phase_idx == 1
+    end
+
+    test "a sandbox without a worktree is refused before any side effect" do
+      assert {:error,
+              %Error{
+                code: :unsupported_phase_action,
+                details: %{reason: :sandbox_requires_worktree}
+              }} =
+               @phases
+               |> PhaseSpec.normalize_all()
+               |> Lowering.lower(ctx(%{sandbox: @sandbox, worktree_spec: %{enabled: false}}))
     end
   end
 end

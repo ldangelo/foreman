@@ -4,7 +4,7 @@ defmodule ForemanServer.Threads.Steerer do
 
   The thread DTO's `steering` is the mode every thread is GUARANTEED: `"pause_resume"`
   (pause, commit partial work, resume with the operator message as the next prompt;
-  `ForemanServer.Jobsite.steer/3` for the jobsite door, `run.steer` for the workflow door).
+  `ForemanServer.Exec.steer/3` for the jobsite door, `run.steer` for the workflow door).
 
   Live mid-phase steering (docs/plans/live-steering.md, beads foreman-s48kc/b3jtt) is an
   ATTEMPT made first by the workflow door when the running phase's provider supports

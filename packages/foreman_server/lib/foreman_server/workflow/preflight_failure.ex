@@ -29,17 +29,28 @@ defmodule ForemanServer.Workflow.PreflightFailure do
     :provider_unsupported,
     :provider_not_installed,
     :model_not_found,
-    :catalog_unavailable
+    :catalog_unavailable,
+    :skill_not_found
   ]
 
   @enforce_keys [:phase, :provider, :class]
-  defstruct [:phase, :provider, :class, model: nil, model_source: nil, detail: nil]
+  defstruct [
+    :phase,
+    :provider,
+    :class,
+    model: nil,
+    model_source: nil,
+    detail: nil,
+    backend: nil,
+    skill: nil
+  ]
 
   @type class ::
           :provider_unsupported
           | :provider_not_installed
           | :model_not_found
           | :catalog_unavailable
+          | :skill_not_found
 
   @type t :: %__MODULE__{
           phase: String.t() | atom() | nil,
@@ -47,7 +58,9 @@ defmodule ForemanServer.Workflow.PreflightFailure do
           class: class(),
           model: String.t() | nil,
           model_source: ForemanServer.Workflow.ModelResolution.source() | nil,
-          detail: term()
+          detail: term(),
+          backend: atom() | nil,
+          skill: String.t() | nil
         }
 
   @doc "The failure classes this struct can carry, in the order they are checked."
@@ -98,8 +111,21 @@ defmodule ForemanServer.Workflow.PreflightFailure do
     do:
       "the #{inspect(provider)} model catalog could not answer whether #{inspect(model)} is present"
 
+  defp class_phrase(%{
+         class: :skill_not_found,
+         provider: provider,
+         skill: skill,
+         backend: backend
+       }),
+       do:
+         "the #{inspect(provider)} harness cannot find skill #{inspect(skill)} in its skill directories" <>
+           backend_clause(backend)
+
   defp class_phrase(%{class: class}),
     do: "unclassified preflight failure #{inspect(class)}"
+
+  defp backend_clause(nil), do: ""
+  defp backend_clause(backend), do: " on the #{inspect(backend)} backend"
 
   defp detail_phrase(detail) when is_binary(detail), do: detail
   defp detail_phrase(detail), do: inspect(detail)

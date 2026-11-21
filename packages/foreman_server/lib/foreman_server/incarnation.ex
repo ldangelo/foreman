@@ -15,6 +15,7 @@ defmodule ForemanServer.Incarnation do
   """
 
   @key {__MODULE__, :id}
+  @started_key {__MODULE__, :started_at_ms}
 
   @doc "The incarnation id of this VM."
   @spec id() :: String.t()
@@ -25,7 +26,19 @@ defmodule ForemanServer.Incarnation do
     end
   end
 
+  @doc """
+  `System.monotonic_time(:millisecond)` taken where the id was created, i.e. at
+  application start. Only a monotonic difference against it is meaningful
+  (`elapsed_since_boot_ms`); it is never a wall-clock time.
+  """
+  @spec started_at_ms() :: integer()
+  def started_at_ms do
+    _ = id()
+    :persistent_term.get(@started_key)
+  end
+
   defp create do
+    :persistent_term.put(@started_key, System.monotonic_time(:millisecond))
     id = Base.url_encode64(:crypto.strong_rand_bytes(12), padding: false)
     :persistent_term.put(@key, id)
     id

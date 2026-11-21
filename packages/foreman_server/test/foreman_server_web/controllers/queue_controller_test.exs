@@ -102,6 +102,38 @@ defmodule ForemanServerWeb.QueueControllerTest do
       refute inspect(body) =~ "p2-"
     end
 
+    test "lists the project's orphan_recovery entries and none of another project's" do
+      assert json_response(api_get("/api/queue?project_id=p1"), 200)["orphan_recovery"] == []
+
+      :ok =
+        ProjectionStore.apply_events([
+          %{
+            event_type: "RunSlotRecoveryAttempted",
+            payload: %{
+              project_id: "p1",
+              run_id: "p1-r1",
+              attempt: 6,
+              outcome: "exhausted",
+              kind: "slot_release",
+              reason: "exit :killed",
+              elapsed_since_boot_ms: 1234
+            }
+          }
+        ])
+
+      assert %{"orphan_recovery" => [listed]} =
+               json_response(api_get("/api/queue?project_id=p1"), 200)
+
+      assert listed == %{
+               "run_id" => "p1-r1",
+               "attempt" => 6,
+               "outcome" => "exhausted",
+               "kind" => "slot_release",
+               "reason" => "exit :killed",
+               "elapsed_since_boot_ms" => 1234
+             }
+    end
+
     test "an unknown project answers 404 project_not_found" do
       assert %{"error" => "project_not_found"} =
                json_response(api_get("/api/queue?project_id=nope"), 404)

@@ -11,7 +11,7 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 
 > ## Read this first: most of this file documents commands that do not exist
 >
-> The Go CLI dispatches exactly eleven top-level verbs (`project`, `usage`, `approvals`, `questions`, `commands`, `run`, `thread`, `jobsite`, `workflow`, `init`, `doctor`) (`packages/foreman_cli/cmd/foreman/main.go`); every other verb
+> The Go CLI dispatches exactly ten top-level verbs (`project`, `usage`, `approvals`, `questions`, `commands`, `run`, `thread`, `workflow`, `init`, `doctor`) (`packages/foreman_cli/cmd/foreman/main.go`); every other verb
 > returns `foreman: unknown command`. The complete real surface, taken from the
 > subcommand switches and flag sets in that package, is:
 >
@@ -21,7 +21,7 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 > foreman project create    --format --id --idempotency-key --path --task-provider --task-provider-database-path
 > foreman project get       --format
 > foreman project open      # no flags beyond -h; opens /dashboard/projects/<id> in the browser; needs FOREMAN_API_TOKEN
-> foreman project update    --format --idempotency-key --task-provider --task-provider-database-path --goal --instructions --instructions-file --thread-model --thread-effort --coordinator-provider --coordinator-model --coordinator-effort --max-concurrent-runs --daily-thread-cap --coordinator-propose-before-start --coordinator-max-active-threads --coordinator-reuse-threads --library-collect-produced --pr-auto-fix --notification-preference --repo-allowlist --max-repos-per-run --clear
+> foreman project update    --format --idempotency-key --task-provider --task-provider-database-path --goal --instructions --instructions-file --thread-model --thread-effort --coordinator-provider --coordinator-model --coordinator-effort --max-concurrent-runs --daily-thread-cap --coordinator-propose-before-start --coordinator-max-active-threads --coordinator-reuse-threads --library-collect-produced --pr-auto-fix --required-checks --notification-preference --repo-allowlist --max-repos-per-run --clear
 > foreman project settings  --format
 > foreman project context   --format
 > foreman usage             --project --from --to --by --limit --format
@@ -57,16 +57,20 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 > foreman run resume        --id
 > foreman run remove        --id
 > foreman run reset         --id
-> foreman run approve-merge --approver --head-sha --id --identity
-> foreman run merge         --id
+> foreman run approve-merge --acknowledge-gate-off --approver --head-sha --id --identity --repo-id
+> foreman run waive-evidence --approver --head-sha --id --identity --reason --waive --repo-id
+> foreman run merge         --id --repo-id
 > foreman run submit        --backend --base-branch --project-id --prompt --work-id --workflow
 > foreman run prs           <run-id>
+> foreman run phases        <run-id>
 > foreman run fix-ci        <run-id> --pr --note
 > foreman run address-comments <run-id> --pr --note
 > foreman run resolve-conflicts <run-id> --pr --note
 > foreman run create-pr     <run-id>
+> foreman run retry-pr      <run-id> --repo-id
 > foreman run watch-start   <run-id> --pr
 > foreman run watch-stop    <run-id> --pr
+> foreman run publish-report <run-id> --id --pr --repo-id
 >
 > foreman commands          inventory|generate|install|validate
 > foreman doctor            --project --strict --format
@@ -78,8 +82,6 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 > foreman thread reopen     (no flags)
 > foreman thread steer      --message --message-id --no-resume
 > foreman thread rereview   (no flags)
->
-> foreman jobsite template  --project-id --prompt --name --provider --model --iterations --signal --branch --sandbox --push --dir --format
 >
 > foreman workflow install  --remote --retries --retry-delay-ms --source --target
 > foreman workflow remove   --all
@@ -117,8 +119,8 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 > is the stale artifact.
 >
 > Note also that this file is *incomplete* about what is real: it has no section
-> for `run get`, `run cancel`, `run pause`, `run resume`, `run reset`, `workflow install` or `workflow
-> remove`, all of which exist. `run pause` and `run resume` are new
+> for `run pause`, `run resume`, `workflow install` or `workflow
+> remove` (`run get`, `run cancel` and `run reset` have a short one below), all of which exist. `run pause` and `run resume` are new
 > (unattended-run-control: no default phase timeout, real pause/resume/kill —
 > `run cancel` now also kills the dispatched agent's OS-level process via
 > `RunControl.cancel_agent/1`, not just the run projection). `foreman task
@@ -198,86 +200,23 @@ Legacy TS delegation and Node daemon start/restart were removed after the Elixir
 
 ### `foreman init`
 
-> **PARTLY INCORRECT — including what the command does.** `foreman init`
-> (no `--template`) does not initialize a project: it POSTs an empty body to
-> `/api/admin/workflows/install` and prints the response (`init.go`). It
-> does not create `.foreman/`, install Pi skills, or register the project. It
-> declares `--force`, which is **required** for this path — bare
-> `foreman init` returns `--force is required to refresh the installed
-> runtime copy`. `-n`/`--name` and `--wizard` do not exist, and `init` takes
-> no positional name. What it DOES take is `--template` and `--dir`
-> (`init.go:44-45`), neither of which reaches the HTTP path.
+`foreman init --force` POSTs an empty body to `/api/admin/workflows/install` and prints the response: it
+refreshes the installed runtime prompts and workflows from the server's bundled source. `--force` is required
+(bare `foreman init` returns `--force is required to refresh the installed runtime copy`). It does not create
+`.foreman/`, register a project or install skills (bundled skills are installed by
+`ForemanServer.Skills.Installer` when the server boots; see `docs/user-guide.md` §7.4), and the CLI does not run
+Postgres migrations or open a database connection. `init` takes no project name and has no wizard.
 
-Initializes Foreman in a project. Which half runs depends on `--template`: with
-it, the verb writes a repo-local `.foreman/` scaffold entirely client-side,
-with no HTTP request at all; without it, it POSTs the asset refresh the note
-above describes. Either way it does **not** install or refresh skills --
-bundled skills are installed by `ForemanServer.Skills.Installer` to
-`~/.foreman/skills/` when the server boots (see `docs/user-guide.md` §7.4), so
-after editing a bundled skill you delete the installed copy and restart the
-server; re-running `init` changes nothing there. The CLI does not run Postgres
-migrations or open a database connection.
+`--template` and `--dir` (a client-side scaffold of Jobsite scripts) were removed with the jobsite dispatch
+path; passing them is now a usage error.
 
 ```bash
-foreman init                      # REFUSED: --force is required to refresh the runtime copy
-foreman init --force              # POSTs /api/admin/workflows/install (asset refresh only)
-foreman init --template NAME      # Client-side repo-local .foreman/ scaffold, no HTTP -- see below
-foreman init --template NAME --dir PATH   # Same, scaffolded into PATH instead of the cwd
-```
-
-Two of the verbs this section previously listed never existed. `foreman init -n my-project` and
-`foreman init --wizard` have no route: `init.go:43-45` declares exactly three flags — `--force`,
-`--template` and `--dir` — with no project-name flag and no positional name, and there is no
-wizard code path anywhere in `packages/foreman_cli`. `--wizard` additionally carried a table row
-describing interactive behaviour it does not have. `docs/lessons/documentation-discipline-history.md` names both of these as known-bad
-claims, so they are annotated rather than left to read as intended design.
-
-| Option | Description |
-|--------|-------------|
-| `-n, --name <name>` | **Does not exist.** `init.go:43-45` declares `--force`, `--template` and `--dir` only; there is no project-name flag and no positional name. |
-| `--force` | Overwrite existing prompt and workflow files. Run this after editing bundled source prompts/workflows so installed runtime copies do not drift. It has no effect on skills: `foreman init` never reads or writes `~/.foreman/skills`, which the server installs at boot via `ForemanServer.Skills.Installer`. |
-| `--wizard` | **Does not exist** — never has; no wizard code path is present anywhere in the Go CLI. |
-
-#### `foreman init --template <name>` (real, current)
-
-This flag **is** implemented and does what its name says — it is the one
-piece of the inaccurate prose above that is now literally true, for the
-scaffold it produces. `--template <name>` (`basic`, `iterate`, `parallel`,
-`review`, or `triage`) scaffolds a repo-local `<dir>/.foreman/` (default
-`<dir>` is `.`): shared `README.md`/`Dockerfile`/`.gitignore`
-plus the named template's runnable `.exs` script and its `prompts/*.md` file(s). It is a
-pure local file write — no HTTP request, no running server required — and
-never overwrites an existing file (a second invocation reports every file
-`skipped`). Combine with `--force` to also run the asset-refresh POST in the
-same invocation; `--force` still never overwrites a scaffold file either.
-
-```bash
-foreman init --template basic                       # scaffold .foreman/ in the current directory
-foreman init --template iterate --dir /path/to/repo  # scaffold into a different repo
-foreman init --template review --force               # scaffold AND refresh installed runtime prompts/workflows
+foreman init --force    # POSTs /api/admin/workflows/install (asset refresh only)
 ```
 
 | Option | Description |
 |--------|-------------|
-| `--template <name>` | Scaffold `.foreman/` from a bundled template: `basic`, `iterate`, `parallel`, `review`, `triage`. Unknown name is a usage error. |
-| `--dir <path>` | Directory to scaffold `.foreman/` into (default `.`) |
-
-The scaffolded scripts come in two kinds. `basic`, `iterate` and `parallel`
-drive a **running** `foreman_server` over HTTP through the `foreman_client`
-package (`packages/foreman_client`, loaded by the script with `Mix.install`;
-nothing is copied into the project); they run with plain `elixir` (Erlang/OTP 27+, no Foreman
-checkout or database) after `FOREMAN_API_TOKEN` and `FOREMAN_PROJECT_ID` are set
-(see the user guide's Remote Jobsite API section for the server-side config).
-`iterate` also reads optional `FOREMAN_AGENT_MODEL`, `FOREMAN_MAX_ITERATIONS` (positive integer, default 20) and `FOREMAN_AGENT_ENV` (comma-separated names of shell variables passed to the agent; the server must allowlist them, see the user guide).
-`parallel` additionally reads `FOREMAN_MERGE_INTO` — the branch the merge step
-targets, which must be the branch currently checked out in the *server's* copy of
-the repo, since `Jobsite.merge_into/2` refuses any other target (409). Unlike
-`FOREMAN_PROJECT_ID` it has no default, so an unset value fails the script only
-after the fan-out completes, not at start.
-
-`review` and `triage` call `ForemanServer.Jobsite` directly and must run inside
-a booted `foreman_server` app (`mix run`, not `mix run --no-start`), e.g. from a
-Foreman checkout: `cd packages/foreman_server && mix run ../../.foreman/review.exs`.
+| `--force` | Overwrite existing prompt and workflow files. Run this after editing bundled source prompts/workflows so installed runtime copies do not drift. |
 
 ### `foreman project`
 
@@ -298,7 +237,7 @@ Manage Elixir-registered projects.
 
 ### `foreman project create`
 
-Register a new project. `--id`, `--path`, and `--task-provider` are required. `--task-provider=beads` also requires `--task-provider-database-path` with an absolute Beads database path.
+Register a new project. `--id`, `--path`, and `--task-provider` are required. The binding to the tracker is provider-conditional: `--task-provider=beads` also requires `--task-provider-database-path` with an absolute Beads database path (stored as `task_provider.config.database_path`); `--task-provider=kata` requires `--path` to be absolute, sends it as `task_provider.config.cwd` (the payload carries `provider: "kata"` and `config.cwd` only: no `KATA_HOME`, `kata_home` or `database_path`), and rejects `--task-provider-database-path`. The server preflights a Kata project's `cwd` (absolute, existing directory) and leaves the project unrouted otherwise (`:cwd_missing`, `:cwd_not_absolute`, `:cwd_not_found`).
 
 ```
 foreman project create \
@@ -308,12 +247,21 @@ foreman project create \
   --task-provider-database-path /srv/foreman/project-123/.beads
 ```
 
+Kata: no database path; `--path` (absolute) is the kata working directory:
+
+```
+foreman project create \
+  --id project-123 \
+  --path /srv/foreman/project-123 \
+  --task-provider kata
+```
+
 | Option | Description |
 |--------|-------------|
 | `--id <id>` | Project ID (required) |
-| `--path <path>` | Project path (required) |
-| `--task-provider <provider>` | Task provider (required) |
-| `--task-provider-database-path <path>` | Absolute task-provider database path; required when `--task-provider=beads` |
+| `--path <path>` | Project path (required); must be absolute with `--task-provider=kata`, where it becomes `task_provider.config.cwd` |
+| `--task-provider <provider>` | Task provider (required): `beads` or `kata` |
+| `--task-provider-database-path <path>` | Absolute task-provider database path; required only when `--task-provider=beads` and rejected when `--task-provider=kata` |
 | `--idempotency-key <key>` | Idempotency key |
 | `--format json` | Print the raw command response as JSON |
 
@@ -351,16 +299,22 @@ foreman project open project-123
 
 ### `foreman project update <id>`
 
-Update a project's task provider and/or settings. At least one change flag is required; `--task-provider` is only required when changing the provider. `--task-provider=beads` also requires `--task-provider-database-path` with an absolute Beads database path. The server is the single validator: its error (for example `{:instructions_too_long, 16001, 16000}`) is printed verbatim. `status` cannot be set here (use `pause`/`resume`/`reactivate`).
+Update a project's task provider and/or settings. At least one change flag is required; `--task-provider` is only required when changing the provider. `--task-provider=beads` requires `--task-provider-database-path` with an absolute Beads database path. `--task-provider=kata` takes no database path (it is rejected): the CLI first reads the project's registered path with `GET /api/projects/<id>` and sends it as `task_provider.config.cwd`, and refuses (sending nothing) if that read fails or the registered path is not absolute. The server keeps a stored `config` when the provider is unchanged and the request carries no `config`, and fails with `{:missing_or_invalid, :cwd}` or `{:missing_or_invalid, :database_path}` when the provider changes and the request's `config` lacks the new provider's key. The server is the single validator: its error (for example `{:instructions_too_long, 16001, 16000}`) is printed verbatim. `status` cannot be set here (use `pause`/`resume`/`reactivate`).
 
 ```
 foreman project update --task-provider beads --task-provider-database-path /srv/foreman/project-123/.beads project-123
 ```
 
+Switching to Kata (no database path; the CLI sends the project's registered path as `config.cwd`):
+
+```
+foreman project update --task-provider kata project-123
+```
+
 | Option | Description |
 |--------|-------------|
 | `--task-provider <provider>` | Task provider (required only when changing the provider) |
-| `--task-provider-database-path <path>` | Absolute task-provider database path; required when `--task-provider=beads` |
+| `--task-provider-database-path <path>` | Absolute task-provider database path; required only when `--task-provider=beads` and rejected when `--task-provider=kata` |
 | `--goal <text>` | Project goal (max 2000 characters) |
 | `--instructions <text>` | Standing instructions (max 16000 characters); exclusive with `--instructions-file` |
 | `--instructions-file <path>` | Read the instructions from a file |
@@ -372,6 +326,7 @@ foreman project update --task-provider beads --task-provider-database-path /srv/
 | `--coordinator-propose-before-start=<true\|false>`, `--coordinator-max-active-threads <n>` (1..50), `--coordinator-reuse-threads=<true\|false>` | Coordinator tuning, enforced by the server |
 | `--repo-allowlist <abs-path-prefix>` | Operator-only: absolute path prefix under which a thread may attach repositories to its run (`foreman_run_request_repo`). Repeatable; the flags given **replace** the whole list; `--clear repo_allowlist` empties it (the feature is then off). `..`, relative entries and `/` are rejected by the server. Not settable through MCP `foreman_project_settings_update` |
 | `--max-repos-per-run <n>` | Operator-only: most repositories one run may hold, primary included (server range 1..1000, default 4). Not settable through MCP |
+| `--required-checks <json>` | Operator-only: the checks a PR must show, as a JSON array of at most 20 entries `{"name": "...", "kind": "check_run"\|"status_context", "workflow": "...", "allow_skipped": true}` (`workflow` and `allow_skipped` are for `check_run` only). `'[]'` turns the gate on with no checks; `--clear required_checks` turns it off. A value that is not a JSON array fails before any request. Not settable through MCP or by the coordinator (a `clear` naming it over MCP is `operator_only_setting`). Setting it, `[]` included, is refused `{:store_not_durable, note}` (HTTP 422) while `:require_durable_store_for_gating` is on and the idempotency store is not durable. Since Phase 1 PR 8, with it set, `run approve-merge` is refused unless the PR's evidence for the approved head is eligible or waived (unset: no evidence refusal; the one refusal such a project can meet is `{:policy_unavailable, _}` for a run or project the server does not know). Read from the source, not observed |
 | `--clear <setting>` | Clear a setting (repeatable) |
 | `--idempotency-key <key>` | Idempotency key (without it the command id hashes the whole update; an identical update re-sent after a `--clear` is a replay and is reported as `no change`, see [Repeating an identical command](#foreman-project-pause-id--resume-id--reactivate-id)) |
 | `--format json` | Print the raw command response as JSON |
@@ -408,7 +363,7 @@ foreman project adopt --kind run --id RUN --new-project --project-id my-app --pa
 
 ### `foreman project settings <id>`
 
-Print a project's status, settings and live limits (`GET /api/projects/<id>/settings`): effective `max_concurrent_runs`, `active_runs`, `running_runs` (runs holding one of the project's run slots), `waiting_runs` (runs queued in the project's own FIFO queue), `daily_thread_cap`, `threads_started_today`, `remaining_today`, `cap_reached?`, `resets_at`, `deferred_tasks`, `deferred_today` (tasks refused today by the cap, run limit or pause; `deferred_by_reason` in `--format json`) and the containment settings `repo_allowlist` and `max_repos_per_run`. `--format json` prints the raw response. `config.env` values are never shown. The run queue is per project: `GET /api/queue` requires `project_id` (422 `project_required` without it) and returns only that project's own run-slot queue.
+Print a project's status, settings and live limits (`GET /api/projects/<id>/settings`): effective `max_concurrent_runs`, `active_runs`, `running_runs` (runs holding one of the project's run slots), `waiting_runs` (runs queued in the project's own FIFO queue), `daily_thread_cap`, `threads_started_today`, `remaining_today`, `cap_reached?`, `resets_at`, `deferred_tasks`, `deferred_today` (tasks refused today by the cap, run limit or pause; `deferred_by_reason` in `--format json`) and the containment settings `repo_allowlist` and `max_repos_per_run` and `required_checks` (printed as JSON, `(unset)` while the gate is off). `--format json` prints the raw response. `config.env` values are never shown. The run queue is per project: `GET /api/queue` requires `project_id` (422 `project_required` without it) and returns only that project's own run-slot queue.
 
 ### `foreman usage --project <id>`
 
@@ -432,8 +387,12 @@ versions. `set <id> NAME` reads the value from **stdin** (trailing newline trimm
 worktree is created (fatal on non-zero exit or timeout); `clear` removes it; `show` prints it.
 
 ### `foreman project network show|set <id>`
-`set --mode default|none|allowlist [--allow <host> ...]`. Enforced on docker jobsites only;
-workflow runs and the host sandbox do not enforce it (host sandbox + policy is a typed error).
+`set --mode default|none|allowlist [--allow <host> ...]`. Enforced on docker jobsites only. A
+workflow run (agents on the server host) cannot enforce it, so a workflow run of a project whose
+policy is not `default` is **refused** before it claims its task or creates a worktree, with
+`failure_reason` `isolation_unsupported: ... ({:isolation_unsupported, :network, :host_workflow})`;
+the host sandbox with a policy is a typed error (`network_policy_unsupported`). See `docs/user-guide.md`
+("Network and skill preflight").
 
 ### `foreman project context <id>`
 
@@ -615,7 +574,7 @@ The workflow task shortcuts create tasks that require later approval. The `forem
 ### `foreman run`
 
 > **NOT IMPLEMENTED as described.** `foreman run` is not a dispatch verb; it
-> requires one of `list`, `get`, `cancel`, `pause`, `resume`, `remove`, `reset`, `submit`, `approve-merge`, `merge`, `prs`, `fix-ci`, `address-comments`, `resolve-conflicts`, `create-pr`, `watch-start`, `watch-stop`, and a
+> requires one of `list`, `get`, `cancel`, `pause`, `resume`, `remove`, `reset`, `submit`, `approve-merge`, `waive-evidence`, `merge`, `prs`, `fix-ci`, `address-comments`, `resolve-conflicts`, `create-pr`, `retry-pr`, `watch-start`, `watch-stop`, `publish-report`, and a
 > bare `foreman run` returns `missing subcommand`. None of the twenty flags this
 > section documents exist anywhere in `run.go` — `--model`, `--watch`,
 > `--no-watch`, `--yes`, `--dry-run`, `--resume`, `--resume-failed`,
@@ -699,7 +658,7 @@ Pipeline budgets are optional environment guards. `0` disables a budget: `FOREMA
 > `FOREMAN_MAX_PIPELINE_COST_USD`, `FOREMAN_MAX_PIPELINE_TOOL_CALLS`,
 > `FOREMAN_MAX_PIPELINE_REVIEW_LOOPS` or `FOREMAN_DEFAULT_MODEL` is read anywhere
 > in the server or CLI source, so no pipeline budget is enforced. `foreman run`
-> without a subcommand does not exist: `run` takes one of `list|get|cancel|pause|resume|remove|reset|submit|approve-merge|merge|prs|fix-ci|address-comments|resolve-conflicts|create-pr|watch-start|watch-stop`.
+> without a subcommand does not exist: `run` takes one of `list|get|cancel|pause|resume|remove|reset|submit|approve-merge|waive-evidence|merge|prs|fix-ci|address-comments|resolve-conflicts|create-pr|retry-pr|watch-start|watch-stop|publish-report`.
 > Bound spend per project with `foreman project update --max-concurrent-runs --daily-thread-cap` and read it with `foreman usage`.
 
 ### `foreman run task`
@@ -726,6 +685,16 @@ foreman run list --project-id foreman           # filter by project
 | `--status <status>` | Filter by run status (`in_progress`, `completed`, `failed`, `cancelled`, etc.). |
 | `--project-id <id>` | Filter by registered project id. |
 | `--limit <n>` | Maximum number of runs to return. Must be non-negative. |
+
+### `foreman run get <run-id>`
+
+Prints the run projection as JSON (`GET /api/runs/<id>`: `{"run": {...}}`; a run waiting on admission or a slot answers 200 with its pending status; an unknown run is 404 `run_not_found`). A run that has been through a recovery step carries `recovery`: its latest record `{outcome, elapsed_since_boot_ms, reason?, effect_class?, effect_key?, effect_verdict?}`, `outcome` being `resumed`, `effect_retried` or `effect_blocked` (the effect fields only on the last two); the field is absent until one is recorded. A run stopped on an unresolved external effect has `status: "blocked"` and `failure_reason` `effect_already_done`, `effect_outcome_ambiguous` or `effect_class_unregistered`. The per-phase fields (`input_artifacts`, `context`, `execution_profile`, `prior_worktree_discarded`) are not in this output: they are on `current_phase` of the `foreman_run_status` MCP tool. See `docs/user-guide.md` ("Restart recovery and external effects").
+
+### `foreman run cancel --id <run-id> [--reason <text>]` / `foreman run reset --id <run-id>`
+
+`run cancel` posts `run.cancel` (default reason `operator_cancel`): the run is terminal as soon as the agent has been signalled with `SIGINT`; the harness escalates to `SIGTERM` then `SIGKILL` (5 s per step by default), Foreman waits for the agent to exit (up to 15 s) and `OrphanReaper` then terminates the tool processes it left in the run's worktree (`SIGTERM`, then `SIGKILL`). `run reset` posts `run.reset`, accepted for a run in `failed`, `stuck`, `blocked` or `paused` status; any other status is rejected with `{:run_not_resettable, "<status>"}`. A blocked run (an unresolved external effect) is reset after the operator has checked the real state of the push, PR or tracker change.
+
+A run that is still waiting for a run slot (listed in `waiting` of `GET /api/queue?project_id=<id>`) has no run record and no agent yet. `run cancel` on it removes it from the waiting list and acknowledges its task (`task.run_terminated`, with the cancel's reason) rather than answering `run_not_found`; the run stops reading as `queued` and is not re-admitted when a slot frees, and the task stays `in_progress` until it is retried. The run holding the slot is not touched.
 
 ### `foreman run remove --id <run-id>`
 
@@ -801,11 +770,15 @@ foreman run reset --id run-f971378012da4da2fec3ec74dbac325d
 |--------|-------------|
 | `--id <run-id>` | Run ID (required). |
 
-### `foreman run approve-merge --id <run-id> --approver <name> --identity <github:login> --head-sha <sha> [--repo-id <repo-id>]`
+### `foreman run approve-merge --id <run-id> --approver <name> --identity <github:login> --head-sha <sha> [--repo-id <repo-id>] [--acknowledge-gate-off]`
 
-Opens a run's merge gate once its PR is ready (the run has signalled `run.pr.ready`), for the exact commit named by `--head-sha`. Sends the `merge_approve` operator command with `head_sha` in its payload. The server accepts it only when `--identity` is on the approver allowlist (`ForemanServer.Workflow.ApproverAuthorizer`, currently the single identity `github:ldangelo`); any other identity is rejected with `unauthorized_approver` and the gate stays shut, before anything is read from GitHub.
+Opens a run's merge gate once its PR is ready (the run has signalled `run.pr.ready`, which records the head GitHub shows at that moment, read with one `gh pr view`), for the exact commit named by `--head-sha`. Sends the `merge_approve` operator command with `head_sha` in its payload. The server accepts it only when `--identity` is on the approver allowlist (`ForemanServer.Workflow.ApproverAuthorizer`, currently the single identity `github:ldangelo`); any other identity is rejected with `unauthorized_approver` and the gate stays shut, before anything is read from GitHub.
 
 `--head-sha` is the PR head you reviewed, as `foreman run prs <run-id>` (`head_sha`) or GitHub shows it, and there is no default. The CLI refuses a missing or empty one (`--head-sha is required`); the server answers `{:missing_or_invalid, :head_sha}` (HTTP 422) for a `merge_approve` that carries none. The server reads the PR head back from GitHub with `gh pr view` and refuses the approval unless it is exactly that commit: `{:head_sha_mismatch, "<yours>", "<GitHub's>"}`, naming both SHAs. An abbreviated SHA is a mismatch, not a prefix match. A head that cannot be read (`gh` missing or failing) is refused with the `gh` error, never assumed. The recorded head is not the authority: the PR watch lags a push by up to a poll interval and polling is opt-in. The approval pins the commit you named (`MergeGateApproved.head_sha`), and `run merge` merges exactly it.
+
+**Evidence gate (Phase 1 PR 8).** For a project with `required_checks` set (`[]` counts), the server then reads the project's policy, records a fresh observation of the PR, and refuses the approval unless the evidence for that head is `eligible` or `waived`: HTTP 422 `{"error": "{:evidence_ineligible, \"<head>\", [\"<code>\", ...]}", "detail": {"status", "head_sha", "policy_version", "checks_ref", "now_ms", "waived", "waiver", "reasons", "inputs"}}`, nothing approved. In `detail`, `reasons` is a list of `{code, subject, detail}` objects, `waived` is a list of code strings (the reasons a waiver covered), `waiver` is the waiver record that applied (or null), and `inputs` has the eight keys `checks_head_sha`, `checks_observed_at`, `evidence_digest`, `checks_ref`, `findings_head_sha`, `findings_digest`, `risk_head_sha`, `risk_digest`: `checks_ref` is the nonce the server stamped for this approval (null only for a gate-off project), the other seven are null when the PR held no such record. The reason codes are `no_checks_configured`, `missing`, `failing`, `pending`, `stale`, `skipped`, `other_sha`, `checks_truncated`, `findings_absent`, `findings_malformed`, `findings_legacy_format`, `findings_other_sha`, `risk_missing`, `risk_other_sha`, `risk_high` (the recorded risk level for the head is `HIGH`) and `evidence_unreadable` (an unreadable evidence RECORD, or a recorded risk level that is not `LOW`, `MEDIUM` or `HIGH`); only `no_checks_configured`, `missing`, `skipped`, `findings_absent`, `findings_legacy_format`, `findings_other_sha` and `risk_high` can be waived. Other refusals: `{:policy_unavailable, _}` (the project's policy cannot be read, or the run or project is unknown to the read model; never read as gate off), `{:store_not_durable, note}`, `{:evidence_not_recorded, "<command>", reason}` (the observation could not be recorded in its 5 s bound) and `{:operator_only, "merge_approve"}` (a system caller). A project with `required_checks` unset reads no evidence and makes no extra GitHub read, but its approval is not silent: it is refused unless you pass `--acknowledge-gate-off` (see below); the other refusal it can meet is `{:policy_unavailable, _}` for a run or project the read model does not know. The risk LEVEL passes at `LOW` or `MEDIUM`, refuses `HIGH` as `risk_high` (waivable with a recorded reason: `run waive-evidence --waive risk_high`) and refuses an unrecognised level as the never-waivable `evidence_unreadable`. The rubric reads `HIGH` for required checks that are not passing, waived or unreadable, a missing or unusable findings block, no risk judgement, unresolved critical or major findings, no recorded base branch, a sensitive path and a PR above the size thresholds, so a PR refused for a check or findings reason also carries `risk_high` and a waiver for that reason approves it only when the same waiver names `risk_high` too. Nothing here protects against an agent that controls the review artifact (the findings and the model judgement are claims it wrote); the known gaps are in `docs/decisions/phase-1-trustworthy-pr-delivery-exit.md`. What each code means and what to do are in `docs/user-guide.md` ("Approval evidence", under PR watching and auto-fix). The decision is recorded on `MergeGateApproved.evidence` (`status`, `policy_version`, `required`, `checks_ref`, `now_ms`, `waived`, `inputs`).
+
+**Gate off (`required_checks` unset): `--acknowledge-gate-off`.** A project without `required_checks` has its merge gate off: approving would open the gate with no PR evidence checked. The server therefore refuses a `merge_approve` for such a project unless the payload carries `acknowledge_gate_off: true`, which this flag sets (the CLI sends the key only when you give the flag, never as `false`). The refusal is HTTP 422 `{"error": ":gate_off_not_acknowledged", "message": "this project has no required_checks, so its merge gate is off and no PR evidence was checked; to approve anyway, acknowledge it: foreman run approve-merge --acknowledge-gate-off (payload key acknowledge_gate_off: true)"}` and nothing is approved. The acknowledgement is per approval, not a project setting, and is recorded on the approval (`MergeGateApproved.gate_off_acknowledged: true`). On a project whose gate is on the flag changes nothing: the evidence rules above decide.
 
 The identity is a claim made by whoever holds the API token, not an authenticated login: the token is the trust boundary. For the same reason there is deliberately no MCP tool for this command; an agent must not be able to approve its own PR.
 
@@ -816,10 +789,27 @@ The identity is a claim made by whoever holds the API token, not an authenticate
 | `--identity <github:login>` | Approver identity checked against the allowlist (required). |
 | `--head-sha <sha>` | Full head commit SHA of the PR as you reviewed it (required). The approval is refused unless GitHub shows exactly this head; the merge is pinned to it. |
 | `--repo-id <repo-id>` | Repository whose PR to approve (E12 multi-repo runs). Omit for the run's primary repository. |
+| `--acknowledge-gate-off` | Approve although the project has no `required_checks` (merge gate off, no PR evidence checked). Per approval; recorded as `gate_off_acknowledged: true` on the approval. Without it the server refuses such an approval (`:gate_off_not_acknowledged`). Not needed, and no effect, when the gate is on. |
 
 Each PR of a multi-repository run has its own merge gate (`merge_gates`, keyed by `repo_id`; the primary's is `nil`), so one `approve-merge` call approves exactly one PR. There is no approve-all. An unknown `--repo-id` fails with `{:merge_gate_not_found, :run, "<repo-id>"}`; for the primary the legacy `{:merge_gate_not_found, :run}` is unchanged. An approved gate cannot be approved again (`merge_gate_already_approved`) until a push voids the approval, see below.
 
 **A push after approval voids the approval** (foreman-ehxy6). An approval covers one commit. When the PR head differs from it the gate returns to `pending`: the approval and its pin are cleared, `run merge` is refused (`pr_not_acceptable`), and `foreman run prs <run-id>` shows `merge_gate: pending` and the new `head_sha`. The server sees the move either through the PR watch (a webhook, a poll or a Fix CI push records the new head, and the gate is held again at once with a `MergeGatePending` event, `reason: "head_moved_since_approval"`, `approved_head_sha` and `head_sha`) or through `run merge` itself, which answers `head_moved_since_approval` and holds the gate again, so a PR watch that is off cannot strand an approved PR. Review the new commit and run `approve-merge --head-sha <new sha>`; the old SHA is refused as `head_sha_mismatch`. The new head is never adopted as the pin, and an approved head that returns later does not revive the old approval. The re-hold is the system command `run.pr.rehold`: it is not on the operator allowlist, not an MCP tool and not available to an agent or run token. An approval recorded before heads were pinned (its event carries no `head_sha`) is pinned to the head the PR watch had recorded at that time and is voided the same way.
+
+### `foreman run waive-evidence --id <run-id> --approver <name> --identity <github:login> --head-sha <sha> --waive <codes> --reason <text> [--repo-id <repo-id>]`
+
+Waives named evidence reasons that block a PR's merge gate (command `run.pr.waive_evidence`). `--waive` is a comma-separated list of reason codes, split and trimmed into the `reasons` list; an empty item is rejected. Every flag except `--repo-id` is required and a missing one fails before any request. `--head-sha` must be the live PR head; the server checks the approver allowlist and the codes, and stamps the policy version itself. Like `approve-merge` there is no MCP tool for it, and a system caller is refused `{:operator_only, "run.pr.waive_evidence"}`. Only `no_checks_configured`, `missing`, `skipped`, `findings_absent`, `findings_legacy_format`, `findings_other_sha` and `risk_high` (a recorded HIGH risk level for the head) can be waived: any other code is refused `{:reason_not_waivable, "<code>"}`. A PR refused for a check or findings reason also carries `risk_high`, so a waiver for that reason covers the approval only when the same `--waive` list names `risk_high` too. The server also refuses `unauthorized_approver`, `{:head_sha_mismatch, "<yours>", "<GitHub's>"}`, `merge_gate_already_approved` (the gate must still be pending), `{:merge_gate_not_found, ...}`, `gate_off` (the project has no `required_checks`) and `{:policy_unavailable, _}` (the policy cannot be read); a reason longer than 500 characters is `{:missing_or_invalid, :reason}`. The waiver is recorded as `PrEvidenceWaived` for that head and policy version and is voided when the PR head moves or the policy version changes. Since Phase 1 PR 8 `approve-merge` reads it: a waiver that covers every remaining reason turns the approval into a `waived` one. Read from the source, not observed.
+
+**A new waiver replaces the earlier one.** Each `run.pr.waive_evidence` REPLACES the PR's previous waiver rather than adding to it, so one `--waive` list must name every code still to be waived (in particular `risk_high` together with the check or findings reason that also blocks the approval). A `risk_high` waiver is bound to the risk record it was given for (`PrEvidenceWaived.risk_digest`, set only when the waiver names `risk_high`): any change of the risk record (base, findings, judgement text, check status) while the head stays uncovers `risk_high` again and you must waive it again.
+
+| Option | Description |
+|--------|-------------|
+| `--id <run-id>` | Run ID (required). |
+| `--approver <name>` | Approver name (required). |
+| `--identity <github:login>` | Approver identity checked against the allowlist (required). |
+| `--head-sha <sha>` | Full head commit SHA of the PR as you reviewed it (required). |
+| `--waive <codes>` | Comma-separated reason codes to waive (required). |
+| `--reason <text>` | Why they are waived, at most 500 characters (required). |
+| `--repo-id <repo-id>` | Repository whose PR to waive for. Omit for the primary repository. |
 
 ### `foreman run merge --id <run-id> [--repo-id <repo-id>]`
 
@@ -843,7 +833,7 @@ Re-opens the PR of one repository of a multi-repository run whose PR could not b
 
 ### `foreman thread list|get|stop|steer|resolve|reopen|rereview`
 
-A thread is the operator-facing unit of work: a workflow run (`run:<id>`) or a jobsite (`jobsite:<id>`). All verbs print the server's JSON.
+A thread is the operator-facing unit of work: a workflow run (`run:<id>`), or a legacy jobsite (`jobsite:<id>`, read-only history: the jobsite door is retired). All verbs print the server's JSON.
 
 | Verb | Request |
 |------|---------|
@@ -870,53 +860,6 @@ Not exposed as CLI verbs (HTTP/MCP only): thread transcript, the live stream and
 **Overview.** There is no `foreman overview` CLI verb. `GET /api/projects/:project_id/overview[?include_resolved=true|false&resolved_limit=0..200]` (and the MCP read tool `foreman_overview`) groups threads into `ready_for_review`, `waiting_on_you`, `working`, `landing`, `idle`, `resolved` with `counts`, `attention` (`needed`, `count`, `reasons`), `truncated` (`true` when the project has more than 500 threads and the older ones are left out) and `tabs` (`pull_requests`, `library` and `scheduled` are all live; `pull_requests` has one row per PR, and a row of a non-primary repository's PR also carries its `repo_id`; `scheduled` is `{available: true, rows: [schedule DTOs]}`, the rows of `GET /api/projects/:id/schedules`). A run with PRs in several repositories is classified over all of them. Read-only: merging is still `merge_approve` then `run.pr.merge`, operator only.
 
 **Transcript caveats.** The workflow transcript is built from `run_logs`, which keep a bounded tail: when entries were dropped `omitted_entries` > 0 and `truncated` is true. Jobsite turns carry no timestamps (`at: null`, ordered by iteration) and jobsite threads have no operator turns, because jobsite resume prompts are not persisted as events.
-
-### `foreman jobsite template --project-id <id> --prompt <text>`
-
-Asks the running server to author a Jobsite template from a natural-language prompt and writes it into the local repo as `<dir>/.foreman/<name>.exs` plus `<dir>/.foreman/prompts/<name>.md`. It calls `POST /api/jobsites/template`, which uses the same fail-closed bearer auth as the rest of `/api/jobsites`. The route only generates and validates the files: it starts no jobsite and spends no agent credits. Run the generated script yourself (the `next:` line prints the command), exactly as for a `foreman init --template` scaffold.
-
-The server derives the template from the prompt by a deterministic keyword match (no model is called) and validates the completed spec with `Jobsite.Spec.from_json/2` against the registered project; what it infers from the prompt, and what it never infers (the provider, the model, the `host` sandbox), is in the user guide's [Remote Jobsite API](./user-guide.md#remote-jobsite-api) section.
-
-```bash
-foreman jobsite template --project-id proj-1 --provider claude --prompt "Fix the failing tests, loop until green, push the branch"
-foreman jobsite template --project-id proj-1 --provider pi --name nightly-docs --iterations 10 --push=false --dir /path/to/repo --prompt "Refresh the docs"
-foreman jobsite template --project-id proj-1 --provider claude --prompt "..." --format json
-```
-
-| Option | Description |
-|--------|-------------|
-| `--project-id <id>` | Registered project the spec is validated against (required). |
-| `--prompt <text>` | The natural-language description; sent verbatim (required). |
-| `--name <name>` | Template name; file names and the default branch derive from it. The server picks a default when omitted. |
-| `--provider <claude\|pi>` | Agent provider. **No default**: a missing provider is the server's 422 `spec_provider_invalid`. |
-| `--model <model>` | Agent model. No CLI default; the server may fall back to the project's `thread_model`. |
-| `--iterations <n>` | `max_iterations`. An explicit value, including `0`, is sent as given and validated by the server. |
-| `--signal <text>` | `completion_signal`. |
-| `--branch <name>` | Strategy branch name. |
-| `--sandbox <docker\|host>` | Sandbox; `host` is refused unless the server allows it. |
-| `--push` / `--push=false` | Sets `push` to `true` / `false`; the flag absent sends no `push` key. |
-| `--dir <path>` | Directory that receives `.foreman/` (default `.`). |
-| `--format json` | Machine-readable output (default is text); any other value is a usage error. |
-
-Only the flags you set are sent; unset flags are omitted from the request rather than sent as zero values, so the server's own defaults apply. A missing or empty `--project-id` or `--prompt`, or any positional argument, is a usage error before any request is made. A non-2xx response is printed as the server's error (for example 422 `spec_provider_invalid`) and nothing is written.
-
-**Files are never overwritten.** Before writing anything the CLI checks every returned path (non-empty, relative, no `..` escape, no NUL byte, no duplicates) and refuses the whole response, writing nothing, if any path is unsafe or the file list is empty. Each file is then created exclusively (`O_EXCL`), so an existing file, or an existing or dangling symlink, is reported as `kept` and left alone; a run in which every file already exists still exits 0.
-
-Text output:
-
-```
-wrote .foreman/fix-tests.exs
-wrote .foreman/prompts/fix-tests.md
-features read from the prompt: loop, push-to-origin
-notes:
-  * <note from the server>
-next: FOREMAN_API_TOKEN=... FOREMAN_PROJECT_ID=proj-1 elixir .foreman/fix-tests.exs
-```
-
-Files that already existed print `kept <path> (already exists; not overwritten)` instead of `wrote`; `features read from the prompt: none` is printed when the server read no features, and the `notes:` block only when there are notes. With `--format json` the output is `{"name", "written": [...], "skipped": [...], "features": [...], "notes": [...], "spec": {...}}` (arrays are `[]`, never `null`, and `spec` is the server's generated spec, echoed unchanged); files are still written.
-
-
----
 
 ## Monitoring
 
@@ -1164,7 +1107,9 @@ foreman recover bd-abc1 --execute-clean-replay  # Full clean replay flow
 
 ### `foreman doctor`
 
-Reports the health checks the server really performs, via `GET /api/doctor`: server reachable, read model (event store projection) reachable, one row per `jido_harness` provider (the same data as the `foreman_doctor` MCP tool), workflow catalog installed, a `workflows.bead_types` row (below), one `warn` row `workflow.<file>.yaml` per workflow manifest the catalog refused to load (its detail is the validation error; a never-loaded manifest is not startable, while a refused edit over a loaded one leaves the previous valid version running and the row says so), a `notifier` row (`ok` when outbound notifications are off or on and running, with the counts since the server started; `warn` when they are enabled but the messaging config is invalid, the notifier or the dispatcher process is stopped, or events were refused; the detail never names a destination URL), and, with `--project`, a summary of that project's setup recommendations (see `foreman project recommend`).
+Reports the health checks the server really performs, via `GET /api/doctor`: server reachable, read model (event store projection) reachable, one row per `jido_harness` provider (the same data as the `foreman_doctor` MCP tool), workflow catalog installed, a `workflows.bead_types` row (below), one `warn` row `workflow.<file>.yaml` per workflow manifest the catalog refused to load (its detail is the validation error; a never-loaded manifest is not startable, while a refused edit over a loaded one leaves the previous valid version running and the row says so), a `notifier` row (`ok` when outbound notifications are off or on and running, with the counts since the server started; `warn` when they are enabled but the messaging config is invalid, the notifier or the dispatcher process is stopped, or events were refused; the detail never names a destination URL), an `effect_keys` row (below), a `pr_observation` row (`ok`, titled `PR observation: watcher on, monitor on|off, webhook secret set|not set`; a `warn` titled `PR watcher is off: fix pushes and PR events are not observed` when `FOREMAN_PR_WATCHER_ENABLED=false`, which `--strict` fails on like any `warn`; its detail lists the watcher, the monitor (`FOREMAN_PR_MONITOR_ENABLED=true`), whether `FOREMAN_GITHUB_WEBHOOK_SECRET` is set (never the value), and says the merge gate does not depend on them because approval re-reads GitHub. Since Phase 1 PR 4 the detail also has a `gated project <name>: ...` line for each non-archived project with `required_checks` set, plus a line when the idempotency store is not durable; the row is a `warn` titled `Gated project(s) <names>: neither the monitor nor the webhook is on, so a head or check change is not observed` when such a project exists and neither is on, and a `warn` titled `Gated projects could not be read: <reason>` when the project list cannot be read, each taking precedence over the watcher states), and, with `--project`, a summary of that project's setup recommendations (see `foreman project recommend`).
+
+The `effect_keys` row reports `started` and ambiguous external-effect keys (`effect:<class>:<run_id>:<identity>`, classes `branch_push`, `pr_create`, `task_provider`) that no operator has resolved. It is titled `Unresolved effect keys: N`; its detail is the idempotency store line (`✓ idempotency store is durable (repo-backed); effect keys survive a restart`, or `✗ idempotency store is not durable ...` naming the switches `config :foreman_server, :jido_ecto, enabled: true` and `JIDO_CHECKPOINT_DATABASE_URL`), a `✓/✗ Phase 1 gating: durable store ...` line, then one `<class> run=<run id> status=<run status> key=<key> key_status=<started|ambiguous> decision=<not_done|none> writer=<alive|dead|none>` line per key (`none` when there are none; `none in this process (keys from before the last restart are not listed)` on the non-durable ETS fallback; `writer` is the state of the process that stamped the `started` key: `alive`, `dead`, or `none` for a key with no stamp). While the keys can be listed the row is `ok` whatever the count, so the count never affects `--strict`. When the store cannot be read the row is a `warn` titled `Unresolved effect keys could not be read`, and `--strict` fails on it (`doctorExit` exits 1 on any `warn` under `--strict`). The detail is multi-line; text output prints it unindented after its first line, `--format json` returns it as one string. The `foreman_doctor` MCP tool prints the same store line and an `Unresolved effect keys` section after its provider report. Detail: `docs/user-guide.md` ("Restart recovery and external effects").
 
 The `workflows.bead_types` row says which bead `issue_type`s BeadsWatcher dispatches and which it holds, derived from the installed manifests' `task_types:` and `br`'s built-in types (`task`, `bug`, `feature`, `epic`, `chore`, `docs`, `question`) rather than from a hand-kept list. It is `ok`, titled `Bead types: N mapped to a workflow, M held`, with a detail like `dispatched: bug -> fix, feature -> prd, ...; held (no workflow maps them, so a labelled bead of these types is never dispatched): chore, docs, ...`. A held type is not a fault (a labelled, open bead of that type is left untouched and reported as the `:unmapped` outcome on every poll), so `--strict` does not fail on it; the row is a `warn` only when no workflow maps any type (`No workflow maps any bead type`) or the catalog did not answer (`Bead type mapping unknown`). `br` also accepts custom type strings; one appears in the row only once a manifest maps it. Map a held type with a manifest `task_types:` entry and `foreman init --force` (see `docs/user-guide.md` §10).
 
@@ -1182,6 +1127,8 @@ foreman doctor --format json         # Machine-readable output
 | `--format json` | Output the server's `{checks: [{id, status, title, detail}]}` body |
 
 Exit code: `0` when no check has status `fail` (and, with `--strict`, none `warn`); `1` otherwise or on a usage error.
+
+`foreman doctor` reports server-wide rows only (the `jido_harness` provider rows, workflows, notifier, setup recommendations); it has no task-provider rows, and a trailing `task_provider` argument is ignored (it runs the same `GET /api/doctor` checks). The per-project task-provider health report, including the Kata section (`kata_version`, `warnings`, `sample_list`), is produced by the server module `ForemanServer.CLI.DoctorTaskProvider` (`ForemanServer.CLI.run(["doctor", "task_provider"])`), which the Go CLI does not route; see `docs/user-guide.md` §10, "Kata task provider".
 
 **NOT IMPLEMENTED:** `--fix` and `--dry-run` (passing them is a usage error), and the Pi SDK, DB integrity, bundled-skill, prompt/workflow-staleness, duplicate `task_type`, zombie-run, stale-run and stale-worktree checks. Use `foreman init --force` to refresh installed prompts and workflows.
 
@@ -1222,7 +1169,11 @@ The Elixir server can follow a run's PR on GitHub in two opt-in ways; both appen
 
 ### `foreman run prs <run-id>`
 
-Lists the pull requests a run is watching (`GET /api/runs/<id>/prs`): PR URL, status, checks state and failing checks, review decision, comment count, whether watching is on, fix attempt counters per kind (`ci`, `comments`, `conflicts`) with any fix in flight, and the merge gate. The same record is returned by the MCP read tool `foreman_pr_status`. An unknown run is `404`.
+Lists the pull requests a run is watching (`GET /api/runs/<id>/prs`): PR URL, status, checks state and failing checks (`failing_truncated` when cut), review decision, comment count, whether watching is on, fix attempt counters per kind (`ci`, `comments`, `conflicts`) with any fix in flight, and the merge gate. Since Phase 1 PR 8 each PR also carries `eligibility` (`status` `off|eligible|ineligible|waived|unknown`, `head_sha`, `reasons` and `waived` as `[{code, subject, detail}]`, `policy_version`, `evaluated_at`), `checks` (`head_sha`, `current`, `stale`, `old`, `observed_at`, `truncated`, `evidence_digest`, `items` with `name`, `kind`, `workflow`, `state`, `conclusion`, `started_at`, `completed_at`), `findings` (`head_sha`, `current`, `stale`, `status`, `defect`, `defect_detail`, `digest`, `recorded_at`, `unresolved`, `total`, `listed_truncated`, `items` with `severity`, `disposition`, `description`, `path`, `line`, `source`, and `judgement` with `status`, `level`, `defect`), `risk` (`head_sha`, `current`, `stale`, `level`, `rubric_version`, `digest`, `seq`, `recorded_at`, `rationale` as `[{rule, level, basis, detail}]`, `instructions`), `waiver` (`head_sha`, `current`, `codes`, `policy_version`, `reason`, `waived_by`, `waived_at`, `applies`, `ignored_because` `other_head|policy_changed`), `report` (`head_sha`, `digest`, `status`, `reason`, `comment_url`, `superseded`, `recorded_at`, `current`, `stale`), `delivery_issue` (`stage`, `reason`, `failed_at`) and `next_actions` (`[{action, command, codes}]`, advice only). Each block is for its own head: `current` says it is for the PR's head, `stale` that it is not. Free text from an agent or GitHub is cleaned of control and bidirectional characters and cut. The same record is returned by the MCP read tool `foreman_pr_status`. An unknown run is `404`. When the server's read model does not answer the status is unknown, never an empty list: HTTP `503 {"error": "projection_unavailable", "status": "unknown", "run_id", "cause": "timeout"|"noproc"|"crashed"}` (the MCP tool answers a `projection_unavailable` tool error). See `docs/user-guide.md` ("Reading", "`unknown`, and the server not starting").
+
+### `foreman run phases <run-id>`
+
+Lists a run's phases in workflow order with their own status (`GET /api/runs/<id>/phases`): `{run_id, phases: [{phase_id, index, name, attempt, status, failure_reason, started_at_ms, last_event_at_ms, latest_stall}]}`. `status` is the phase projection's (`in_progress`, `completed`, `failed`, ...); `failure_reason` is set for a failed phase and `latest_stall` for a stalled one. A queued run that has started no phase answers an empty list; an unknown run is `404 run_not_found`. Only these fields are served: the phase's input artifacts, execution profile and artifact template are not. The Herdr run-detail tab (`ops/herdr-sidebar/`) reads this for its phase strip.
 
 ### `foreman run fix-ci|address-comments|resolve-conflicts <run-id> [--pr <url>] [--note <text>]`
 
@@ -1230,9 +1181,15 @@ Operator commands `run.pr.fix_ci`, `run.pr.address_comments`, `run.pr.resolve_co
 
 The `--note` text is redacted of the project's secret values (every secret-store value of 8 or more characters, whatever its name, plus the values of secret-named environment variables) before the command reaches the run, so the stored `PrFixRequested.note` and the fix prompt carry `[REDACTED]`, like the coordinator's conversation text; a secret store that cannot be read costs only the store's values. Redaction lengthens the text (`[REDACTED]` is longer than a short secret), so a note close to the 2000-character cap that contains a secret can be refused as `invalid_note` after redaction. A note on a run the server does not know is refused (`not_found`) instead of stored. Events stored before this change are not rewritten.
 
+### `foreman run publish-report <run-id> [--id <run-id>] [--pr <url>] [--repo-id <repo-id>]`
+
+Publishes the risk report of a run's PR again (`run.pr.publish_report`, an operator command: it is reachable through the CLI and `POST /api/commands` only, never through an MCP tool, the coordinator or an approval). The report is normally posted by the server when the risk record is made; this verb is the retry after a refused publication (`redaction_failed`, `effect_refused`, `gh_failed`, `publisher_error`, shown in the PR's `evidence.report`). It names no head, digest or level: the server republishes the report of the PR's CURRENT risk record for the PR's current head, and the request refuses a payload that names one (`derived_field`). The PR is `--pr`, else the PR the merge gate holds for `--repo-id`, else the one watched PR; the run id is the first argument or `--id`, and a missing run id is a usage error before any request. Each call posts the command for `run:<run-id>` with its own random command id, so two requests are two requests. The server appends `PrReportRequested` (`run_id`, `project_id`, `task_id`, `pr_url`, `repo_id`, `head_sha`, `digest`, `requested_by`, `requested_at`) and `PrReport.Publisher` publishes that record's report; the outcome is the usual `run.pr.comment_published`. Refusals: `{no_risk_record, pr_url}` (the PR has no risk record), `{risk_not_current, pr_url, risk_head, head}` (its record is for another head), `{report_current, head_sha, digest}` (that report is already published) and `pr_not_open` / `pr_not_watched`. A project whose gate is off publishes nothing (the publisher skips the request: publication follows the gate switch).
+
+**An accepted request is not a posted report.** The server records the request (`PrReportRequested`, the CLI answers with the accepted command and prints a note on stderr) whatever the project's gate says, and the publisher then acts only for a project whose `required_checks` gate is on, an open watched PR, and the PR's current risk record for its current head: a project with the gate off (or whose policy cannot be read), a PR that has since moved to another head or a report that was published in the meantime publishes nothing, and the publisher logs the reason once at info level (`the requested report of run <id> was not published (ungated | policy_unavailable | risk_not_current | already_reported | ...)`). Look at the PR's `evidence.report` (`foreman run prs <run-id>`) for the outcome: a `published` or `refused` report with its reason. `requested_at` and `requested_by`, when sent, are validated (a non-negative integer and at most 128 characters).
+
 ### `foreman run create-pr <run-id>` / `foreman run watch-stop|watch-start <run-id> [--pr <url>]`
 
-`create-pr` (`run.pr.create`) opens the PR for a run that has none and puts it in the merge gate like a run's own PR (`run.pr.ready`, so `approve-merge` and `merge` work on it); a failed gate signal is an error (`pr_ready_signal_failed`) and a retry resumes the open PR. `watch-stop` / `watch-start` (`run.pr.watch_stop`, `run.pr.watch_start`; MCP `foreman_pr_watch_stop`) pause or resume PR watching. None of them merge or approve: use `approve-merge` and `merge`.
+`create-pr` (`run.pr.create`) opens the PR for a run that has none and puts it in the merge gate like a run's own PR (`run.pr.ready` with the head GitHub shows, so `approve-merge` and `merge` work on it); a failed gate signal is an error (`pr_ready_signal_failed`, carrying `{:head_read_failed, reason}` when GitHub could not be read for the head (`gh` missing or failing, a 30 s timeout) or `{:ready_dispatch_failed, reason}` when the signal was refused; the failure is also recorded on the PR's watch record) and a retry resumes the open PR. `watch-stop` / `watch-start` (`run.pr.watch_stop`, `run.pr.watch_start`; MCP `foreman_pr_watch_stop`) pause or resume PR watching. None of them merge or approve: use `approve-merge` and `merge`.
 
 **Project policy.** `foreman project update <id> --pr-auto-fix '<json>'` sets `pr_auto_fix` (`kinds` from `ci|comments|conflicts`, `max_attempts` 1..5, `cooldown_seconds` 0..86400); `--clear pr_auto_fix` turns automatic fixing off. Server settings: `FOREMAN_PR_WATCHER_ENABLED`, `FOREMAN_PR_MONITOR_ENABLED` (polling, off by default), `FOREMAN_GITHUB_WEBHOOK_SECRET`. Live webhooks, force-push handling, check re-run, conflict resolution, unresolved-thread reads, the workspace PR buttons and the `pr_auto_fix` policy (off, on, bounded) are verified against real GitHub (`docs/acceptance/github-live-run.md`, `docs/acceptance/live-github-protection-ui-autofix.md`).
 
@@ -1307,7 +1264,7 @@ Reset Foreman to a clean operator state by intentionally dropping stale/obsolete
 
 ### `foreman run kill-switch`
 
-> **NOT IMPLEMENTED.** `foreman run kill-switch` is not a `run` subcommand. `runRun` dispatches exactly `list`, `get`, `cancel`, `pause`, `resume`, `remove`, `reset`, `approve-merge`, `merge`, `prs`, `fix-ci`, `address-comments`, `resolve-conflicts`, `create-pr`, `watch-stop`, `watch-start`, `submit`. Nearest real: `foreman run cancel --id <run-id> --reason <text>` (now also kills the dispatched agent's OS-level process via `RunControl.cancel_agent/1`, not just the run projection) or, to stop and later continue the same run, `foreman run pause --id <run-id>` followed by `foreman run resume --id <run-id>` (resume re-runs the interrupted phase from its last committed partial work).
+> **NOT IMPLEMENTED.** `foreman run kill-switch` is not a `run` subcommand. `runRun` dispatches exactly `list`, `get`, `cancel`, `pause`, `resume`, `remove`, `reset`, `approve-merge`, `waive-evidence`, `merge`, `prs`, `fix-ci`, `address-comments`, `resolve-conflicts`, `create-pr`, `retry-pr`, `watch-stop`, `watch-start`, `publish-report`, `submit`. Nearest real: `foreman run cancel --id <run-id> --reason <text>` (now also kills the dispatched agent's OS-level process via `RunControl.cancel_agent/1`, not just the run projection) or, to stop and later continue the same run, `foreman run pause --id <run-id>` followed by `foreman run resume --id <run-id>` (resume re-runs the interrupted phase from its last committed partial work).
 
 Kill a stuck active run and route to a recovery phase without losing artifacts. This is the first-class operator kill-switch for stuck phases — it stops the active worker, marks the current phase as failed with `retryWith` routing, and preserves the worktree, PR, and reports by default.
 
@@ -1609,6 +1566,8 @@ optional `after`, `limit`), `foreman_thread_find` (`project_id`, optional `q`,
 
 `foreman_workflow_get` (`name`) returns `{name, description, digest, phase_count, manifest_path, phases}` for a loaded workflow: `description` and `digest` are `""` when the manifest declares none (a `digest` is only computed for a manifest with a `worktree:` block), and `phases` are the phases the manifest declares, as written (string keys), without the catalog's derived fields.
 
+`foreman_run_status` returns `recovery` (the run's latest recovery record, or `null`) and `current_phase` with `phase_id`, `run_id`, `task_id`, `index`, `name`, `status`, `attempt`, `input_artifacts`, `context`, `execution_profile` (including a `skill` entry of `available` or `unverifiable` when the phase names a skill) and `prior_worktree_discarded`. `foreman_queue_status` returns `capacity`, `running`, `waiting` and `orphan_recovery` (the same list as `GET /api/queue`). `foreman_doctor` returns `output`, `strict` and the provider `providers` rows; `output` ends with the idempotency store line and the `Unresolved effect keys` section. All field-level detail is in `docs/user-guide.md` (section 9, "MCP tool integration").
+
 Write-gated thread tools (`allow_workflow_writes: true`): `foreman_thread_stop`
 (`thread_id`, optional `reason`) and `foreman_thread_steer` (`thread_id`,
 `text`, optional `message_id`, `resume`).
@@ -1666,8 +1625,8 @@ unless `allow_workflow_writes: true`.
 `foreman_project_settings_get` returns the same typed payload as
 `GET /api/projects/<id>/settings` (`project_id`, `status`, `settings`, `limits`;
 no env values). Project reads over HTTP and MCP replace `config.env` /
-`config.environment` values with `"[redacted]"` (keys, `name`, `task_provider` and
-`database_path` stay visible). The write tools `foreman_project_settings_update`
+`config.environment` values with `"[redacted]"` (keys, `name`, `task_provider` (its
+`database_path` for Beads, its `cwd` for Kata) stay visible). The write tools `foreman_project_settings_update`
 (arguments: `project_id`, `goal`, `instructions`, `thread_model`, `thread_effort`,
 `coordinator_provider`, `coordinator_model`, `coordinator_effort`,
 `max_concurrent_runs`, `daily_thread_cap`, `coordinator_propose_before_start`,

@@ -9,7 +9,7 @@ defmodule ForemanServer.PrWatcherFixTest do
   """
   use ExUnit.Case, async: false
 
-  alias ForemanServer.Jobsite.Error
+  alias ForemanServer.Exec.Error
   alias ForemanServer.{CommandGateway, PrWatcher, ProjectionStore}
   alias ForemanServer.PrWatcher.Observer
   alias ForemanServer.TestSupport.PrFixSupport, as: Fix
@@ -22,17 +22,25 @@ defmodule ForemanServer.PrWatcherFixTest do
     on_exit(fn -> if Process.alive?(github), do: Agent.stop(github) end)
     counter = :counters.new(1, [])
 
-    starter = fn opts ->
+    starter = fn request ->
       :counters.add(counter, 1, 1)
-      id = "js-fix-#{:counters.get(counter, 1)}-#{System.unique_integer([:positive])}"
-      send(test_pid, {:jobsite_start, id, opts})
+      id = request.run_id
+      send(test_pid, {:fix_start, id, request})
       {:ok, id}
     end
 
     %{github: github, starter: starter}
   end
 
-  defp fetch_fun(github), do: fn _url -> Agent.get(github, &{:ok, &1}) end
+  # A stored `{:error, reason}` is a failed read; any other value is the PR's status.
+  defp fetch_fun(github) do
+    fn _url ->
+      case Agent.get(github, & &1) do
+        {:error, _reason} = error -> error
+        status -> {:ok, status}
+      end
+    end
+  end
 
   defp github!(github, status), do: Agent.update(github, fn _ -> status end)
 
@@ -43,7 +51,7 @@ defmodule ForemanServer.PrWatcherFixTest do
       {PrWatcher,
        [
          fetch_fun: fetch_fun(github),
-         jobsite_starter: Keyword.get(opts, :starter, test_ctx.starter),
+         followup_starter: Keyword.get(opts, :starter, test_ctx.starter),
          plan_opts: [
            fetch_fun: fetch_fun(github),
            log_fetcher: fn _url, _check -> {:error, :none} end
@@ -69,11 +77,25 @@ defmodule ForemanServer.PrWatcherFixTest do
     })
   end
 
-  defp finish_jobsite!(type, jobsite_id, extra \\ %{}) do
+  # The fix's follow-up run ends: `JobsiteCompleted` -> `RunCompleted`, `JobsiteFailed` -> `RunFailed`.
+  defp finish_jobsite!(type, run_id, extra \\ %{}) do
+    type = %{"JobsiteCompleted" => "RunCompleted", "JobsiteFailed" => "RunFailed"}[type]
+
+    started =
+      if ProjectionStore.run(run_id),
+        do: [],
+        else: [%{event_type: "RunStarted", payload: %{run_id: run_id, project_id: "p"}}]
+
     :ok =
-      ProjectionStore.apply_events([
-        %{event_type: type, payload: Map.merge(%{jobsite_id: jobsite_id}, extra)}
-      ])
+      ProjectionStore.apply_events(
+        started ++
+          [
+            %{
+              event_type: type,
+              payload: Map.merge(%{run_id: run_id}, Map.drop(extra, [:code, :message]))
+            }
+          ]
+      )
   end
 
   defp data(%{data: data}) when is_map(data), do: data
@@ -99,7 +121,7 @@ defmodule ForemanServer.PrWatcherFixTest do
   # carries no failure code). Wait for the registration where the code matters.
   defp await_registered(jobsite_id, attempts \\ 200_000) do
     cond do
-      Map.has_key?(:sys.get_state(PrWatcher).jobsites, jobsite_id) -> :ok
+      Map.has_key?(:sys.get_state(PrWatcher).fixes, jobsite_id) -> :ok
       attempts == 0 -> flunk("watcher never registered #{jobsite_id}")
       true -> await_registered(jobsite_id, attempts - 1)
     end
@@ -118,7 +140,7 @@ defmodule ForemanServer.PrWatcherFixTest do
   end
 
   defp assert_started!(jobsite_id_pattern \\ nil) do
-    assert_receive {:jobsite_start, id, opts}, 10_000
+    assert_receive {:fix_start, id, opts}, 10_000
     if jobsite_id_pattern, do: assert(id == jobsite_id_pattern)
     {id, opts}
   end
@@ -141,7 +163,7 @@ defmodule ForemanServer.PrWatcherFixTest do
 
     # the defect is not swallowed: the crash is logged with its reason
     assert log =~ "PrWatcher fix task"
-    assert log =~ "crashed: " <> logged_reason
+    assert log =~ logged_reason
 
     assert [%{fix: %{in_flight: nil}}] = ProjectionStore.pr_watch(ctx.run_id)
     # the PR is free again: the aggregate accepts a new request (dispatch! raises on refusal)
@@ -156,18 +178,17 @@ defmodule ForemanServer.PrWatcherFixTest do
 
       request_fix!(ctx, "run.pr.fix_ci", %{note: "keep the diff small"})
 
-      {jobsite_id, opts} = assert_started!()
+      {run_id, request} = assert_started!()
       head = ctx.status.head_branch
 
-      assert opts[:strategy] == {:branch, head}
-      assert opts[:push] == true
-      assert opts[:sync_remote] == "origin"
-      assert opts[:repo_path] == ctx.repo
-      assert opts[:prompt] =~ "unit"
-      assert opts[:prompt] =~ "keep the diff small"
+      assert request.attach_branch == head
+      assert request.push == true
+      assert request.repo_path == ctx.repo
+      assert request.prompt =~ "unit"
+      assert request.prompt =~ "keep the diff small"
 
       started = await_event("PrFixStarted", ctx.run_id)
-      assert started.jobsite_id == jobsite_id
+      assert started.fix_run_id == run_id
       assert started.kind == "ci"
       assert started.pr_url == ctx.pr_url
     end
@@ -194,7 +215,7 @@ defmodule ForemanServer.PrWatcherFixTest do
       send(pid, {:projection_event, requested})
       await_idle()
 
-      refute_receive {:jobsite_start, _, _}, 300
+      refute_receive {:fix_start, _, _}, 300
       assert Enum.count(Support.run_event_types(ctx.run_id), &(&1 == "PrFixStarted")) == 1
     end
 
@@ -202,7 +223,7 @@ defmodule ForemanServer.PrWatcherFixTest do
          tc do
       ctx = setup_run!(tc)
 
-      starter = fn _opts -> {:error, Error.new(:spawn_failed, "no docker", %{})} end
+      starter = fn _request -> {:error, Error.new(:spawn_failed, "no docker", %{})} end
       start_watcher!(ctx, tc, starter: starter)
 
       request_fix!(ctx)
@@ -227,7 +248,7 @@ defmodule ForemanServer.PrWatcherFixTest do
       finished = await_event("PrFixFinished", ctx.run_id)
       assert finished.outcome == "failed"
       assert finished.error_code == "branch_unsafe"
-      refute_receive {:jobsite_start, _, _}, 100
+      refute_receive {:fix_start, _, _}, 100
     end
 
     test "a start task that crashes finishes the fix as failed instead of leaving it in flight",
@@ -235,13 +256,17 @@ defmodule ForemanServer.PrWatcherFixTest do
       # not a `{:ok, id} | {:error, _}` shape: the start task raises CaseClauseError
       assert_start_crash_finishes_fix!(
         tc,
-        fn _opts -> :unexpected end,
-        "{{:case_clause, :unexpected}"
+        fn _request -> :unexpected end,
+        "WithClauseError"
       )
     end
 
     test "a start task that is killed finishes the fix as failed too", tc do
-      assert_start_crash_finishes_fix!(tc, fn _opts -> Process.exit(self(), :kill) end, ":killed")
+      assert_start_crash_finishes_fix!(
+        tc,
+        fn _request -> Process.exit(self(), :kill) end,
+        ":killed"
+      )
     end
   end
 
@@ -264,6 +289,90 @@ defmodule ForemanServer.PrWatcherFixTest do
 
       # the re-observation reached the PR record (CI is now green at the new head)
       assert [%{head_sha: "sha-2"}] = ProjectionStore.pr_watch(ctx.run_id)
+    end
+
+    test "a fix push moves the head: the current-head observation is reset to the new head and nothing of the old head reads as current (TRD-009)",
+         tc do
+      ctx = setup_run!(tc)
+      start_watcher!(ctx, tc)
+      old_head = ctx.status.head_sha
+
+      assert [
+               %{
+                 head_sha: ^old_head,
+                 checks_state: "failing",
+                 failing: [_ | _],
+                 evidence: %{checks: %{head_sha: ^old_head} = old_checks}
+               }
+             ] = ProjectionStore.pr_watch(ctx.run_id)
+
+      request_fix!(ctx)
+      {jobsite_id, _opts} = assert_started!()
+      await_event("PrFixStarted", ctx.run_id)
+
+      # the push is not a keyed effect: only the re-read after the jobsite ends can see it
+      github!(tc.github, %{ctx.status | head_sha: "sha-2", checks_state: :passing, checks: []})
+      finish_jobsite!("JobsiteCompleted", jobsite_id)
+      assert await_event("PrFixFinished", ctx.run_id).new_head_sha == "sha-2"
+
+      assert [record] = ProjectionStore.pr_watch(ctx.run_id)
+      assert record.head_sha == "sha-2"
+      assert record.checks_state == "passing"
+      assert record.failing == []
+      # the old head's failing result is not the current head's, and the evidence record
+      # is labelled with the head it was recorded for
+      assert record.evidence.checks.head_sha == "sha-2"
+      refute record.evidence.checks.evidence_digest == old_checks.evidence_digest
+    end
+
+    test "a failed re-read is `failed` with refresh_failed_*, and the old head's observation stays",
+         tc do
+      ctx = setup_run!(tc)
+      start_watcher!(ctx, tc)
+      old_head = ctx.status.head_sha
+      [before] = ProjectionStore.pr_watch(ctx.run_id)
+
+      request_fix!(ctx)
+      {jobsite_id, _opts} = assert_started!()
+      await_event("PrFixStarted", ctx.run_id)
+
+      # the fix pushed, but GitHub cannot be read once the jobsite ends
+      github!(tc.github, {:error, {:gh_failed, 1, "boom"}})
+      finish_jobsite!("JobsiteCompleted", jobsite_id)
+
+      finished = await_event("PrFixFinished", ctx.run_id)
+      assert finished.outcome == "failed"
+      assert finished.error_code == "refresh_failed_gh_failed"
+      refute Map.get(finished, :new_head_sha)
+
+      # nothing was re-observed: the record still holds the old head's observation
+      assert [record] = ProjectionStore.pr_watch(ctx.run_id)
+      assert record.head_sha == old_head
+      assert record.evidence.checks == before.evidence.checks
+    end
+
+    test "a watch the operator stopped is not re-read: the fix finishes `failed` not_watched",
+         tc do
+      ctx = setup_run!(tc)
+      start_watcher!(ctx, tc)
+
+      request_fix!(ctx)
+      {jobsite_id, _opts} = assert_started!()
+      await_event("PrFixStarted", ctx.run_id)
+
+      Support.dispatch!(%{
+        type: "run.pr.watch_stop",
+        command_id: "stop-#{ctx.run_id}",
+        aggregate_id: "run:#{ctx.run_id}",
+        payload: %{run_id: ctx.run_id, pr_url: ctx.pr_url, reason: "operator"}
+      })
+
+      github!(tc.github, %{ctx.status | head_sha: "sha-2", checks_state: :passing, checks: []})
+      finish_jobsite!("JobsiteCompleted", jobsite_id)
+
+      finished = await_event("PrFixFinished", ctx.run_id)
+      assert finished.outcome == "failed"
+      assert finished.error_code == "refresh_failed_not_watched"
     end
 
     test "an unchanged head is `no_change`", tc do
@@ -293,7 +402,7 @@ defmodule ForemanServer.PrWatcherFixTest do
 
       finished = await_event("PrFixFinished", ctx.run_id)
       assert finished.outcome == "failed"
-      assert finished.error_code == "agent_crashed"
+      assert finished.error_code == "run_failed"
     end
 
     test "an event of a jobsite this watcher did not start for a fix is ignored", tc do
@@ -344,7 +453,7 @@ defmodule ForemanServer.PrWatcherFixTest do
       assert exhausted.reason == "max_attempts"
       assert exhausted.head_sha == "sha-2"
 
-      refute_receive {:jobsite_start, _, _}, 300
+      refute_receive {:fix_start, _, _}, 300
       assert Enum.count(Support.run_event_types(ctx.run_id), &(&1 == "PrFixRequested")) == 1
     end
 
@@ -407,7 +516,7 @@ defmodule ForemanServer.PrWatcherFixTest do
 
       # nothing was re-started for the fix that was already running
       await_idle()
-      refute_receive {:jobsite_start, _, _}, 300
+      refute_receive {:fix_start, _, _}, 300
 
       # an at-most-one operator re-request is still refused by the aggregate
       assert {:error, {:fix_in_flight, _}} =
@@ -441,9 +550,9 @@ defmodule ForemanServer.PrWatcherFixTest do
 
       finished = await_event("PrFixFinished", ctx.run_id)
       assert finished.outcome == "failed"
-      # only the projected status survives a restart, not the failure code
-      assert finished.error_code == "jobsite_failed"
-      refute_receive {:jobsite_start, _, _}, 100
+      # only the projected status survives a restart, not the failure reason
+      assert finished.error_code == "run_failed"
+      refute_receive {:fix_start, _, _}, 100
     end
 
     test "a request that never got a jobsite is finished as lost_on_restart, never started late",
@@ -459,7 +568,7 @@ defmodule ForemanServer.PrWatcherFixTest do
       finished = await_event("PrFixFinished", ctx.run_id)
       assert finished.outcome == "failed"
       assert finished.error_code == "lost_on_restart"
-      refute_receive {:jobsite_start, _, _}, 100
+      refute_receive {:fix_start, _, _}, 100
     end
   end
 end

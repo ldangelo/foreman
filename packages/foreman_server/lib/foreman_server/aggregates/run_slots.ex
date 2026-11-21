@@ -25,6 +25,8 @@ defmodule ForemanServer.Aggregates.RunSlots do
       RunSlotReleased    — run removed from holders
       RunSlotTransferred — run removed from holders; FIFO head promoted
       RunSlotWaiterRemoved — run removed from waiters list
+      RunSlotRecoveryAttempted — boot cleanup budget of an orphan entry (`recovery`);
+                                 dropped when the entry's holder/waiter leaves
 
   ## Replay contract
 
@@ -67,9 +69,13 @@ defmodule ForemanServer.Aggregates.RunSlots do
     RunSlotAcquired,
     RunSlotQueued,
     RunSlotReleased,
+    RunSlotRecoveryAttempted,
     RunSlotTransferred,
     RunSlotWaiterRemoved
   }
+
+  @recovery_outcomes ["failed", "exhausted", "dispatched"]
+  @recovery_kinds ["slot_release", "waiter_remove"]
 
   @behaviour ForemanServer.Aggregate
 
@@ -84,17 +90,30 @@ defmodule ForemanServer.Aggregates.RunSlots do
   end
 
   defmodule State do
-    @moduledoc "Per-project run-slot state."
+    @moduledoc """
+    Per-project run-slot state. `recovery` holds one entry per run whose boot cleanup
+    (slot release or waiter removal) failed, `%{attempt, outcome, kind, reason,
+    elapsed_since_boot_ms}`; it exists only while the run's holder or waiter does.
+    """
+    @type recovery_entry :: %{
+            attempt: non_neg_integer(),
+            outcome: String.t(),
+            kind: String.t(),
+            reason: String.t() | nil,
+            elapsed_since_boot_ms: integer()
+          }
     @type t :: %__MODULE__{
             capacity: non_neg_integer() | nil,
             holders: %{optional(String.t()) => %{acquired_at_ms: integer()}},
-            waiters: [RunSlots.Waiter.t()]
+            waiters: [RunSlots.Waiter.t()],
+            recovery: %{optional(String.t()) => recovery_entry()}
           }
     @enforce_keys []
     defstruct [
       :capacity,
       holders: %{},
-      waiters: []
+      waiters: [],
+      recovery: %{}
     ]
   end
 
@@ -197,7 +216,7 @@ defmodule ForemanServer.Aggregates.RunSlots do
   end
 
   @impl true
-  def initial_state, do: %State{capacity: nil, holders: %{}, waiters: []}
+  def initial_state, do: %State{capacity: nil, holders: %{}, waiters: [], recovery: %{}}
 
   # -------------------------------------------------------------------------
   # Typed-struct apply_event clauses
@@ -242,7 +261,8 @@ defmodule ForemanServer.Aggregates.RunSlots do
 
     %State{
       state
-      | holders: Map.delete(state.holders, Aggregate.get(payload, :run_id))
+      | holders: Map.delete(state.holders, Aggregate.get(payload, :run_id)),
+        recovery: Map.delete(state.recovery, Aggregate.get(payload, :run_id))
     }
   end
 
@@ -260,7 +280,11 @@ defmodule ForemanServer.Aggregates.RunSlots do
           |> Map.put(new_holder_run_id, %{
             acquired_at_ms: Aggregate.get(payload, :acquired_at_ms)
           }),
-        waiters: drop_waiter(state.waiters, new_holder_run_id)
+        waiters: drop_waiter(state.waiters, new_holder_run_id),
+        recovery:
+          state.recovery
+          |> Map.delete(Aggregate.get(payload, :released_run_id))
+          |> Map.delete(new_holder_run_id)
     }
   end
 
@@ -270,8 +294,14 @@ defmodule ForemanServer.Aggregates.RunSlots do
 
     %State{
       state
-      | waiters: drop_waiter(state.waiters, Aggregate.get(payload, :run_id))
+      | waiters: drop_waiter(state.waiters, Aggregate.get(payload, :run_id)),
+        recovery: Map.delete(state.recovery, Aggregate.get(payload, :run_id))
     }
+  end
+
+  @impl true
+  def apply_event(%State{} = state, %RunSlotRecoveryAttempted{} = event) do
+    fold_recovery(state, event_data_to_map(event))
   end
 
   # -------------------------------------------------------------------------
@@ -310,7 +340,8 @@ defmodule ForemanServer.Aggregates.RunSlots do
       "RunSlotReleased" ->
         %State{
           state
-          | holders: Map.delete(state.holders, Aggregate.get(payload, :run_id))
+          | holders: Map.delete(state.holders, Aggregate.get(payload, :run_id)),
+            recovery: Map.delete(state.recovery, Aggregate.get(payload, :run_id))
         }
 
       "RunSlotTransferred" ->
@@ -324,14 +355,22 @@ defmodule ForemanServer.Aggregates.RunSlots do
               |> Map.put(new_holder_run_id, %{
                 acquired_at_ms: Aggregate.get(payload, :acquired_at_ms)
               }),
-            waiters: drop_waiter(state.waiters, new_holder_run_id)
+            waiters: drop_waiter(state.waiters, new_holder_run_id),
+            recovery:
+              state.recovery
+              |> Map.delete(Aggregate.get(payload, :released_run_id))
+              |> Map.delete(new_holder_run_id)
         }
 
       "RunSlotWaiterRemoved" ->
         %State{
           state
-          | waiters: drop_waiter(state.waiters, Aggregate.get(payload, :run_id))
+          | waiters: drop_waiter(state.waiters, Aggregate.get(payload, :run_id)),
+            recovery: Map.delete(state.recovery, Aggregate.get(payload, :run_id))
         }
+
+      "RunSlotRecoveryAttempted" ->
+        fold_recovery(state, payload)
 
       _ ->
         state
@@ -342,7 +381,34 @@ defmodule ForemanServer.Aggregates.RunSlots do
   # Internal helpers
   # -------------------------------------------------------------------------
 
-  defp append_waiter(waiters, %Waiter{} = waiter), do: waiters ++ [waiter]
+  # `failed` and `exhausted` record the run's cleanup budget; `dispatched` clears it.
+  defp fold_recovery(%State{} = state, payload) do
+    run_id = Aggregate.get(payload, :run_id)
+
+    case Aggregate.get(payload, :outcome) do
+      "dispatched" ->
+        %State{state | recovery: Map.delete(state.recovery, run_id)}
+
+      outcome ->
+        entry = %{
+          attempt: Aggregate.get(payload, :attempt),
+          outcome: outcome,
+          kind: Aggregate.get(payload, :kind),
+          reason: Aggregate.get(payload, :reason),
+          elapsed_since_boot_ms: Aggregate.get(payload, :elapsed_since_boot_ms)
+        }
+
+        %State{state | recovery: Map.put(state.recovery, run_id, entry)}
+    end
+  end
+
+  # A run already waiting keeps its place; history written before do_acquire guarded this can hold
+  # the same run twice. ProjectionStore folds RunSlotQueued the same way.
+  defp append_waiter(waiters, %Waiter{} = waiter) do
+    if Enum.any?(waiters, &(&1.run_id == waiter.run_id)),
+      do: waiters,
+      else: waiters ++ [waiter]
+  end
 
   defp drop_waiter(waiters, run_id) do
     Enum.reject(waiters, &(&1.run_id == run_id))
@@ -466,6 +532,45 @@ defmodule ForemanServer.Aggregates.RunSlots do
     end
   end
 
+  @impl true
+  def handle_command(%State{} = state, %{type: "run_slots.recovery_attempt"} = command) do
+    payload = Map.get(command, :payload) || %{}
+    reason = Aggregate.get(payload, :reason)
+
+    with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
+         {:ok, attempt} <- required_non_neg_integer(Aggregate.get(payload, :attempt), :attempt),
+         {:ok, outcome} <-
+           required_member(Aggregate.get(payload, :outcome), @recovery_outcomes, :outcome),
+         {:ok, kind} <- required_member(Aggregate.get(payload, :kind), @recovery_kinds, :kind),
+         {:ok, elapsed} <-
+           required_non_neg_integer(
+             Aggregate.get(payload, :elapsed_since_boot_ms),
+             :elapsed_since_boot_ms
+           ),
+         :ok <- optional_binary(reason, :reason) do
+      # A failure or exhaustion only describes an entry that still holds or
+      # waits: a release by another route between the failure and this record
+      # must not leave an orphan recovery entry behind. `dispatched` follows
+      # the release, so it needs no membership.
+      if outcome == "dispatched" or in_slot_role?(state, run_id) do
+        {:ok,
+         %RunSlotRecoveryAttempted{
+           run_id: run_id,
+           attempt: attempt,
+           outcome: outcome,
+           kind: kind,
+           reason: reason,
+           elapsed_since_boot_ms: elapsed,
+           project_id: optional_project_id(payload)
+         }}
+      else
+        {:ok, nil}
+      end
+    else
+      {:error, _} = err -> err
+    end
+  end
+
   # -------------------------------------------------------------------------
   # Internal command helpers
   # -------------------------------------------------------------------------
@@ -496,17 +601,15 @@ defmodule ForemanServer.Aggregates.RunSlots do
            project_id: project_id
          }}
 
-      # A queued run keeps its single position.
-      waiting? ->
-        {:ok, nil}
-
-      # FIFO: a new run may take a free slot only when no older run is queued;
-      # otherwise (e.g. a limit change left capacity free before the promote
-      # lands) it queues behind them.
-      not enqueue_only? and state.waiters == [] and map_size(state.holders) < capacity ->
+      # FIFO: a run may take a free slot only when no OLDER run is queued: a new run, or the head
+      # waiter itself (a paused waiting run that acquires again on resume while a slot is free).
+      # Otherwise (e.g. a limit change left capacity free before the promote lands) it queues
+      # behind them. The fold drops the run from waiters, so it is never holder AND waiter.
+      not enqueue_only? and map_size(state.holders) < capacity and
+          (state.waiters == [] or hd(state.waiters).run_id == run_id) ->
         Telemetry.run_slots_acquired(run_id, map_size(state.holders) + 1, capacity,
           project_id: project_id,
-          waiting: length(state.waiters)
+          waiting: length(drop_waiter(state.waiters, run_id))
         )
 
         {:ok,
@@ -516,6 +619,11 @@ defmodule ForemanServer.Aggregates.RunSlots do
            acquired_at_ms: now_ms,
            project_id: project_id
          }}
+
+      # A queued run behind an older waiter, or while no slot is free, keeps its single position:
+      # a second RunSlotQueued would list it twice.
+      waiting? ->
+        {:ok, nil}
 
       true ->
         position = length(state.waiters) + 1
@@ -593,6 +701,18 @@ defmodule ForemanServer.Aggregates.RunSlots do
       _ -> nil
     end
   end
+
+  defp in_slot_role?(state, run_id) do
+    Map.has_key?(state.holders, run_id) or Enum.any?(state.waiters, &(&1.run_id == run_id))
+  end
+
+  defp required_member(value, allowed, field) do
+    if value in allowed, do: {:ok, value}, else: {:error, {:missing_or_invalid, field}}
+  end
+
+  defp optional_binary(nil, _field), do: :ok
+  defp optional_binary(value, _field) when is_binary(value), do: :ok
+  defp optional_binary(_value, field), do: {:error, {:missing_or_invalid, field}}
 
   defp required_non_neg_integer(value, _field) when is_integer(value) and value >= 0,
     do: {:ok, value}

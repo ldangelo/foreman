@@ -30,6 +30,7 @@ defmodule ForemanServer.Events.ProjectUpdated do
           coordinator_max_active_threads: pos_integer() | nil,
           coordinator_reuse_threads: boolean() | nil,
           notification_preference: String.t() | nil,
+          required_checks: [map()] | nil,
           cleared_settings: [String.t()]
         }
   @derive Jason.Encoder
@@ -53,6 +54,7 @@ defmodule ForemanServer.Events.ProjectUpdated do
     :coordinator_max_active_threads,
     :coordinator_reuse_threads,
     :notification_preference,
+    :required_checks,
     config: %{},
     cleared_settings: []
   ]

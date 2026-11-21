@@ -110,6 +110,42 @@ defmodule ForemanServer.ProjectionStoreQueueStatusTest do
     end
   end
 
+  describe "orphan recovery entries (boot cleanup budget)" do
+    defp recovery(project, run, outcome, attempt),
+      do: %{
+        event_type: "RunSlotRecoveryAttempted",
+        payload: %{
+          project_id: project,
+          run_id: run,
+          attempt: attempt,
+          outcome: outcome,
+          kind: "slot_release",
+          reason: "exit :killed",
+          elapsed_since_boot_ms: 10
+        }
+      }
+
+    test "an entry is listed on its own project only and leaves with its holder" do
+      apply!(three_running_two_waiting("p1") ++ three_running_two_waiting("p2"))
+      assert ProjectionStore.queue_status("p1").orphan_recovery == []
+
+      apply!([recovery("p1", "p1-r1", "failed", 2)])
+
+      assert [%{run_id: "p1-r1", attempt: 2, outcome: "failed", kind: "slot_release"}] =
+               ProjectionStore.queue_status("p1").orphan_recovery
+
+      assert ProjectionStore.queue_status("p2").orphan_recovery == []
+
+      apply!([%{event_type: "RunSlotReleased", payload: %{project_id: "p1", run_id: "p1-r1"}}])
+      assert ProjectionStore.queue_status("p1").orphan_recovery == []
+    end
+
+    test "a dispatched outcome clears the entry" do
+      apply!([recovery("p1", "r1", "failed", 1), recovery("p1", "r1", "dispatched", 0)])
+      assert ProjectionStore.queue_status("p1").orphan_recovery == []
+    end
+  end
+
   describe "no cross-project leakage (AC-010-2)" do
     test "reading one project never includes the other's runs" do
       apply!(three_running_two_waiting("p1") ++ three_running_two_waiting("p2"))

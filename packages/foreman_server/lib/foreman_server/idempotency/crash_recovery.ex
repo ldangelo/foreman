@@ -67,8 +67,21 @@ defmodule ForemanServer.Idempotency.CrashRecovery do
             "CrashRecovery: key=#{key} has side effects; marking completed before retry"
           )
 
-          :ok = ForemanServer.Idempotency.KeyStore.mark_completed(key, %{recovered: true})
-          {:retry, :side_effects_present}
+          case ForemanServer.Idempotency.KeyStore.mark_completed(key, %{recovered: true}) do
+            :ok ->
+              {:retry, :side_effects_present}
+
+            # Settled between the read and this write: decide again from what it is now.
+            :status_changed ->
+              reconcile(key, side_effects_check)
+
+            {:error, reason} ->
+              Logger.error(
+                "CrashRecovery: key=#{key} could not be marked completed: #{inspect(reason)}"
+              )
+
+              {:retry, :unknown_state}
+          end
         else
           {:retry, :no_side_effects}
         end

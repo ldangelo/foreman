@@ -104,6 +104,12 @@ defmodule ForemanServer.TaskProvider.Telemetry do
       scrub_required?: false,
       description: "Registry removed a per-project task provider registration."
     },
+    [:foreman_server, :task_provider, :registry, :invalid_capabilities] => %{
+      metadata_keys: [:provider, :violations],
+      scrub_required?: false,
+      description:
+        "Registry left a provider out of its routing snapshot because its capability map breaks the provider contract."
+    },
     [:foreman_server, :task_provider, :beads, :contract, :version_changed] => %{
       metadata_keys: [:previous_version, :current_version],
       scrub_required?: false,
@@ -123,6 +129,11 @@ defmodule ForemanServer.TaskProvider.Telemetry do
       metadata_keys: [:argv, :error],
       scrub_required?: true,
       description: "BeadsAdapter preflight returned a ProviderError."
+    },
+    [:foreman_server, :task_provider, :kata, :subprocess, :spawned] => %{
+      metadata_keys: [:os_pid],
+      scrub_required?: false,
+      description: "SystemKataRunner spawned a kata subprocess; carries its OS pid only."
     },
     [:foreman_server, :task_provider, :concurrency_limiter, :acquire] => %{
       metadata_keys: [:project_id, :source, :in_flight],

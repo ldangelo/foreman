@@ -26,7 +26,7 @@ defmodule ForemanServer.Approvals.Capability do
   promises a live prompt it cannot deliver.
   """
 
-  alias ForemanServer.Jobsite.Agent
+  alias ForemanServer.Exec.Agent
 
   @type mode :: :live | :inflight | :resume_with_override
 
@@ -63,7 +63,7 @@ defmodule ForemanServer.Approvals.Capability do
   not only the approved tool: there is no per-tool grant on this path (`bypassPermissions`
   skips every permission check, so an `allowed_tools` list cannot narrow it, and a
   per-tool grant would need a new steer field through every layer of the resume path).
-  Always a name `ForemanServer.Jobsite.Agent.parse_approval_mode/1` accepts.
+  Always a name `ForemanServer.Exec.Agent.parse_approval_mode/1` accepts.
   """
   @spec override_for(String.t()) :: String.t()
   def override_for(tool_name) when is_binary(tool_name) do

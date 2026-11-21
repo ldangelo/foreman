@@ -159,7 +159,7 @@ gh_approve_merge() {
     printf '%s\n' "$GH_OUT" > "$EVID/$1.out"
     return 1
   fi
-  gh_fm "$1" run approve-merge --id "$GH_RUN" --approver e2e-operator --identity "github:${GH_REPO%%/*}" --head-sha "$gam_head"
+  gh_fm "$1" run approve-merge --id "$GH_RUN" --approver e2e-operator --identity "github:${GH_REPO%%/*}" --head-sha "$gam_head" --acknowledge-gate-off
 }
 
 # gh_ui <thread> [driver flags]: the Playwright driver; one JSON object in GH_UI. Non-zero exit = the driver failed.
@@ -486,7 +486,7 @@ gh_x_postapproval() {
   gh_events_note "$GH_RUN" "$mark"
   assert_eq "no second PrReady was recorded by the push" "$(gh_events_count "$GH_RUN" "$mark" PrReady)" "0"
   assert_eq "the push voided the approval: the merge gate is pending again" "$(gh_pr_field .merge_gate)" "pending"
-  gh_fm pa-stale run approve-merge --id "$GH_RUN" --approver e2e-operator --identity "github:${GH_REPO%%/*}" --head-sha "$approved_head"
+  gh_fm pa-stale run approve-merge --id "$GH_RUN" --approver e2e-operator --identity "github:${GH_REPO%%/*}" --head-sha "$approved_head" --acknowledge-gate-off
   note "approve-merge naming the OLD head ${approved_head:0:8}: rc=$GH_RC: $(printf '%s' "$GH_OUT" | tr '\n' ' ' | cut -c1-400)"
   [ "$GH_RC" != 0 ] && pass "approving the old head is refused after the push" || fail "the old head was approved after a push moved the PR"
   gh_fm pa-merge run merge --id "$GH_RUN"
@@ -586,7 +586,7 @@ gh_trigger_fix_ci() {
 
 gh_x_claude_fix_ci() {
   say "9k. the PR fix thread of a REAL claude run resumes THAT run's claude session (foreman-nufr9)"
-  note "EXPECTED: (a) the run bound a claude provider session; (b) PrFixStarted.resumed_session is true; (c) the fix jobsite's first JobsiteIterationStarted.resumed_session_id is that session; (d) the PR head moved with the fix commit and CI is green; (e) claude's transcript of THAT session grew (same id, more lines) and no new session appeared"
+  note "EXPECTED: (a) the run bound a claude provider session; (b) PrFixStarted.resumed_session is true; (c) the follow-up request names that session to resume; (d) the PR head moved with the fix commit and CI is green; (e) claude's transcript of THAT session grew (same id, more lines) and no new session appeared"
   if ! claude_private_home || ! claude_ready; then
     unverified "the PR fix thread of a real claude run resumes its claude session" "${CLAUDE_UNAVAILABLE:-claude is not usable}"
     return 0
@@ -628,19 +628,22 @@ gh_x_claude_fix_ci() {
   gc_started=$(gh_prfix_field PrFixStarted .data)
   note "PrFixStarted data: $gc_started"
   assert_eq "(b) PrFixStarted.resumed_session" "$(printf '%s' "$gc_started" | jq -r '.resumed_session')" "true"
-  gc_jobsite=$(printf '%s' "$gc_started" | jq -r '.jobsite_id')
+  gc_fixrun=$(printf '%s' "$gc_started" | jq -r '.fix_run_id')
+  assert_has "the fix is a follow-up RUN (PrFixStarted.fix_run_id), not a jobsite" "$gc_fixrun" "run-"
   gc_orig_path=$(gh_prfix_field WorktreeCreated .data.worktree_path)
   note "the run's worktree (WorktreeCreated): $gc_orig_path; WorktreeCleaned: $(gh_prfix_field WorktreeCleaned .at | grep . || echo never)"
 
-  # the fix jobsite's own events: the session it was started on
-  if gh_wait 300 "fix jobsite iteration" gh_prfix_has JobsiteIterationStarted; then pass "the fix jobsite $gc_jobsite started its first iteration"; else fail "the fix jobsite $gc_jobsite never started an iteration within 300s"; gh_events_note "$GH_RUN" "$gc_mark"; return 1; fi
-  note "fix jobsite agent: $(gh_prfix_field JobsiteStarted '.data.agent | tojson')"
-  assert_eq "the fix jobsite runs claude" "$(gh_prfix_field JobsiteStarted '.data.agent.provider')" "claude"
-  gc_fix_path=$(gh_prfix_field JobsiteWorktreeProvisioned .data.path)
-  note "the fix jobsite's worktree (JobsiteWorktreeProvisioned): $gc_fix_path (reused: $(gh_prfix_field JobsiteWorktreeProvisioned '.data["reused?"]'))"
-  assert_eq "the fix jobsite works at the SAME path the run did (the working directory a claude session is tied to)" "$gc_fix_path" "$gc_orig_path"
-  gc_resumed=$(gh_prfix_field JobsiteIterationStarted 'select(.data.index == 1) | .data.resumed_session_id')
-  assert_eq "(c) the fix jobsite's first JobsiteIterationStarted.resumed_session_id is the run's claude session" "$gc_resumed" "$gc_sid"
+  # the follow-up run's own events: the request, the session it resumes, the worktree it works in
+  if gh_wait 300 "follow-up request" gh_prfix_has RunFollowUpRequested; then pass "the follow-up run $gc_fixrun was requested (RunFollowUpRequested)"; else fail "no RunFollowUpRequested for $gc_fixrun within 300s"; gh_events_note "$GH_RUN" "$gc_mark"; return 1; fi
+  note "follow-up request: $(gh_prfix_field RunFollowUpRequested '.data | del(.prompt) | tojson')"
+  assert_eq "the follow-up is attached to the PR head branch" "$(gh_prfix_field RunFollowUpRequested .data.attach_branch)" "$GH_BRANCH"
+  assert_eq "the follow-up pushes" "$(gh_prfix_field RunFollowUpRequested .data.push)" "true"
+  assert_eq "the follow-up runs claude" "$(gh_prfix_field RunFollowUpRequested .data.provider)" "claude"
+  assert_eq "(c) the follow-up request names the run's claude session to resume" "$(gh_prfix_field RunFollowUpRequested .data.resume_session_id)" "$gc_sid"
+  if gh_wait 300 "follow-up worktree" gh_prfix_has WorktreeCreated; then :; fi
+  gc_fix_path=$(gh_prfix_field WorktreeCreated "select(.stream == \"vcs:wt-$gc_fixrun\") | .data.worktree_path")
+  note "the follow-up run's worktree: ${gc_fix_path:-none}"
+  assert_eq "the follow-up works at the SAME path the run did (the working directory a claude session is tied to)" "$gc_fix_path" "$gc_orig_path"
 
   # the fix lands
   if gh_wait 900 "fix commit" gh_head_moved_from "$BROKEN"; then pass "(d) the fix thread pushed a commit: $BROKEN -> $(gh_head)"; else fail "(d) no fix commit within 900s of the click"; gh_events_note "$GH_RUN" "$gc_mark"; gh_prfix_evidence "$GH_RUN"; note "PR record: $(gh_pr_record)"; return 1; fi
@@ -653,8 +656,7 @@ gh_x_claude_fix_ci() {
   if gh_wait 300 "PrFixFinished" gh_prfix_has PrFixFinished; then pass "the fix was recorded as finished"; else fail "no PrFixFinished within 300s"; fi
   assert_eq "the fix finished as pushed" "$(gh_prfix_field PrFixFinished .data.outcome)" "pushed"
   if gh_wait_card "$GH_THREAD" '.group == "ready_for_review"' 420; then pass "Overview: back in Ready for review: $(gh_card_line "$GH_CARD")"; else fail "not back in Ready for review: $(gh_card_line "$GH_CARD")"; fi
-  gh_wait 300 "jobsite iteration completed" gh_prfix_has JobsiteIterationCompleted || true
-  assert_eq "(c) the fix iteration ended on the SAME claude session id" "$(gh_prfix_field JobsiteIterationCompleted .data.session_id)" "$gc_sid"
+  if gh_wait 300 "follow-up run completed" gh_prfix_has RunCompleted; then pass "the follow-up run $gc_fixrun completed (RunCompleted)"; else fail "the follow-up run never completed within 300s"; fi
 
   # claude's own record: the transcript of that session grew, no other session appeared
   gc_lines_after=$(wc -l < "$gc_file" | tr -d ' ')
@@ -667,6 +669,76 @@ gh_x_claude_fix_ci() {
   gh_events_note "$GH_RUN" "$gc_mark"
   note "PR record: $(gh_pr_record)"
   note "kept in $EVID: prfix-evidence-$GH_RUN.jsonl (the event payloads), events-$GH_RUN.txt, claude-session-$gc_sid.jsonl (claude's transcript, never commit it)"
+  return 0
+}
+
+
+# ---------------------------------------------------------------- 9k2: the Docker sandbox PR fix
+
+# The same PR-fix flow as 9k, but BOTH the run (workflow `dockeredit`, `sandbox: docker`) and the fix (the PrFix
+# default sandbox) execute through the Docker sandbox, with a SIMULATED pi baked into the image (docker_agent/):
+# it proves the sandbox plumbing end to end (image, worktree mount, agent in the container, commit and push from the
+# host, container cleanup) with no real agent and no provider session resume. Run it with FOREMAN_PR_FIX_SANDBOX=docker
+# in the environment of `serve`.
+GH_DOCKER_BEAD_TYPE=docker-e2e
+gh_x_docker_fix_ci() {
+  say "9k2. the PR fix of a Docker-sandboxed run runs in Docker too (simulated agent, no provider session)"
+  note "EXPECTED: the run's agent ran in a container (proof file dockerenv=yes); the fix is a follow-up run with sandbox docker whose agent also ran in a container and fixed app.add; the head moved by a fast-forward, CI is green, the fix finished as pushed, no container is left"
+  if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
+    unverified "the Docker sandbox PR fix" "docker is not available"; return 0
+  fi
+  assert_eq "the server was started with FOREMAN_PR_FIX_SANDBOX=docker" "${FOREMAN_PR_FIX_SANDBOX:-unset}" "docker"
+  gd_image="foreman-jobsite:$(basename "$GH_CLONE")"
+  if docker build -q -t "$gd_image" "$ASSETS/docker_agent" >/dev/null 2>&1; then pass "the sandbox image $gd_image was built"; else fail "docker build of $gd_image failed"; return 1; fi
+  sed "s|__E2E_MODEL__|$E2E_MODEL|" "$ASSETS/workflows/dockeredit.yaml" > "$WORK/workflows/dockeredit.yaml"
+  gd_start=$(date +%s)
+  while :; do
+    gd_out=$(rpc "IO.puts(\"CATALOG \" <> inspect(ForemanServer.Workflow.Catalog.type_to_workflow(\"$GH_DOCKER_BEAD_TYPE\")))" 2>/dev/null | grep '^CATALOG ')
+    case "$gd_out" in *'{:ok, "dockeredit"}'*) pass "the catalog maps issue type $GH_DOCKER_BEAD_TYPE to dockeredit"; break ;; esac
+    [ "$(elapsed "$gd_start")" -lt 60 ] || { fail "the catalog never mapped $GH_DOCKER_BEAD_TYPE to dockeredit: ${gd_out:-no answer}"; return 1; }
+    gh_server_alive || return 1
+    sleep 3
+  done
+
+  gh_new_pr docker1 PRD "$GH_DOCKER_BEAD_TYPE" || return 1
+  gd_run_proof=$(gh api "repos/$GH_REPO/contents/docker-run-proof.txt?ref=$GH_BRANCH" --jq '.content' 2>/dev/null | base64 -d 2>/dev/null)
+  note "the run's proof file: ${gd_run_proof:-none}"
+  assert_has "the run's agent ran INSIDE a container" "$gd_run_proof" "dockerenv=yes"
+  gh_x_ready || return 1
+  gh_inject_code_bug || { fail "could not push the regression to $GH_BRANCH"; return 1; }
+  if gh_wait 300 "ci failure" gh_ci_head_is failure; then pass "GitHub Actions reports the check FAILED on $BROKEN"; else fail "the regression never showed as failed"; return 1; fi
+  if gh_wait_card "$GH_THREAD" '.reason == "ci_failing"' 420; then pass "Foreman observed it: $(gh_card_line "$GH_CARD")"; else fail "Foreman never showed the failing check"; return 1; fi
+
+  gd_mark=$(gh_events_mark "$GH_RUN")
+  gh_trigger_fix_ci docker-fix-ci || return 1
+  if gh_wait 300 "PrFixStarted" gh_prfix_has PrFixStarted; then pass "the fix started: PrFixStarted is recorded"; else fail "no PrFixStarted within 300s"; gh_events_note "$GH_RUN" "$gd_mark"; return 1; fi
+  gd_started=$(gh_prfix_field PrFixStarted .data)
+  gd_fixrun=$(printf '%s' "$gd_started" | jq -r '.fix_run_id')
+  assert_has "the fix is a follow-up run" "$gd_fixrun" "run-"
+  if gh_wait 300 "follow-up request" gh_prfix_has RunFollowUpRequested; then pass "RunFollowUpRequested is recorded for $gd_fixrun"; else fail "no RunFollowUpRequested"; return 1; fi
+  assert_eq "the follow-up request asks for the docker sandbox (the PrFix default)" "$(gh_prfix_field RunFollowUpRequested .data.sandbox)" "docker"
+  assert_eq "the follow-up is attached to the PR head branch" "$(gh_prfix_field RunFollowUpRequested .data.attach_branch)" "$GH_BRANCH"
+  assert_eq "the follow-up pushes" "$(gh_prfix_field RunFollowUpRequested .data.push)" "true"
+  if gh_wait 300 "follow-up RunStarted" gh_prfix_has RunStarted; then :; fi
+  assert_eq "the follow-up run's frozen workflow snapshot says sandbox docker" "$(gh_prfix_field RunStarted .data.workflow_snapshot.sandbox)" "docker"
+
+  if gh_wait 900 "fix commit" gh_head_moved_from "$BROKEN"; then pass "the fix pushed a commit: $BROKEN -> $(gh_head)"; else fail "no fix commit within 900s"; gh_events_note "$GH_RUN" "$gd_mark"; gh_prfix_evidence "$GH_RUN"; return 1; fi
+  gd_fixed=$(gh_head)
+  if gh_wait 300 "ci green" gh_ci_head_is success; then pass "CI is green again on $gd_fixed"; else fail "CI not green after the fix ($(gh_ci_state "$gd_fixed"))"; fi
+  gh_clone_sync
+  if git -C "$GH_OP" merge-base --is-ancestor "$BROKEN" "$gd_fixed"; then pass "the fix is a new commit on top of the regression (no force push)"; else fail "the new head does not descend from the regression"; fi
+  assert_has "the fix repaired the code (app.add adds again)" "$(git -C "$GH_OP" show "$gd_fixed:app.py" 2>/dev/null)" "return a + b"
+  gd_fix_proof=$(git -C "$GH_OP" show "$gd_fixed:docker-fix-proof.txt" 2>/dev/null)
+  note "the fix's proof file: ${gd_fix_proof:-none}"
+  assert_has "the fix's agent ran INSIDE a container" "$gd_fix_proof" "dockerenv=yes"
+  if gh_wait 300 "PrFixFinished" gh_prfix_has PrFixFinished; then pass "the fix was recorded as finished"; else fail "no PrFixFinished"; fi
+  assert_eq "the fix finished as pushed" "$(gh_prfix_field PrFixFinished .data.outcome)" "pushed"
+  if gh_wait 300 "fix run completed" gh_prfix_has RunCompleted; then pass "the follow-up run completed"; else fail "the follow-up run never completed"; fi
+  gd_left=$(docker ps -aq --filter "ancestor=$gd_image" 2>/dev/null | grep -c .)
+  assert_eq "no sandbox container is left behind" "$gd_left" "0"
+  gh_prfix_evidence "$GH_RUN"
+  gh_events_note "$GH_RUN" "$gd_mark"
+  note "kept in $EVID: prfix-evidence-$GH_RUN.jsonl, events-$GH_RUN.txt"
   return 0
 }
 

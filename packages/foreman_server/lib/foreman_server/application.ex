@@ -100,6 +100,12 @@ defmodule ForemanServer.Application do
         # path that resolves a Beads provider, including the
         # TaskProvider.Registry snapshot and BootReconciliation's lazy
         # orphan-reopen pass.
+        # ConcurrencyLimiter bounds the `kata` CLI processes in flight per
+        # project (TRD-KATA-T055). KataAdapter acquires a slot around every
+        # runner call, including the `available?/0` probe the Registry makes
+        # while it boots, so it must be alive before the Registry. One
+        # globally named instance; the Beads adapter does not use it.
+        ForemanServer.TaskProviders.ConcurrencyLimiter,
         # TaskProvider.Registry owns configured task provider routing and must
         # start before dispatch paths resolve a provider snapshot.
         ForemanServer.TaskProvider.Registry
@@ -128,13 +134,6 @@ defmodule ForemanServer.Application do
         # that resolves a workflow (CommandRouter, Dispatcher, RunExecutor).
         ForemanServer.Workflow.Catalog,
         ForemanServer.Workflow.RunSupervisor,
-        # Jobsite.Registry/Jobsite.Supervisor mirror the
-        # RunExecutorRegistry/RunSupervisor pattern above, for the
-        # scripted event-sourced jobsite engine: one Executor per
-        # jobsite id, registered via `{:via, Registry, {Jobsite.Registry, id}}`.
-        {Registry, keys: :unique, name: ForemanServer.Jobsite.Registry},
-        ForemanServer.Jobsite.Control,
-        ForemanServer.Jobsite.Supervisor,
         # Dispatcher subscribes to ProjectionStore and reacts to TaskDispatched
         # AND terminal run events (RunCancelled, RunFlaggedStuck, RunCompleted,
         # RunFailed), forwarding the latter to BootReconciliation.run_terminated/2
@@ -161,6 +160,7 @@ defmodule ForemanServer.Application do
       maybe_coordinator_children() ++
       maybe_stuck_detector_child() ++
       maybe_pr_watcher_child() ++
+      maybe_pr_report_publisher_child() ++
       maybe_pr_monitor_child() ++
       maybe_schedule_ticker_child() ++
       maybe_trigger_poller_child() ++
@@ -253,6 +253,10 @@ defmodule ForemanServer.Application do
     :ok = ForemanServer.Workflow.RunSlotsMigration.warn_retired_config()
 
     {:ok, pid} = Supervisor.start_link(children(), supervisor_opts())
+
+    # TRD-014: after the tree is up (a configured checkpoint repo has started), say loudly when
+    # the idempotency store is not durable: effect keys then do not survive a restart.
+    _ = ForemanServer.Idempotency.KeyStore.report_boot_durability()
 
     # TRD-004: register the Jido.Harness backend adapter with the
     # AgentRuntime.AdapterCatalog after the supervisor tree is alive.
@@ -733,6 +737,16 @@ defmodule ForemanServer.Application do
     if ForemanServer.PrWatcher.enabled?(), do: [ForemanServer.PrWatcher], else: []
   end
 
+  # TRD-021: the PR report publisher subscribes to ProjectionStore and dispatches through
+  # CommandRouter, and its comment effect needs the key store, so it starts after PrWatcher
+  # (which appends the PrRiskRecorded it reacts to). On by default; the test env turns it
+  # off (tests start it with start_supervised!).
+  defp maybe_pr_report_publisher_child do
+    if ForemanServer.PrReport.Publisher.enabled?(),
+      do: [ForemanServer.PrReport.Publisher],
+      else: []
+  end
+
   # After ProjectionStore and CommandRouter (earlier in this list) so the first
   # tick and boot recovery can read projections and dispatch commands.
   defp maybe_schedule_ticker_child do
@@ -770,12 +784,12 @@ defmodule ForemanServer.Application do
   # Gated on :start_jobsite_boot_recovery? config so the test suite can opt out
   # of the boot-time scan (it would otherwise pause jobsites that other tests
   # seed in non-terminal states in the shared event store). Its own tests call
-  # `Jobsite.BootRecovery.scan/1` directly. Listed after CommandRouter,
+  # `Exec.BootRecovery.scan/1` directly. Listed after CommandRouter,
   # ProjectionStore, Jobsite.Registry and Jobsite.Supervisor, which the scan
   # reads and dispatches through.
   def maybe_jobsite_boot_recovery_child do
     if Application.get_env(:foreman_server, :start_jobsite_boot_recovery?, true) do
-      [ForemanServer.Jobsite.BootRecovery]
+      [ForemanServer.Exec.BootRecovery]
     else
       []
     end

@@ -39,14 +39,14 @@ Make the compiler catch it; if it can't, fail loudly. Never degrade to a plausib
 
 ## Invariants (do not relax)
 
-- **Phase execution runs on the Jobsite engine** (`Workflow.Lowering` → `Jobsite.Engine`). Do not reintroduce a second phase loop in `RunExecutor`.
+- **Phase execution runs on the execution engine** (`Workflow.Lowering` → `Exec.Engine`; the module name is historical, the jobsite dispatch door is retired). Do not reintroduce a second phase loop in `RunExecutor`.
 - **Workflow vocabulary is closed.** Phase fields: `PhaseSpec.@fields` + `commit`, `stack_pr`, `timeout_minutes`, `approval_mode`; plus the workflow `worktree:` block. Never author `builtin`, `checkpointPr`, `create-pr`, `pr-wait` or `merge` phases; don't dispatch stale workflows from `~/.foreman/workflows/` (supported set: `packages/foreman_server/priv/defaults/workflows/`).
 - **Refuse what cannot be honoured; warn where the consequence is merely invisible.** No load-time veto on a manifest a retained worktree makes satisfiable.
 - **The PR base is the branch the run was cut from; there is no default.** Undeterminable base → typed error and no PR, never a guess to `main`.
 - **Env vars exported by `foreman_env/3` prove only that Foreman computed them.** If a variable "has no effect", read `JidoHarnessWorker.init/1` first. A `command:` phase has no in-prompt channel: anything it must know travels by env.
 - **The merge gate is operator-only.** `merge_approve` / `run.pr.merge` are never exposed as MCP tools or agent paths.
 - **Phase timeouts:** an absent `timeout_minutes:` means no deadline (`:infinity`); resolution order is in `FailurePolicy.resolve/2`.
-- **Remote Jobsite API** stays fail-closed (`RequireAuthenticated`), `allow_remote_start` default off, `hooks.host.*` forbidden, client never supplies repo paths.
+- **The jobsite dispatch door is retired** (`docs/plans/retire-jobsites.md`): PR fixes are follow-up runs admitted through `RunAdmission.start/2`; `run.followup.request` is system-only and stays off every operator allowlist.
 - **Foreman never learns provider from model name.** Harness providers are `[:pi, :claude]`; a LiteLLM proxy is reached *through* them.
 
 ## Testing and Safety
@@ -84,7 +84,7 @@ CQRS/event-sourced Elixir umbrella: `foreman_server` (Phoenix is the sole HTTP i
 
 | File | Read before touching |
 | --- | --- |
-| `phase-execution-and-pr-mechanics.md` | RunExecutor, Jobsite engine, `commit:`/`stack_pr:`/`timeout_minutes:`, AutoPR, base-branch resolution, `FOREMAN_*` env/artifact contract, merge gate, `/api/jobsites` |
+| `phase-execution-and-pr-mechanics.md` | RunExecutor, Jobsite engine, `commit:`/`stack_pr:`/`timeout_minutes:`, AutoPR, base-branch resolution, `FOREMAN_*` env/artifact contract, merge gate |
 | `typed-boundaries-full.md` | Full §5 rules with the MCP/StepSequencer/cleanup post-mortems |
 | `architecture-and-events.md` | Stack, command flow, actors, aggregate state, domain events, idempotency, Go CLI boundaries, TaskProvider, ImplementationContext |
 | `claude-projects-architecture.md` | Project workspace capabilities (threads, Overview, coordinator, approvals, PR watching, schedules, usage, memory, library): aggregates, events, modules, HTTP/MCP/CLI surfaces |
@@ -94,3 +94,4 @@ CQRS/event-sourced Elixir umbrella: `foreman_server` (Phoenix is the sole HTTP i
 | `beads-workflow-legacy.md` | Older Beads narrative (historical) |
 | `run-logs-known-issues.md` | Durable run logs, MCP run status, known issues, stall detection, outbound messaging |
 | `documentation-discipline-history.md` | Why the documentation gate exists; CLI-reference corrections |
+| `executor-isolation-and-vfs.md` | What each backend enforces (execution profile, host fail-closed network check, `VfsIsolation` is not enforcement), docker cleanup routes, pi skill preflight, CI-equivalent local test runs |

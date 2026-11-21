@@ -23,7 +23,7 @@ defmodule ForemanServer.Projects.SourceBranch do
     * `{:invalid_source_branch, value}` - a branch name that is not safe to hand to git (`validate/1`).
   """
 
-  alias ForemanServer.Jobsite.Git
+  alias ForemanServer.Exec.Git
   alias ForemanServer.ProjectionStore
 
   # The same shape `Jobsite.Spec` accepts for a branch strategy: it ends up as a git argument.

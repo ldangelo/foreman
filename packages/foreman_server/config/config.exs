@@ -38,13 +38,38 @@ config :foreman_server, :agent_runtime,
 # and flip run.status from awaiting_worker → in_progress. Test mode
 # overrides this to false in config/test.exs.
 config :foreman_server, ForemanServer.Overwatch, enabled: true
+# Phase 1 (P-3): gating a project on required_checks needs the durable idempotency store.
+# `KeyStore.require_durable/0` refuses (`{:store_not_durable, note}`) while this is true and
+# the store is ETS-only or unreachable. dev.exs and test.exs set it false (their store is
+# ETS-only); prod.exs leaves it true and the store off by default, so turning the store on
+# (`:jido_ecto`) stays a deployment step.
+config :foreman_server, :require_durable_store_for_gating, true
+
+# Effect reconcilers (TRD-011..013): the class of an ambiguous `effect:` key (the
+# `effect_class` its metadata carries) mapped to the module that asks the outside
+# world whether the effect happened. A class with no entry blocks the run
+# `effect_class_unregistered`.
+config :foreman_server, ForemanServer.Idempotency.Reconciler,
+  classes: %{
+    "branch_push" => ForemanServer.Idempotency.Reconcilers.BranchPush,
+    "pr_create" => ForemanServer.Idempotency.Reconcilers.PrCreate,
+    "pr_comment" => ForemanServer.Idempotency.Reconcilers.PrComment,
+    "task_provider" => ForemanServer.Idempotency.Reconcilers.TaskProvider
+  }
+
 # foreman_server: task_provider subsystem (TRD-029)
 config :foreman_server, :br_runner, ForemanServer.TaskProviders.SystemBrRunner
 
+# `accepted_kata_versions` are `Version.match?/2` requirements read only by `foreman doctor`; the
+# adapter itself accepts any kata that answers `--version` (TRD-KATA-T009, T022).
 config :foreman_server, :task_provider,
   actor: nil,
-  accepted_contract_versions: ["br.capabilities.v1"],
-  providers: [ForemanServer.TaskProviders.BeadsAdapter]
+  accepted_contract_versions: ["br.capabilities.v1", "kata.capabilities.v1"],
+  accepted_kata_versions: [">= 0.19.0"],
+  providers: [
+    ForemanServer.TaskProviders.BeadsAdapter,
+    ForemanServer.TaskProviders.KataAdapter
+  ]
 
 # Per-project Beads JSONL watcher + orphan janitor supervisors (TRD-014).
 # Both default `false` — operators opt in for production via
@@ -63,6 +88,13 @@ config :foreman_server, :max_concurrent_runs_per_project, 3
 # not the project's primary (`{:error, :multi_repo_runs_disabled}`). Tests state the
 # gate they need with `ForemanServer.MultiRepoRuns.enable!/0` and `disable!/0`.
 config :foreman_server, :multi_repo, runs: true
+# Follow-up runs (docs/plans/retire-jobsites.md): a task-less run attached to a PR head branch. It is
+# how a PR fix runs now that the jobsite door is retired, so the gate is ON. `enabled: false` is the
+# operator's kill switch: `run.followup.request` is refused and a PR fix is finished as failed. The
+# first `RunFollowUpRequested` event writes keys an older build cannot decode: after it, rolling back
+# to a build without this event is NOT safe. Tests state the gate they need with
+# `ForemanServer.FollowUpRuns.enable!/0` and `disable!/0`.
+config :foreman_server, :followup_runs, enabled: true
 # Anubis MCP server (TRD-036)
 config :foreman_server, :mcp,
   enabled: false,
@@ -297,7 +329,9 @@ config :foreman_server, :review,
 # (FOREMAN_PR_MONITOR_ENABLED=true -> ForemanServer.PrMonitor). The fix-thread jobsite
 # runs `agent` unless the run's own provider session names one; `max_iterations`
 # bounds one fix agent invocation; `log_tail_bytes` caps the failing-CI log excerpt.
-config :foreman_server, :pr_watcher, enabled: true
+# no_change_rechecks / no_change_recheck_ms: an unchanged PR head after a fix run is re-read this many times,
+# this far apart, before the fix is recorded `no_change` (GitHub's read side lags a push by moments).
+config :foreman_server, :pr_watcher, enabled: true, no_change_rechecks: 3, no_change_recheck_ms: 3_000
 
 config :foreman_server, :pr_fix,
   agent: %{"provider" => "claude"},

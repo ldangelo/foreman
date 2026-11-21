@@ -62,6 +62,7 @@ defmodule ForemanServer.CommandRouter do
   @spec dispatch(command :: map(), timeout :: integer()) ::
           {:ok, event_spec :: map() | nil}
           | {:error, any()}
+          | {:error, reason :: any(), details :: any()}
   def dispatch(command, timeout \\ 5_000)
 
   def dispatch(%{type: "run.start"}, _timeout) do
@@ -594,6 +595,7 @@ defmodule ForemanServer.CommandRouter do
   def aggregate_module_for("jobsite:" <> _), do: ForemanServer.Aggregates.Jobsite
   def aggregate_module_for("jobsite_audit:" <> _), do: ForemanServer.Aggregates.JobsiteAudit
   def aggregate_module_for("run_repo_audit:" <> _), do: ForemanServer.Aggregates.RunRepoAudit
+  def aggregate_module_for("run_followup:" <> _), do: ForemanServer.Aggregates.RunFollowUp
   def aggregate_module_for("review:" <> _), do: ForemanServer.Aggregates.Review
   def aggregate_module_for("project_memory:" <> _), do: ForemanServer.Aggregates.ProjectMemory
   def aggregate_module_for("project_library:" <> _), do: ForemanServer.Aggregates.ProjectLibrary

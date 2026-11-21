@@ -18,6 +18,21 @@ defmodule ForemanServerWeb.DoctorController do
       to deliver, `warn` when messaging is enabled but its config is invalid, the
       notifier or the dispatcher process is down, or events were refused
       (`Notifier.status/0`; it never names a destination);
+    * `effect_keys` - started and ambiguous effect keys
+      (`MCP.Tools.Doctor.unresolved_effect_keys/0`): `ok` with the count in the title
+      (informational, so `foreman doctor --strict` stays green) and the store line, the Phase 1
+      gating line (`Doctor.gating_line/0`: durable store required and met or not; a switch that
+      is not a boolean is read as on and says so) and one line per key in `detail`
+      (`<class> run=<id> status=<run status> key=<key> key_status=<started|ambiguous>
+      decision=<not_done|none> writer=<alive|dead|none>`, `Doctor.effect_entry_line/1`); `warn` only when the
+      keys cannot be read (the detail then still carries the gating line);
+    * `pr_observation` - what shows a head change, a new check result or a published
+      report without anyone approving (a fix push is re-read by the watcher; any other push
+      is seen only by the poll loop or a verified webhook): the watcher
+      (`PrWatcher.enabled?/0`, on by default), the monitor (`PrMonitor.enabled?/0`, opt-in)
+      and whether `FOREMAN_GITHUB_WEBHOOK_SECRET` is set (never its value); `warn` when
+      the watcher is off. The merge gate does not depend on any of them: approval re-reads
+      GitHub;
     * `project.recommendations` - with `?project=`, counts of setup
       recommendations by severity (`Projects.Recommendations`).
 
@@ -44,7 +59,9 @@ defmodule ForemanServerWeb.DoctorController do
     checks =
       [check("server", :ok, "Server reachable", "The server answered this request.")] ++
         [event_store_check()] ++
-        provider_checks() ++ workflow_checks() ++ [notifier_check()] ++ project_check
+        provider_checks() ++
+        workflow_checks() ++
+        [notifier_check(), effect_keys_check(), pr_observation_check()] ++ project_check
 
     case Enum.find(project_check, &(&1["status"] == "not_found")) do
       nil -> conn |> put_status(:ok) |> json(%{checks: checks})
@@ -58,6 +75,158 @@ defmodule ForemanServerWeb.DoctorController do
   catch
     :exit, reason ->
       check("event_store", :fail, "Read model unreachable", inspect(reason))
+  end
+
+  defp effect_keys_check do
+    case safely(&Doctor.unresolved_effect_keys/0) do
+      {:ok, {:ok, entries}} ->
+        lines = [
+          Doctor.store_line(),
+          Doctor.gating_line() | Enum.map(Doctor.effect_entry_lines(entries), &("  " <> &1))
+        ]
+
+        check(
+          "effect_keys",
+          :ok,
+          "Unresolved effect keys: #{length(entries)}",
+          Enum.join(lines, "\n")
+        )
+
+      _unreadable ->
+        check(
+          "effect_keys",
+          :warn,
+          "Unresolved effect keys could not be read",
+          "The idempotency store did not answer, so ambiguous effect keys are unknown.\n" <>
+            Doctor.gating_line()
+        )
+    end
+  end
+
+  defp pr_observation_check do
+    watcher = ForemanServer.PrWatcher.enabled?()
+    monitor = ForemanServer.PrMonitor.enabled?()
+    webhook = webhook_secret_set?()
+    {gated, unreadable} = gated_projects()
+
+    detail =
+      Enum.join(
+        [
+          "watcher: #{on_off(watcher)} (FOREMAN_PR_WATCHER_ENABLED; on by default; re-reads the PR when a fix jobsite ends)",
+          "monitor: #{on_off(monitor)} (FOREMAN_PR_MONITOR_ENABLED=true; polls for a head that moves for any other reason)",
+          "webhook secret: #{if webhook, do: "set", else: "not set"} (FOREMAN_GITHUB_WEBHOOK_SECRET; without it /webhooks/github answers 503)",
+          "The merge gate does not depend on these: approval re-reads GitHub."
+        ] ++ unreadable_lines(unreadable) ++ Enum.flat_map(gated, &gated_lines/1),
+        "\n"
+      )
+
+    cond do
+      unreadable != nil ->
+        check(
+          "pr_observation",
+          :warn,
+          "Gated projects could not be read: #{unreadable}",
+          detail
+        )
+
+      gated != [] and not monitor and not webhook ->
+        check(
+          "pr_observation",
+          :warn,
+          "Gated project(s) #{Enum.join(gated, ", ")}: neither the monitor nor the webhook is on, " <>
+            "so a head or check change is not observed",
+          detail
+        )
+
+      watcher ->
+        check(
+          "pr_observation",
+          :ok,
+          "PR observation: #{summary(monitor, webhook)}",
+          detail
+        )
+
+      true ->
+        check(
+          "pr_observation",
+          :warn,
+          "PR watcher is off: fix pushes and PR events are not observed",
+          detail
+        )
+    end
+  end
+
+  # `{names, nil}`, or `{[], reason}` when the projection cannot be read: an unreadable
+  # projection must not look like "no gated project", so the row says so and warns.
+  # Archived projects are skipped (they take no PRs); names are sorted.
+  defp gated_projects do
+    names =
+      for project <- list_projects(),
+          not archived?(project),
+          ForemanServer.ProjectSettings.from_config(Map.get(project, :config)).required_checks !=
+            nil do
+        to_string(
+          Map.get(project, :name) || Map.get(project, :id) || Map.get(project, :project_id)
+        )
+      end
+
+    {Enum.sort(names), nil}
+  rescue
+    error -> {[], Exception.message(error)}
+  catch
+    :exit, reason -> {[], inspect(reason, limit: 5)}
+  end
+
+  # The projection read; `:doctor_project_lister` (a zero-arity fun) replaces it in tests.
+  defp list_projects do
+    lister =
+      Application.get_env(
+        :foreman_server,
+        :doctor_project_lister,
+        &ProjectionStore.list_projects/0
+      )
+
+    lister.()
+  end
+
+  defp archived?(project),
+    do: Map.get(project, :status) == "archived" or Map.get(project, :archived?) == true
+
+  defp unreadable_lines(nil), do: []
+  defp unreadable_lines(reason), do: ["gated projects could not be read: #{reason}"]
+
+  defp gated_lines(name) do
+    durable =
+      case ForemanServer.Idempotency.KeyStore.require_durable() do
+        :ok ->
+          []
+
+        {:error, {:store_not_durable, _note}} ->
+          [
+            "gated project #{name}: the idempotency store is not durable (see the Phase 1 gating line)"
+          ]
+      end
+
+    [
+      "gated project #{name}: required_checks is set; a PR with more than 100 checks is read from " <>
+        "the newest 100 only, so a required check outside them is checks_truncated and not eligible."
+      | durable
+    ]
+  end
+
+  defp summary(true, true), do: "watcher on, monitor on, webhook secret set"
+  defp summary(true, false), do: "watcher on, monitor on, webhook secret not set"
+  defp summary(false, true), do: "watcher on, monitor off, webhook secret set"
+  defp summary(false, false), do: "watcher on, monitor off, webhook secret not set"
+
+  defp on_off(true), do: "on"
+  defp on_off(false), do: "off"
+
+  defp webhook_secret_set? do
+    case Application.get_env(:foreman_server, :github_webhook_secret) do
+      secret when is_binary(secret) and secret != "" -> true
+      _ -> false
+    end
   end
 
   # Notifications are optional, so "off" is a healthy answer. What must not look healthy is the

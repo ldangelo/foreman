@@ -59,9 +59,9 @@ E2E_HOOK_PORT=${E2E_HOOK_PORT:-4930}
 # shellcheck source=claude_projects/bead_thread.sh
 . "$HERE/claude_projects/bead_thread.sh"
 
-SCENARIOS=${*:-"provider-down agent-crash coordinator-crash server-crash port-closed cancel-strays shutdown-strays project-paused br-down jobsite-resume"}
+SCENARIOS=${*:-"provider-down agent-crash coordinator-crash server-crash port-closed cancel-strays shutdown-strays project-paused br-down"}
 for s in $SCENARIOS; do
-  case "$s" in provider-down|agent-crash|coordinator-crash|server-crash|port-closed|cancel-strays|shutdown-strays|project-paused|br-down|jobsite-resume) ;; *) die "unknown scenario '$s'" 1 ;; esac
+  case "$s" in provider-down|agent-crash|coordinator-crash|server-crash|port-closed|cancel-strays|shutdown-strays|project-paused|br-down) ;; jobsite-resume) die "scenario 'jobsite-resume' is retired with the jobsite dispatch path (docs/plans/retire-jobsites.md)" 1 ;; *) die "unknown scenario '$s'" 1 ;; esac
 done
 
 check_environment
@@ -744,7 +744,6 @@ for s in $SCENARIOS; do
     shutdown-strays) scenario_shutdown_strays ;;
     project-paused) scenario_project_paused ;;
     br-down) scenario_br_down ;;
-    jobsite-resume) scenario_jobsite_resume ;;
   esac
 done
 summary

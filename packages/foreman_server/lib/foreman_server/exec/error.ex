@@ -1,0 +1,51 @@
+defmodule ForemanServer.Exec.Error do
+  @moduledoc """
+  Typed error payload for every Jobsite failure. Per AGENTS.md §5.1, a
+  failure is always this struct, never a bare map.
+
+  `code` vocabulary (each used once, at its origin):
+
+    * `:prompt_source_missing` / `:prompt_source_conflict` / `:prompt_arg_missing` /
+      `:prompt_arg_reserved` / `:prompt_expansion_failed` — `Exec.Prompt`
+    * `:worktree_create_failed` / `:worktree_vanished` / `:branch_strategy_unsupported` /
+      `:merge_conflict` / `:merge_failed` — `Exec.Worktree`
+    * `:commit_failed` / `:git_failed` — `Exec.Git`
+    * `:sandbox_create_failed` / `:sandbox_exec_failed` / `:copy_failed` / `:image_missing` —
+      sandbox providers
+    * `:hook_failed` — `Exec.Hooks`, `Exec.Engine` (also the project setup script)
+    * `:project_env_invalid` — `Jobsite.Executor` (the project's stored environment uses
+      reserved `FOREMAN_*` names; fails loudly, never silently dropped)
+    * `:network_policy_unsupported` / `:network_policy_violation` / `:network_policy_failed` —
+      `Exec.NetworkPolicy` (project `environment.network` on a non-docker sandbox; a
+      wider sandbox network than the policy; docker refused to create the policy's network)
+    * `:agent_start_failed` / `:agent_failed` / `:agent_idle_timeout` — `Exec.AgentRunner`
+    * `:resume_with_iterations` / `:output_tag_missing` / `:output_invalid` /
+      `:output_with_iterations` — `Exec.Output` / `Jobsite.Options`
+    * `:jobsite_not_found` / `:not_resumable` / `:no_session` — `Jobsite.resume/1`,
+      `Jobsite.resume_async/2`, `Jobsite.steer/3`, via `Jobsite.Executor.check_resumable/1`
+      (`:not_resumable` covers a terminal jobsite and one that never
+      provisioned a worktree; `:no_session` one whose agent never reported a
+      provider session, so a resume would start a blank agent)
+    * `:dispatch_rejected` — `Jobsite.Executor`
+    * `:jobsite_start_failed` — `Jobsite.run_async/1` (the Executor exited before it recorded
+      `jobsite.start`, so the id it would have returned could never be read)
+    * `:orphan_agent_survived` — `Jobsite.Executor.resume/2` (an agent process left by a dead
+      server in the worktree would not terminate; resume refused)
+    * `:thread_cap_reached` — `Jobsite.Executor.reserve_thread/2` (project daily thread cap)
+    * `:runner_capability` / `:unsupported_phase_action` — `Workflow.Lowering`
+    * `:executor_lost` / `:boot_recovery_failed` — `Exec.BootRecovery` (`:executor_lost`: no
+      worktree, or no provider session, was ever recorded for the orphan)
+    * `:template_option_unsupported` — `Jobsite.Template` (a key the template generator does not
+      set; `Spec.from_json/2` may well accept it). Every other template failure carries the
+      `:spec_*` code `Spec.from_json/2` gave it.
+  """
+  @enforce_keys [:code, :message]
+  @type t :: %__MODULE__{code: atom(), message: String.t(), details: map()}
+  defstruct [:code, :message, details: %{}]
+
+  @spec new(atom(), String.t(), map()) :: t()
+  def new(code, message, details \\ %{})
+      when is_atom(code) and is_binary(message) and is_map(details) do
+    %__MODULE__{code: code, message: message, details: details}
+  end
+end

@@ -1,7 +1,6 @@
 defmodule ForemanServer.PrFixTest do
   use ExUnit.Case, async: false
 
-  alias ForemanServer.Jobsite.Error
   alias ForemanServer.{PrFix, ProjectionStore}
   alias ForemanServer.TestSupport.PrFixSupport, as: Fix
   alias ForemanServer.TestSupport.PrWatchSupport, as: Support
@@ -254,18 +253,68 @@ defmodule ForemanServer.PrFixTest do
                PrFix.plan("ci", ctx.run_id, ctx.pr_url, fetch_fun: fn _ -> {:ok, ctx.status} end)
     end
 
-    test "a GitHub read failure is a typed fetch error, a Jobsite spec rejection passes through" do
+    test "a GitHub read failure is a typed fetch error" do
       ctx = Fix.watched!()
 
       assert {:error, {:fetch_failed, :rate_limited}} =
                PrFix.plan("ci", ctx.run_id, ctx.pr_url,
                  fetch_fun: fn _ -> {:error, :rate_limited} end
                )
+    end
+  end
 
-      Application.put_env(:foreman_server, :pr_fix, max_iterations: 0)
+  # The follow-up run request a fix hands the Dispatcher (docs/plans/retire-jobsites.md): every field
+  # the jobsite spec carried, in run terms. (PR0 pinned the jobsite option set; this is its successor.)
+  describe "plan option contract" do
+    setup do
       on_exit(fn -> Application.delete_env(:foreman_server, :pr_fix) end)
+      %{ctx: Fix.watched!()}
+    end
 
-      assert {:error, %Error{}} =
+    test "carries exactly these keys, with these values", %{ctx: ctx} do
+      request = plan!("ci", ctx).followup
+
+      required =
+        ~w(project_id kind requested_by parent_run_id pr_url fix_kind attach_branch push prompt)a
+
+      optional =
+        ~w(provider model approval_mode sandbox repo_path worktree_path resume_session_provider resume_session_id)a
+
+      keys = Map.keys(request)
+      assert required -- keys == []
+      assert (keys -- (required ++ optional)) |> Enum.uniq() == []
+
+      assert request.project_id == ctx.project_id
+      assert request.kind == "pr_fix"
+      assert request.requested_by == "pr_watcher"
+      assert request.parent_run_id == ctx.run_id
+      assert request.pr_url == ctx.pr_url
+      assert request.fix_kind == "ci"
+      assert request.push == true
+      assert request.attach_branch == ctx.status.head_branch
+      assert request.repo_path == ctx.repo
+      assert request.prompt == plan!("ci", ctx).prompt
+
+      # A fix runs in Docker unless configured otherwise.
+      assert request.sandbox == "docker"
+    end
+
+    test "the fix kind is carried; the host sandbox is refused unless the server allows it", %{
+      ctx: ctx
+    } do
+      assert plan!("comments", ctx).followup.fix_kind == "comments"
+
+      Application.put_env(:foreman_server, :pr_fix, sandbox: "host")
+
+      assert {:error, {:sandbox_not_allowed, "host"}} =
+               PrFix.plan("ci", ctx.run_id, ctx.pr_url, fetch_fun: fn _ -> {:ok, ctx.status} end)
+
+      Application.put_env(:foreman_server, :pr_fix, sandbox: "host", allow_host_sandbox: true)
+      assert plan!("ci", ctx).followup.sandbox == nil
+
+      Application.put_env(:foreman_server, :pr_fix, sandbox: "vm")
+
+      assert {:error, {:sandbox_invalid, "vm"}} =
                PrFix.plan("ci", ctx.run_id, ctx.pr_url, fetch_fun: fn _ -> {:ok, ctx.status} end)
     end
   end
@@ -290,13 +339,12 @@ defmodule ForemanServer.PrFixTest do
 
       assert plan.resumed_session
       assert plan.head_branch == ctx.status.head_branch
-      assert plan.jobsite_opts[:resume_session] == "sess-1"
-      assert plan.jobsite_opts[:agent].provider == :pi
-      assert plan.jobsite_opts[:agent].model == "minimax/MiniMax-M2.7-highspeed"
-      refute Keyword.has_key?(plan.jobsite_opts, :path)
-      assert plan.jobsite_opts[:push] == true
-      assert plan.jobsite_opts[:sync_remote] == "origin"
-      assert plan.jobsite_opts[:strategy] == {:branch, ctx.status.head_branch}
+      assert plan.followup[:resume_session_id] == "sess-1"
+      assert plan.followup.provider == "pi"
+      assert plan.followup.model == "minimax/MiniMax-M2.7-highspeed"
+      assert plan.followup.worktree_path == nil
+      assert plan.followup.push == true
+      assert plan.followup.attach_branch == ctx.status.head_branch
     end
 
     test "once the original worktree is cleaned up it is recreated at the SAME path and resumed",
@@ -307,8 +355,8 @@ defmodule ForemanServer.PrFixTest do
       plan = plan!("ci", ctx)
 
       assert plan.resumed_session
-      assert plan.jobsite_opts[:path] == original
-      assert plan.jobsite_opts[:resume_session] == "sess-1"
+      assert plan.followup.worktree_path == original
+      assert plan.followup[:resume_session_id] == "sess-1"
     end
 
     test "when something else took the original path nothing is resumed (sessions are cwd-bound)",
@@ -319,9 +367,9 @@ defmodule ForemanServer.PrFixTest do
       plan = plan!("ci", ctx)
 
       refute plan.resumed_session
-      refute Keyword.has_key?(plan.jobsite_opts, :path)
-      refute Keyword.has_key?(plan.jobsite_opts, :resume_session)
-      assert plan.jobsite_opts[:agent].provider == :pi
+      assert plan.followup.worktree_path == nil
+      refute Map.has_key?(plan.followup, :resume_session_id)
+      assert plan.followup.provider == "pi"
     end
 
     test "a branch checked out in a DIFFERENT worktree than the run's is not resumed",
@@ -334,7 +382,7 @@ defmodule ForemanServer.PrFixTest do
       plan = plan!("ci", ctx)
 
       refute plan.resumed_session
-      refute Keyword.has_key?(plan.jobsite_opts, :resume_session)
+      refute Map.has_key?(plan.followup, :resume_session_id)
     end
   end
 
@@ -358,10 +406,10 @@ defmodule ForemanServer.PrFixTest do
         plan = plan!("ci", ctx)
 
         assert plan.resumed_session
-        assert plan.jobsite_opts[:resume_session] == "sess-1"
-        assert plan.jobsite_opts[:agent].provider == :claude
-        assert plan.jobsite_opts[:agent].model == "haiku"
-        assert plan.jobsite_opts[:agent].approval_mode == unquote(mode)
+        assert plan.followup[:resume_session_id] == "sess-1"
+        assert plan.followup.provider == "claude"
+        assert plan.followup.model == "haiku"
+        assert plan.followup.approval_mode == unquote(Atom.to_string(mode))
       end
     end
 
@@ -371,7 +419,7 @@ defmodule ForemanServer.PrFixTest do
       plan = plan!("ci", ctx)
 
       assert plan.resumed_session
-      assert plan.jobsite_opts[:agent].approval_mode == nil
+      assert plan.followup.approval_mode == nil
     end
 
     test "prompt is not carried: a jobsite has nobody to answer a per-call approval" do
@@ -380,7 +428,7 @@ defmodule ForemanServer.PrFixTest do
       plan = plan!("ci", ctx)
 
       assert plan.resumed_session
-      assert plan.jobsite_opts[:agent].approval_mode == nil
+      assert plan.followup.approval_mode == nil
     end
 
     test "the mode of the LAST session is the one the fix thread uses" do
@@ -389,8 +437,8 @@ defmodule ForemanServer.PrFixTest do
 
       plan = plan!("ci", ctx)
 
-      assert plan.jobsite_opts[:resume_session] == "sess-2"
-      assert plan.jobsite_opts[:agent].approval_mode == :auto_edit
+      assert plan.followup[:resume_session_id] == "sess-2"
+      assert plan.followup.approval_mode == "auto_edit"
     end
 
     test "the mode follows the agent even when the session cannot be resumed" do
@@ -401,15 +449,15 @@ defmodule ForemanServer.PrFixTest do
       plan = plan!("ci", ctx)
 
       refute plan.resumed_session
-      refute Keyword.has_key?(plan.jobsite_opts, :resume_session)
-      assert plan.jobsite_opts[:agent].approval_mode == :auto_approve
+      refute Map.has_key?(plan.followup, :resume_session_id)
+      assert plan.followup.approval_mode == "auto_approve"
     end
 
     test "every kind of fix carries it" do
       {ctx, _original} = claude_run!(%{approval_mode: "auto_approve"})
 
       for kind <- ["ci", "comments", "conflicts"] do
-        assert plan!(kind, ctx).jobsite_opts[:agent].approval_mode == :auto_approve
+        assert plan!(kind, ctx).followup.approval_mode == "auto_approve"
       end
     end
   end
@@ -430,13 +478,13 @@ defmodule ForemanServer.PrFixTest do
       plan = plan!("ci", ctx)
 
       refute plan.resumed_session
-      assert plan.jobsite_opts[:agent].provider == :pi
-      assert plan.jobsite_opts[:agent].model == "minimax/MiniMax-M2.7-highspeed"
-      refute Keyword.has_key?(plan.jobsite_opts, :resume_session)
+      assert plan.followup.provider == "pi"
+      assert plan.followup.model == "minimax/MiniMax-M2.7-highspeed"
+      refute Map.has_key?(plan.followup, :resume_session_id)
       # the fresh session still starts at the original path (nothing else holds it)
-      assert plan.jobsite_opts[:path] == original
+      assert plan.followup.worktree_path == original
       # the configured agent names no approval mode
-      assert plan.jobsite_opts[:agent].approval_mode == nil
+      assert plan.followup.approval_mode == nil
     end
   end
 end

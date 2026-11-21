@@ -229,8 +229,8 @@ defmodule ForemanServer.PrMonitorMultiRepoTest do
         ])
 
       assert {:ok, plan} = PrFix.plan("ci", ctx.run_id, ctx.b_url, fetch_fun: stub)
-      assert plan.jobsite_opts[:repo_path] == ctx.repo_b
-      assert plan.jobsite_opts[:path] == b_path
+      assert plan.followup.repo_path == ctx.repo_b
+      assert plan.followup.worktree_path == b_path
     end
 
     test "a fix for a's PR still uses the primary repository and worktree", ctx do
@@ -275,8 +275,8 @@ defmodule ForemanServer.PrMonitorMultiRepoTest do
         ])
 
       assert {:ok, plan} = PrFix.plan("ci", ctx.run_id, ctx.a_url, fetch_fun: stub)
-      assert plan.jobsite_opts[:repo_path] == ctx.repo_a
-      assert plan.jobsite_opts[:path] == a_path
+      assert plan.followup.repo_path == ctx.repo_a
+      assert plan.followup.worktree_path == a_path
     end
 
     # The run's agent ran in the PRIMARY's worktree, so every persisted provider session is bound
@@ -331,12 +331,12 @@ defmodule ForemanServer.PrMonitorMultiRepoTest do
 
       assert {:ok, plan_a} = PrFix.plan("ci", ctx.run_id, ctx.a_url, fetch_fun: stub_a)
       assert plan_a.resumed_session
-      assert plan_a.jobsite_opts[:resume_session] == "sess-primary"
+      assert plan_a.followup[:resume_session_id] == "sess-primary"
 
       assert {:ok, plan_b} = PrFix.plan("ci", ctx.run_id, ctx.b_url, fetch_fun: stub_b)
       refute plan_b.resumed_session
-      refute Keyword.has_key?(plan_b.jobsite_opts, :resume_session)
-      assert plan_b.jobsite_opts[:agent].provider == :pi
+      refute Map.has_key?(plan_b.followup, :resume_session_id)
+      assert plan_b.followup.provider == "pi"
     end
   end
 end

@@ -7,12 +7,9 @@ defmodule ForemanServer.LibraryDeliveryTest do
   @moduletag :tmp_dir
 
   alias ForemanServer.{CommandRouter, Library, ProjectContext}
-  alias ForemanServer.Jobsite
-  alias ForemanServer.Jobsite.{Agents, Sandboxes}
   alias ForemanServer.ProjectContext.Library, as: LibrarySection
   alias ForemanServer.Workflow.RunExecutor
 
-  @fake_agent Path.join(__DIR__, "jobsite/support/fake_agent.sh")
   @operator %{kind: :operator, ref: "op"}
 
   setup %{tmp_dir: tmp_dir} do
@@ -107,7 +104,7 @@ defmodule ForemanServer.LibraryDeliveryTest do
       worktree = %{path: ctx.repo, repo_path: ctx.repo}
 
       assert {:ok, _state, _sandbox_path, _container} =
-               ForemanServer.Jobsite.Sandboxes.Docker.create(
+               ForemanServer.Exec.Sandboxes.Docker.create(
                  %{binary: fake, image: "img", mounts: mounts, uid: "1", gid: "1"},
                  worktree
                )
@@ -117,81 +114,34 @@ defmodule ForemanServer.LibraryDeliveryTest do
     end
   end
 
-  describe "jobsite resume" do
-    test "a resumed docker-less jobsite still gets FOREMAN_LIBRARY_PATH", ctx do
-      add!(ctx)
-      # The agent env is not persisted across a pause, so the resumed agent only sees
-      # the library variable if resume re-derives it. This agent reports it on every
-      # run after the first (the first one holds long enough to be paused).
-      script = Path.join(ctx.tmp_dir, "env-agent.sh")
-
-      File.write!(script, """
-      #!/bin/sh
-      n=0
-      [ -f agent-count ] && n=$(cat agent-count)
-      n=$((n + 1))
-      echo $n > agent-count
-      printf '{"type":"session","id":"s1"}\\n'
-      [ "$n" = "1" ] && sleep 20
-      T="lib=$(printenv FOREMAN_LIBRARY_PATH || true)"
-      printf '{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"%s"}}\\n' "$T"
-      printf '{"type":"message_end","message":{"role":"assistant","content":"%s","usage":{"input_tokens":1,"output_tokens":1}}}\\n' "$T"
-      """)
-
-      File.chmod!(script, 0o755)
-
-      {:ok, id} =
-        Jobsite.run_async(
-          repo_path: ctx.repo,
-          strategy: :merge_to_head,
-          sandbox: Sandboxes.host(),
-          agent: Agents.pi("x", binary: script),
-          prompt: "go",
-          project_id: ctx.project_id,
-          max_iterations: 3,
-          completion_signal: "NEVER"
-        )
-
-      await_until(fn -> (Jobsite.get(id) || %{})[:status] == "running" end)
-      # A resume needs the provider session the agent reported (foreman-cm8nv).
-      ForemanServer.TestSupport.JobsiteSession.await!(id)
-      assert :ok = Jobsite.pause(id, "for resume")
-      await_until(fn -> (Jobsite.get(id) || %{})[:status] == "paused" end)
-      await_until(fn -> ForemanServer.Jobsite.Executor.pid_for(id) == nil end)
-
-      assert {:ok, _} = Jobsite.resume(id)
-
-      transcript = File.read!(Path.join([ctx.archive_root, "jobsite", id, "transcript.jsonl"]))
-      assert transcript =~ "lib=#{host_dir(ctx)}"
-    end
-
-    defp await_until(fun, tries \\ 400) do
-      cond do
-        fun.() ->
-          :ok
-
-        tries == 0 ->
-          flunk("condition never became true")
-
-        true ->
-          receive do
-          after
-            25 -> await_until(fun, tries - 1)
-          end
-      end
-    end
-  end
-
   describe "workflow door" do
     defp launch_env(project_id) do
       state = %{
-        run_id: "run-lib",
+        run_id: "run-lib-#{project_id}",
         plan_context: %{},
         task: %{task_id: "t1", project_id: project_id},
         completed: [],
         phase_specs: [],
         artifact_base: System.tmp_dir!()
       }
+
+      # A launch records its project context on the phase the executor started.
+      phase_id = ForemanServer.Identity.phase_id(state.run_id, 1)
+
+      {:ok, _} =
+        ForemanServer.CommandGateway.dispatch_system(%{
+          type: "phase.start",
+          command_id: "test:library-launch:#{state.run_id}",
+          aggregate_id: "phase:#{state.run_id}:#{phase_id}",
+          payload: %{
+            run_id: state.run_id,
+            phase_id: phase_id,
+            index: 1,
+            name: "implement",
+            attempt: 1,
+            artifact_template: %{}
+          }
+        })
 
       {:ok, launch} =
         RunExecutor.__prepare_agent_launch_for_test__(state, %{name: :implement}, 0, 1, nil)
@@ -231,47 +181,6 @@ defmodule ForemanServer.LibraryDeliveryTest do
       assert {:ok, %{system_text: text}} = ProjectContext.build(ctx.project_id)
       assert text =~ "Project library"
       assert text =~ "$FOREMAN_LIBRARY_PATH"
-    end
-  end
-
-  describe "jobsite door (host sandbox, real run)" do
-    defp run_echo(ctx) do
-      agent =
-        Agents.pi("x",
-          binary: @fake_agent,
-          env: %{"FAKE_AGENT_ECHO_ENV" => "FOREMAN_LIBRARY_PATH"}
-        )
-
-      {:ok, %{jobsite_id: id}} =
-        Jobsite.run(
-          repo_path: ctx.repo,
-          strategy: :merge_to_head,
-          sandbox: Sandboxes.host(),
-          agent: agent,
-          prompt: "go",
-          project_id: ctx.project_id
-        )
-
-      Path.join([ctx.archive_root, "jobsite", id])
-    end
-
-    test "the agent sees the library path and nothing is written into the worktree", ctx do
-      add!(ctx)
-      archive = run_echo(ctx)
-
-      transcript = File.read!(Path.join(archive, "transcript.jsonl"))
-      assert transcript =~ "env:FOREMAN_LIBRARY_PATH=#{host_dir(ctx)}"
-
-      diff = File.read!(Path.join(archive, "diff.patch"))
-      refute diff =~ "LIBRARY-SECRET-CONTENT"
-      refute diff =~ "spec.md"
-    end
-
-    test "an empty library leaves the variable unset", ctx do
-      archive = run_echo(ctx)
-      transcript = File.read!(Path.join(archive, "transcript.jsonl"))
-      assert transcript =~ "env:FOREMAN_LIBRARY_PATH="
-      refute transcript =~ host_dir(ctx)
     end
   end
 end

@@ -21,7 +21,7 @@ defmodule ForemanServer.ProjectEnvironmentDTO do
   """
 
   alias ForemanServer.{ProjectEnvironment, ProjectionStore}
-  alias ForemanServer.Jobsite.NetworkPolicy
+  alias ForemanServer.Exec.NetworkPolicy
 
   @redacted "[redacted]"
 
