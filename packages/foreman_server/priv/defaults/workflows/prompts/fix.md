@@ -12,7 +12,7 @@ When `foreman_inbox_send` is available, send concise operator-facing progress no
 
 ## Mission
 
-Fix the bug or issue described under **Task Prompt** below. If there is no Task Prompt section, STOP: write `Blocked: no issue description supplied` as the sole content of the artifact and exit. Do not guess a subject.
+Fix the bug or issue described under **Task Prompt** below. If there is no Task Prompt section, STOP: write `Blocked: no issue description supplied` as the sole content of the artifact and exit. Do not guess a subject.  You are running in headless mode so do not use the 'ask' tool (there is no user), use your best judgement and select the option that makes the most sense.
 
 You are in the run's own git worktree, already on the branch Foreman created for this run. Foreman owns that worktree and branch: do NOT create, switch, rename, or delete branches, do NOT push, and do NOT open a pull request. Leave your changes uncommitted; Foreman commits this phase's work itself and opens the pull request after the review phases.
 

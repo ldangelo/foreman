@@ -2,7 +2,7 @@ defmodule ForemanServer.RunLifecycleReconcilerSlotTest do
   use ExUnit.Case, async: false
 
   alias EventStore.RecordedEvent
-  alias ForemanServer.Aggregates.{Project, Run}
+  alias ForemanServer.Aggregates.{Project, Run, RunSlots}
   alias ForemanServer.RunLifecycleReconciler
 
   @terminal_release [:foreman_server, :reconciler, :terminal_release]
@@ -135,8 +135,8 @@ defmodule ForemanServer.RunLifecycleReconcilerSlotTest do
       assert_receive {:dispatch,
                       %{
                         type: "run_slots.release",
-                        aggregate_id: "run_slots:global",
-                        payload: %{run_id: "run-1"}
+                        aggregate_id: "run_slots:project-1",
+                        payload: %{run_id: "run-1", project_id: "project-1"}
                       }, 5_000},
                      1_000
 
@@ -276,6 +276,241 @@ defmodule ForemanServer.RunLifecycleReconcilerSlotTest do
     end
   end
 
+  describe "backstop sweep walks every project's slot stream (AC-007-1)" do
+    test "a terminal holder is released on its own project's stream, in any project" do
+      parent = self()
+
+      holders = %{
+        "project-1" => %{"run-1" => %{}, "run-live" => %{}},
+        "project-2" => %{"run-2" => %{}}
+      }
+
+      pid =
+        start_supervised!(
+          {RunLifecycleReconciler,
+           [
+             name: unique_name(),
+             interval_ms: 60_000,
+             subscribe_fun: fn -> :ok end,
+             list_active_runs_fun: fn -> [] end,
+             list_projects_fun: fn -> [%{project_id: "project-1"}, %{project_id: "project-2"}] end,
+             slot_state_loader_fun: fn project_id ->
+               %{holders: Map.fetch!(holders, project_id)}
+             end,
+             run_loader_fun: fn
+               "run-live" -> active_run_state("run-live", "project-1")
+               run_id -> terminal_run_state(run_id, "project-x")
+             end,
+             dispatch_fun: fn command, timeout ->
+               send(parent, {:dispatch, command, timeout})
+               {:ok, %{}}
+             end
+           ]}
+        )
+
+      send(pid, :scheduled)
+
+      assert_receive {:dispatch,
+                      %{
+                        type: "run_slots.release",
+                        aggregate_id: "run_slots:project-1",
+                        payload: %{run_id: "run-1", project_id: "project-1"}
+                      }, 5_000},
+                     1_000
+
+      assert_receive {:dispatch,
+                      %{
+                        type: "run_slots.release",
+                        aggregate_id: "run_slots:project-2",
+                        payload: %{run_id: "run-2", project_id: "project-2"}
+                      }, 5_000},
+                     1_000
+
+      refute_receive {:dispatch, %{payload: %{run_id: "run-live"}}, _}, 200
+      refute_receive {:dispatch, %{aggregate_id: "run_slots:global"}, _}, 100
+    end
+  end
+
+  describe "backstop sweep edge cases (TRD-008 review follow-ups)" do
+    defp sweep_reconciler(extra) do
+      parent = self()
+
+      opts =
+        [
+          name: unique_name(),
+          interval_ms: 60_000,
+          subscribe_fun: fn -> :ok end,
+          list_active_runs_fun: fn -> [] end,
+          run_loader_fun: fn run_id -> terminal_run_state(run_id, "project-x") end,
+          dispatch_fun: fn command, timeout ->
+            send(parent, {:dispatch, command, timeout})
+            {:ok, %{}}
+          end
+        ]
+        |> Keyword.merge(extra)
+
+      start_supervised!({RunLifecycleReconciler, opts})
+    end
+
+    test "an archived project's stale holder is still released" do
+      pid =
+        sweep_reconciler(
+          list_projects_fun: fn -> [%{project_id: "project-arch", status: "archived"}] end,
+          slot_state_loader_fun: fn "project-arch" -> %{holders: %{"run-1" => %{}}} end
+        )
+
+      send(pid, :scheduled)
+
+      assert_receive {:dispatch,
+                      %{type: "run_slots.release", aggregate_id: "run_slots:project-arch"}, _},
+                     1_000
+    end
+
+    test "a project missing from the projection is not swept and does not stop the others" do
+      pid =
+        sweep_reconciler(
+          list_projects_fun: fn -> [%{project_id: "project-kept"}] end,
+          slot_state_loader_fun: fn
+            "project-kept" -> %{holders: %{"run-1" => %{}}}
+            "project-gone" -> flunk("a project outside the projection must not be loaded")
+          end
+        )
+
+      send(pid, :scheduled)
+
+      assert_receive {:dispatch, %{aggregate_id: "run_slots:project-kept"}, _}, 1_000
+      refute_receive {:dispatch, %{aggregate_id: "run_slots:project-gone"}, _}, 200
+      assert Process.alive?(pid)
+    end
+
+    test "a release dispatch that exits does not crash the sweep or skip later holders" do
+      parent = self()
+
+      pid =
+        sweep_reconciler(
+          list_projects_fun: fn -> [%{project_id: "project-1"}] end,
+          slot_state_loader_fun: fn "project-1" ->
+            %{holders: %{"run-a" => %{}, "run-b" => %{}}}
+          end,
+          dispatch_fun: fn
+            %{payload: %{run_id: "run-a"}}, _timeout ->
+              send(parent, :run_a_attempted)
+              exit({:timeout, {GenServer, :call, [:run_slots, :release, 5_000]}})
+
+            command, timeout ->
+              send(parent, {:dispatch, command, timeout})
+              {:ok, %{}}
+          end
+        )
+
+      send(pid, :scheduled)
+
+      assert_receive :run_a_attempted, 1_000
+
+      assert_receive {:dispatch, %{type: "run_slots.release", payload: %{run_id: "run-b"}}, _},
+                     1_000
+
+      assert Process.alive?(pid)
+    end
+
+    test "a project whose slot stream raises does not crash the sweep or stop the others" do
+      pid =
+        sweep_reconciler(
+          list_projects_fun: fn -> [%{project_id: "project-bad"}, %{project_id: "project-ok"}] end,
+          slot_state_loader_fun: fn
+            "project-bad" -> raise CaseClauseError, term: :unfoldable
+            "project-ok" -> %{holders: %{"run-1" => %{}}}
+          end
+        )
+
+      send(pid, :scheduled)
+
+      assert_receive {:dispatch, %{aggregate_id: "run_slots:project-ok"}, _}, 1_000
+      assert Process.alive?(pid)
+    end
+
+    test "a failing list of projects does not crash the sweep" do
+      pid = sweep_reconciler(list_projects_fun: fn -> raise "projection restarting" end)
+
+      send(pid, :scheduled)
+      _ = :sys.get_state(pid)
+
+      assert Process.alive?(pid)
+    end
+
+    test "a holder whose run does not exist yet but whose task is in progress is live" do
+      # RunAdmission takes the slot before RunStarted is written.
+      in_flight = "run-in-flight-#{System.unique_integer([:positive])}"
+      gone = "run-gone-#{System.unique_integer([:positive])}"
+      seed_in_progress_task!(in_flight, "project-1")
+
+      pid =
+        sweep_reconciler(
+          list_projects_fun: fn -> [%{project_id: "project-1"}] end,
+          slot_state_loader_fun: fn "project-1" ->
+            %{holders: %{in_flight => %{}, gone => %{}}}
+          end,
+          run_loader_fun: fn _run_id -> %Run.State{exists?: false} end
+        )
+
+      send(pid, :scheduled)
+
+      assert_receive {:dispatch, %{type: "run_slots.release", payload: %{run_id: ^gone}}, _},
+                     1_000
+
+      refute_receive {:dispatch, %{payload: %{run_id: ^in_flight}}, _}, 200
+    end
+  end
+
+  describe "one slot per run (AC-018-1)" do
+    test "a run touching three repositories holds exactly one slot" do
+      project_id = "multi-repo-#{System.unique_integer([:positive])}"
+      run_id = "run-multi-#{System.unique_integer([:positive])}"
+
+      {:ok, _} =
+        ForemanServer.CommandRouter.dispatch(%{
+          aggregate_id: "project:#{project_id}",
+          command_id: "register:#{project_id}",
+          type: "project.register",
+          payload: %{project_id: project_id, name: "Multi #{project_id}", path: System.tmp_dir!()}
+        })
+
+      payload = %{
+        run_id: run_id,
+        task_id: "task-#{run_id}",
+        approval_id: "approval-#{run_id}",
+        workflow_snapshot: %{phases: [%{id: "p", kind: "command"}]},
+        phase_specs: [%{phase_id: "p", kind: "command"}],
+        repo_ids: ["repo-a", "repo-b", "repo-c"]
+      }
+
+      set_limit = fn ->
+        ForemanServer.CommandRouter.dispatch(%{
+          aggregate_id: "project:#{project_id}",
+          command_id: "limit:#{project_id}",
+          type: "project.update",
+          payload: %{project_id: project_id, max_concurrent_runs: 2}
+        })
+      end
+
+      assert {:ok, _} = set_limit.()
+      assert {:ok, _} = ForemanServer.RunAdmission.start(project_id, payload)
+
+      # With a limit of 2, a second run still starts (not queued): the
+      # three-repository run took one slot, not three.
+      second = %{payload | run_id: run_id <> "-2", task_id: "task-#{run_id}-2", repo_ids: []}
+
+      assert {:ok, %{"event_type" => "RunStarted"}} =
+               ForemanServer.RunAdmission.start(project_id, second)
+
+      {slots, _version} =
+        ForemanServer.Aggregate.load(RunSlots, RunSlots.stream_id(project_id))
+
+      assert Map.keys(slots.holders) |> Enum.sort() == [run_id, run_id <> "-2"]
+      assert slots.waiters == []
+    end
+  end
+
   defp unique_name do
     String.to_atom("run_lifecycle_reconciler_slot_test_#{System.unique_integer([:positive])}")
   end
@@ -340,6 +575,36 @@ defmodule ForemanServer.RunLifecycleReconcilerSlotTest do
       worker_status: %{},
       retry_history: []
     }
+  end
+
+  defp seed_in_progress_task!(run_id, project_id) do
+    task_id = "task-#{System.unique_integer([:positive])}"
+
+    :ok =
+      ForemanServer.ProjectionStore.apply_events([
+        %{
+          event_type: "TaskCreated",
+          payload: %{
+            task_id: task_id,
+            project_id: project_id,
+            title: "t",
+            status: "open",
+            task_type: "implementation"
+          }
+        },
+        %{
+          event_type: "TaskApproved",
+          payload: %{
+            task_id: task_id,
+            approval_id: "a-#{task_id}",
+            approved_by: "alice",
+            approved_at: "2026-08-10T00:00:00Z",
+            run_id: run_id,
+            workflow_snapshot: %{run_id: run_id, phases: []}
+          }
+        },
+        %{event_type: "TaskUpdated", payload: %{task_id: task_id, status: "in_progress"}}
+      ])
   end
 
   defp terminal_run_state(run_id, project_id) do

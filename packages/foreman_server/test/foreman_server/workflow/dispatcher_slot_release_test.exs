@@ -61,9 +61,21 @@ defmodule ForemanServer.Workflow.DispatcherSlotReleaseTest do
       :meck.passthrough([command])
     end)
 
+    # Every run of this file belongs to one project; the Dispatcher resolves it
+    # from the run projection and releases on that project's own stream.
+    :meck.new(ForemanServer.ProjectionStore, [:passthrough, :no_link])
+
+    :meck.expect(ForemanServer.ProjectionStore, :run, fn run_id ->
+      %{run_id: run_id, project_id: "proj-slot-release"}
+    end)
+
     on_exit(fn ->
       if :meck.validate(ForemanServer.CommandGateway) do
         :meck.unload(ForemanServer.CommandGateway)
+      end
+
+      if :meck.validate(ForemanServer.ProjectionStore) do
+        :meck.unload(ForemanServer.ProjectionStore)
       end
     end)
 
@@ -163,7 +175,8 @@ defmodule ForemanServer.Workflow.DispatcherSlotReleaseTest do
 
     assert_receive {:dispatch_system, command, 5_000}, 500
     assert command.type == "run_slots.release"
-    assert command.aggregate_id == "run_slots:global"
+    assert command.aggregate_id == "run_slots:proj-slot-release"
+    assert command.payload.project_id == "proj-slot-release"
     assert command.payload.run_id == run_id
   end
 

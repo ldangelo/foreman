@@ -249,6 +249,9 @@ defmodule ForemanServer.Application do
       end
     end
 
+    # The global run-slot cap is retired (TRD-010): a leftover value is ignored, loudly, once.
+    :ok = ForemanServer.Workflow.RunSlotsMigration.warn_retired_config()
+
     {:ok, pid} = Supervisor.start_link(children(), supervisor_opts())
 
     # TRD-014: after the tree is up (a configured checkpoint repo has started), say loudly when
@@ -756,7 +759,7 @@ defmodule ForemanServer.Application do
 
   # Gated on :start_lifecycle_reconciler? config so the test suite
   # can opt out of it (avoids cross-test state pollution on the
-  # shared `run_slots:global` aggregate).
+  # shared run-slot aggregates).
   def maybe_lifecycle_reconciler_child do
     if Application.get_env(:foreman_server, :start_lifecycle_reconciler?, true) do
       [ForemanServer.RunLifecycleReconciler]

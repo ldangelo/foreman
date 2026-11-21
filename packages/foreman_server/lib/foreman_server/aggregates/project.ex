@@ -415,24 +415,16 @@ defmodule ForemanServer.Aggregates.Project do
          :ok <- require_exists(state, project_id),
          :ok <- reject_archived(state, project_id),
          :ok <- reject_same_implementation_key(state, project_id, run_id, implementation_key) do
-      # Precedence: payload override (test seam) > the project's
-      # `max_concurrent_runs` setting > the global per-project default. The
-      # setting is read from state, so the check is atomic with the
-      # reservation count.
-      max_concurrent_runs_per_project =
-        Aggregate.get(payload, :max_concurrent_runs_per_project) ||
-          effective_run_limit(state)
-
+      # No run ceiling here (TRD-006): the project's `run_slots:<project_id>`
+      # stream is the only concurrency authority and has already decided that
+      # this run holds a slot. The reservation map stays for the archive guard,
+      # same-implementation single flight and the daily cap.
       day = today()
 
       if reserved_run(state, run_id) do
         {:ok, nil}
       else
-        with :ok <- admission_refusal(state, run_id),
-             :ok <- reject_at_run_limit(state, max_concurrent_runs_per_project) do
-          :ok
-        end
-        |> case do
+        case admission_refusal(state, run_id) do
           :ok ->
             {:ok,
              %{
@@ -609,10 +601,13 @@ defmodule ForemanServer.Aggregates.Project do
   end
 
   @doc """
-  The non-terminal refusals that apply to starting a NEW run: paused project,
-  exhausted daily thread cap. `:ok` for a run that already holds a reservation.
-  Pure over aggregate state; `project.reserve_run` uses it authoritatively and
-  `RunAdmission` consults it before touching the global run slot.
+  The refusals that apply to starting a NEW run: archived project, paused
+  project, exhausted daily thread cap. `:ok` for a run that already holds a
+  reservation. Pure over aggregate state; `project.reserve_run` uses it
+  authoritatively and `RunAdmission` consults it before touching the project's
+  run-slot stream (so a refused run holds no slot and no queue position).
+  The project's run ceiling is NOT a refusal: it is the capacity of the slot
+  stream, and a run over it waits in the queue.
   """
   @spec admission_refusal(%State{}, String.t() | nil) :: :ok | {:error, term()}
   def admission_refusal(%State{} = state, run_id) do
@@ -621,7 +616,8 @@ defmodule ForemanServer.Aggregates.Project do
         :ok
 
       true ->
-        with :ok <- reject_paused(state, state.project_id) do
+        with :ok <- reject_archived(state, state.project_id),
+             :ok <- reject_paused(state, state.project_id) do
           reject_at_daily_cap(state, today(), "run", run_id)
         end
     end
@@ -634,25 +630,6 @@ defmodule ForemanServer.Aggregates.Project do
   @spec effective_run_limit(%State{}) :: non_neg_integer()
   def effective_run_limit(%State{} = state) do
     Aggregate.get(state.config, :max_concurrent_runs) || Config.max_concurrent_runs_per_project()
-  end
-
-  @doc """
-  `{:error, :run_limit_exceeded}` when starting `run_id` would exceed the
-  project's run ceiling; `:ok` for a run that already holds a reservation.
-
-  Pure over aggregate state. `RunAdmission` consults it BEFORE acquiring the
-  global run slot: the slot-acquire command id is per run id, so a refused run
-  can neither keep its slot without starving other projects nor hand it back
-  and re-acquire it on the retry. `project.reserve_run` still enforces the
-  limit authoritatively.
-  """
-  @spec run_limit_refusal(%State{}, String.t() | nil) :: :ok | {:error, :run_limit_exceeded}
-  def run_limit_refusal(%State{} = state, run_id) do
-    if is_binary(run_id) and reserved_run(state, run_id) do
-      :ok
-    else
-      reject_at_run_limit(state, effective_run_limit(state))
-    end
   end
 
   defp require_absent(%State{exists?: true}, project_id),
@@ -750,15 +727,6 @@ defmodule ForemanServer.Aggregates.Project do
     do: {:error, {:project_archived, project_id}}
 
   defp reject_archived(%State{}, _project_id), do: :ok
-
-  defp reject_at_run_limit(%State{active_run_reservations: reservations}, limit)
-       when is_integer(limit) and limit >= 0 do
-    if map_size(reservations) >= limit do
-      {:error, :run_limit_exceeded}
-    else
-      :ok
-    end
-  end
 
   defp update_status(%State{} = state, payload) do
     if status = Aggregate.get(payload, :status),

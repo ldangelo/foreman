@@ -1,21 +1,26 @@
 defmodule ForemanServer.Aggregates.RunSlots do
   @moduledoc """
-  Global run-slot admission gate on stream `run_slots:global`.
+  Run-slot admission gate. One aggregate per project, on stream
+  `run_slots:<project_id>` (`stream_id/1`). History written before per-project queues
+  (one shared global stream) is folded by the same `apply_event/2` and carried over by
+  `Workflow.RunSlotsMigration`, the only module that still reads it.
 
   State is `RunSlots.State` (`defstruct [:capacity, holders: %{}, waiters: []]`).
 
-  Serializes all concurrent-run admission decisions globally. Capacity is
+  Serializes the concurrent-run admission decisions of one project. Capacity is
   carried on the acquire command and recorded on the emitted event — never
   read from `Application.get_env` during replay — so that history is
   self-describing and replay is deterministic.
 
   ## Stream id
 
-      run_slots:global
+      run_slots:<project_id>
 
   ## Events folded
 
-      RunSlotAcquired     — run added to holders (and dropped from waiters if it was one); capacity set from event
+      RunSlotAcquired     — run added to holders (and dropped from waiters, as
+                            a promoted or forced waiter leaves the queue);
+                            capacity set from event
       RunSlotQueued      — run appended to FIFO waiters
       RunSlotReleased    — run removed from holders
       RunSlotTransferred — run removed from holders; FIFO head promoted
@@ -31,6 +36,24 @@ defmodule ForemanServer.Aggregates.RunSlots do
   via `event_data_to_map/1`.
 
   ## Command dispatch
+
+  Map-envelope commands: `run_slots.acquire`, `run_slots.release`,
+  `run_slots.remove_waiter` and `run_slots.promote`.
+
+  `run_slots.acquire` payload flags:
+
+    * `force: true`  — record the run as a holder regardless of capacity
+      (adoption of already-running work); a queued run is acquired and the
+      fold drops its waiter entry.
+    * `enqueue_only: true` — queue the run even when capacity is free (the
+      queue is then drained by `run_slots.promote`).
+
+  A run that is already a holder, or already a waiter, yields `{:ok, nil}`
+  (never a second slot or queue position).
+
+  `run_slots.promote` (`payload: %{capacity, project_id?}`) emits ONE
+  `RunSlotAcquired` (`promoted: true`) for the FIFO head waiter when
+  `map_size(holders) < capacity`; otherwise `{:ok, nil}`.
 
   Commands may be sent either as typed structs (`%RunSlotsAcquire{}`,
   `%RunSlotsRelease{}`) or as map envelopes with `type` field
@@ -68,7 +91,7 @@ defmodule ForemanServer.Aggregates.RunSlots do
 
   defmodule State do
     @moduledoc """
-    Global run-slot state. `recovery` holds one entry per run whose boot cleanup
+    Per-project run-slot state. `recovery` holds one entry per run whose boot cleanup
     (slot release or waiter removal) failed, `%{attempt, outcome, kind, reason,
     elapsed_since_boot_ms}`; it exists only while the run's holder or waiter does.
     """
@@ -94,6 +117,104 @@ defmodule ForemanServer.Aggregates.RunSlots do
     ]
   end
 
+  @doc "Stream id of a project's run-slot aggregate."
+  @spec stream_id(String.t()) :: String.t()
+  def stream_id(project_id) when is_binary(project_id), do: "run_slots:" <> project_id
+
+  @doc """
+  The ONE builder of a `run_slots.release` command envelope (TRD-002).
+
+  `RunAdmission`, `Dispatcher`, `RunLifecycleReconciler` and `BootReconciliation`
+  all release through it. It reads the project's effective run limit once, here
+  (never inside an aggregate decision) and carries it as `payload.capacity`, so
+  `do_release` can hold the queue when the limit was lowered below the running
+  count. The command id is unique per call.
+
+  `project_id` must be a project id: there is no global stream to release on.
+  """
+  @spec release_command(String.t(), String.t(), String.t() | atom()) :: map()
+  def release_command(project_id, run_id, reason)
+      when is_binary(project_id) and project_id != "" and is_binary(run_id) do
+    command_id =
+      "run_slots:release:#{run_id}:#{System.system_time(:millisecond)}:" <>
+        Integer.to_string(System.unique_integer([:positive, :monotonic]))
+
+    %{
+      type: "run_slots.release",
+      command_id: command_id,
+      aggregate_id: stream_id(project_id),
+      payload: %{
+        run_id: run_id,
+        project_id: project_id,
+        capacity: project_run_limit(project_id),
+        reason: reason
+      }
+    }
+  end
+
+  # Effective limit: the project's setting, else the per-project default.
+  defp project_run_limit(project_id) do
+    settings =
+      try do
+        ForemanServer.ProjectionStore.project_settings(project_id)
+      catch
+        :exit, _ -> nil
+      end
+
+    limit = settings && Map.get(settings, :max_concurrent_runs)
+
+    if is_integer(limit) and limit >= 1,
+      do: limit,
+      else: ForemanServer.RunSlots.Config.max_concurrent_runs_per_project()
+  end
+
+  @doc """
+  The `run_slots.remove_waiter` command envelopes that empty a project's queue:
+  one per waiter in `state`, FIFO order, on `stream_id(project_id)`. Pure; holders
+  are never named. Command ids are unique per call.
+  """
+  @spec drop_project_commands(State.t(), String.t()) :: [map()]
+  def drop_project_commands(%State{waiters: waiters}, project_id) when is_binary(project_id) do
+    Enum.map(waiters, fn %Waiter{run_id: run_id} ->
+      %{
+        type: "run_slots.remove_waiter",
+        command_id:
+          "run_slots:drop_project:#{project_id}:#{run_id}:#{System.system_time(:millisecond)}:" <>
+            Integer.to_string(System.unique_integer([:positive, :monotonic])),
+        aggregate_id: stream_id(project_id),
+        payload: %{run_id: run_id, project_id: project_id}
+      }
+    end)
+  end
+
+  @doc """
+  Removes every waiter of `project_id`'s run-slot queue and touches no holder
+  (a running run keeps its slot). Returns the removed run ids in queue order;
+  `{:ok, []}` when the queue is empty (idempotent).
+
+  This is the ONE function a future project-delete command must call (groundwork
+  for REQ-017; there is no delete command yet). It reads the stream's own state,
+  not a projection, and dispatches through `CommandGateway.dispatch_system/2`;
+  the first dispatch failure stops the loop and is returned.
+  """
+  @spec drop_project(String.t()) :: {:ok, [String.t()]} | {:error, term()}
+  def drop_project(project_id) when is_binary(project_id) do
+    {state, _version} = Aggregate.load(__MODULE__, stream_id(project_id))
+
+    state
+    |> drop_project_commands(project_id)
+    |> Enum.reduce_while({:ok, []}, fn command, {:ok, removed} ->
+      case ForemanServer.CommandGateway.dispatch_system(command, 5_000) do
+        {:ok, _} -> {:cont, {:ok, [command.payload.run_id | removed]}}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, removed} -> {:ok, Enum.reverse(removed)}
+      error -> error
+    end
+  end
+
   @impl true
   def initial_state, do: %State{capacity: nil, holders: %{}, waiters: [], recovery: %{}}
 
@@ -106,18 +227,16 @@ defmodule ForemanServer.Aggregates.RunSlots do
   def apply_event(%State{} = state, %RunSlotAcquired{} = event) do
     payload = event_data_to_map(event)
 
+    run_id = Aggregate.get(payload, :run_id)
+
     %State{
       state
       | capacity: Aggregate.get(payload, :capacity),
         holders:
-          Map.put(
-            state.holders,
-            Aggregate.get(payload, :run_id),
-            %{
-              acquired_at_ms: Aggregate.get(payload, :acquired_at_ms)
-            }
-          ),
-        waiters: drop_waiter(state.waiters, Aggregate.get(payload, :run_id))
+          Map.put(state.holders, run_id, %{
+            acquired_at_ms: Aggregate.get(payload, :acquired_at_ms)
+          }),
+        waiters: drop_waiter(state.waiters, run_id)
     }
   end
 
@@ -195,18 +314,16 @@ defmodule ForemanServer.Aggregates.RunSlots do
 
     case Aggregate.event_type(event) do
       "RunSlotAcquired" ->
+        run_id = Aggregate.get(payload, :run_id)
+
         %State{
           state
           | capacity: Aggregate.get(payload, :capacity),
             holders:
-              Map.put(
-                state.holders,
-                Aggregate.get(payload, :run_id),
-                %{
-                  acquired_at_ms: Aggregate.get(payload, :acquired_at_ms)
-                }
-              ),
-            waiters: drop_waiter(state.waiters, Aggregate.get(payload, :run_id))
+              Map.put(state.holders, run_id, %{
+                acquired_at_ms: Aggregate.get(payload, :acquired_at_ms)
+              }),
+            waiters: drop_waiter(state.waiters, run_id)
         }
 
       "RunSlotQueued" ->
@@ -306,12 +423,12 @@ defmodule ForemanServer.Aggregates.RunSlots do
 
   @impl true
   def handle_command(%State{} = state, %RunSlotsAcquire{} = cmd) do
-    do_acquire(state, cmd.run_id, cmd.capacity)
+    do_acquire(state, cmd.run_id, cmd.capacity, cmd.project_id)
   end
 
   @impl true
   def handle_command(%State{} = state, %RunSlotsRelease{} = cmd) do
-    do_release(state, cmd.run_id, cmd.capacity)
+    do_release(state, cmd.run_id, cmd.capacity, cmd.project_id)
   end
 
   @impl true
@@ -323,7 +440,7 @@ defmodule ForemanServer.Aggregates.RunSlots do
         :aggregate
       )
 
-      {:ok, %RunSlotWaiterRemoved{run_id: cmd.run_id}}
+      {:ok, %RunSlotWaiterRemoved{run_id: cmd.run_id, project_id: cmd.project_id}}
     else
       {:ok, nil}
     end
@@ -338,12 +455,48 @@ defmodule ForemanServer.Aggregates.RunSlots do
     payload = Map.get(command, :payload) || %{}
     run_id = Aggregate.get(payload, :run_id)
     capacity = Aggregate.get(payload, :capacity)
+    project_id = optional_project_id(payload)
 
     with {:ok, run_id} <- Aggregate.required_binary(run_id, :run_id),
          {:ok, capacity} <- required_non_neg_integer(capacity, :capacity) do
-      do_acquire(state, run_id, capacity)
+      opts = [
+        force: Aggregate.get(payload, :force) == true,
+        enqueue_only: Aggregate.get(payload, :enqueue_only) == true
+      ]
+
+      do_acquire(state, run_id, capacity, project_id, opts)
     else
       {:error, _} = err -> err
+    end
+  end
+
+  @impl true
+  def handle_command(%State{} = state, %{type: "run_slots.promote"} = command) do
+    payload = Map.get(command, :payload) || %{}
+
+    with {:ok, capacity} <- required_non_neg_integer(Aggregate.get(payload, :capacity), :capacity) do
+      case state.waiters do
+        [head | _] when map_size(state.holders) < capacity ->
+          project_id = optional_project_id(payload)
+
+          Telemetry.run_slots_acquired(head.run_id, map_size(state.holders) + 1, capacity,
+            project_id: project_id,
+            waiting: length(state.waiters) - 1,
+            queue_wait_ms: queue_wait_ms(head, System.system_time(:millisecond))
+          )
+
+          {:ok,
+           %RunSlotAcquired{
+             run_id: head.run_id,
+             capacity: capacity,
+             acquired_at_ms: System.system_time(:millisecond),
+             project_id: project_id,
+             promoted: true
+           }}
+
+        _ ->
+          {:ok, nil}
+      end
     end
   end
 
@@ -355,7 +508,7 @@ defmodule ForemanServer.Aggregates.RunSlots do
 
     with {:ok, run_id} <- Aggregate.required_binary(run_id, :run_id) do
       capacity = if is_integer(capacity) and capacity >= 0, do: capacity, else: nil
-      do_release(state, run_id, capacity)
+      do_release(state, run_id, capacity, optional_project_id(payload))
     else
       {:error, _} = err -> err
     end
@@ -365,11 +518,12 @@ defmodule ForemanServer.Aggregates.RunSlots do
   def handle_command(%State{} = state, %{type: "run_slots.remove_waiter"} = command) do
     payload = Map.get(command, :payload) || %{}
     run_id = Aggregate.get(payload, :run_id)
+    project_id = optional_project_id(payload)
 
     with {:ok, run_id} <- Aggregate.required_binary(run_id, :run_id) do
       if Enum.any?(state.waiters, &(&1.run_id == run_id)) do
         Telemetry.run_slots_waiter_removed(run_id, max(length(state.waiters) - 1, 0), :aggregate)
-        {:ok, %RunSlotWaiterRemoved{run_id: run_id}}
+        {:ok, %RunSlotWaiterRemoved{run_id: run_id, project_id: project_id}}
       else
         {:ok, nil}
       end
@@ -406,7 +560,8 @@ defmodule ForemanServer.Aggregates.RunSlots do
            outcome: outcome,
            kind: kind,
            reason: reason,
-           elapsed_since_boot_ms: elapsed
+           elapsed_since_boot_ms: elapsed,
+           project_id: optional_project_id(payload)
          }}
       else
         {:ok, nil}
@@ -420,53 +575,130 @@ defmodule ForemanServer.Aggregates.RunSlots do
   # Internal command helpers
   # -------------------------------------------------------------------------
 
-  defp do_acquire(state, run_id, capacity) do
-    now_ms = System.monotonic_time(:millisecond)
+  defp do_acquire(state, run_id, capacity, project_id, opts \\ []) do
+    now_ms = System.system_time(:millisecond)
+    force? = Keyword.get(opts, :force, false)
+    enqueue_only? = Keyword.get(opts, :enqueue_only, false)
+    waiting? = Enum.any?(state.waiters, &(&1.run_id == run_id))
 
     cond do
       Map.has_key?(state.holders, run_id) ->
         {:ok, nil}
 
-      map_size(state.holders) < capacity ->
-        Telemetry.run_slots_acquired(run_id, map_size(state.holders) + 1, capacity)
-        {:ok, %RunSlotAcquired{run_id: run_id, capacity: capacity, acquired_at_ms: now_ms}}
+      # force: record a holder regardless of capacity; the fold drops the run
+      # from waiters if it was queued, so it never ends up running AND queued.
+      force? ->
+        Telemetry.run_slots_acquired(run_id, map_size(state.holders) + 1, capacity,
+          project_id: project_id,
+          waiting: length(drop_waiter(state.waiters, run_id))
+        )
 
-      # Already waiting and still no free slot: it keeps its place. A second RunSlotQueued would
-      # list it twice (a paused waiting run re-acquires on resume).
-      Enum.any?(state.waiters, &(&1.run_id == run_id)) ->
+        {:ok,
+         %RunSlotAcquired{
+           run_id: run_id,
+           capacity: capacity,
+           acquired_at_ms: now_ms,
+           project_id: project_id
+         }}
+
+      # FIFO: a run may take a free slot only when no OLDER run is queued: a new run, or the head
+      # waiter itself (a paused waiting run that acquires again on resume while a slot is free).
+      # Otherwise (e.g. a limit change left capacity free before the promote lands) it queues
+      # behind them. The fold drops the run from waiters, so it is never holder AND waiter.
+      not enqueue_only? and map_size(state.holders) < capacity and
+          (state.waiters == [] or hd(state.waiters).run_id == run_id) ->
+        Telemetry.run_slots_acquired(run_id, map_size(state.holders) + 1, capacity,
+          project_id: project_id,
+          waiting: length(drop_waiter(state.waiters, run_id))
+        )
+
+        {:ok,
+         %RunSlotAcquired{
+           run_id: run_id,
+           capacity: capacity,
+           acquired_at_ms: now_ms,
+           project_id: project_id
+         }}
+
+      # A queued run behind an older waiter, or while no slot is free, keeps its single position:
+      # a second RunSlotQueued would list it twice.
+      waiting? ->
         {:ok, nil}
 
       true ->
         position = length(state.waiters) + 1
-        Telemetry.run_slots_queued(run_id, position, position)
-        {:ok, %RunSlotQueued{run_id: run_id, position: position, enqueued_at_ms: now_ms}}
+
+        Telemetry.run_slots_queued(run_id, position, position,
+          project_id: project_id,
+          holders: map_size(state.holders)
+        )
+
+        {:ok,
+         %RunSlotQueued{
+           run_id: run_id,
+           position: position,
+           enqueued_at_ms: now_ms,
+           project_id: project_id
+         }}
     end
   end
 
-  defp do_release(state, run_id, capacity) do
+  defp do_release(state, run_id, capacity, project_id) do
     if Map.has_key?(state.holders, run_id) do
-      now_ms = System.monotonic_time(:millisecond)
+      now_ms = System.system_time(:millisecond)
 
       effective_capacity =
         if is_integer(capacity) and capacity >= 0, do: capacity, else: state.capacity
 
-      if Enum.empty?(state.waiters) do
-        Telemetry.run_slots_released(run_id, max(map_size(state.holders) - 1, 0), :aggregate)
-        {:ok, %RunSlotReleased{run_id: run_id, capacity: effective_capacity}}
+      # Promote only while the holders left after this release are below the
+      # capacity: a limit lowered under the running count keeps the queue held
+      # (AC-003-4). A nil capacity (legacy stream) keeps the old always-promote.
+      promote? =
+        state.waiters != [] and
+          (not is_integer(effective_capacity) or map_size(state.holders) - 1 < effective_capacity)
+
+      if not promote? do
+        Telemetry.run_slots_released(run_id, max(map_size(state.holders) - 1, 0), :aggregate,
+          project_id: project_id,
+          waiting: length(state.waiters)
+        )
+
+        {:ok,
+         %RunSlotReleased{run_id: run_id, capacity: effective_capacity, project_id: project_id}}
       else
         {promoted, remaining} = List.pop_at(state.waiters, 0)
-        Telemetry.run_slots_transferred(run_id, promoted.run_id, length(remaining))
+
+        Telemetry.run_slots_transferred(run_id, promoted.run_id, length(remaining),
+          project_id: project_id,
+          holders: map_size(state.holders),
+          queue_wait_ms: queue_wait_ms(promoted, now_ms)
+        )
 
         {:ok,
          %RunSlotTransferred{
            released_run_id: run_id,
            acquired_run_id: promoted.run_id,
            capacity: effective_capacity,
-           acquired_at_ms: now_ms
+           acquired_at_ms: now_ms,
+           project_id: project_id
          }}
       end
     else
       {:ok, nil}
+    end
+  end
+
+  # Time the promoted waiter spent queued, from its durable enqueue stamp.
+  defp queue_wait_ms(%Waiter{enqueued_at_ms: at}, now_ms)
+       when is_integer(at),
+       do: max(now_ms - at, 0)
+
+  defp queue_wait_ms(_waiter, _now_ms), do: nil
+
+  defp optional_project_id(payload) do
+    case Aggregate.get(payload, :project_id) do
+      id when is_binary(id) and id != "" -> id
+      _ -> nil
     end
   end
 

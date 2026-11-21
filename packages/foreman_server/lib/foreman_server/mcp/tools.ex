@@ -392,10 +392,14 @@ defmodule ForemanServer.MCP.Tools do
 
   @schema_foreman_queue_status %{
     name: "foreman_queue_status",
-    description: "Get the current run slot queue status",
+    description:
+      "Get one project's run slot queue: limit, running and waiting counts, and the waiting runs in order",
     inputSchema: %{
       type: "object",
-      properties: %{}
+      properties: %{
+        project_id: %{type: "string", description: "The project ID"}
+      },
+      required: ["project_id"]
     }
   }
 
@@ -2264,12 +2268,38 @@ defmodule ForemanServer.MCP.Tools do
     result
   end
 
-  defp tool_foreman_queue_status(%{}) do
+  defp tool_foreman_queue_status(%{project_id: project_id}) do
     start_us = System.monotonic_time(:microsecond)
-    result = ProjectionStore.queue_status()
+    project_id = if is_binary(project_id), do: String.trim(project_id), else: ""
+
+    result =
+      cond do
+        project_id == "" -> :project_required
+        ProjectionStore.project_projection(project_id) == nil -> :not_found
+        true -> {:ok, ProjectionStore.queue_status(project_id)}
+      end
+
     duration_us = System.monotonic_time(:microsecond) - start_us
-    Telemetry.mcp_tool_call(duration_us, "foreman_queue_status", :ok)
-    {:ok, result}
+
+    outcome =
+      case result do
+        {:ok, _} -> :ok
+        other -> other
+      end
+
+    Telemetry.mcp_tool_call(duration_us, "foreman_queue_status", outcome)
+
+    case result do
+      {:ok, _} = ok ->
+        ok
+
+      :project_required ->
+        {:error,
+         %ToolError{code: "INVALID_PARAMS", message: "name a project: project_id is required"}}
+
+      :not_found ->
+        {:error, %ToolError{code: "NOT_FOUND", message: "Project not found"}}
+    end
   end
 
   defp tool_foreman_overview(args) do

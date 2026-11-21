@@ -320,7 +320,7 @@ foreman project update --task-provider kata project-123
 | `--instructions-file <path>` | Read the instructions from a file |
 | `--thread-model <model>`, `--thread-effort <low\|medium\|high>` | Default model/effort for threads |
 | `--coordinator-provider <pi\|claude>`, `--coordinator-model <model>`, `--coordinator-effort <low\|medium\|high>` | Coordinator settings |
-| `--max-concurrent-runs <n>` | Concurrent runs limit (1..1000) |
+| `--max-concurrent-runs <n>` | This project's concurrent runs limit (1..1000; default 3 when unset). Total concurrency is the sum of per-project limits; there is no machine-wide ceiling |
 | `--daily-thread-cap <n>` | Threads started per UTC day (1..10000) |
 | `--library-collect-produced[=false]` | Register each run's artifacts and session-archive files in the project library (opt-in, default off) |
 | `--coordinator-propose-before-start=<true\|false>`, `--coordinator-max-active-threads <n>` (1..50), `--coordinator-reuse-threads=<true\|false>` | Coordinator tuning, enforced by the server |
@@ -363,7 +363,7 @@ foreman project adopt --kind run --id RUN --new-project --project-id my-app --pa
 
 ### `foreman project settings <id>`
 
-Print a project's status, settings and live limits (`GET /api/projects/<id>/settings`): effective `max_concurrent_runs`, `active_runs`, `daily_thread_cap`, `threads_started_today`, `remaining_today`, `cap_reached?`, `resets_at`, `deferred_tasks`, `deferred_today` (tasks refused today by the cap, run limit or pause; `deferred_by_reason` in `--format json`), the containment settings `repo_allowlist` and `max_repos_per_run` and `required_checks` (printed as JSON, `(unset)` while the gate is off). `--format json` prints the raw response. `config.env` values are never shown.
+Print a project's status, settings and live limits (`GET /api/projects/<id>/settings`): effective `max_concurrent_runs`, `active_runs`, `running_runs` (runs holding one of the project's run slots), `waiting_runs` (runs queued in the project's own FIFO queue), `daily_thread_cap`, `threads_started_today`, `remaining_today`, `cap_reached?`, `resets_at`, `deferred_tasks`, `deferred_today` (tasks refused today by the cap, run limit or pause; `deferred_by_reason` in `--format json`) and the containment settings `repo_allowlist` and `max_repos_per_run` and `required_checks` (printed as JSON, `(unset)` while the gate is off). `--format json` prints the raw response. `config.env` values are never shown. The run queue is per project: `GET /api/queue` requires `project_id` (422 `project_required` without it) and returns only that project's own run-slot queue.
 
 ### `foreman usage --project <id>`
 
@@ -694,7 +694,7 @@ Prints the run projection as JSON (`GET /api/runs/<id>`: `{"run": {...}}`; a run
 
 `run cancel` posts `run.cancel` (default reason `operator_cancel`): the run is terminal as soon as the agent has been signalled with `SIGINT`; the harness escalates to `SIGTERM` then `SIGKILL` (5 s per step by default), Foreman waits for the agent to exit (up to 15 s) and `OrphanReaper` then terminates the tool processes it left in the run's worktree (`SIGTERM`, then `SIGKILL`). `run reset` posts `run.reset`, accepted for a run in `failed`, `stuck`, `blocked` or `paused` status; any other status is rejected with `{:run_not_resettable, "<status>"}`. A blocked run (an unresolved external effect) is reset after the operator has checked the real state of the push, PR or tracker change.
 
-A run that is still waiting for a run slot (listed in `waiting` of `GET /api/queue`) has no run record and no agent yet. `run cancel` on it removes it from the waiting list and acknowledges its task (`task.run_terminated`, with the cancel's reason) rather than answering `run_not_found`; the run stops reading as `queued` and is not re-admitted when a slot frees, and the task stays `in_progress` until it is retried. The run holding the slot is not touched.
+A run that is still waiting for a run slot (listed in `waiting` of `GET /api/queue?project_id=<id>`) has no run record and no agent yet. `run cancel` on it removes it from the waiting list and acknowledges its task (`task.run_terminated`, with the cancel's reason) rather than answering `run_not_found`; the run stops reading as `queued` and is not re-admitted when a slot frees, and the task stays `in_progress` until it is retried. The run holding the slot is not touched.
 
 ### `foreman run remove --id <run-id>`
 
@@ -1550,7 +1550,7 @@ when a Foreman server is already running.
 
 ### Tools
 
-Read tools are always advertised: `foreman_doctor`, `foreman_queue_status`,
+Read tools are always advertised: `foreman_doctor`, `foreman_queue_status` (takes a required `project_id`),
 `foreman_project_list`, `foreman_project_get`, `foreman_workflow_list`,
 `foreman_workflow_get`, `foreman_workflow_validate`, `foreman_prompt_get`,
 `foreman_run_get`, `foreman_run_status`,

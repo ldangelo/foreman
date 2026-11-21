@@ -60,7 +60,7 @@ non-door users.
 
 ## 3. Admission: how runs will admit fix runs
 
-Today jobsites bypass `RunAdmission` and the global `RunSlots`: they take only `project.reserve_thread`
+Today jobsites bypass `RunAdmission` and the per-project `RunSlots`: they take only `project.reserve_thread`
 (daily cap, paused/archived refusal) plus a controller-level `max_concurrent_jobsites` (HTTP 429 only).
 Consequences already filed: archive not refused while a jobsite runs (`30b2`), no re-check while iterating (`f793`).
 
@@ -72,7 +72,7 @@ allowlist is `workflow/dispatcher.ex` and `run_lifecycle_reconciler.ex`, neither
    `note`). `PrWatcher` dispatches it where it now calls `Jobsite.run_async/1`. It is **not** added to any operator
    allowlist (`operator_only_pr_commands_test`, `command_allowlist_parity_test` stay as they are).
 2. `Workflow.Dispatcher` consumes it and calls `RunAdmission.start/2`, so it passes the slot gate (queued
-   durably as `:slot_queued`), project limits (`ProjectLimits`, which already caps by global slots), paused/archived
+   durably as `:slot_queued`), project limits (`ProjectLimits`, which reads the project's own slot queue), paused/archived
    refusal, `project.reserve_thread` and the daily cap, with the same-implementation single-flight not applying (no TRD key).
 3. A fix run needs no task and mints no Bead (`task.create` would mint one: wrong). `Aggregates.Run` already allows
    `task_id: nil`; the executor must tolerate it (verify in PR 3; if any phase code assumes a task, thread it through
@@ -141,12 +141,12 @@ replays an event carrying it (same shape as the E12 multi-repo caveat, CLAUDE.md
 ## 8. Decisions (all resolved 2026-11-19, as recommended)
 
 1. Confirm dropping `merge_into` (§2) and the iteration loop (`max_iterations`/`completion_signal`) from the public surface.
-2. Confirm fixes queue behind global run slots (§3.4), or ask for a reserved fix slot.
+2. Confirm fixes queue behind the project's run slots (§3.4), or ask for a reserved fix slot.
 3. Confirm the `jobsite` thread door stays as read-only history (vs. hiding legacy jobsites entirely).
 4. AGENTS.md: may I edit it in Phase 2 PR 8?
 5. Confirm you are overriding the 2026-10-23 KEEP decision (`9mds`) for the remote API.
 
-Resolved: (1) drop `merge_into` and the iteration loop; (2) fixes queue behind global run slots; (3) `jobsite` thread door stays read-only history; (4) AGENTS.md may be edited in PR 8; (5) the 2026-10-23 KEEP decision (`9mds`) is overridden and the remote API is removed.
+Resolved: (1) drop `merge_into` and the iteration loop; (2) fixes queue behind the project's own run slots; (3) `jobsite` thread door stays read-only history; (4) AGENTS.md may be edited in PR 8; (5) the 2026-10-23 KEEP decision (`9mds`) is overridden and the remote API is removed.
 
 ## 9. Findings during Phase 2 (corrections to the plan)
 

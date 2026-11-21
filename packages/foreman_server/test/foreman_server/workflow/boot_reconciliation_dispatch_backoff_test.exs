@@ -3,16 +3,16 @@ defmodule ForemanServer.Workflow.BootReconciliationDispatchBackoffTest do
   The 5-restart backoff applied to BootReconciliation's orphan slot-release /
   waiter-remove dispatches (RTE-T004 pattern), and its DURABLE budget (TRD-003).
 
-  The `run_slots:global` aggregate actor can be force-killed by test helpers or
-  operator intervention. Each orphan's consecutive failures are counted on the
-  `run_slots:global` stream as `RunSlotRecoveryAttempted` (a holder or waiter whose
+  A project's `run_slots:<project_id>` aggregate actor can be force-killed by test
+  helpers or operator intervention. Each orphan's consecutive failures are counted on its
+  project's stream as `RunSlotRecoveryAttempted` (a holder or waiter whose
   run is absent or terminal has no aggregate of its own to carry a count), so the
   count survives a BootReconciliation restart. Five retries are permitted; the sixth
   failure records the entry `exhausted` and boot stops dispatching it.
 
-  The failed dispatch is forced with `BootReconciliation.record_dispatch_failure/4`,
-  which runs the real `handle_dispatch_failure/4` inside the reconciler process. It
-  bypasses only the timing of killing the `run_slots:global` actor mid-dispatch; the
+  The failed dispatch is forced with `BootReconciliation.record_dispatch_failure/5`,
+  which runs the real `handle_dispatch_failure/5` inside the reconciler process. It
+  bypasses only the timing of killing the project's slot actor mid-dispatch; the
   count read, the backoff decision, the telemetry and the durable append are the
   production ones. Restarts, scans, releases and reads are real.
   """
@@ -27,10 +27,11 @@ defmodule ForemanServer.Workflow.BootReconciliationDispatchBackoffTest do
   alias ForemanServer.Aggregates.RunSlots
   alias ForemanServer.EventStore, as: Store
   alias ForemanServer.Idempotency.RestartBackoff
+  alias ForemanServer.TestSupport.CoordinatorHelpers, as: H
   alias ForemanServer.TestSupport.Eventually
+  alias ForemanServer.TestSupport.RunSlotsReset
   alias ForemanServer.Workflow.BootReconciliation
 
-  @run_slots_stream "run_slots:global"
   @blocked_event [:foreman_server, :workflow, :boot_reconciliation, :dispatch_blocked]
 
   setup_all do
@@ -43,18 +44,24 @@ defmodule ForemanServer.Workflow.BootReconciliationDispatchBackoffTest do
   end
 
   setup do
-    cleanup_run_slots_stream()
+    cleanup_run_slots_streams()
     ForemanServer.TestSupport.ProjectionStoreReset.reset!(keep_subscribers: true)
+
+    # Every slot entry lives on its project's own stream; the reconciler only scans
+    # projects the projection knows, so the test project is registered. The test
+    # process reads it back through `project/0` and `stream/0`.
+    project = H.register_project(System.tmp_dir!(), config: %{})
+    Process.put(:slot_project, project)
 
     {handler_id, ref} =
       ForemanServer.TelemetryTest.Handler.attach_event_handlers(self(), Telemetry.all_events())
 
     on_exit(fn ->
       :telemetry.detach(handler_id)
-      cleanup_run_slots_stream()
+      cleanup_run_slots_streams()
     end)
 
-    {:ok, telemetry_ref: ref}
+    {:ok, telemetry_ref: ref, project: project}
   end
 
   describe "RestartBackoff.next_attempt/1 contract (RTE-T004)" do
@@ -164,7 +171,7 @@ defmodule ForemanServer.Workflow.BootReconciliationDispatchBackoffTest do
         fn ->
           match?(
             [%{run_id: ^run_id, outcome: "exhausted", attempt: 6, kind: "slot_release"}],
-            ProjectionStore.queue_status().orphan_recovery
+            ProjectionStore.queue_status(project()).orphan_recovery
           )
         end,
         message: "queue_status/0 to list the exhausted entry"
@@ -182,16 +189,23 @@ defmodule ForemanServer.Workflow.BootReconciliationDispatchBackoffTest do
       assert {:ok, _} =
                CommandGateway.dispatch_system(%{
                  type: "run_slots.release",
-                 aggregate_id: @run_slots_stream,
+                 aggregate_id: stream(),
                  command_id: "backstop-release:#{run_id}",
-                 payload: %{run_id: run_id, released_at_ms: System.system_time(:millisecond)}
+                 payload: %{
+                   run_id: run_id,
+                   project_id: project(),
+                   released_at_ms: System.system_time(:millisecond)
+                 }
                })
 
       assert recovery_entry(run_id) == nil
 
       Eventually.await(
         fn ->
-          Enum.all?(ProjectionStore.queue_status().orphan_recovery, &(&1.run_id != run_id))
+          Enum.all?(
+            ProjectionStore.queue_status(project()).orphan_recovery,
+            &(&1.run_id != run_id)
+          )
         end,
         message: "projection to drop the entry with its holder"
       )
@@ -359,13 +373,14 @@ defmodule ForemanServer.Workflow.BootReconciliationDispatchBackoffTest do
       boot_pid = Process.whereis(BootReconciliation)
 
       # A suspended actor never answers, so the append's call exits (a timeout).
-      [{actor, _}] = Registry.lookup(ForemanServer.AggregateRegistry, @run_slots_stream)
+      [{actor, _}] = Registry.lookup(ForemanServer.AggregateRegistry, stream())
       :ok = :sys.suspend(actor)
 
       log =
         capture_log(fn ->
           assert :ok =
                    BootReconciliation.record_dispatch_failure(
+                     project(),
                      run_id,
                      :boot_orphan_holder,
                      :slot_release,
@@ -383,7 +398,7 @@ defmodule ForemanServer.Workflow.BootReconciliationDispatchBackoffTest do
 
       Eventually.await(
         fn -> match?({:ok, _}, safe_events()) end,
-        message: "run_slots:global to be readable again"
+        message: "the project run-slot stream to be readable again"
       )
 
       assert recovery_events(run_id) == []
@@ -398,6 +413,9 @@ defmodule ForemanServer.Workflow.BootReconciliationDispatchBackoffTest do
     "#{prefix}-slot-orphan-#{System.system_time(:nanosecond)}-#{System.unique_integer([:positive])}"
   end
 
+  defp project, do: Process.get(:slot_project)
+  defp stream, do: RunSlots.stream_id(project())
+
   defp ensure_supervised(child) do
     case Process.whereis(child) do
       nil -> start_supervised!(child)
@@ -409,6 +427,7 @@ defmodule ForemanServer.Workflow.BootReconciliationDispatchBackoffTest do
     for _ <- 1..times do
       assert :ok =
                BootReconciliation.record_dispatch_failure(
+                 project(),
                  run_id,
                  :boot_orphan_holder,
                  kind,
@@ -436,13 +455,13 @@ defmodule ForemanServer.Workflow.BootReconciliationDispatchBackoffTest do
     :ok
   end
 
-  # Restart while the `run_slots:global` actor does not answer, so the restarted
+  # Restart while the project's run-slot actor does not answer, so the restarted
   # reconciler's own scan fails its release/removal dispatch for real (the call
   # times out and is caught) and cannot clear the entry. The actor is then killed,
   # not resumed, so the timed-out commands in its mailbox are never applied; the
   # Aggregator restarts it from the stream.
   defp restart_with_stuck_actor! do
-    [{actor, _}] = Registry.lookup(ForemanServer.AggregateRegistry, @run_slots_stream)
+    [{actor, _}] = Registry.lookup(ForemanServer.AggregateRegistry, stream())
     :ok = :sys.suspend(actor)
     restart_boot_reconciliation!()
     ref = Process.monitor(actor)
@@ -451,7 +470,7 @@ defmodule ForemanServer.Workflow.BootReconciliationDispatchBackoffTest do
 
     Eventually.await(
       fn ->
-        case Registry.lookup(ForemanServer.AggregateRegistry, @run_slots_stream) do
+        case Registry.lookup(ForemanServer.AggregateRegistry, stream()) do
           [{pid, _}] -> pid != actor
           [] -> true
         end
@@ -461,7 +480,7 @@ defmodule ForemanServer.Workflow.BootReconciliationDispatchBackoffTest do
   end
 
   defp kill_actor_and_scan do
-    case Registry.lookup(ForemanServer.AggregateRegistry, @run_slots_stream) do
+    case Registry.lookup(ForemanServer.AggregateRegistry, stream()) do
       [{actor_pid, _}] ->
         ref = Process.monitor(actor_pid)
         Process.exit(actor_pid, :kill)
@@ -475,7 +494,7 @@ defmodule ForemanServer.Workflow.BootReconciliationDispatchBackoffTest do
   end
 
   defp safe_events do
-    case Store.read_stream_forward(@run_slots_stream, 0, 200) do
+    case Store.read_stream_forward(stream(), 0, 200) do
       {:ok, events} -> {:ok, events}
       {:error, :stream_not_found} -> {:ok, []}
       other -> other
@@ -509,55 +528,28 @@ defmodule ForemanServer.Workflow.BootReconciliationDispatchBackoffTest do
   defp field(data, key), do: Aggregate.get(data, key)
 
   defp recovery_entry(run_id) do
-    {state, _version} = Aggregate.load(RunSlots, @run_slots_stream)
+    {state, _version} = Aggregate.load(RunSlots, stream())
     Map.get(state.recovery, run_id)
   end
 
-  defp cleanup_run_slots_stream do
-    # A scan cast still in flight appends to the stream; the reconciler is the barrier.
+  defp cleanup_run_slots_streams do
+    # A scan cast still in flight appends to a slot stream; the reconciler is the barrier.
     _ = :sys.get_state(BootReconciliation)
-
-    case Store.delete_stream(@run_slots_stream, :any_version, :hard) do
-      :ok -> :ok
-      {:ok, _} -> :ok
-      {:error, :stream_not_found} -> :ok
-      {:error, :not_supported} -> :ok
-    end
-
-    case Registry.lookup(ForemanServer.AggregateRegistry, @run_slots_stream) do
-      [{pid, _}] when is_pid(pid) ->
-        ref = Process.monitor(pid)
-        Process.exit(pid, :kill)
-
-        receive do
-          {:DOWN, ^ref, :process, ^pid, _} -> :ok
-        after
-          1_000 -> :ok
-        end
-
-        Eventually.await(
-          fn ->
-            ForemanServer.AggregateRegistry
-            |> Registry.lookup(@run_slots_stream)
-            |> Enum.all?(fn {registered, _value} -> registered != pid end)
-          end,
-          message: "registry to drop the killed #{@run_slots_stream} actor"
-        )
-
-      _ ->
-        :ok
-    end
-
-    :ok
+    RunSlotsReset.reset!()
   end
 
   defp append_run_slot_holder!(run_id) do
     {:ok, _} =
       CommandGateway.dispatch_system(%{
         type: "run_slots.acquire",
-        aggregate_id: @run_slots_stream,
+        aggregate_id: stream(),
         command_id: "seed-holder:#{run_id}",
-        payload: %{run_id: run_id, capacity: 1, acquired_at_ms: System.system_time(:millisecond)}
+        payload: %{
+          run_id: run_id,
+          project_id: project(),
+          capacity: 1,
+          acquired_at_ms: System.system_time(:millisecond)
+        }
       })
   end
 
@@ -565,9 +557,14 @@ defmodule ForemanServer.Workflow.BootReconciliationDispatchBackoffTest do
     {:ok, _} =
       CommandGateway.dispatch_system(%{
         type: "run_slots.acquire",
-        aggregate_id: @run_slots_stream,
+        aggregate_id: stream(),
         command_id: "seed-waiter:#{run_id}",
-        payload: %{run_id: run_id, capacity: 0, acquired_at_ms: System.system_time(:millisecond)}
+        payload: %{
+          run_id: run_id,
+          project_id: project(),
+          capacity: 0,
+          acquired_at_ms: System.system_time(:millisecond)
+        }
       })
   end
 
@@ -575,7 +572,7 @@ defmodule ForemanServer.Workflow.BootReconciliationDispatchBackoffTest do
     %{
       run_id: run_id,
       task_id: unique_id("task"),
-      project_id: unique_id("project"),
+      project_id: project(),
       workflow_snapshot: %{},
       sequence: 0
     }
@@ -583,7 +580,12 @@ defmodule ForemanServer.Workflow.BootReconciliationDispatchBackoffTest do
 
   defp seed_terminal_run!(run_id) do
     append_and_apply("run:#{run_id}", 0, "RunStarted", started_payload(run_id))
-    append_and_apply("run:#{run_id}", 1, "RunCompleted", %{run_id: run_id, sequence: 1})
+
+    append_and_apply("run:#{run_id}", 1, "RunCompleted", %{
+      run_id: run_id,
+      project_id: project(),
+      sequence: 1
+    })
   end
 
   defp append_and_apply(stream_uuid, expected_version, event_type, payload) do

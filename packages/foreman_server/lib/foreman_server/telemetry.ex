@@ -406,55 +406,94 @@ defmodule ForemanServer.Telemetry do
 
   @doc """
   Emits `[:foreman_server, :run_slots, :acquired]`.
-  Measurements: `holders`, `capacity`.
-  Metadata: `run_id`, `source`.
+  Measurements: `holders`, `capacity`, `waiting`, and `queue_wait_ms` only when the grant
+  promotes a queued run (time since the waiter's enqueue stamp).
+  Metadata: `run_id`, `source`, `project_id` (nil for the legacy global stream).
+  `opts`: `:project_id`, `:waiting` (default 0), `:queue_wait_ms`.
   """
-  @spec run_slots_acquired(String.t(), non_neg_integer(), non_neg_integer()) :: :ok
-  def run_slots_acquired(run_id, holders, capacity)
+  @spec run_slots_acquired(String.t(), non_neg_integer(), non_neg_integer(), keyword()) :: :ok
+  def run_slots_acquired(run_id, holders, capacity, opts \\ [])
       when is_binary(run_id) and is_integer(holders) and holders >= 0 and
              is_integer(capacity) and capacity >= 0 do
-    execute(@run_slots_acquired, %{holders: holders, capacity: capacity}, %{
-      run_id: run_id,
-      source: :aggregate
-    })
+    execute(
+      @run_slots_acquired,
+      slot_counts(%{holders: holders, capacity: capacity}, opts),
+      %{run_id: run_id, source: :aggregate, project_id: Keyword.get(opts, :project_id)}
+    )
   end
 
   @doc """
   Emits `[:foreman_server, :run_slots, :queued]`.
-  Measurements: `depth`.
-  Metadata: `run_id`, `position`.
+  Measurements: `depth`, `holders`, `waiting`.
+  Metadata: `run_id`, `position`, `project_id`.
+  `opts`: `:project_id`, `:holders` (default 0).
   """
-  @spec run_slots_queued(String.t(), non_neg_integer(), pos_integer()) :: :ok
-  def run_slots_queued(run_id, depth, position)
+  @spec run_slots_queued(String.t(), non_neg_integer(), pos_integer(), keyword()) :: :ok
+  def run_slots_queued(run_id, depth, position, opts \\ [])
       when is_binary(run_id) and is_integer(depth) and depth >= 0 and
              is_integer(position) and position > 0 do
-    execute(@run_slots_queued, %{depth: depth}, %{run_id: run_id, position: position})
+    execute(
+      @run_slots_queued,
+      %{depth: depth, holders: Keyword.get(opts, :holders, 0), waiting: depth},
+      %{run_id: run_id, position: position, project_id: Keyword.get(opts, :project_id)}
+    )
   end
 
   @doc """
   Emits `[:foreman_server, :run_slots, :released]`.
-  Measurements: `holders`.
-  Metadata: `run_id`, `reason`.
+  Measurements: `holders`, `waiting`.
+  Metadata: `run_id`, `reason`, `project_id`.
+  `opts`: `:project_id`, `:waiting` (default 0).
   """
-  @spec run_slots_released(String.t(), non_neg_integer(), atom() | String.t() | nil) :: :ok
-  def run_slots_released(run_id, holders, reason)
+  @spec run_slots_released(
+          String.t(),
+          non_neg_integer(),
+          atom() | String.t() | nil,
+          keyword()
+        ) :: :ok
+  def run_slots_released(run_id, holders, reason, opts \\ [])
       when is_binary(run_id) and is_integer(holders) and holders >= 0 do
-    execute(@run_slots_released, %{holders: holders}, %{run_id: run_id, reason: reason})
+    execute(
+      @run_slots_released,
+      %{holders: holders, waiting: Keyword.get(opts, :waiting, 0)},
+      %{run_id: run_id, reason: reason, project_id: Keyword.get(opts, :project_id)}
+    )
   end
 
   @doc """
   Emits `[:foreman_server, :run_slots, :transferred]`.
-  Measurements: `depth`.
-  Metadata: `released_run_id`, `acquired_run_id`.
+  Measurements: `depth`, `holders`, `waiting`, and `queue_wait_ms` (promoted waiter's time
+  in queue) when `opts[:queue_wait_ms]` is given.
+  Metadata: `released_run_id`, `acquired_run_id`, `project_id`.
+  `opts`: `:project_id`, `:holders`, `:queue_wait_ms`.
   """
-  @spec run_slots_transferred(String.t(), String.t(), non_neg_integer()) :: :ok
-  def run_slots_transferred(released_run_id, acquired_run_id, depth)
+  @spec run_slots_transferred(String.t(), String.t(), non_neg_integer(), keyword()) :: :ok
+  def run_slots_transferred(released_run_id, acquired_run_id, depth, opts \\ [])
       when is_binary(released_run_id) and is_binary(acquired_run_id) and
              is_integer(depth) and depth >= 0 do
-    execute(@run_slots_transferred, %{depth: depth}, %{
+    measurements =
+      slot_counts(%{depth: depth, holders: Keyword.get(opts, :holders, 0)}, waiting: depth)
+
+    measurements =
+      case Keyword.get(opts, :queue_wait_ms) do
+        ms when is_integer(ms) and ms >= 0 -> Map.put(measurements, :queue_wait_ms, ms)
+        _ -> measurements
+      end
+
+    execute(@run_slots_transferred, measurements, %{
       released_run_id: released_run_id,
-      acquired_run_id: acquired_run_id
+      acquired_run_id: acquired_run_id,
+      project_id: Keyword.get(opts, :project_id)
     })
+  end
+
+  defp slot_counts(measurements, opts) do
+    measurements = Map.put(measurements, :waiting, Keyword.get(opts, :waiting, 0))
+
+    case Keyword.get(opts, :queue_wait_ms) do
+      ms when is_integer(ms) and ms >= 0 -> Map.put(measurements, :queue_wait_ms, ms)
+      _ -> measurements
+    end
   end
 
   @doc """

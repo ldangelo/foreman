@@ -711,7 +711,7 @@ foreman project settings project-123
 | `instructions` | 16000 characters (`String.length`, like Claude Projects) | Standing instructions for every thread |
 | `thread_model`, `thread_effort` (`low`/`medium`/`high`) | | Default model/effort for the project's threads |
 | `coordinator_provider` (`pi`/`claude`), `coordinator_model`, `coordinator_effort` | | Provider, model and effort of the project's coordinator agent (see [Project coordinator](#14-project-coordinator)) |
-| `max_concurrent_runs` | 1..1000 | Runs the project may have active at once |
+| `max_concurrent_runs` | 1..1000 | Runs the project may have active at once; unset means 3 (server default `:max_concurrent_runs_per_project`). Further runs wait in the project's own queue |
 | `daily_thread_cap` | 1..10000 | Threads (workflow runs plus jobsites) the project may start per UTC day |
 | `library_collect_produced` | `true`/`false` | Register each run's artifacts and session-archive files in the project library (default off; see [Project library](#121-project-library)) |
 | `coordinator_propose_before_start` (bool), `coordinator_max_active_threads` (1..50), `coordinator_reuse_threads` (bool) | | Coordinator tuning enforced by the server; clearable with `--clear` |
@@ -733,14 +733,18 @@ once when a run's executor starts (a resumed run reads the project's current
 value). `thread_effort` is delivered as `reasoning_effort` only to providers whose
 adapter declares it (logged and ignored otherwise, never an error).
 
-**Limits.** `max_concurrent_runs` is enforced inside the project aggregate at run
-reservation, and is further capped by the global run-slot capacity (a project value
-above the global one cannot raise it). The daily thread cap counts a workflow run (a PR-fix follow-up run included) at
+**Limits.** `max_concurrent_runs` (default 3 when the project sets none) is enforced
+by the project's own run-slot queue, which holds the runs above it in FIFO order. There
+is no global cap: one project's queue never delays another's, total concurrency is the
+sum of per-project limits (there is no machine-wide ceiling), and the old server-wide
+`config :foreman_server, :max_concurrent_runs` is retired (a leftover value is ignored
+and logs one warning at boot). The daily thread cap counts a workflow run (a PR-fix follow-up run included) at
 reservation; the (N+1)th thread of the UTC day is refused
 (`{:daily_thread_cap_exceeded, N, day}`). Refused admissions are not terminal: the task stays approved and is
 retried when the project resumes or its settings change. `project settings` (and
 `GET /api/projects/<id>/settings`) shows the effective limits, usage today,
-`resets_at` and the count of deferred tasks.
+`resets_at`, the count of deferred tasks, and the slot usage `running_runs` (runs
+holding one of the project's slots) and `waiting_runs` (runs queued behind them).
 
 ### Repositories
 
@@ -841,7 +845,7 @@ the rest. Foreman never computes a price. `--from` / `--to` are inclusive UTC da
 The same data is `GET /api/projects/<id>/usage?from=&to=&group_by=&limit=` (422 `invalid_range`,
 `range_too_large`, `invalid_group_by`, `invalid_limit`; 404 for an unknown project) and the MCP read tool
 `foreman_usage_get`. The response also carries the `limits` block (including `deferred_today` /
-`deferred_by_reason`, the durable count of tasks refused today by the daily cap, run limit or pause) and
+`deferred_by_reason`, the durable count of tasks refused today by the daily cap or pause) and
 `cache_hints`, one per thread: `cache_read_ratio`, `idle_seconds` and `likely_cold` (`null` when the provider has
 no configured cache TTL; the TTLs are `config :foreman_server, :usage, cache_ttl_seconds:`, claude 300 by
 default, an assumption to tune per provider). Usage covers the last 366 days per project. Jobsite iteration
@@ -925,16 +929,19 @@ re-admitted on resume. `reactivate` is for archived projects (and clears any
 earlier pause); `resume` is for paused ones.
 
 A run id returned by `foreman run submit` exists before admission has produced a
-run. A task refused at admission (`run_limit_exceeded`, daily thread cap, pause)
+run. A task refused at admission (daily thread cap, paused or archived project)
 keeps its run id and `foreman run get <id>` / `GET /api/runs/<id>` answers `200`
 with `run.status` `deferred` and `run.reason` (or `queued` while admission is
 pending), never a 404. It is re-admitted when the project is resumed, when a
-`project update` changes its settings (a raised limit), when a finished run
+`project update` changes its settings, when a finished run
 frees its reservation, and when the UTC day rolls over (a task the daily thread
 cap refused is retried as soon as the cap resets, with no operator action; a
-timer in the Dispatcher fires at the next UTC midnight). The global run slot is
+timer in the Dispatcher fires at the next UTC midnight). A run slot is
 only taken once the project's own limits admit the run, so a deferred run never
 starves other projects.
+The run ceiling is not an admission refusal: a run over the project's `max_concurrent_runs`
+is admitted and waits in that project's own slot queue (see `waiting_runs`), not `deferred`;
+a raised limit starts queued runs in order.
 
 ### Tasks
 
@@ -1081,7 +1088,7 @@ foreman run merge --id <run-id>
   processes whose cwd is inside the worktree and whose parent is pid 1
   are touched). A server shutdown does the same for live agents, and a
   restarted server reaps what an agent left in a worktree before reusing it.
-  A run still waiting for a run slot (listed in `waiting` of `GET /api/queue`) has no run
+  A run still waiting for a run slot (listed in `waiting` of `GET /api/queue?project_id=<id>`) has no run
   record and no agent yet: `run cancel` removes it from the waiting list and acknowledges its
   task (`task.run_terminated`, with the cancel's `reason`) instead of failing with
   `run_not_found`. The run stops reading as `queued` and is not re-admitted when a slot frees;
@@ -1196,7 +1203,7 @@ task/project directory), not the server's working directory.
 
 If the resume had to re-provision the run's worktree, the first phase event afterwards (that `PhaseRetried`, or the next `PhaseStarted` when no phase was in flight) carries `prior_worktree_discarded` (`{name, path}`): uncommitted changes in that worktree were **not** carried over. It is recorded only when a worktree could have held work (worktrees enabled for the workflow and at least one phase had started), so a run with none does not claim a loss. It shows on `current_phase.prior_worktree_discarded` in `foreman_run_status`. A `git worktree prune` that fails during resume fails the run with `{:resume_worktree_prune_failed, repo_path, code, output}` (it used to be reported as `:resume_context_unresolvable`).
 
-**Orphaned slot entries.** A run-slot holder or waiter whose run is absent or terminal is released at boot. When that cleanup fails, the failure count is stored durably (`RunSlotRecoveryAttempted`, command `run_slots.recovery_attempt`, one budget per run across holders and waiters) and capped by the same 5-restart backoff as the agent crash-recovery loop: attempts 1 to 5 are retried at later boots, the sixth consecutive failure records the entry `exhausted` and boot skips it from then on. `GET /api/queue` and `foreman_queue_status` list these entries in `orphan_recovery`: `[{run_id, kind, attempt, outcome, reason, elapsed_since_boot_ms}]` with `kind` `slot_release` or `waiter_remove` and `outcome` `failed` or `exhausted`; `[]` when there are none. There is no operator verb to re-arm an exhausted entry. An entry leaves the list when a cleanup finally succeeds or its holder or waiter leaves the stream by another route, which also clears its count: so "recorded at 3 failures, fails again, is at 4" holds only while the entry stays in the slot stream.
+**Orphaned slot entries.** A run-slot holder or waiter whose run is absent or terminal is released at boot, on its own project's `run_slots:<project_id>` stream. When that cleanup fails, the failure count is stored durably (`RunSlotRecoveryAttempted`, command `run_slots.recovery_attempt`, one budget per run across holders and waiters) and capped by the same 5-restart backoff as the agent crash-recovery loop: attempts 1 to 5 are retried at later boots, the sixth consecutive failure records the entry `exhausted` and boot skips it from then on. `GET /api/queue?project_id=<id>` and `foreman_queue_status` list a project's entries in `orphan_recovery`: `[{run_id, kind, attempt, outcome, reason, elapsed_since_boot_ms}]` with `kind` `slot_release` or `waiter_remove` and `outcome` `failed` or `exhausted`; `[]` when there are none. There is no operator verb to re-arm an exhausted entry. An entry leaves the list when a cleanup finally succeeds or its holder or waiter leaves the stream by another route, which also clears its count: so "recorded at 3 failures, fails again, is at 4" holds only while the entry stays in the slot stream.
 
 **External effects.** Four side effects outside the event store are recorded in the idempotency store under a key `effect:<class>:<run_id>:<identity>` (written `started` before the effect, settled after it): `branch_push` (a `git push` of the run branch; identity the head branch), `pr_create` (`gh pr create`; identity `<head>:<base>`), `task_provider` (a provider `claim`, `complete`, `fail` or `reopen`; identity `<op>:<issue_id>`, [Task-provider enablement](#10-task-provider-beads-enablement)) and `pr_comment` (the PR report comment, Phase 1 PR 7; identity `<head>:<digest>`; repeatable and never blocks or cancels a run: see "PR report comment" under Required checks below). A crash between the write and the settle leaves the key `ambiguous`. The boot sweep asks the class's reconciler what really happened (`git ls-remote` for a push, `gh pr list --state all` for a PR, a read of the issue for the provider, a list of the PR's comments for a report comment: done only for the token user's own comment carrying the matching marker) and acts on the verdict:
 
@@ -1327,9 +1334,9 @@ Read endpoints are projection-only:
   when Foreman recorded none. `GET /api/runs` carries the same field on
   each listed run.
 - `GET /api/tasks/{id}`, `GET /api/projects`, `GET /api/projects/{id}`,
-  and `GET /api/queue` expose corresponding projections. `GET /api/queue`
-  returns `capacity`, `running`, `waiting` and `orphan_recovery` (the boot
-  cleanup budget of orphaned slot entries; `[]` when none, see
+  and `GET /api/queue?project_id=<id>` (the one project's own run-slot queue; 422 `project_required` without `project_id`, there is no machine-wide queue view) expose corresponding projections. `GET /api/queue?project_id=<id>`
+  returns `project_id`, `limit`, `running_runs`, `waiting_runs`, `running`, `waiting` and `orphan_recovery` (the boot
+  cleanup budget of that project's orphaned slot entries; `[]` when none, see
   [Restart recovery and external effects](#restart-recovery-and-external-effects)).
 - Schedules: `GET /api/projects/{project_id}/schedules` returns
   `{ticker: "running"|"disabled", schedules: [...]}` (the Scheduled tab's data;
@@ -2156,7 +2163,7 @@ release); it does not depend on `PHX_SERVER` (`foreman-cnn1l`). Agents reach it 
 [the live run](acceptance/multi-repo-agent-live-run.md)).
 
 **Read tools** are always advertised: `foreman_doctor`,
-`foreman_queue_status`, `foreman_project_list`, `foreman_project_get`,
+`foreman_queue_status` (takes a required `project_id`), `foreman_project_list`, `foreman_project_get`,
 `foreman_workflow_list`, `foreman_workflow_get`,
 `foreman_workflow_validate`, `foreman_prompt_get`,
 `foreman_run_get`, `foreman_run_status`, `foreman_run_get_logs`,
@@ -2185,9 +2192,10 @@ The write-gated thread tools are `foreman_thread_stop` and
   [Network and skill preflight](#network-and-skill-preflight)) and
   `prior_worktree_discarded` (`{name, path}` when a resume re-provisioned a
   worktree that may have held uncommitted work, else `null`).
-- `foreman_queue_status` returns the run-slot queue (`capacity`, `running`,
-  `waiting`) and `orphan_recovery`, the boot cleanup budget entries of
-  orphaned slot holders and waiters (same shape as `GET /api/queue`).
+- `foreman_queue_status` (requires `project_id`) returns that project's run-slot queue
+  (`limit`, `running_runs`, `waiting_runs`, `running`, `waiting`) and `orphan_recovery`, the boot
+  cleanup budget entries of the project's orphaned slot holders and waiters (same shape as
+  `GET /api/queue?project_id=<id>`).
 - `foreman_doctor` returns `output` (the provider readiness report, then the
   `Idempotency store` line and the `Unresolved effect keys` section, one line per
   ambiguous effect key: `<class> run=<id> status=<run status> key=<key> key_status=<started|ambiguous> decision=<not_done|none> writer=<alive|dead|none>`, plus, since Phase 1 PR 2, `started` keys and a `Phase 1 gating` line after the store line),
@@ -2573,7 +2581,7 @@ The separate "jobsite" dispatch path (`/api/jobsites`, `foreman jobsite template
 
 - **PR fixes are follow-up runs.** `foreman run fix-ci|address-comments|resolve-conflicts` (and the `pr_auto_fix`
   policy) record a system-only `run.followup.request`. The Dispatcher admits that run through the same admission as
-  every run, so it respects the global run slots (a fix can **wait** behind full slots), the project's run limit and
+  every run, so it respects the project's run slots (a fix can **wait** in the project's own queue when its slots are full), the project's run limit and
   daily thread cap, and pause/archive. The run has no task and mints no Bead. It attaches to the PR's head branch
   (fast-forward only, never force), runs the run's agent (provider, model, approval mode, and its provider session
   when it can resume at the same working directory) and pushes only that branch. `config :foreman_server,

@@ -31,31 +31,17 @@ defmodule ForemanServer.Workflow.RunResumeBoundariesTest do
   @dispatcher Dispatcher
   @app_supervisor ForemanServer.Application
   @barrier_timeout_ms 30_000
-  @unbounded_capacity 1_000_000
+  @default_run_limit 50
 
   setup_all do
     MeckScope.new_once!([RunSupervisor])
   end
 
   setup context do
-    previous = Application.fetch_env(:foreman_server, :max_concurrent_runs)
-    # A restart replays the WHOLE event log, not just this test's runs: every run an earlier
-    # module left live in the log is re-admitted through the same global slot stream, ahead of
-    # or behind this test's own. Only a capacity no suite can fill guarantees this test's
-    # resumed run a free slot (`@tag capacity: n` narrows it for the test that wants a full one).
-    Application.put_env(
-      :foreman_server,
-      :max_concurrent_runs,
-      Map.get(context, :capacity, @unbounded_capacity)
-    )
-
-    on_exit(fn ->
-      case previous do
-        {:ok, value} -> Application.put_env(:foreman_server, :max_concurrent_runs, value)
-        :error -> Application.delete_env(:foreman_server, :max_concurrent_runs)
-      end
-    end)
-
+    # Run slots are per project and this test registers its own project below, so no other
+    # module's runs share its queue; a restart replays the WHOLE event log, but those runs
+    # belong to other projects. The project's own run limit is the capacity under test:
+    # `@tag capacity: n` narrows it for the test that wants a full one.
     # The app Dispatcher must be the real, subscribed one; the rebuilds below resurrect every
     # run in the log, so the store is reset again when the test is over.
     DispatcherRestart.restart!()
@@ -104,7 +90,10 @@ defmodule ForemanServer.Workflow.RunResumeBoundariesTest do
         type: "project.update",
         aggregate_id: "project:#{project}",
         command_id: "u-#{System.unique_integer([:positive])}",
-        payload: %{project_id: project, max_concurrent_runs: 50}
+        payload: %{
+          project_id: project,
+          max_concurrent_runs: Map.get(context, :capacity, @default_run_limit)
+        }
       })
 
     {:ok, project: project}

@@ -1,11 +1,13 @@
 defmodule ForemanServer.RunAdmissionProjectRefusalTest do
-  # A paused project / exhausted daily cap refuses run admission WITHOUT starting
-  # a run. The global run slot the attempt acquired must be handed back, or one
-  # paused project would starve every other project. After the refusal is lifted
-  # the same admission succeeds.
+  # A paused or archived project / exhausted daily cap refuses run admission
+  # WITHOUT starting a run, and BEFORE the project's slot stream is touched
+  # (TRD-005): a refused run holds no slot and takes no queue position. After
+  # the refusal is lifted the same admission succeeds. A project's run ceiling
+  # is no longer a refusal: the run waits in the project's queue.
   use ExUnit.Case, async: false
 
   alias ForemanServer.{Aggregate, CommandRouter, RunAdmission}
+  alias ForemanServer.Aggregates.RunSlots
   alias ForemanServer.TestSupport.RunSlotsReset
 
   setup_all do
@@ -33,16 +35,6 @@ defmodule ForemanServer.RunAdmissionProjectRefusalTest do
 
   setup do
     RunSlotsReset.reset!()
-    init_run_id = "refusal-init-#{System.unique_integer([:positive])}"
-
-    {:ok, _} =
-      ForemanServer.CommandGateway.dispatch_system(%{
-        type: "run_slots.acquire",
-        command_id: "test:refusal-init:#{init_run_id}",
-        aggregate_id: "run_slots:global",
-        payload: %{run_id: init_run_id, capacity: 100}
-      })
-
     :ok
   end
 
@@ -61,17 +53,16 @@ defmodule ForemanServer.RunAdmissionProjectRefusalTest do
   defp register!(project_id),
     do: dispatch!(project_id, "project.register", %{path: System.tmp_dir!()})
 
-  defp slot_holders do
-    {:ok, pid} = start_or_lookup_slots()
-    Aggregate.Actor.get_state(pid).holders
+  # The project's own slot stream, replayed from the event store.
+  defp slot_state(project_id) do
+    {state, _version} = Aggregate.load(RunSlots, RunSlots.stream_id(project_id))
+    state
   end
 
-  defp start_or_lookup_slots do
-    case Registry.lookup(ForemanServer.AggregateRegistry, "run_slots:global") do
-      [{pid, _}] -> {:ok, pid}
-      [] -> flunk("run_slots:global aggregate not started")
-    end
-  end
+  defp slot_holders(project_id), do: slot_state(project_id).holders
+
+  defp slot_waiter_ids(project_id),
+    do: Enum.map(slot_state(project_id).waiters, & &1.run_id)
 
   defp payload(run_id) do
     %{
@@ -83,7 +74,7 @@ defmodule ForemanServer.RunAdmissionProjectRefusalTest do
     }
   end
 
-  test "paused: admission is refused with {:project_paused, id} and the slot is not taken" do
+  test "paused: admission is deferred with {:project_paused, id}, no slot and no queue position" do
     project_id = unique("project")
     run_id = unique("run")
     register!(project_id)
@@ -92,10 +83,11 @@ defmodule ForemanServer.RunAdmissionProjectRefusalTest do
     assert {:error, {:project_paused, ^project_id}} =
              RunAdmission.start(project_id, payload(run_id))
 
-    refute Map.has_key?(slot_holders(), run_id)
+    refute Map.has_key?(slot_holders(project_id), run_id)
+    refute run_id in slot_waiter_ids(project_id)
   end
 
-  test "daily thread cap: the next run is refused and the slot is not taken" do
+  test "daily thread cap: the next run is deferred, holds no slot, and is admitted once the cap allows" do
     project_id = unique("project")
     register!(project_id)
     dispatch!(project_id, "project.update", %{daily_thread_cap: 1})
@@ -111,25 +103,54 @@ defmodule ForemanServer.RunAdmissionProjectRefusalTest do
     assert {:error, {:daily_thread_cap_exceeded, 1, _day}} =
              RunAdmission.start(project_id, payload(second))
 
-    refute Map.has_key?(slot_holders(), second)
-  end
+    refute Map.has_key?(slot_holders(project_id), second)
+    refute second in slot_waiter_ids(project_id)
 
-  test "run limit: the next run is refused, its slot is not taken, and it is admitted once the limit is raised" do
-    project_id = unique("project")
-    register!(project_id)
-    dispatch!(project_id, "project.update", %{max_concurrent_runs: 1})
-
-    assert {:ok, _} = RunAdmission.start(project_id, payload(unique("run")))
-    second = unique("run")
-
-    assert {:error, :run_limit_exceeded} = RunAdmission.start(project_id, payload(second))
-    refute Map.has_key?(slot_holders(), second)
-
-    dispatch!(project_id, "project.update", %{max_concurrent_runs: 2})
+    # The cap counts threads per UTC day, so the day rolling over has the same
+    # effect as raising it here (the aggregate has no clock seam to roll).
+    dispatch!(project_id, "project.update", %{daily_thread_cap: 2})
 
     assert {:ok, %{"event_type" => "RunStarted"}} =
              RunAdmission.start(project_id, payload(second))
 
-    assert Map.has_key?(slot_holders(), second)
+    assert Map.has_key?(slot_holders(project_id), second)
+  end
+
+  test "archived: admission is refused before any slot is touched" do
+    project_id = unique("project")
+    run_id = unique("run")
+    register!(project_id)
+    dispatch!(project_id, "project.archive", %{})
+
+    assert {:error, :project_archived} =
+             RunAdmission.start(project_id, payload(run_id))
+
+    assert slot_holders(project_id) == %{}
+    assert slot_waiter_ids(project_id) == []
+
+    assert {:error, :stream_not_found} =
+             ForemanServer.EventStore.read_stream_forward(RunSlots.stream_id(project_id), 0, 10)
+  end
+
+  test "run limit: the next run waits in the project's queue (not refused) and takes the slot once one is freed" do
+    project_id = unique("project")
+    register!(project_id)
+    dispatch!(project_id, "project.update", %{max_concurrent_runs: 1})
+
+    first = unique("run")
+    assert {:ok, %{"event_type" => "RunStarted"}} = RunAdmission.start(project_id, payload(first))
+    second = unique("run")
+
+    assert {:ok, :slot_queued} = RunAdmission.start(project_id, payload(second))
+    refute Map.has_key?(slot_holders(project_id), second)
+    assert slot_waiter_ids(project_id) == [second]
+
+    assert {:ok, _} =
+             ForemanServer.CommandGateway.dispatch_system(
+               RunSlots.release_command(project_id, first, "test_finished")
+             )
+
+    assert Map.has_key?(slot_holders(project_id), second)
+    assert slot_waiter_ids(project_id) == []
   end
 end

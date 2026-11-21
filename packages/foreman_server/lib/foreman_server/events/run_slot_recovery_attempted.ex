@@ -1,7 +1,7 @@
 defmodule ForemanServer.Events.RunSlotRecoveryAttempted do
   @moduledoc """
   Typed event for the durable boot cleanup budget of an orphaned run-slot entry,
-  on the `run_slots:global` stream (`run_slots.recovery_attempt`).
+  on the project's `run_slots:<project_id>` stream (`run_slots.recovery_attempt`).
 
   `BootReconciliation` releases a slot holder or removes a waiter whose run is
   absent or terminal. When that dispatch fails, the failure count is recorded
@@ -14,6 +14,7 @@ defmodule ForemanServer.Events.RunSlotRecoveryAttempted do
     * `kind` - `slot_release` or `waiter_remove`.
     * `reason` - free-text detail of the failure.
     * `elapsed_since_boot_ms` - monotonic time since application start.
+    * `project_id` - the project whose queue holds the entry (absent on legacy history).
   """
   @enforce_keys [:run_id, :attempt, :outcome, :kind, :elapsed_since_boot_ms]
   @type t :: %__MODULE__{
@@ -22,8 +23,9 @@ defmodule ForemanServer.Events.RunSlotRecoveryAttempted do
           outcome: String.t(),
           kind: String.t(),
           reason: String.t() | nil,
-          elapsed_since_boot_ms: integer()
+          elapsed_since_boot_ms: integer(),
+          project_id: String.t() | nil
         }
   @derive Jason.Encoder
-  defstruct [:run_id, :attempt, :outcome, :kind, :reason, :elapsed_since_boot_ms]
+  defstruct [:run_id, :attempt, :outcome, :kind, :reason, :elapsed_since_boot_ms, :project_id]
 end

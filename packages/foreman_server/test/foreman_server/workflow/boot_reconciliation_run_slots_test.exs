@@ -5,9 +5,10 @@ defmodule ForemanServer.Workflow.BootReconciliationRunSlotsTest do
   alias EventStore.RecordedEvent
   alias ForemanServer.EventStore, as: Store
   alias ForemanServer.{ProjectionStore, Telemetry}
-  alias ForemanServer.TestSupport.Eventually
+  alias ForemanServer.Aggregates.RunSlots
+  alias ForemanServer.TestSupport.CoordinatorHelpers, as: H
+  alias ForemanServer.TestSupport.RunSlotsReset
   alias ForemanServer.Workflow.BootReconciliation
-  @run_slots_stream "run_slots:global"
 
   setup_all do
     ensure_started(ForemanServer.EventStore, ForemanServer.EventStore)
@@ -24,14 +25,17 @@ defmodule ForemanServer.Workflow.BootReconciliationRunSlotsTest do
   end
 
   setup do
-    cleanup_run_slots_stream()
+    # A previous example may have left a scan cast in flight that is still appending; the scan
+    # runs inside BootReconciliation, so a call there is a barrier for it.
+    _ = :sys.get_state(BootReconciliation)
+    RunSlotsReset.reset!()
     cleanup_boot_reconciliation_runs()
 
-    on_exit(fn ->
-      cleanup_run_slots_stream()
-    end)
+    on_exit(fn -> RunSlotsReset.reset!() end)
 
-    :ok
+    # The boot scan reads each registered project's own `run_slots:<project_id>` stream.
+    project = H.register_project(System.tmp_dir!(), config: %{})
+    {:ok, project: project, stream: RunSlots.stream_id(project)}
   end
 
   setup do
@@ -47,17 +51,21 @@ defmodule ForemanServer.Workflow.BootReconciliationRunSlotsTest do
       assert :ok = BootReconciliation.scan_run_slot_orphans()
     end
 
-    test "holder with terminal run → run_slots.release dispatched", %{telemetry_ref: ref} do
+    test "holder with terminal run → run_slots.release dispatched", %{
+      telemetry_ref: ref,
+      project: project,
+      stream: stream
+    } do
       terminal_run_id = unique_id("orphan-holder-run")
 
-      seed_terminal_run!(terminal_run_id)
+      seed_terminal_run!(terminal_run_id, project)
       # Append holder directly to bypass aggregate actor state issues
-      append_run_slot_holder!(terminal_run_id, 0)
+      append_run_slot_holder!(project, terminal_run_id, 0)
 
       assert :ok = BootReconciliation.scan_run_slot_orphans()
 
       assert_eventually(fn ->
-        case Store.read_stream_forward(@run_slots_stream, 0, 20) do
+        case Store.read_stream_forward(stream, 0, 20) do
           {:ok, events} ->
             case List.last(events) do
               %RecordedEvent{event_type: "RunSlotReleased", data: data}
@@ -83,11 +91,11 @@ defmodule ForemanServer.Workflow.BootReconciliationRunSlotsTest do
                       %{holders_dropped: 1, waiters_dropped: 0}, %{phase: :boot}}
     end
 
-    test "holder with live run → no release dispatched" do
+    test "holder with live run → no release dispatched", %{project: project, stream: stream} do
       live_run_id = unique_id("live-holder-run")
 
-      seed_live_run!(live_run_id)
-      append_run_slot_holder!(live_run_id, 0)
+      seed_live_run!(live_run_id, project)
+      append_run_slot_holder!(project, live_run_id, 0)
 
       assert :ok = BootReconciliation.scan_run_slot_orphans()
 
@@ -96,25 +104,29 @@ defmodule ForemanServer.Workflow.BootReconciliationRunSlotsTest do
       # the scan (and every command it dispatched) has completed.
       _ = :sys.get_state(BootReconciliation)
 
-      assert {:ok, events} = Store.read_stream_forward(@run_slots_stream, 0, 20)
+      assert {:ok, events} = Store.read_stream_forward(stream, 0, 20)
       released_events = Enum.filter(events, &(&1.event_type == "RunSlotReleased"))
       assert released_events == []
     end
 
-    test "waiter with terminal run → run_slots.remove_waiter dispatched", %{telemetry_ref: ref} do
+    test "waiter with terminal run → run_slots.remove_waiter dispatched", %{
+      telemetry_ref: ref,
+      project: project,
+      stream: stream
+    } do
       holder_run_id = unique_id("holder-run-waiter-test")
       orphan_waiter_run_id = unique_id("orphan-waiter-run")
 
-      seed_live_run!(holder_run_id)
-      seed_terminal_run!(orphan_waiter_run_id)
+      seed_live_run!(holder_run_id, project)
+      seed_terminal_run!(orphan_waiter_run_id, project)
       # Append holder at v0, waiter at v1
-      append_run_slot_holder!(holder_run_id, 0)
-      append_run_slot_waiter!(orphan_waiter_run_id, 1)
+      append_run_slot_holder!(project, holder_run_id, 0)
+      append_run_slot_waiter!(project, orphan_waiter_run_id, 1)
 
       assert :ok = BootReconciliation.scan_run_slot_orphans()
 
       assert_eventually(fn ->
-        case Store.read_stream_forward(@run_slots_stream, 0, 30) do
+        case Store.read_stream_forward(stream, 0, 30) do
           {:ok, events} ->
             removed? =
               Enum.any?(events, fn
@@ -140,14 +152,14 @@ defmodule ForemanServer.Workflow.BootReconciliationRunSlotsTest do
                       %{holders_dropped: 0, waiters_dropped: 1}, %{phase: :boot}}
     end
 
-    test "waiter with live run → no remove_waiter dispatched" do
+    test "waiter with live run → no remove_waiter dispatched", %{project: project, stream: stream} do
       holder_run_id = unique_id("live-holder-run-waiter")
       live_waiter_run_id = unique_id("live-waiter-run")
 
-      seed_live_run!(holder_run_id)
-      seed_live_run!(live_waiter_run_id)
-      append_run_slot_holder!(holder_run_id, 0)
-      append_run_slot_waiter!(live_waiter_run_id, 1)
+      seed_live_run!(holder_run_id, project)
+      seed_live_run!(live_waiter_run_id, project)
+      append_run_slot_holder!(project, holder_run_id, 0)
+      append_run_slot_waiter!(project, live_waiter_run_id, 1)
 
       assert :ok = BootReconciliation.scan_run_slot_orphans()
 
@@ -156,19 +168,20 @@ defmodule ForemanServer.Workflow.BootReconciliationRunSlotsTest do
       # the scan (and every command it dispatched) has completed.
       _ = :sys.get_state(BootReconciliation)
 
-      assert {:ok, events} = Store.read_stream_forward(@run_slots_stream, 0, 30)
+      assert {:ok, events} = Store.read_stream_forward(stream, 0, 30)
       removed_events = Enum.filter(events, &(&1.event_type == "RunSlotWaiterRemoved"))
       assert removed_events == []
     end
 
-    test "survives force-kill of run_slots:global actor mid-scan (regression: race with RunSlotsReset.reset!/0)" do
+    test "survives force-kill of the project's run_slots actor mid-scan (regression: race with RunSlotsReset.reset!/0)",
+         %{project: project, stream: stream} do
       terminal_run_id = unique_id("kill-orphan-run")
-      seed_terminal_run!(terminal_run_id)
-      append_run_slot_holder!(terminal_run_id, 0)
+      seed_terminal_run!(terminal_run_id, project)
+      append_run_slot_holder!(project, terminal_run_id, 0)
 
       # Force the actor into the same dead state RunSlotsReset.reset!/0
       # creates between test cases — this is the real-world race.
-      [{actor_pid, _}] = Registry.lookup(ForemanServer.AggregateRegistry, @run_slots_stream)
+      [{actor_pid, _}] = Registry.lookup(ForemanServer.AggregateRegistry, stream)
       ref = Process.monitor(actor_pid)
       Process.exit(actor_pid, :kill)
       assert_receive {:DOWN, ^ref, :process, ^actor_pid, _}, 1_000
@@ -177,7 +190,7 @@ defmodule ForemanServer.Workflow.BootReconciliationRunSlotsTest do
 
       _log =
         ExUnit.CaptureLog.capture_log(fn ->
-          # Without the try/catch rescue in release_run_slot/2 this scan
+          # Without the try/catch rescue in release_run_slot/3 this scan
           # propagates `(EXIT) killed` up through handle_info and terminates
           # BootReconciliation, which cascades into ForemanServer.Application
           # shutting down and Process.whereis(ForemanServer.EventStore) going
@@ -201,51 +214,6 @@ defmodule ForemanServer.Workflow.BootReconciliationRunSlotsTest do
     "#{prefix}-slot-orphan-#{System.system_time(:nanosecond)}-#{System.unique_integer([:positive])}"
   end
 
-  defp cleanup_run_slots_stream do
-    # A previous example may have left a scan cast in flight that is still
-    # appending to the stream; hard-deleting under it violates the stream_events
-    # foreign key. The scan runs inside BootReconciliation, so a call there is a
-    # barrier for it.
-    _ = :sys.get_state(BootReconciliation)
-
-    case Store.delete_stream(@run_slots_stream, :any_version, :hard) do
-      :ok -> :ok
-      {:ok, _} -> :ok
-      {:error, :stream_not_found} -> :ok
-      {:error, :not_supported} -> :ok
-    end
-
-    case Registry.lookup(ForemanServer.AggregateRegistry, @run_slots_stream) do
-      [{pid, _}] when is_pid(pid) ->
-        ref = Process.monitor(pid)
-        Process.exit(pid, :kill)
-
-        receive do
-          {:DOWN, ^ref, :process, ^pid, _} -> :ok
-        after
-          1_000 -> :ok
-        end
-
-        # The registry drops a dead process's entry from its own partition process,
-        # asynchronously to the DOWN above (and the Aggregator then restarts the actor
-        # under the same id). The next dispatch must not be handed the dead pid, so wait
-        # until the stream no longer maps to it.
-        Eventually.await(
-          fn ->
-            ForemanServer.AggregateRegistry
-            |> Registry.lookup(@run_slots_stream)
-            |> Enum.all?(fn {registered, _value} -> registered != pid end)
-          end,
-          message: "registry to drop the killed #{@run_slots_stream} actor #{inspect(pid)}"
-        )
-
-      _ ->
-        :ok
-    end
-
-    :ok
-  end
-
   defp cleanup_boot_reconciliation_runs do
     :sys.replace_state(ProjectionStore, fn state ->
       %{
@@ -258,47 +226,49 @@ defmodule ForemanServer.Workflow.BootReconciliationRunSlotsTest do
     end)
   end
 
-  defp append_run_slot_holder!(run_id, version) do
+  defp append_run_slot_holder!(project, run_id, version) do
     ForemanServer.CommandGateway.dispatch_system(%{
       type: "run_slots.acquire",
-      aggregate_id: @run_slots_stream,
+      aggregate_id: RunSlots.stream_id(project),
       command_id: "seed-holder:#{run_id}:#{version}",
       payload: %{
         run_id: run_id,
+        project_id: project,
         capacity: 1,
         acquired_at_ms: System.system_time(:millisecond)
       }
     })
   end
 
-  defp append_run_slot_waiter!(run_id, version) do
+  defp append_run_slot_waiter!(project, run_id, version) do
     ForemanServer.CommandGateway.dispatch_system(%{
       type: "run_slots.acquire",
-      aggregate_id: @run_slots_stream,
+      aggregate_id: RunSlots.stream_id(project),
       command_id: "seed-waiter:#{run_id}:#{version}",
       payload: %{
         run_id: run_id,
+        project_id: project,
         capacity: 0,
         acquired_at_ms: System.system_time(:millisecond)
       }
     })
   end
 
-  defp seed_live_run!(run_id) do
+  defp seed_live_run!(run_id, project) do
     append_and_apply("run:#{run_id}", 0, "RunStarted", %{
       run_id: run_id,
       task_id: unique_id("task"),
-      project_id: unique_id("project"),
+      project_id: project,
       workflow_snapshot: %{},
       sequence: 0
     })
   end
 
-  defp seed_terminal_run!(run_id) do
+  defp seed_terminal_run!(run_id, project) do
     append_and_apply("run:#{run_id}", 0, "RunStarted", %{
       run_id: run_id,
       task_id: unique_id("task"),
-      project_id: unique_id("project"),
+      project_id: project,
       workflow_snapshot: %{},
       sequence: 0
     })
