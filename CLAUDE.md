@@ -773,10 +773,10 @@ Source of truth: `docs/TRD/TRD-2026-a804d1c7-phase-0-durable-execution.md`.
   phase stays `in_progress`, `attempt` advances, `input_artifacts` and
   `prior_worktree_discarded` ride on it) and `run.recovery_attempt` (`outcome:
   "resumed"`, `elapsed_since_boot_ms`; non-terminal runs only). The boot cleanup
-  budget of an orphaned slot holder or waiter is durable on the `run_slots:global`
+  budget of an orphaned slot holder or waiter is durable on the entry's own `run_slots:<project_id>`
   stream (`run_slots.recovery_attempt` → `RunSlotRecoveryAttempted`); the sixth
   consecutive failure records the entry `exhausted` and later boots skip it. It
-  shows as `orphan_recovery` in `ProjectionStore.queue_status/0` and `GET /api/queue`
+  shows as `orphan_recovery` in `ProjectionStore.queue_status/1` and `GET /api/queue?project_id=<id>`
   (`foreman_queue_status`). The old ETS table `:boot_recon_dispatch_attempts` is
   gone. An exhausted entry clears only when its holder or waiter leaves the stream.
   A worktree that no longer exists at resume is recorded as

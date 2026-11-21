@@ -12,18 +12,22 @@ const PROJECT_RETRY_MS = 60000;
 const QUEUE_EVERY_MS = 30000; // the queue changes slowly and its lookups are heavier than the run list
 const TERMINAL_RUN = new Set(["completed", "failed", "cancelled"]);
 
-// The queue of every project, from three server reads.
-//   q        GET /api/queue: {capacity, running: [run_id], waiting: [run_id]}; waiting is in slot order,
-//            runs the server admitted but has no free slot for yet.
+// The queue of every project, from per-project server reads. There is no machine-wide queue: run slots
+// are per project, so `GET /api/queue` needs a `project_id` (422 `project_required` without one).
+//   queues   one `GET /api/queue?project_id=<id>` per project:
+//            {project_id, limit, running_runs, waiting_runs, running: [run_id],
+//             waiting: [{run_id, position, waited_ms}]}; waiting is in that project's slot order (position is
+//            1-based), runs the server admitted but has no free slot for yet.
 //   open     GET /api/tasks?status=open: tasks not yet approved (no run); "ready" means approved and bound to a run.
 //   resolved Map run_id -> {project_id, task_id, title, stale}: what each waiting run is for.
 // A waiting id that resolves to nothing, or to a run that has already ended, is a leftover in the
 // server's queue; it is kept (never hidden) but marked stale, and not counted as queued.
-function buildQueue(q, open, resolved) {
-  const slot = (q.waiting ?? []).map((run_id, i) => {
+function buildQueue(queues, open, resolved) {
+  const slot = queues.flatMap((q) => (q.waiting ?? []).map((w, i) => {
+    const run_id = typeof w === "string" ? w : w.run_id;
     const r = resolved.get(run_id);
-    return { kind: "slot", pos: i + 1, run_id, project_id: r?.project_id ?? null, task_id: r?.task_id ?? null, title: r?.title ?? null, stale: !r || r.stale === true };
-  });
+    return { kind: "slot", pos: w?.position ?? i + 1, run_id, project_id: r?.project_id ?? q.project_id ?? null, task_id: r?.task_id ?? null, title: r?.title ?? null, stale: !r || r.stale === true };
+  }));
   const notStarted = open
     .filter((t) => t.run_id == null)
     .map((t) => ({ kind: "open", task_id: t.task_id, project_id: t.project_id ?? null, title: t.title ?? null, created: t.created_at_ms ?? 0, stale: false }))
@@ -138,9 +142,26 @@ export default class ForemanRuns extends View {
     if (!force && Date.now() - this.queueAt < QUEUE_EVERY_MS) return;
     this.queueAt = Date.now();
     try {
-      const q = await api("/api/queue");
+      // One read per project: the server has no un-scoped queue. A project whose read fails (deleted
+      // since the list, a hiccup) is skipped and named in the note, so the others still show.
+      const body = await foreman(["project", "list", "--format=json"]);
+      const projects = (Array.isArray(body) ? body : (body?.projects ?? [])).map((p) => ({ id: p.project_id ?? p.id, name: p.name })).filter((p) => p.id);
+      for (const p of projects) if (p.name) this.projectNames.set(p.id, p.name);
+      const queues = [];
+      const failed = [];
+      await Promise.all(projects.map(async (p) => {
+        try {
+          queues.push(await api(`/api/queue?project_id=${encodeURIComponent(p.id)}`));
+        } catch (e) {
+          failed.push(`${p.id}: ${String(e?.message ?? e).split("\n")[0]}`);
+        }
+      }));
+      if (projects.length > 0 && queues.length === 0) throw new Error(failed[0]);
+      // Slot order is per project; keep the projects in the order the server listed them.
+      const order = new Map(projects.map((p, i) => [p.id, i]));
+      queues.sort((a, b) => (order.get(a.project_id) ?? 0) - (order.get(b.project_id) ?? 0));
       const open = (await api("/api/tasks?status=open")).tasks ?? [];
-      const waiting = q.waiting ?? [];
+      const waiting = queues.flatMap((q) => (q.waiting ?? []).map((w) => (typeof w === "string" ? w : w.run_id)));
       const resolved = new Map();
       if (waiting.length > 0) {
         // A waiting run belongs to a task that is in progress: its run_id names it.
@@ -156,8 +177,10 @@ export default class ForemanRuns extends View {
           } catch { /* stays unresolved: shown as stale, with its run id */ }
         }));
       }
-      this.queue = { capacity: q.capacity ?? null, running: (q.running ?? []).length, entries: buildQueue(q, open, resolved) };
-      this.queueError = null;
+      const sum = (key) => queues.reduce((n, q) => n + (q[key] ?? 0), 0);
+      // Totals across the projects queried: total concurrency is the sum of per-project limits.
+      this.queue = { capacity: queues.length > 0 ? sum("limit") : null, running: sum("running_runs"), entries: buildQueue(queues, open, resolved) };
+      this.queueError = failed.length > 0 ? `${failed.length} project queue(s) unreadable (${failed[0]})` : null;
     } catch (e) {
       this.queueError = String(e?.message ?? e).split("\n")[0];
     }

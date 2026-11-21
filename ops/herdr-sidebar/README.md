@@ -89,9 +89,10 @@ time of the last successful refresh (red while the latest refresh is failing).
 work that is waiting, in the order the server will start it:
 
 - `#N … waiting for a slot`: a run the server has admitted but has no free run slot for yet, with its
-  place in the server's global slot queue (`GET /api/queue`, `waiting`). The title is its task's. `N`
-  is the server's own position, so it counts entries that can no longer start (see "stale"); the
-  group header counts only the live ones.
+  place in its project's own slot queue (`GET /api/queue?project_id=<id>`, `waiting`; run slots are per
+  project, so the mod reads one queue per project and the server has no machine-wide one). The title is
+  its task's. `N` is the server's own 1-based position in that project's queue, so it counts entries
+  that can no longer start (see "stale"); the group header counts only the live ones.
 - `… awaiting approval`: a task in the project that is still `open`, i.e. not yet approved and with no
   run (`GET /api/tasks?status=open`), oldest first, with how long ago it was created. Not counted
   as queued: the group header shows it separately as `N awaiting`.
@@ -103,12 +104,14 @@ work that is waiting, in the order the server will start it:
 A run that is already listed as a run is not repeated here. A run the server resumed after a pause
 waits for a slot with its run record, so it shows under its status (`starting`) with the other runs
 and not as a queue row; only a run that was never started (no run record) is a queue row. `#N` stays
-the server's global position, so the rows that remain can have gaps (a lone row may read `#3`).
+the server's position in the project's queue, so the rows that remain can have gaps (a lone row may
+read `#3`).
 
 Queue rows are display only: a queued run has no transcript or phases to open yet. The queue is read
 every 30 s (a manual refresh reads it at once), and if reading it fails the runs still show, with a
-one-line "Queue unavailable: …" note under the header. The failed filter hides the queue. Work the
-server is holding back (daily thread cap, run limit, a paused project) is not in the slot queue and is
+one-line "Queue unavailable: …" note under the header (a project whose queue cannot be read is named
+in that note while the other projects' queues still show). The failed filter hides the queue. Work the
+server is holding back (daily thread cap, a paused project) is not in the slot queue and is
 not shown; `GET /api/projects/<id>/usage` reports it as `limits.deferred_tasks`.
 
 | Action | Mouse | Shortcut |
@@ -224,7 +227,8 @@ The run-detail tab also reads `GET /api/runs/:id`, `/phases`, `/approvals`,
 `branch`) and its `/transcript` (`turns`: `seq`, `at`, `kind`, `source`, `text`;
 `omitted_entries` invalidates cursors).
 
-The queue reads `GET /api/queue` (`capacity`, `running`, `waiting`) and `GET /api/tasks` (`status`,
+The queue reads `GET /api/queue?project_id=<id>` once per project from `foreman project list` (`limit`,
+`running`, `waiting` as `{run_id, position, waited_ms}`) and `GET /api/tasks` (`status`,
 `task_id`, `project_id`, `title`, `run_id`, `created_at_ms`); a waiting run is matched to its task by
 `run_id`, and an unmatched one is looked up with `GET /api/runs/<id>`.
 
