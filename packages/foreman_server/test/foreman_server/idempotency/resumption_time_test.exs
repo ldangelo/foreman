@@ -121,20 +121,10 @@ defmodule ForemanServer.Idempotency.ResumptionTimeTest do
   describe "AC-002-4: boot-to-resumed time is recorded for every resumed run" do
     @interrupted_runs 5
 
-    # The default cap is 3 runs. Admitting more queues the extras, and a queued run has no
-    # run stream yet, so `run.recovery_attempt` would be `:not_found` for it. The capacity is
-    # the test's own, set before the slot stream is reset so the aggregate derives it afresh.
+    # The default limit is 3 runs per project. Admitting more queues the extras, and a queued
+    # run has no run stream yet, so `run.recovery_attempt` would be `:not_found` for it. The
+    # test's project sets its own limit (below), so its queue never holds an interrupted run.
     setup do
-      previous = Application.fetch_env(:foreman_server, :max_concurrent_runs)
-      Application.put_env(:foreman_server, :max_concurrent_runs, @interrupted_runs)
-
-      on_exit(fn ->
-        case previous do
-          {:ok, value} -> Application.put_env(:foreman_server, :max_concurrent_runs, value)
-          :error -> Application.delete_env(:foreman_server, :max_concurrent_runs)
-        end
-      end)
-
       :ok = ForemanServer.DispatcherQuiesce.suspend!()
       RunSlotsReset.reset!()
       :ok
@@ -151,6 +141,14 @@ defmodule ForemanServer.Idempotency.ResumptionTimeTest do
           type: "project.register",
           payload: %{project_id: project_id, path: repo},
           aggregate_id: "project:#{project_id}"
+        })
+
+      {:ok, _} =
+        CommandRouter.dispatch(%{
+          type: "project.update",
+          payload: %{project_id: project_id, max_concurrent_runs: @interrupted_runs},
+          aggregate_id: "project:#{project_id}",
+          command_id: "limit:#{project_id}"
         })
 
       run_ids =

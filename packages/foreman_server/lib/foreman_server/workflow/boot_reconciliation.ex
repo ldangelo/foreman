@@ -1636,7 +1636,7 @@ defmodule ForemanServer.Workflow.BootReconciliation do
 
   # An entry that reached the cleanup limit stays in the stream and is not
   # re-dispatched with a fresh budget; it is logged, emitted as skipped, and
-  # listed in `queue_status/0`. Only its holder or waiter leaving by another
+  # listed in `queue_status/1` (`orphan_recovery`). Only its holder or waiter leaving by another
   # route (the Dispatcher's terminal release, the periodic sweep) removes it.
   defp skip_exhausted?(state, run_id) do
     case Map.get(state.recovery, run_id) do

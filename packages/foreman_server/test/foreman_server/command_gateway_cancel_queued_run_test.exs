@@ -149,6 +149,18 @@ defmodule ForemanServer.CommandGatewayCancelQueuedRunTest do
     assert Map.keys(holders(other)) == [other_holder]
   end
 
+  test "run.cancel without a run_id is refused by validation, not by a crash in the queued-run path" do
+    for payload <- [%{}, %{run_id: ""}, %{"run_id" => nil}] do
+      assert {:error, _reason} =
+               CommandGateway.dispatch_operator(%{
+                 type: "run.cancel",
+                 command_id: unique_id("cancel"),
+                 aggregate_id: "run:#{unique_id("none")}",
+                 payload: payload
+               })
+    end
+  end
+
   # ---------------------------------------------------------------------------------- helpers
 
   defp cancel(run_id) do

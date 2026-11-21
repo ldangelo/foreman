@@ -178,6 +178,8 @@ defmodule ForemanServer.CommandGateway do
   # The project whose `run_slots:<project_id>` queue holds `run_id` as a waiter, or nil. The run has
   # no aggregate, so its project is read from the task (or follow-up request) bound to it; a run
   # whose project cannot be resolved is not queued as far as this path can tell.
+  defp queued_slot_project(run_id) when not is_binary(run_id) or run_id == "", do: nil
+
   defp queued_slot_project(run_id) do
     case Aggregate.load(Run, "run:#{run_id}") do
       {%Run.State{exists?: false}, _version} ->

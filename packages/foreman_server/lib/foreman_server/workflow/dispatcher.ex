@@ -314,7 +314,7 @@ defmodule ForemanServer.Workflow.Dispatcher do
   def handle_info(_msg, state), do: {:noreply, state}
 
   # A follow-up run (`run.followup.request`): admitted through the same `RunAdmission.start/2` as
-  # every run, so the global slot gate, the project limits and the pause/archive refusals apply. The
+  # every run, so the project's run-slot gate, the project limits and the pause/archive refusals apply. The
   # request is read back from the projection by run id (it has no task), which is also how a slot
   # promotion and a restart find it again.
   defp handle_followup_requested(envelope, state) do
