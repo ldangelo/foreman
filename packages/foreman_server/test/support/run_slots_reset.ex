@@ -36,17 +36,25 @@ defmodule ForemanServer.TestSupport.RunSlotsReset do
 
     Enum.each(streams, &hard_delete_with_retry(&1, 3))
 
+    # The actors are stopped with `terminate_child/delete_child`, not `Process.exit(pid, :kill)`:
+    # a kill is a crash the permanent child restarts from, and one stream per project means
+    # hundreds of them at once, over the Aggregator's budget of 100 restarts in 5 s. The
+    # Aggregator then dies with every actor and a test's `start_child` call exits `:shutdown`.
+    # A terminated child is not restarted and does not count against that budget; the next
+    # lookup starts a fresh actor that replays the (now empty) stream.
     Enum.each(streams, fn stream ->
       case Registry.lookup(ForemanServer.AggregateRegistry, stream) do
-        [{pid, _}] when is_pid(pid) -> Process.exit(pid, :kill)
-        _ -> :ok
+        [{pid, _}] when is_pid(pid) ->
+          _ = Supervisor.terminate_child(ForemanServer.Aggregator, stream)
+          _ = Supervisor.delete_child(ForemanServer.Aggregator, stream)
+
+        _ ->
+          :ok
       end
     end)
 
-    # Give the Aggregator supervisor time to restart the actors and
-    # register the new pids under the same aggregate_id before the next
-    # dispatch. Without this, `Aggregator.start_aggregate/2` can return
-    # a stale dead pid and the subsequent `GenServer.call` exits.
+    # Registry entries go when the actor's process does, a moment after `terminate_child`
+    # returns; wait so the next `Aggregator.start_aggregate/2` cannot see a stale dead pid.
     Process.sleep(20)
 
     ForemanServer.TestSupport.ProjectionStoreReset.reset!(keep_subscribers: true)
