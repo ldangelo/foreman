@@ -48,19 +48,32 @@ export async function foreman(args) {
 
 // GET <server>/api/... as parsed JSON, for what the CLI does not offer (docs/cli-reference.md lists
 // thread transcripts as HTTP/MCP only). The server is FOREMAN_API_URL, as for the CLI. The bearer
-// token travels on a pipe into curl's header file (-H @-): never in an argument list.
+// token travels on a pipe into curl's header file (-H @-): never in an argument list. curl's -w puts
+// the HTTP status on a last line of its own, so a caller can tell a server that has no such route (its
+// own HTML or plain 404 page) from an answer.
 const API_SCRIPT =
   `${LOAD_TOKEN} url="\${FOREMAN_API_URL:-http://127.0.0.1:4766}$1"; ` +
-  'if [ -n "$FOREMAN_API_TOKEN" ]; then printf "Authorization: Bearer %s\\n" "$FOREMAN_API_TOKEN" | curl -sS --max-time 10 -H @- "$url"; ' +
-  'else curl -sS --max-time 10 "$url"; fi';
+  'if [ -n "$FOREMAN_API_TOKEN" ]; then printf "Authorization: Bearer %s\\n" "$FOREMAN_API_TOKEN" | curl -sS --max-time 10 -w "\\n%{http_code}" -H @- "$url"; ' +
+  'else curl -sS --max-time 10 -w "\\n%{http_code}" "$url"; fi';
+
+// An Error that carries the HTTP status (null when there was none) and, for a JSON {error: code} body, the code.
+// A body's `error` field is an error only on an HTTP error status: a 200 body may carry one as data (the
+// artifact route answers {state: "missing", error: "<why>"} with 200).
+const apiError = (message, status, code) => Object.assign(new Error(message), { status, code });
 
 export async function api(path) {
   if (!/^\/api\/[A-Za-z0-9_.:\/?=&%-]+$/.test(path)) throw new Error(`refusing odd API path: ${path}`);
   const r = await exec("sh", ["-c", API_SCRIPT, "sh", ENV_FILE, path], { timeout: 15000 });
   if (r.code !== 0) throw new Error(r.stderr.trim().split("\n")[0] || `curl exited ${r.code}`);
+  const route = path.split("?")[0];
+  const cut = r.stdout.lastIndexOf("\n");
+  if (cut < 0) throw apiError(`unexpected response from ${route}`, null);
+  const status = Number(r.stdout.slice(cut + 1));
   let body;
-  try { body = JSON.parse(r.stdout); } catch { throw new Error(`unexpected response from ${path.split("?")[0]}`); }
-  if (body?.error) throw new Error(`${body.error}${body.detail ? `: ${body.detail}` : ""}`);
+  try { body = JSON.parse(r.stdout.slice(0, cut)); } catch { throw apiError(`unexpected response from ${route} (HTTP ${status})`, status); }
+  const httpError = status >= 400;
+  if (body?.error && (httpError || !Number.isFinite(status))) throw apiError(`${body.error}${body.detail ? `: ${body.detail}` : body.cause ? `: ${body.cause}` : ""}`, status, String(body.error));
+  if (httpError) throw apiError(`HTTP ${status} from ${route}`, status);
   return body;
 }
 
