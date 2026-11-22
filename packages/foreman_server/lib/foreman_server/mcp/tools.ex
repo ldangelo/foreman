@@ -1883,7 +1883,7 @@ defmodule ForemanServer.MCP.Tools do
 
     result =
       case ProjectionStore.run(run_id) do
-        nil -> nil
+        nil -> pending_run_status_dto(ProjectionStore.pending_run(run_id))
         run -> run_status_dto(run, ProjectionStore.phases_for_run(run_id))
       end
 
@@ -3615,6 +3615,32 @@ defmodule ForemanServer.MCP.Tools do
       nil -> raise ArgumentError, "expected :terminal? boolean, got: nil"
       other -> raise ArgumentError, "expected :terminal? boolean, got: #{inspect(other)}"
     end
+  end
+
+  # A run that is still waiting for a slot has no `runs` projection yet; the
+  # pending projection carries its identity and queue state instead. It is not
+  # terminal: the run has not started, so it can still be cancelled.
+  defp pending_run_status_dto(nil), do: nil
+
+  defp pending_run_status_dto(%{run_id: run_id, status: status} = pending)
+       when is_binary(run_id) and is_binary(status) do
+    %RunStatus{
+      run_id: run_id,
+      status: status,
+      terminal: false,
+      project_id: Map.get(pending, :project_id),
+      task_id: Map.get(pending, :task_id),
+      workflow_name: nil,
+      current_phase: nil,
+      started_at_ms: nil,
+      last_event_at_ms: nil,
+      failure_reason: Map.get(pending, :reason),
+      latest_stall: nil,
+      provider_session_id: nil,
+      provider_sessions: [],
+      usage: nil,
+      recovery: nil
+    }
   end
 
   defp current_phase([], _task_id), do: nil

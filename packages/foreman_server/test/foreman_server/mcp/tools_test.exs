@@ -340,6 +340,33 @@ defmodule ForemanServer.MCP.ToolsTest do
                {:error, %ToolError{code: "NOT_FOUND", message: "Run not found"}}
     end
 
+    # Regression (foreman-laju1): the HTTP run route already answers a
+    # slot-queued run from `ProjectionStore.pending_run/1`; this tool read only
+    # `ProjectionStore.run/1`, so the same run reported NOT_FOUND over MCP.
+    test "returns the queued pending projection instead of NOT_FOUND for a run waiting on a slot" do
+      replace_state(%{
+        runs: %{},
+        tasks: %{
+          "task-q" => %{
+            task_id: "task-q",
+            project_id: "proj-q",
+            run_id: "run-q",
+            status: "in_progress",
+            acknowledged_run_id: nil
+          }
+        }
+      })
+
+      assert {:ok, dto} = Tools.call_tool("foreman_run_status", %{run_id: "run-q"})
+
+      assert dto.run_id == "run-q"
+      assert dto.status == "queued"
+      assert dto.terminal == false
+      assert dto.task_id == "task-q"
+      assert dto.project_id == "proj-q"
+      assert dto.current_phase == nil
+    end
+
     test "returns nil current_phase when run has no phases" do
       run = %{
         run_id: "run-3",

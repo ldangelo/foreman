@@ -1457,6 +1457,16 @@ defmodule ForemanServer.Workflow.Dispatcher do
         terminate_slot(run_id, "run_cancelled")
         {:noreply, state}
 
+      # The task was closed, failed or merged while its run waited for the slot. `task.update`
+      # never sets `acknowledged_run_id`, so the clause above cannot catch it: promoting the run
+      # would start work for a task nobody is waiting for. Deny-list (not a whitelist) because
+      # older task projections carry no `:status` key at all and must keep today's behaviour.
+      [%{status: status} | _] when status in ["closed", "failed", "merged"] ->
+        Logger.info("handle_slot_promoted: not starting #{run_id}: its task is #{status}")
+
+        terminate_slot(run_id, "run_cancelled")
+        {:noreply, state}
+
       [task | _] ->
         phase_specs = extract_phase_specs(task)
         project_id = Map.get(task, :project_id) || Map.get(task, "project_id")

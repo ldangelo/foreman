@@ -1606,7 +1606,11 @@ does not scrape logs or raw events. It also carries `usage`
 `total_tokens`, `cost_usd`; every value `null` when the provider did not report it, and
 `usage` itself `null` for runs that predate usage capture); `cost_usd` is provider-reported
 only (for claude it is `null` when the CLI priced the model with a guess, as for a gateway alias it has no price
-for; the tokens are still counted) and sums only the phases that reported one. `foreman_run_get` returns the same
+for; the tokens are still counted) and sums only the phases that reported one. A run that is
+still waiting for a slot has no run projection yet: `foreman_run_status` answers from the
+pending projection with `status` `"queued"` (`"deferred"` while the project is deferred),
+`terminal` `false` and `current_phase` `null`. `NOT_FOUND` means the run id is unknown.
+`foreman_run_get` returns the same
 fields in its full projection.
 
 `foreman_task_list` accepts optional `project_id`, canonical `status` (`open`,

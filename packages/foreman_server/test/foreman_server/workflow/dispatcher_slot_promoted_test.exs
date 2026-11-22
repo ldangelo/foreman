@@ -331,6 +331,60 @@ defmodule ForemanServer.Workflow.DispatcherSlotPromotedTest do
       assert :meck.called(ForemanServer.RunAdmission, :start, :_)
       refute :meck.called(ForemanServer.Workflow.RunSupervisor, :start_run, :_)
     end
+
+    # Regression (foreman-laju1): the slot-promotion path only honoured
+    # `acknowledged_run_id`, which `task.update` never sets, so closing the task
+    # while its run waited for a slot still admitted and started the run.
+    test "does NOT admit a promoted run whose task was closed, and drops its slot" do
+      task_id = "task-closed-#{unique_id()}"
+      run_id = "run-closed-#{unique_id()}"
+      project_id = "project-closed-test"
+
+      task = %{
+        task_id: task_id,
+        project_id: project_id,
+        status: "closed",
+        approval_id: "approval-#{task_id}",
+        workflow_snapshot: %{implementation: %{}}
+      }
+
+      :meck.expect(ForemanServer.ProjectionStore, :tasks_by_run_id, fn ^run_id -> [task] end)
+
+      # `terminate_slot/2` releases the slot and drops the waiter through the
+      # command gateway; capture those commands instead of touching real actors.
+      test_pid = self()
+      :meck.new(ForemanServer.CommandGateway, [:passthrough, :no_link])
+      on_exit(fn -> :meck.unload(ForemanServer.CommandGateway) end)
+
+      :meck.expect(ForemanServer.CommandGateway, :dispatch_system, fn command ->
+        send(test_pid, {:dispatch_system, command.type, command.payload})
+        {:ok, nil}
+      end)
+
+      :meck.expect(ForemanServer.CommandGateway, :dispatch_system, fn command, _state ->
+        send(test_pid, {:dispatch_system, command.type, command.payload})
+        {:ok, nil}
+      end)
+
+      envelope = %{
+        event_type: "RunSlotTransferred",
+        data: %{
+          released_run_id: "run-old",
+          acquired_run_id: run_id,
+          acquired_at_ms: System.system_time(:millisecond)
+        }
+      }
+
+      {:noreply, _state} = Dispatcher.handle_info({:projection_event, envelope}, %{})
+
+      refute :meck.called(ForemanServer.RunAdmission, :start, :_),
+             "a closed task must not have its queued run admitted"
+
+      refute :meck.called(ForemanServer.Workflow.RunSupervisor, :start_run, :_)
+
+      assert_received {:dispatch_system, "run_slots.release", %{run_id: ^run_id}}
+      assert_received {:dispatch_system, "run_slots.remove_waiter", %{run_id: ^run_id}}
+    end
   end
 
   # ---------------------------------------------------------------------------

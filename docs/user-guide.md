@@ -2204,6 +2204,10 @@ The write-gated thread tools are `foreman_thread_stop` and
   agent has reported one, and cumulative `usage` tokens and provider-reported
   `cost_usd`, `null` where unknown), plus `recovery`: the run's latest
   recovery record, or `null` ([Restart recovery and external effects](#restart-recovery-and-external-effects)).
+  A run still waiting for a slot has no run projection yet: the DTO comes
+  from the pending projection with `status` `"queued"` (`"deferred"` while the
+  project is deferred), `terminal` `false` and `current_phase` `null`.
+  `NOT_FOUND` means the run id is unknown.
   `current_phase` is the phase in progress (else the latest) with `phase_id`,
   `run_id`, `task_id`, `index`, `name`, `status`, `attempt`, timestamps,
   `failure_reason`, `latest_stall` and four recorded facts about its launch:
