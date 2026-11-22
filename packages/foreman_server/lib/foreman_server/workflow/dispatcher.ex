@@ -1433,6 +1433,10 @@ defmodule ForemanServer.Workflow.Dispatcher do
     :exit, _ -> nil
   end
 
+  # Task statuses that must not have a run started on their behalf. An operator can close, fail
+  # or block a task while its run is still queued for a slot; the promotion must not resurrect it.
+  @non_startable_task_statuses ~w(closed failed blocked)
+
   defp start_promoted_run(run_id, state) do
     # Find the task associated with this run to build the admission payload.
     # A run is associated with exactly one task during dispatch.
@@ -1455,6 +1459,15 @@ defmodule ForemanServer.Workflow.Dispatcher do
         )
 
         terminate_slot(run_id, "run_cancelled")
+        {:noreply, state}
+
+      # `TaskUpdated` and `TaskExecutionCompleted` move only `status`, never `acknowledged_run_id`,
+      # so the clause above cannot see a task the operator ended while its run queued. Re-read the
+      # status at promotion time and hand the slot back instead of starting a dead task's run.
+      [%{status: status} | _] when status in @non_startable_task_statuses ->
+        Logger.info("handle_slot_promoted: not starting #{run_id}: its task is #{status}")
+
+        terminate_slot(run_id, "task_#{status}")
         {:noreply, state}
 
       [task | _] ->
