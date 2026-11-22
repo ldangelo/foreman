@@ -81,6 +81,10 @@ defmodule ForemanServer.Overwatch.LaunchWorker do
 
   @default_activation_timeout_ms 5_000
 
+  # The worker this launcher supervises gets a bounded window to stop its
+  # agent (and the agent's OS process) before we kill it.
+  @worker_stop_timeout_ms 18_000
+
   # ------------------------------------------------------------------
   # Public API
   # ------------------------------------------------------------------
@@ -278,6 +282,28 @@ defmodule ForemanServer.Overwatch.LaunchWorker do
   end
 
   def handle_info(_msg, state), do: {:noreply, state}
+
+  @doc """
+  Stop the supervised worker when this launcher goes down.
+
+  A terminal or paused run stops its launcher through the Overwatch
+  registry (`WorkerSupervisor.stop_run_workers/1`), so the worker has to
+  die here or it keeps editing the run's worktree unsupervised.
+  """
+  @impl true
+  def terminate(_reason, %{worker_pid: worker_pid}) when is_pid(worker_pid) do
+    if Process.alive?(worker_pid) do
+      try do
+        GenServer.stop(worker_pid, :shutdown, @worker_stop_timeout_ms)
+      catch
+        :exit, _reason -> safe_stop(worker_pid)
+      end
+    end
+
+    :ok
+  end
+
+  def terminate(_reason, _state), do: :ok
 
   defp safe_stop(pid) when is_pid(pid), do: Process.exit(pid, :kill)
   defp safe_stop(_), do: :ok

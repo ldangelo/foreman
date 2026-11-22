@@ -33,7 +33,10 @@ defmodule ForemanServer.Overwatch.WorkerSupervisor do
 
   use DynamicSupervisor
 
+  require Logger
+
   alias ForemanServer.Overwatch.LaunchWorker
+  alias ForemanServer.Overwatch.StopReport
 
   def start_link(opts \\ []) do
     case Keyword.get(opts, :name, __MODULE__) do
@@ -86,6 +89,9 @@ defmodule ForemanServer.Overwatch.WorkerSupervisor do
       id: {LaunchWorker, worker_id, run_id},
       start: {LaunchWorker, :start_link, [opts]},
       restart: :transient,
+      # Long enough for `LaunchWorker.terminate/2` to stop the worker it
+      # supervises (18s) plus the adapter's own stop wait.
+      shutdown: 20_000,
       type: :worker
     }
 
@@ -162,4 +168,45 @@ defmodule ForemanServer.Overwatch.WorkerSupervisor do
   end
 
   def list_pids_for_run(_), do: []
+
+  @doc """
+  Stop every live worker of `run_id` and report what happened.
+
+  This is the authoritative stop path for a terminal or paused run: the
+  Overwatch registry, not `RunControl`, knows which workers are alive.
+  `RunControl` is an ETS cache the executor clears when the run ends, so
+  `RunControl.cancel_agent/1` can legitimately find no agent to cancel
+  while the worker is still running.
+
+  A worker that cannot be stopped is reported in `:unstopped` instead of
+  being folded into a plausible success.
+  """
+  @spec stop_run_workers(String.t()) :: StopReport.t()
+  def stop_run_workers(run_id) when is_binary(run_id) and run_id != "" do
+    pids = list_pids_for_run(run_id)
+
+    stopped =
+      Enum.filter(pids, fn pid ->
+        case Process.whereis(__MODULE__) do
+          nil ->
+            not Process.alive?(pid)
+
+          supervisor ->
+            case DynamicSupervisor.terminate_child(supervisor, pid) do
+              :ok -> true
+              {:error, _reason} -> not Process.alive?(pid)
+            end
+        end
+      end)
+
+    unstopped = pids -- stopped
+
+    if unstopped != [] do
+      Logger.error(
+        "Overwatch: run #{run_id} keeps #{length(unstopped)} live worker(s) after the stop attempt: #{inspect(unstopped)}"
+      )
+    end
+
+    %StopReport{run_id: run_id, stopped: stopped, unstopped: unstopped}
+  end
 end

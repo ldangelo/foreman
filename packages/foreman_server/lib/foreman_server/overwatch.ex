@@ -28,7 +28,15 @@ defmodule ForemanServer.Overwatch do
 
   use Supervisor
 
+  require Logger
+
   alias ForemanServer.Overwatch.{Tracker, WorkerSupervisor}
+
+  # A worktree tolerates exactly one writer. Before launching we give a worker
+  # that is on its way out a short window to disappear, then refuse rather
+  # than start a second one beside it.
+  @single_writer_wait_ms 2_000
+  @single_writer_poll_ms 50
 
   def start_link(opts \\ []) do
     case Keyword.get(opts, :name, __MODULE__) do
@@ -121,7 +129,8 @@ defmodule ForemanServer.Overwatch do
 
     project_id = Keyword.get(opts, :project_id) || project_id_from_phase(phase)
 
-    with {:ok, env_map, resolved_secrets} <- build_launch_env(project_id, opts) do
+    with :ok <- ensure_single_writer(run_id),
+         {:ok, env_map, resolved_secrets} <- build_launch_env(project_id, opts) do
       launch_opts =
         [
           worker_id: worker_id,
@@ -179,9 +188,50 @@ defmodule ForemanServer.Overwatch do
   end
 
   # The caller's `:env_map` wins (RunExecutor resolved it once, together with
+
   # its redaction list). Without one the project's environment is resolved here
   # so the fallback path redacts exactly what it delivers.
   defp build_launch_env(nil, _opts), do: {:ok, %{}, []}
+
+  # Single writer per worktree: refuse to launch while a worker for this run is
+  # still live. A relaunch beside a live worker means two agents editing one
+  # worktree, which is what silently overwrote a failed run's phase artifact.
+  defp ensure_single_writer(run_id) do
+    deadline = System.monotonic_time(:millisecond) + @single_writer_wait_ms
+
+    if pids = live_workers_for(run_id), do: wait_for_worker_to_exit(pids, deadline)
+  end
+
+  defp wait_for_worker_to_exit(pids, deadline) do
+    case Enum.filter(pids, &Process.alive?/1) do
+      [] ->
+        :ok
+
+      live ->
+        if System.monotonic_time(:millisecond) >= deadline do
+          Logger.error(
+            "Overwatch: refusing to launch a worker for #{inspect_run(pids_live(pids))}: " <>
+              "#{length(live)} worker(s) still live: #{inspect(live)}"
+          )
+
+          {:error, {:worker_already_running, Keyword.get(live, :run_id)}}
+        else
+          Process.sleep(@single_writer_poll_ms)
+          wait_for_worker_to_exit(pids, deadline)
+        end
+    end
+  end
+
+  defp live_workers_for(run_id) do
+    case WorkerSupervisor.list_pids_for_run(run_id) do
+      [] -> nil
+      pids -> [run_id: run_id, pids: pids]
+    end
+  end
+
+  defp inspect_run([run_id: run_id, pids: pids]), do: "#{run_id} (#{inspect(pids)})"
+
+  defp pids_live(kv), do: kv
 
   defp build_launch_env(project_id, opts) do
     case Keyword.get(opts, :env_map) do
