@@ -25,6 +25,7 @@ defmodule ForemanServer.ApplicationChildrenTest do
   }
 
   alias ForemanServer.Aggregates.BeadsDbLease.{KeeperRegistry, KeeperSupervisor}
+  alias ForemanServer.RunArtifacts.Backfill
   alias ForemanServer.Schedule.Ticker
 
   alias ForemanServer.TaskProviders.{
@@ -43,7 +44,8 @@ defmodule ForemanServer.ApplicationChildrenTest do
     :pr_report_publisher,
     :pr_monitor_enabled,
     :schedule,
-    :secret_log_filter
+    :secret_log_filter,
+    :start_run_artifact_backfill?
   ]
 
   # The operator switches `config/runtime.exs` reads. Cleared before a config is evaluated so a
@@ -220,6 +222,31 @@ defmodule ForemanServer.ApplicationChildrenTest do
       ticker(false)
 
       refute Ticker in child_ids()
+    end
+  end
+
+  describe "RunArtifacts.Backfill" do
+    test "is supervised after the ProjectionStore it reads and the CommandRouter, while enabled" do
+      # The test environment leaves it off; restored after the test.
+      ForemanServer.TestSupport.Eventually.put_env_for_test(
+        :foreman_server,
+        :start_run_artifact_backfill?,
+        true
+      )
+
+      assert ForemanServer.Application.maybe_run_artifact_backfill_child() == [Backfill]
+      assert_started_after(child_ids(), Backfill, [ProjectionStore, CommandRouter])
+    end
+
+    test "is not supervised once it is disabled" do
+      ForemanServer.TestSupport.Eventually.put_env_for_test(
+        :foreman_server,
+        :start_run_artifact_backfill?,
+        false
+      )
+
+      assert ForemanServer.Application.maybe_run_artifact_backfill_child() == []
+      refute Backfill in child_ids()
     end
   end
 
@@ -406,6 +433,13 @@ defmodule ForemanServer.ApplicationChildrenTest do
       assert_started_after(ids, PrWatcher, [ProjectionStore, CommandRouter])
       assert_started_after(ids, Ticker, [ProjectionStore, CommandRouter])
       assert ids == Enum.uniq(ids)
+    end
+
+    test "boots the report backfill, which only the test environment switches off" do
+      ids = boot_ids_with_production_config(%{})
+
+      assert Backfill in ids
+      assert_started_after(ids, Backfill, [ProjectionStore, CommandRouter])
     end
 
     test "FOREMAN_PR_WATCHER_ENABLED=false stops the watcher; no other value does" do

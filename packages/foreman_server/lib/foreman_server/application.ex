@@ -150,6 +150,7 @@ defmodule ForemanServer.Application do
         ForemanServer.CommandRouter
       ] ++
       maybe_jobsite_boot_recovery_child() ++
+      maybe_run_artifact_backfill_child() ++
       maybe_messaging_dispatcher_child() ++
       maybe_notifier_child() ++
       maybe_threads_children() ++
@@ -790,6 +791,20 @@ defmodule ForemanServer.Application do
   def maybe_jobsite_boot_recovery_child do
     if Application.get_env(:foreman_server, :start_jobsite_boot_recovery?, true) do
       [ForemanServer.Exec.BootRecovery]
+    else
+      []
+    end
+  end
+
+  # The one-shot report backfill (`RunArtifacts.Backfill`): archives the reports recorded before
+  # the phase report archive existed, in a process of its own after the boot work, so it never
+  # delays boot. Gated on :start_run_artifact_backfill? config so the test suite can opt out (it
+  # would otherwise read whatever runs earlier tests left in the shared projection); its own
+  # tests call `Backfill.run/1` directly. Listed after ProjectionStore, which it reads once the
+  # store has rebuilt from the event log, and after CommandRouter with the other boot closers.
+  def maybe_run_artifact_backfill_child do
+    if Application.get_env(:foreman_server, :start_run_artifact_backfill?, true) do
+      [ForemanServer.RunArtifacts.Backfill]
     else
       []
     end

@@ -76,6 +76,8 @@ defmodule ForemanServerWeb.Router do
     get("/runs/:id", RunController, :show)
     get("/runs/:id/prs", RunController, :prs)
     get("/runs/:id/phases", RunController, :phases)
+    get("/runs/:id/artifacts", RunController, :artifacts)
+    get("/runs/:id/artifacts/:phase_id", RunController, :artifact)
     get("/runs/:run_id/approvals", ApprovalController, :index_for_run)
     get("/projects/:project_id/threads", ThreadController, :index)
     get("/projects/:project_id/threads/find", ThreadController, :find)

@@ -90,14 +90,17 @@ fi
 [ -f "$home_dir/layouts/main.json" ] || { echo "install.sh: $home_dir/layouts/main.json not found (start Herdr once)" >&2; exit 1; }
 
 # 1. The mods. Only common.js is rewritten (its ENV_FILE line points at this checkout's .env). A mod
-#    can import only from its own folder, so each one gets its own copy of common.js.
+#    can import only from its own folder, so each one gets its own copy of common.js, and every *.js
+#    of its own folder (main.js and the helper modules it imports, e.g. foreman-run/model.js).
 env_js="$(jq -Rn --arg p "$env_file" '$p')" # a JSON string is a valid JS string literal
 common_js="$(awk -v line="const ENV_FILE = $env_js;" '/^const ENV_FILE = / { print line; next } { print }' "$here/common.js")"
 printf '%s\n' "$common_js" | grep -qF "const ENV_FILE = $env_js;" ||
   { echo "install.sh: could not point ENV_FILE at $env_file; has the \"const ENV_FILE = \" line in common.js changed?" >&2; exit 1; }
 for m in "${mods[@]}"; do
   mkdir -p "$mods_dir/$m"
-  write_if_changed "$mods_dir/$m/main.js" "$(cat "$here/mods/$m/main.js")"
+  for f in "$here/mods/$m"/*.js; do
+    write_if_changed "$mods_dir/$m/$(basename "$f")" "$(cat "$f")"
+  done
   write_if_changed "$mods_dir/$m/common.js" "$common_js"
   write_if_changed "$mods_dir/$m/mod.json" "$(cat "$here/mods/$m/mod.json")"
 done

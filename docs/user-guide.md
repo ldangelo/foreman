@@ -465,6 +465,19 @@ per PR and a hard cap of 5 attempts per kind
 To see where a run is in its workflow, `foreman run phases <run-id>` lists each phase with its
 status. The Herdr sidebar in `ops/herdr-sidebar/` shows this, the live transcript and the run's
 changes in a tab per run.
+The report each completed phase wrote is readable over HTTP (`GET /api/runs/<id>/artifacts` lists
+them, `GET /api/runs/<id>/artifacts/<phase-id>` returns one, capped at 256 KiB; see the
+[CLI reference](cli-reference.md)); there is no CLI verb for it. Reports usually live in the run's
+worktree, which is cleaned up after the run, so Foreman keeps a copy of each report at
+`~/.foreman/runs/<run-id>/archive/phase-<index>.md` when the phase completes (only while the file
+still matches the digest recorded for it) and serves that copy once the original is gone or no longer
+matches that digest: the
+single-report body says which file it read in `source` (`recorded` or `archive`). On each server
+start a background pass archives the reports of earlier runs whose files still exist and still
+match, and the server log ends it with one summary line:
+`Run artifact backfill: archived N, already archived M, missing K, mismatched J, failed F`. A run
+whose worktree was already cleaned before the archive existed stays `missing`. Nothing deletes the
+archive: remove `~/.foreman/runs/<run-id>/` to reclaim the space.
 
 ### Notifications
 
