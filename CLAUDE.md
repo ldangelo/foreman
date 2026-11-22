@@ -1033,8 +1033,9 @@ Known limits (documented, not fixed in this slice):
 `foreman_run_status` is a bounded DTO built from `ProjectionStore.run/1` and
 `ProjectionStore.phases_for_run/1`; a run that is still waiting for a slot has no
 run projection, so it falls back to `ProjectionStore.pending_run/1` and answers
-`status` `"queued"` with `terminal` `false` and `current_phase` `null` (`NOT_FOUND`
-means the run id is unknown). Do not rebuild it from logs or raw event
+`status` `"queued"` (`"deferred"` while the project is deferred) with `terminal`
+`false` and `current_phase` `null` (`NOT_FOUND` means the run id is unknown).
+Do not rebuild it from logs or raw event
 streams, and keep `foreman_run_get`'s full projection shape distinct. Both carry
 `provider_session_id` (latest) and `provider_sessions` (ordered
 `{worker_id, provider, model, provider_session_id}` list), folded from the

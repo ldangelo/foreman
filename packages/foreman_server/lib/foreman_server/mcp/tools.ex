@@ -909,7 +909,8 @@ defmodule ForemanServer.MCP.Tools do
 
   @schema_foreman_run_status %{
     name: "foreman_run_status",
-    description: "Get a bounded run status DTO from run and phase projections",
+    description:
+      "Get a bounded run status DTO from run and phase projections; a run still waiting for a slot answers from its pending projection with status \"queued\"",
     inputSchema: %{
       type: "object",
       properties: %{
