@@ -465,6 +465,9 @@ per PR and a hard cap of 5 attempts per kind
 To see where a run is in its workflow, `foreman run phases <run-id>` lists each phase with its
 status. The Herdr sidebar in `ops/herdr-sidebar/` shows this, the live transcript and the run's
 changes in a tab per run.
+The report each completed phase wrote is readable over HTTP (`GET /api/runs/<id>/artifacts` lists
+them, `GET /api/runs/<id>/artifacts/<phase-id>` returns one, capped at 256 KiB; see the
+[CLI reference](cli-reference.md)); there is no CLI verb for it.
 
 ### Notifications
 

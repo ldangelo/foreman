@@ -1173,7 +1173,21 @@ Lists the pull requests a run is watching (`GET /api/runs/<id>/prs`): PR URL, st
 
 ### `foreman run phases <run-id>`
 
-Lists a run's phases in workflow order with their own status (`GET /api/runs/<id>/phases`): `{run_id, phases: [{phase_id, index, name, attempt, status, failure_reason, started_at_ms, last_event_at_ms, latest_stall}]}`. `status` is the phase projection's (`in_progress`, `completed`, `failed`, ...); `failure_reason` is set for a failed phase and `latest_stall` for a stalled one. A queued run that has started no phase answers an empty list; an unknown run is `404 run_not_found`. Only these fields are served: the phase's input artifacts, execution profile and artifact template are not. The Herdr run-detail tab (`ops/herdr-sidebar/`) reads this for its phase strip.
+Lists a run's phases in workflow order with their own status (`GET /api/runs/<id>/phases`): `{run_id, phases: [{phase_id, index, name, attempt, status, failure_reason, started_at_ms, last_event_at_ms, latest_stall}]}`. `status` is the phase projection's (`in_progress`, `completed`, `failed`, ...); `failure_reason` is set for a failed phase and `latest_stall` for a stalled one. A queued run that has started no phase answers an empty list; an unknown run is `404 run_not_found`. Only these fields are served: the phase's input artifacts, execution profile and artifact template are not (a completed phase's report is read through `GET /api/runs/<id>/artifacts`, below). The Herdr run-detail tab (`ops/herdr-sidebar/`) reads this for its phase strip.
+
+### `GET /api/runs/<id>/artifacts` and `GET /api/runs/<id>/artifacts/<phase_id>` (HTTP only, no CLI verb)
+
+Read the report file each completed phase recorded (the `artifact_path`, `artifact_sha256` and `artifact_bytes` of its `PhaseCompleted` event). There is no `foreman run` verb for them; the Herdr run-detail tab (`ops/herdr-sidebar/`) is the reader.
+
+`GET /api/runs/<id>/artifacts` lists them, never with content: `{run_id, artifacts: [{phase_id, index, name, attempt, status, path, sha256, bytes}]}`, only phases that recorded an artifact, in workflow order. A queued run or a run with no recorded artifact answers an empty list; an unknown run is `404 run_not_found`.
+
+`GET /api/runs/<id>/artifacts/<phase_id>` returns one: `{run_id, phase_id, index, name, path, sha256, bytes, state, content, content_bytes, truncated, sha_matches, error}`. The file read is only ever the path the run's projection recorded for that phase: `<phase_id>` is matched against the run's own phases and never becomes part of a path. `state` says what the file is, and all three are `200` because the artifact is known and the file's state is data:
+
+- `ok`: `content` is the file as UTF-8 (invalid bytes replaced with U+FFFD), at most 262144 bytes (256 KiB), cut on a UTF-8 boundary with `truncated: true` when the file is longer; `content_bytes` is the byte size of the returned `content`. `sha_matches` is whether the SHA-256 of the **whole** file (streamed, also when truncated) equals the recorded `sha256`.
+- `missing`: the file does not exist (the run's worktree or artifact directory may have been cleaned). `content` and `sha_matches` are `null` and `error` says why.
+- `unreadable`: any other file error. `content` and `sha_matches` are `null` and `error` is the posix reason (for example `eacces`, `eisdir`).
+
+An unknown run is `404 run_not_found`; a `<phase_id>` the run does not have is `404 phase_not_found`; a phase that recorded no artifact (not completed yet, or failed) is `404 artifact_not_found`.
 
 ### `foreman run fix-ci|address-comments|resolve-conflicts <run-id> [--pr <url>] [--note <text>]`
 

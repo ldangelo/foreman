@@ -6,6 +6,9 @@ defmodule ForemanServerWeb.RunController do
   `GET /api/runs/:id` returns the projected state for a single run.
   `GET /api/runs/:id/prs` returns the run's watched PRs as `ForemanServer.PrWatch.DTO`s.
   `GET /api/runs/:id/phases` returns the run's phases in workflow order with their own status.
+  `GET /api/runs/:id/artifacts` lists the phase reports the run recorded (no content);
+  `GET /api/runs/:id/artifacts/:phase_id` returns one report's content, read from the path the
+  projection recorded for that phase and never from a client-supplied path.
   """
 
   use ForemanServerWeb, :controller
@@ -88,6 +91,44 @@ defmodule ForemanServerWeb.RunController do
       true ->
         conn |> put_status(:not_found) |> json(%{error: "run_not_found", run_id: run_id})
     end
+  end
+
+  def artifacts(conn, %{"id" => run_id}) do
+    case run_phases(run_id) do
+      {:ok, phases} ->
+        conn |> put_status(:ok) |> json(ForemanServer.RunArtifacts.list(run_id, phases))
+
+      :run_not_found ->
+        run_not_found(conn, run_id)
+    end
+  end
+
+  def artifact(conn, %{"id" => run_id, "phase_id" => phase_id}) do
+    with {:ok, phases} <- run_phases(run_id),
+         {:ok, body} <- ForemanServer.RunArtifacts.read(run_id, phase_id, phases) do
+      conn |> put_status(:ok) |> json(body)
+    else
+      :run_not_found ->
+        run_not_found(conn, run_id)
+
+      {:error, reason} when reason in [:phase_not_found, :artifact_not_found] ->
+        conn
+        |> put_status(:not_found)
+        |> json(%{error: Atom.to_string(reason), run_id: run_id, phase_id: phase_id})
+    end
+  end
+
+  # A queued or deferred run has admitted nothing yet, so it has no phases: an empty list, not a 404.
+  defp run_phases(run_id) do
+    cond do
+      ProjectionStore.run(run_id) != nil -> {:ok, ProjectionStore.phases_for_run(run_id)}
+      ProjectionStore.pending_run(run_id) != nil -> {:ok, []}
+      true -> :run_not_found
+    end
+  end
+
+  defp run_not_found(conn, run_id) do
+    conn |> put_status(:not_found) |> json(%{error: "run_not_found", run_id: run_id})
   end
 
   defp maybe_put_opt(opts, _key, value) when value in [nil, ""], do: opts
