@@ -663,3 +663,55 @@ export function prOverall(p) {
   if (p.eligibility.status === "eligible" || p.eligibility.status === "waived") return { tone: "ok", text: p.eligibility.status };
   return { tone: "dim", text: p.eligibility.status === "off" ? "gate off" : p.status ?? "open" };
 }
+
+// ---------------------------------------------------------------------- reports recovered from git
+// Foreman commits a phase's work with the subject "Foreman run <run_id> phase <n>" (Lowering.commit_message/2),
+// and a phase that commits takes its report file into that commit. So when the server cannot serve a report
+// (it has no /artifacts route, or the file is gone with the run's worktree) the run's own history still has it.
+
+const escapeRe = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+// Output of `git log --all --format=%H<TAB>%s` -> Map phase number -> the newest commit whose subject is exactly
+// "Foreman run <runId> phase <n>" (a substring match would also take "phase 10" for "phase 1"). git lists the
+// newest commit first, so a phase that was retried and committed again keeps its last commit.
+export function parsePhaseCommits(out, runId) {
+  const subject = new RegExp(`^Foreman run ${escapeRe(runId)} phase (\\d+)$`);
+  const commits = new Map();
+  for (const line of String(out ?? "").split("\n")) {
+    const [sha, ...rest] = line.split("\t");
+    const m = subject.exec(rest.join("\t"));
+    if (m && /^[0-9a-f]{40}$/.test(sha) && !commits.has(Number(m[1]))) commits.set(Number(m[1]), sha);
+  }
+  return commits;
+}
+
+// The report files among the paths one phase commit touched (`git diff-tree --name-only` lines): the files named
+// like the workflow's report (its `artifact:`), else the text documents under docs/reports/. `strict` takes only
+// the named files: used on a commit that is not the phase's own (a phase that declares `commit: false` has its
+// work committed with a later phase, and that commit also holds the later phase's own reports). A path git quoted
+// (control characters, quotes) or that could pass for an option is left out.
+export function pickReportFiles(names, reportName, strict = false) {
+  const paths = String(names ?? "").split("\n").map((s) => s.trim()).filter((p) => p !== "" && !p.startsWith('"') && !p.startsWith("-"));
+  const named = reportName ? paths.filter((p) => p.split("/").pop() === reportName) : [];
+  if (named.length > 0 || strict) return named;
+  return paths.filter((p) => /(^|\/)docs\/reports\//.test(p) && /\.(?:md|markdown|txt)$/i.test(p));
+}
+
+// Output of `git cat-file -s` then `git show` of one blob: the size on the first line, the (capped) text after it.
+export function parseBlob(out, cap) {
+  const s = String(out ?? "");
+  const nl = s.indexOf("\n");
+  const bytes = Number(s.slice(0, nl));
+  if (nl < 0 || !Number.isInteger(bytes) || bytes < 0) return null;
+  return { bytes, text: s.slice(nl + 1), truncated: bytes > cap };
+}
+
+// The size in bytes of a string as UTF-8 (Herdr's mod runtime has no TextEncoder).
+export function utf8Bytes(s) {
+  let n = 0;
+  for (const ch of String(s ?? "")) {
+    const c = ch.codePointAt(0);
+    n += c < 0x80 ? 1 : c < 0x800 ? 2 : c < 0x10000 ? 3 : 4;
+  }
+  return n;
+}

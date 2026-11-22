@@ -32,7 +32,7 @@ FOREMAN   4 failed  0 active  13:22:22  ↻
 | `foreman` on the `PATH` the Herdr app sees | The panel runs `foreman run list` and `foreman project list`. A GUI app inherits your login shell's `PATH`, so `~/bin` or `/usr/local/bin` is fine. |
 | `curl`, `git` (and `gh` for finished runs) | The run-detail tab reads the activity feed over HTTP, runs `git` in the run's worktree for its changes, and falls back to `gh pr view` for a run whose worktree is gone. |
 | A server with `GET /api/runs/:id/phases` | `foreman run phases`, added with the run-detail tab. An older server answers 404: the tab still works, the phase strip loses its per-phase status and says so. |
-| A server with `GET /api/runs/:id/artifacts` and `/artifacts/:phase_id` | The phase reports of the Phases tab. An older server answers 404: the tab says the server lacks the route (never "no report") and everything else works. |
+| A server with `GET /api/runs/:id/artifacts` and `/artifacts/:phase_id` | The recorded phase reports of the Phases tab (original file or the server's archived copy, with a digest check). An older server answers 404: the tab says so and reads each finished phase's report from this machine instead: the run's own files under `~/.foreman/runs/<run-id>/`, else the commit Foreman made for the phase (see below). A report that exists in neither place shows `not found` until the server has the route. |
 | A server with `GET /api/runs/:id/prs` | The PR evidence of the Overview and the PR tab. Without it they say so. |
 | `jq` | Used by `install.sh` to edit the layout and `keys.json`. |
 | A running Foreman server | Default `http://127.0.0.1:4766` (`devbox run server`). With the server down the panel shows the CLI's error (for example "connection refused") and keeps the time of the last good refresh. |
@@ -198,7 +198,8 @@ one that is going on Activity; the tab you click stays.
   whether the file's sha256 still matches what the phase recorded (`✓` / `✕ … changed after the phase
   wrote it`), a notice when the server cut it at 256 KiB, and the text itself with headings, bullets,
   `**Label**:` lead-ins, tables and code blocks drawn plainly (120 rows, then `show more`). A report whose file is
-  `missing` or `unreadable` says so with the server's reason; a phase with no report says that, but only once the
+  `missing` or `unreadable` says so with the server's reason (a report whose original file is gone or has been
+  overwritten since the phase, but which the server archived at phase completion, is shown from that copy, with a line saying so); a phase with no report says that, but only once the
   server has answered that it has none. Last, `Agent output (N turns)`, that phase's slice of the
   transcript, closed by default.
 - **Changes.** For a run with a worktree: the commits since it branched, every
@@ -224,8 +225,8 @@ interpreted, linked or loaded.
 `PR ↗` opens the pull request, `raw` opens `foreman run get`, the id line copies the run id.
 
 Open it from the panel, or directly:
-`herdr-app do tab.new '{"name":"run","mod":"foreman-run","props":{"run_id":"run-…","tab":"phases"}}'`
-(`tab` is optional: `overview`, `activity`, `phases`, `changes` or `pr`).
+`herdr-app do tab.new '{"name":"run","mod":"foreman-run","props":{"run_id":"run-…","tab":"phases","phase":"fix"}}'`
+(`tab` is optional: `overview`, `activity`, `phases`, `changes` or `pr`; `phase` is optional too, a phase name or its number: that phase opens in the Phases tab, which then becomes the starting tab unless `tab` says otherwise).
 
 ## Troubleshooting
 
@@ -237,9 +238,9 @@ Open it from the panel, or directly:
 | No panel | The `foreman` layout is not showing: `herdr-app do layout.switch '{"name":"foreman"}'`. |
 | Shortcuts do nothing | They apply only while the `foreman` layout is showing. If they still do nothing with a terminal focused, move the entries of `layout:foreman` into the `global` section of `keys.json`. |
 | Panel errors after a Herdr update | `herdr-app status` lists mod errors; `herdr-app check ~/.config/herdr-app/mods/foreman-runs` (or `…/foreman-run`) prints the exact one. |
-| "Phase reports are unavailable: this server has no /api/runs/:id/artifacts route" | The server predates the report routes. Update and restart it; the rest of the tab works meanwhile. The tab never says "no report" when it could not ask. |
+| "This server has no /api/runs/:id/artifacts route (HTTP 404), so each report is read from this machine instead" | The server predates the report routes. For each finished phase the tab reads, in order: the server's archived copy at `~/.foreman/runs/<run-id>/archive/phase-<n>.md` (any phase; header `report 4.9 KB · archive`); for a phase with no `artifact:` template, the file it wrote at `~/.foreman/runs/<run-id>/phase-<n>.md` (header `· disk`); otherwise the commit Foreman made for the phase (`Foreman run <run-id> phase <n>`), or, for a phase that declared `commit: false`, the later phase's commit that carries the file the workflow names, read with `git` in the run's repository (its thread's `repo_path`, else its project's registered path; archived projects included), header `report 1.1 KB · git`. None of these are checked against a recorded digest. A report in none of these places reads `not found`. Update and restart the server to get the recorded, digest-checked copies. |
 | "Could not read the PR evidence: projection_unavailable: …" | The server's store did not answer, so the PR's status is *unknown*, not clean. `↻` once it is healthy. The last good answer stays on screen, marked old. |
-| "The report file is missing" | The report was written under a worktree or report directory that has been cleaned up; the listing still knows its path and size. |
+| "The report file is missing" | The report was written under a worktree or report directory that has been cleaned up and the server holds no archived copy of it. The tab then also looks in the run's git commits and shows the report from there when the phase committed it (a line says which commit). The server archives a report when its phase completes (and, at boot, those whose file still exists), so only runs that finished and were cleaned up before that was in place, and whose phase never committed its report, stay missing. The listing still knows the path and size. |
 | "No readable output: the log holds only N blank chunks" | The agent wrote nothing but blank chunks into the part of the log the server keeps (about the newest 500 entries). |
 | "unmerged chunks" on a turn | The turn ends with fragments of a message whose whole text has not arrived (or is outside the server's log window); they are shown as sent. |
 | "the server has no thread for this run" | The run failed before its thread existed: no transcript, title or branch. The other tabs still work. |
@@ -295,7 +296,7 @@ The run-detail tab reads these endpoints (all `GET`, all through `api()` in `com
 | `/api/runs/:id` | `status`, `terminal?`, `failure_reason`, `latest_stall` (`reason`, `stall_kind`, `idle_ms`, `phase_name`, `detected_at_ms`), `usage`, `pr_url`, `base_branch`, `project_id`, `started_at_ms`, `last_event_at_ms`, `provider_sessions[].model`, `workflow_snapshot.phases[]` (`name`, `phase_id`, `provider`, `command`, `action`, `models.default`, `artifact`) | the tab shows the error |
 | `/api/runs/:id/phases` | `phases[]`: `phase_id`, `index`, `name`, `attempt`, `status` (`in_progress`, `completed`, `failed`, `skipped`, `cancelled`), `started_at_ms`, `last_event_at_ms`, `failure_reason`, `latest_stall` | strip loses per-phase status, banner says why |
 | `/api/runs/:id/artifacts` | `artifacts[]`: `phase_id`, `index`, `name`, `attempt`, `status`, `path`, `sha256`, `bytes`; only phases that recorded a report, no content | Phases tab says the server lacks the route |
-| `/api/runs/:id/artifacts/:phase_id` | `state` (`ok`, `missing`, `unreadable`), `content`, `content_bytes`, `truncated`, `sha_matches`, `error`, `path`, `bytes`. A `missing` or `unreadable` file is a **200** that carries `error` as data | the report shows the error |
+| `/api/runs/:id/artifacts/:phase_id` | `state` (`ok`, `missing`, `unreadable`), `source` (`recorded` or `archive`: where the content came from; absent on a server that predates archiving), `content`, `content_bytes`, `truncated`, `sha_matches`, `error`, `path`, `bytes`. A `missing` or `unreadable` file is a **200** that carries `error` as data | the report shows the error; `source: "archive"` adds a line saying the shown text is the archived copy |
 | `/api/runs/:id/prs` | per PR: `pr_url`, `status`, `head_sha`, `base_branch`, `branch_name`, `merge_gate`, `checks_state`, `failing`, `checks.items[]` (`name`, `state` `passing`/`failing`/`pending`, `conclusion`), `review_decision`, `comment_count`, `fixes`, `agent_review`, `eligibility` (`status`, `reasons[]`, `waived[]`), `findings` (`status`, `total`, `unresolved` **as a map by severity**, `items[]`, `judgement`), `risk` (`level`, `rationale[]`, `instructions[]`), `waiver`, `report`, `delivery_issue`, `next_actions[]`; shapes in the moduledoc of `ForemanServer.PrWatch.DTO` | PR sections say the server lacks the route |
 | `/api/runs/:id/approvals`, `/api/projects/:id/questions` | `approvals[]`: `tool_call_id`, `tool_name`, `input_summary`, `requested_at`; `questions[]`: `run_id`, `question_id`, `text` | banner says they could not be read |
 | `/api/threads/run:<id>` and `/transcript` | `repo_path`, `title`, `branch`; `turns[]`: `seq`, `at`, `kind`, `source`, `text`, `omitted_entries` (invalidates cursors). A run that failed before its thread existed answers `thread_not_found` | the feed says there is no transcript |

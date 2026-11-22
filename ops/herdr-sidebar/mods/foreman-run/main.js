@@ -4,8 +4,8 @@
 // server itself and only ever reads from it. The logic that is not drawing lives in ./model.js.
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, ScrollHandle } from "gpui-base";
-import { theme, checking, run, exec, notify, settings, props as tabProps } from "herdr";
-import { info, clock, api, foremanArgv, prUrl, workflowName, openUrlArgv } from "./common.js";
+import { theme, checking, run, exec, home, notify, readTextFile, settings, props as tabProps } from "herdr";
+import { info, clock, api, foreman, foremanArgv, prUrl, workflowName, openUrlArgv } from "./common.js";
 import * as M from "./model.js";
 
 const LIVE_POLL_MS = 3000; // while the run is active
@@ -26,6 +26,10 @@ const RUN_ID = /^[A-Za-z0-9_.-]+$/;
 const PHASE_ID = /^[A-Za-z0-9_.:-]+$/;
 const SAFE_REF = /^[A-Za-z0-9_][A-Za-z0-9_.\/-]*$/; // a base branch is passed to git: never an option
 const OPENABLE = /\.(?:md|markdown|txt|json|log|ya?ml)$/i; // a report is opened in the default app only if it is a document
+const REPORT_CAP = 262144; // bytes of a report read from git (the server's own route caps at the same size)
+// One file of a commit: its size on the first line, then its text (capped). $1 = repository, $2 = commit, $3 = path.
+const GIT_BLOB = `git -C "$1" cat-file -s "$2:$3" || exit 3; git -C "$1" show "$2:$3" | head -c ${REPORT_CAP}`;
+const firstLine = (s) => String(s ?? "").trim().split("\n")[0];
 
 // Prints the commits, changed files (numstat) and untracked files of a run's worktree against the
 // point it branched from. $1 = worktree, $2 = base branch. Output is sectioned by "##NAME" lines.
@@ -79,6 +83,9 @@ export default class ForemanRun extends View {
     this.artifacts = null; // GET /api/runs/:id/artifacts: the listing entries
     this.artifactMap = null; // phase_id -> entry; null until the listing has been read
     this.artifactsAt = 0;
+    this.repoPath = null; // the run's repository: its thread's repo_path, else its project's registered path
+    this.gitIdx = null; // {at, repo, commits: Map phase number -> sha} | {at, error}: the run's phase commits
+    this.gitReports = new Map(); // phase key -> {status: "loading"|"done"|"failed", repo, sha, files, reason, warn}
     this.reports = new Map(); // phase_id -> {sha, status: "loading"|"done"|"failed", body, rows, warn}: fetched on expand
     this.reportShown = new Map(); // phase_id -> rows of its report drawn
     this.changes = null; // see loadChanges()
@@ -91,6 +98,9 @@ export default class ForemanRun extends View {
     this.hiddenGroups = new Set(); // phases collapsed in the Activity feed
     const want = tabProps()?.tab; // props.tab: where the tab opens; without it the run's state decides
     this.tab = TABS.some(([id]) => id === want) ? want : null;
+    const wantPhase = tabProps()?.phase; // props.phase: a phase (its name or number) to open in the Phases tab
+    this.wantPhase = wantPhase === undefined || wantPhase === null || wantPhase === "" ? null : String(wantPhase);
+    if (this.wantPhase !== null && this.tab === null) this.tab = "phases";
     this.filter = "all";
     this.follow = true; // keep the newest turn in view
     this.pendingScroll = false;
@@ -152,6 +162,11 @@ export default class ForemanRun extends View {
       this.pendingScroll = this.tab === "activity";
     }
     await Promise.all([this.loadThread(), this.loadPhases()]);
+    if (this.wantPhase !== null) {
+      const row = this.phaseRows().find((r) => r.started && (r.name === this.wantPhase || String(r.index) === this.wantPhase));
+      this.wantPhase = null;
+      if (row) { this.openPhases.add(row.key); this.jumpTo = row.key; }
+    }
     await this.loadTranscript();
     const live = M.isLive(this.run);
     const due = (at) => force || at === 0 || Date.now() - at >= (live ? SIDE_EVERY_MS : DONE_POLL_MS);
@@ -162,6 +177,7 @@ export default class ForemanRun extends View {
       force || !this.changes || ((live || this.run.status === "paused") && Date.now() - this.changesAt >= CHANGES_EVERY_MS) ? this.loadChanges() : null,
     ]);
     await this.refreshOpenReports(force);
+    await this.prefetchGitReports(force);
   }
 
   // The thread (title, branch, repo) never changes: ask until it has answered. A queued run has none yet.
@@ -314,11 +330,133 @@ export default class ForemanRun extends View {
     }
   }
 
+  // The phase rows as the view builds them, for the loaders that need to know what each phase is.
+  phaseRows() {
+    const r = this.run;
+    return r ? M.buildPhaseRows(r, this.phases, r.workflow_snapshot?.phases, this.artifactMap, Date.now()) : [];
+  }
+
+  // Whether the server cannot give this finished phase's report, so the run's own commits are asked instead:
+  // it cannot list reports at all (no route), or it listed this one and then could not read it (the file is gone).
+  needsGit(row) {
+    if (!row.started || row.state !== "done") return false;
+    if (!this.artifactMap) return true;
+    const entry = this.artifactMap.get(row.phaseId);
+    if (!entry) return false;
+    const c = this.reports.get(row.phaseId);
+    return c?.status === "failed" || (c?.status === "done" && c.body.state !== "ok");
+  }
+
+  async ensureReport(row, force = false) {
+    const entry = this.artifactMap?.get(row.phaseId);
+    if (entry) await this.loadReport(entry, force);
+    if (this.needsGit(row)) await this.loadGitReport(row, force);
+  }
+
   async refreshOpenReports(force) {
-    if (!this.artifactMap) return;
-    for (const id of this.openPhases) {
-      const entry = this.artifactMap.get(id);
-      if (entry) await this.loadReport(entry, force);
+    for (const row of this.phaseRows()) if (this.openPhases.has(row.key)) await this.ensureReport(row, force);
+  }
+
+  // A server that cannot list reports gets every finished phase looked up in git up front, so the phase list
+  // can say what each report is without opening it.
+  async prefetchGitReports(force) {
+    if (this.artifactMap) return;
+    for (const row of this.phaseRows()) if (this.needsGit(row)) await this.loadGitReport(row, force);
+  }
+
+  // The run's repository: the thread's repo_path, else the path its project is registered with.
+  async findRepo() {
+    if (this.repoPath) return this.repoPath;
+    const fromThread = this.thread?.repo_path;
+    if (typeof fromThread === "string" && fromThread.startsWith("/")) return (this.repoPath = fromThread);
+    const pid = this.run?.project_id;
+    if (typeof pid !== "string" || pid === "") return null;
+    const projects = await foreman(["project", "list", "--include-archived", "--format=json"]);
+    const path = Array.isArray(projects) ? projects.find((x) => x?.project_id === pid)?.path : null;
+    if (typeof path === "string" && path.startsWith("/")) this.repoPath = path;
+    return this.repoPath;
+  }
+
+  // One `git log` for the run's phase commits ("Foreman run <id> phase <n>"): phase number -> commit.
+  async loadGitIndex(force = false) {
+    const cur = this.gitIdx;
+    if (cur && !force && (Date.now() - cur.at < SIDE_EVERY_MS || (!cur.error && !M.isLive(this.run)))) return cur;
+    const at = Date.now();
+    try {
+      if (!RUN_ID.test(this.runId)) throw new Error(`refusing odd run id: ${this.runId}`);
+      const repo = await this.findRepo();
+      if (!repo) throw new Error("the run's repository is unknown: it has no thread and no project path");
+      const res = await exec("git", ["-C", repo, "log", "--all", "--no-color", "--format=%H%x09%s", `--grep=Foreman run ${this.runId} phase`], { timeout: 20000 });
+      if (res.code !== 0) throw new Error(firstLine(res.stderr) || `git exited ${res.code}`);
+      this.gitIdx = { at, repo, commits: M.parsePhaseCommits(res.stdout, this.runId) };
+    } catch (e) {
+      this.gitIdx = { at, error: firstLine(e?.message ?? e) };
+    }
+    return this.gitIdx;
+  }
+
+  // A phase's report read from where the server cannot be asked for it: how a report is shown when the server cannot
+  // serve it (no /artifacts route, or its file is gone with the worktree). In order: a phase with no `artifact:`
+  // template wrote it to ~/.foreman/runs/<run id>/phase-<n>.md (never reclaimed), the server's archive copy of it, then
+  // the commit Foreman made for the phase (or, for a phase that declared `commit: false`, the later phase's commit that
+  // carried its work). Only ever reads; the text is shown as plain text.
+  async loadGitReport(row, force = false) {
+    const cur = this.gitReports.get(row.key);
+    if (cur && !force && (cur.status === "loading" || cur.status === "done" || Date.now() - cur.at < SIDE_EVERY_MS)) return;
+    this.gitReports.set(row.key, { status: "loading", at: Date.now() });
+    let diskNote = "";
+    try {
+      if (RUN_ID.test(this.runId) && Number.isInteger(row.index)) {
+        const dir = `${home()}/.foreman/runs/${this.runId}`;
+        // The server's archived copy is keyed by run and phase number, whatever the phase's template; the default
+        // `phase-<n>.md` is only where a phase with no `artifact:` template wrote its report.
+        const candidates = [["archive", `${dir}/archive/phase-${row.index}.md`]];
+        if (row.reportName === null) candidates.push(["disk", `${dir}/phase-${row.index}.md`]);
+        for (const [source, path] of candidates) {
+          let text = null;
+          try { text = await readTextFile(path); } catch (e) { diskNote = ` (could not read ${path}: ${firstLine(e?.message ?? e)})`; }
+          if (text === null) continue;
+          const shown = text.length > REPORT_CAP ? text.slice(0, REPORT_CAP) : text;
+          const file = { path, bytes: M.utf8Bytes(text), text: shown, truncated: text.length > REPORT_CAP, rows: M.markdownRows(shown) };
+          this.gitReports.set(row.key, { status: "done", at: Date.now(), source, sha: null, via: null, repo: null, files: [file], reason: null });
+          return;
+        }
+      }
+      const idx = await this.loadGitIndex(force);
+      if (idx.error) throw new Error(idx.error);
+      const own = idx.commits.get(row.index) ?? null;
+      const diffNames = async (commit) => {
+        const res = await exec("git", ["-c", "core.quotepath=off", "-C", idx.repo, "diff-tree", "--no-commit-id", "--name-only", "-r", "--root", commit], { timeout: 15000 });
+        if (res.code !== 0) throw new Error(firstLine(res.stderr) || `git diff-tree exited ${res.code}`);
+        return res.stdout;
+      };
+      let sha = own;
+      let via = null;
+      let paths = own ? M.pickReportFiles(await diffNames(own), row.reportName) : [];
+      if (paths.length === 0 && row.reportName) {
+        // A phase that declares `commit: false` has its work committed with a later phase.
+        for (const n of [...idx.commits.keys()].filter((k) => k > row.index).sort((a, b) => a - b)) {
+          const found = M.pickReportFiles(await diffNames(idx.commits.get(n)), row.reportName, true);
+          if (found.length > 0) { sha = idx.commits.get(n); paths = found; via = n; break; }
+        }
+      }
+      const done = (reason, files = []) => this.gitReports.set(row.key, { status: "done", at: Date.now(), source: "git", repo: idx.repo, sha, via, files, reason });
+      if (paths.length === 0) {
+        return done(own === null
+          ? `Not in git: no commit "Foreman run ${this.runId} phase ${row.index}" in ${idx.repo}${row.reportName ? `, and no later phase's commit holds ${row.reportName}` : ""}. A report that was never committed is a file under ~/.foreman/runs/${this.runId}/ that only a server with the /artifacts route can serve${diskNote}.`
+          : `Not in git: the phase's commit ${own.slice(0, 10)} holds no report file${row.reportName ? ` (the workflow names it ${row.reportName}), and no later phase's commit holds it` : ""}${diskNote}.`);
+      }
+      const files = [];
+      for (const path of paths.slice(0, 3)) {
+        const res = await exec("sh", ["-c", GIT_BLOB, "sh", idx.repo, sha, path], { timeout: 20000 });
+        if (res.code !== 0) throw new Error(firstLine(res.stderr) || `git exited ${res.code} reading ${path}`);
+        const blob = M.parseBlob(res.stdout, REPORT_CAP);
+        if (!blob) throw new Error(`unexpected git output reading ${path}`);
+        files.push({ path, ...blob, rows: M.markdownRows(blob.text) });
+      }
+      return done(null, files);
+    } catch (e) {
+      this.gitReports.set(row.key, { status: "failed", at: Date.now(), warn: firstLine(e?.message ?? e) });
     }
   }
 
@@ -440,8 +578,7 @@ export default class ForemanRun extends View {
     this.openPhases.add(row.key);
     this.tab = "phases";
     this.jumpTo = row.key;
-    const entry = this.artifactMap?.get(row.phaseId);
-    if (entry) cx.spawn(async (cx) => { await this.loadReport(entry, this.reports.get(row.phaseId)?.status === "failed"); cx.notify(); });
+    cx.spawn(async (cx) => { await this.ensureReport(row, this.reports.get(row.phaseId)?.status === "failed"); cx.notify(); });
     cx.notify();
   }
 
@@ -449,8 +586,7 @@ export default class ForemanRun extends View {
     if (this.openPhases.delete(row.key)) return cx.notify();
     this.openPhases.add(row.key);
     cx.notify();
-    const entry = this.artifactMap?.get(row.phaseId);
-    if (entry) cx.spawn(async (cx) => { await this.loadReport(entry, this.reports.get(row.phaseId)?.status === "failed"); cx.notify(); });
+    cx.spawn(async (cx) => { await this.ensureReport(row, this.reports.get(row.phaseId)?.status === "failed"); cx.notify(); });
   }
 
   toggle(set, key, cx) {
@@ -948,7 +1084,9 @@ export default class ForemanRun extends View {
     const { th, rows } = vm;
     const out = [];
     const w = this.warn.artifacts;
-    if (w) out.push(note(th, `Phase reports are unavailable: ${w.text}${w.kind === "missing_route" ? ". Update the Foreman server to read them here." : ""}`, w.kind === "missing_route" ? "idle" : "blocked"));
+    if (w) out.push(note(th, w.kind === "missing_route"
+      ? "This server has no /api/runs/:id/artifacts route (HTTP 404), so each report is read from this machine instead (the run's files under ~/.foreman/runs, else the commit Foreman made for the phase): not checked against a recorded digest. Update the Foreman server for the recorded copies."
+      : `Phase reports are unavailable: ${w.text}`, w.kind === "missing_route" ? "idle" : "blocked"));
     if (rows.length === 0) out.push(note(th, this.warn.phases ? "The phase list could not be read (see above)." : "No phases yet."));
     const groups = new Map(M.groupTurns(M.compressTurns(this.turns), rows).map((g) => [g.key, g]));
     for (const p of rows) {
@@ -963,7 +1101,9 @@ export default class ForemanRun extends View {
     const { th } = vm;
     const [glyph, color] = M.PHASE_GLYPH[p.state];
     const open = this.openPhases.has(p.key);
-    const report = p.artifactState === "present" ? `report ${M.bytesText(p.artifact.bytes)}` : p.artifactState === "unknown" ? "report ?" : p.started && p.state === "done" ? "no report" : "";
+    const g = this.gitReports.get(p.key);
+    const fromGit = g?.status === "done" ? (g.files.length > 0 ? `report ${M.bytesText(g.files[0].bytes)} · ${g.source}` : "not found") : g?.status === "loading" ? "report …" : "report ?";
+    const report = p.artifactState === "present" ? `report ${M.bytesText(p.artifact.bytes)}` : p.artifactState === "unknown" ? fromGit : p.started && p.state === "done" ? "no report" : "";
     return h_flex().id(`ph-${p.key}`).px(12).py(5).mt(2).gap(8).items_center().hover((s) => s.bg(th.hover))
       .when(p.started, (el) => el.cursor_pointer().on_click((_e, cx) => this.togglePhase(p, cx)))
       .child(div().w(10).flex_none().text_size(10).text_color(th.dim).child(p.started ? (open ? "▾" : "▸") : ""))
@@ -1011,6 +1151,8 @@ export default class ForemanRun extends View {
     const w = this.warn.artifacts;
     const entry = p.artifact;
     if (!this.artifactMap) {
+      const g = this.gitRows(p, vm, title, pad);
+      if (g) return g;
       out.push(title([]), pad(w ? `The report list could not be read, so this phase's report cannot be shown (${w.text}).` : "Reading the report list…", w ? (w.kind === "missing_route" ? "idle" : "blocked") : "dim", 12));
       return out;
     }
@@ -1022,32 +1164,75 @@ export default class ForemanRun extends View {
       return out;
     }
     const name = entry.path.split("/").pop();
+    const served = this.reports.get(entry.phase_id)?.body; // what the server answered for it, once it has
+    const pathIsDead = served !== undefined && (served.state !== "ok" || served.source === "archive"); // `open` would open nothing
     const pills = [
       chip(th, `copy-path-${p.key}`, "copy path", false, (_e, cx) => this.copy(entry.path, "the report path", cx)),
-      OPENABLE.test(entry.path) && entry.path.startsWith("/") ? chip(th, `open-file-${p.key}`, "open", false, () => this.openFile(entry.path)) : null,
+      OPENABLE.test(entry.path) && entry.path.startsWith("/") && !pathIsDead ? chip(th, `open-file-${p.key}`, "open", false, () => this.openFile(entry.path)) : null,
     ];
     out.push(title([div().text_size(11).text_color(th.dim).child(`${name} · ${M.bytesText(entry.bytes)}`), ...pills]));
     const c = this.reports.get(entry.phase_id);
     if (!c || c.status === "loading") { out.push(pad("Loading the report…", "dim", 12)); return out; }
-    if (c.status === "failed") { out.push(pad(`Could not read the report: ${c.warn.text}`, c.warn.kind === "missing_route" ? "idle" : "blocked", 12)); return out; }
+    if (c.status === "failed") {
+      out.push(pad(`Could not read the report: ${c.warn.text}`, c.warn.kind === "missing_route" ? "idle" : "blocked", 12));
+      out.push(...(this.gitRows(p, vm, title, pad, true) ?? []));
+      return out;
+    }
     const b = c.body;
     out.push(pad(entry.path, "dim", 10.5));
     if (b.state !== "ok") {
-      out.push(pad(`${b.state === "missing" ? "The report file is missing" : "The report file could not be read"}${b.error ? `: ${b.error}` : "."}`, "blocked", 12));
-      if (b.state === "missing") out.push(pad("The run's worktree or report directory may have been cleaned up.", "dim"));
+      const g = this.gitReports.get(p.key);
+      const recovered = g?.status === "done" && g.files.length > 0;
+      out.push(pad(`${b.state === "missing" ? "The report file is missing" : "The report file could not be read"}${b.error ? `: ${b.error}` : "."}`, recovered ? "dim" : "blocked", 12));
+      if (b.state === "missing" && !recovered) out.push(pad(b.source === undefined ? "The run's worktree or report directory may have been cleaned up." : "The run's worktree or report directory was cleaned up and the server holds no archived copy (reports are archived when a phase completes; runs that finished before that was in place have none).", "dim"));
+      out.push(...(this.gitRows(p, vm, title, pad, true) ?? []));
       return out;
     }
     const sha = b.sha_matches === true ? ["✓ sha256 matches what the phase recorded", "done"] : b.sha_matches === false ? ["✕ sha256 differs from what the phase recorded: the file changed after the phase wrote it", "blocked"] : ["sha256 was not checked", "dim"];
     out.push(pad(sha[0], sha[1]));
+    if (b.source === "archive") out.push(pad("Showing the server's archived copy: the file at the path above is gone or has changed since the phase wrote it.", "idle"));
     if (b.truncated) out.push(pad(`Showing the first ${M.bytesText(b.content_bytes)} of ${M.bytesText(b.bytes)}: the server returns at most that much. Open the file for the rest.`, "idle"));
-    if (c.rows.length === 0) out.push(pad("The report is empty.", "dim", 12));
-    const limit = this.reportShown.get(p.key) ?? REPORT_ROWS;
-    c.rows.slice(0, limit).forEach((m, k) => { const el = this.mdRow(m, th, `${p.key}-${k}`); if (el) out.push(el); });
-    if (c.rows.length > limit) {
+    out.push(...this.reportBodyRows(p.key, c.rows, th, pad));
+    return out;
+  }
+
+  // The text of a report, from its rows: the first REPORT_ROWS, then "show more".
+  reportBodyRows(key, rows, th, pad) {
+    const out = [];
+    if (rows.length === 0) out.push(pad("The report is empty.", "dim", 12));
+    const limit = this.reportShown.get(key) ?? REPORT_ROWS;
+    rows.slice(0, limit).forEach((m, k) => { const el = this.mdRow(m, th, `${key}-${k}`); if (el) out.push(el); });
+    if (rows.length > limit) {
       out.push(h_flex().pl(34).pr(12).py(3).gap(6)
-        .child(chip(th, `more-${p.key}`, `show ${Math.min(REPORT_PAGE, c.rows.length - limit)} more rows`, false, (_e, cx) => { this.reportShown.set(p.key, limit + REPORT_PAGE); cx.notify(); }))
-        .child(chip(th, `all-${p.key}`, `show all ${c.rows.length}`, false, (_e, cx) => { this.reportShown.set(p.key, c.rows.length); cx.notify(); })));
+        .child(chip(th, `more-${key}`, `show ${Math.min(REPORT_PAGE, rows.length - limit)} more rows`, false, (_e, cx) => { this.reportShown.set(key, limit + REPORT_PAGE); cx.notify(); }))
+        .child(chip(th, `all-${key}`, `show all ${rows.length}`, false, (_e, cx) => { this.reportShown.set(key, rows.length); cx.notify(); })));
     }
+    return out;
+  }
+
+  // The phase's report as read from the run's commits (loadGitReport); null when that was never tried.
+  gitRows(p, vm, title, pad, titled = false) {
+    const { th } = vm;
+    const g = this.gitReports.get(p.key);
+    if (!g) return null;
+    const out = titled ? [] : [title([])];
+    if (g.status === "loading") return [...out, pad("Looking for the report in the run's commits…", "dim", 12)];
+    if (g.status === "failed") return [...out, pad(`Could not read the report from the run's commits: ${g.warn}`, "blocked", 12)];
+    if (g.files.length === 0) return [...out, pad(g.reason, "dim", 12)];
+    g.files.forEach((f, i) => {
+      const head = h_flex().pl(34).pr(12).pt(4).pb(2).gap(8).items_center().flex_wrap()
+        .child(div().text_size(11).text_color(th.foreground).child(`${f.path.split("/").pop()} · ${M.bytesText(f.bytes)}`))
+        .child(chip(th, `copy-text-${p.key}-${i}`, "copy text", false, (_e, cx) => this.copy(f.text, "the report", cx)))
+        .when(g.source === "git", (el) => el.child(chip(th, `copy-commit-${p.key}-${i}`, "copy commit", false, (_e, cx) => this.copy(g.sha, "the commit id", cx))))
+        .when(g.source !== "git" && OPENABLE.test(f.path), (el) => el.child(chip(th, `open-local-${p.key}-${i}`, "open", false, () => this.openFile(f.path))));
+      out.push(head);
+      out.push(pad(f.path, "dim", 10.5));
+      out.push(pad(g.source === "git"
+        ? `Read from commit ${g.sha.slice(0, 10)} ${g.via === null ? `("Foreman run … phase ${p.index}")` : `("Foreman run … phase ${g.via}": this phase deferred its commit to it)`} in ${g.repo}, not from the server: the report as committed, not checked against a recorded digest.`
+        : `Read from ${f.path} on this machine${g.source === "archive" ? " (the server's archived copy)" : ""}, not through the server: not checked against a recorded digest.`, "idle"));
+      if (f.truncated) out.push(pad(g.source === "git" ? `Showing the first ${M.bytesText(REPORT_CAP)} of ${M.bytesText(f.bytes)}; git show ${g.sha.slice(0, 10)}:${f.path} has the rest.` : `Showing the first ${M.bytesText(REPORT_CAP)} of ${M.bytesText(f.bytes)}; open the file for the rest.`, "idle"));
+      out.push(...this.reportBodyRows(`${p.key}~${i}`, f.rows, th, pad));
+    });
     return out;
   }
 

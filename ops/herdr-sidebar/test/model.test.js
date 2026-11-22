@@ -3,8 +3,8 @@
 import { test, expect } from "bun:test";
 import {
   bytesText, buildPhaseRows, classifyFetchError, cleanText, compact, compressTurns, filterCounts, groupTurns, isBlankTurn,
-  liveTail, markdownRows, matchesFilter, MAX_REPORT_ROWS, notableEvents, nowSummary, outcomeOf, prepareTurn, prOverall,
-  reassemble, span, splitThink, summarizePr, summarizePrs,
+  liveTail, markdownRows, matchesFilter, MAX_REPORT_ROWS, notableEvents, nowSummary, outcomeOf, parseBlob, parsePhaseCommits,
+  pickReportFiles, prepareTurn, prOverall, reassemble, span, splitThink, summarizePr, summarizePrs, utf8Bytes,
 } from "../mods/foreman-run/model.js";
 
 const T0 = 1_700_000_000_000;
@@ -391,4 +391,70 @@ test("bytesText / span / compact edge values", () => {
   expect([span(-5), span(0), span(59_999), span(60_000), span(3_599_000), span(3_600_000), span(90_061_000)]).toEqual(["0s", "0s", "59s", "1m 0s", "59m 59s", "1h 0m", "1d 1h"]);
   expect([compact(0), compact(undefined), compact(999), compact(1000), compact(74_800), compact(1_500_000)]).toEqual(["0", "0", "999", "1.0k", "74.8k", "1.5M"]);
   expect(compact(999_999)).toBe("1.0M"); // not "1000.0k"
+});
+
+// ---- reports recovered from the run's commits
+const SHA = (c) => c.repeat(40);
+
+test("parsePhaseCommits keeps the newest commit of exactly the asked run and phase", () => {
+  const out = [
+    `${SHA("a")}\tForeman run run-1 phase 10`, // not phase 1
+    `${SHA("b")}\tForeman run run-1 phase 1`, // newest first: this is the one
+    `${SHA("c")}\tForeman run run-1 phase 1`, // the earlier attempt of the same phase
+    `${SHA("d")}\tForeman run run-12 phase 2`, // another run whose id starts the same
+    `${SHA("e")}\tfix: Foreman run run-1 phase 3`, // not a phase commit: the subject only contains it
+    `${SHA("f")}\tForeman run run-1 phase 2`,
+    `nothex\tForeman run run-1 phase 4`,
+    "",
+  ].join("\n");
+  const commits = parsePhaseCommits(out, "run-1");
+  expect([...commits]).toEqual([[10, SHA("a")], [1, SHA("b")], [2, SHA("f")]]);
+  expect(parsePhaseCommits("", "run-1").size).toBe(0);
+  expect(parsePhaseCommits(undefined, "run-1").size).toBe(0);
+});
+
+test("parsePhaseCommits does not read a run id as a pattern", () => {
+  const out = `${SHA("a")}\tForeman run run-a.b phase 1\n${SHA("b")}\tForeman run run-aXb phase 1`;
+  expect([...parsePhaseCommits(out, "run-a.b")]).toEqual([[1, SHA("a")]]);
+});
+
+test("pickReportFiles prefers the file the workflow names, else the documents under docs/reports", () => {
+  const names = ["src/app.ex", "docs/reports/foreman-t1/FIX_REPORT.md", "docs/reports/foreman-t1/NOTES.md", "docs/reports/foreman-t1/data.json", ""].join("\n");
+  expect(pickReportFiles(names, "FIX_REPORT.md")).toEqual(["docs/reports/foreman-t1/FIX_REPORT.md"]);
+  expect(pickReportFiles(names, null)).toEqual(["docs/reports/foreman-t1/FIX_REPORT.md", "docs/reports/foreman-t1/NOTES.md"]);
+  // the workflow's name is not among the commit's files: fall back to the documents there
+  expect(pickReportFiles(names, "OTHER.md")).toEqual(["docs/reports/foreman-t1/FIX_REPORT.md", "docs/reports/foreman-t1/NOTES.md"]);
+  expect(pickReportFiles("src/app.ex\nlib/b.ex", "FIX_REPORT.md")).toEqual([]);
+  expect(pickReportFiles(undefined, null)).toEqual([]);
+});
+
+test("pickReportFiles drops paths git quoted and paths that could pass for an option", () => {
+  const names = ['"docs/reports/we\\"ird.md"', "-docs/reports/x.md", "docs/reports/foreman-beads:foreman:t/REPORT.md"].join("\n");
+  expect(pickReportFiles(names, null)).toEqual(["docs/reports/foreman-beads:foreman:t/REPORT.md"]);
+});
+
+test("parseBlob splits the size from the text and flags a report over the cap", () => {
+  expect(parseBlob("22\nNo response requested.", 1000)).toEqual({ bytes: 22, text: "No response requested.", truncated: false });
+  expect(parseBlob("5000\nabc", 1000)).toEqual({ bytes: 5000, text: "abc", truncated: true });
+  expect(parseBlob("0\n", 1000)).toEqual({ bytes: 0, text: "", truncated: false });
+  expect(parseBlob("", 1000)).toBeNull();
+  expect(parseBlob("not a size\ntext", 1000)).toBeNull();
+  expect(parseBlob("12", 1000)).toBeNull(); // no newline: no text follows the size
+});
+
+test("pickReportFiles strict takes only the named file, so a later commit's own reports are not credited to a deferred phase", () => {
+  const later = ["src/app.ex", "docs/reports/foreman-t1/PLAN.md", "docs/reports/foreman-t1/FIX_REPORT.md"].join("\n");
+  expect(pickReportFiles(later, "PLAN.md", true)).toEqual(["docs/reports/foreman-t1/PLAN.md"]);
+  expect(pickReportFiles(later, "REVIEW.md", true)).toEqual([]); // not strict it would return both documents
+  expect(pickReportFiles(later, "REVIEW.md", false)).toEqual(["docs/reports/foreman-t1/PLAN.md", "docs/reports/foreman-t1/FIX_REPORT.md"]);
+  expect(pickReportFiles(later, null, true)).toEqual([]);
+});
+
+test("utf8Bytes counts bytes, not characters", () => {
+  expect([utf8Bytes(""), utf8Bytes(undefined), utf8Bytes("abc")]).toEqual([0, 0, 3]);
+  expect(utf8Bytes("é")).toBe(2); // 1 char, 2 bytes
+  expect(utf8Bytes("✓")).toBe(3);
+  expect(utf8Bytes("😀")).toBe(4); // one code point, a surrogate pair in UTF-16
+  expect(utf8Bytes("a✓😀")).toBe(8);
+  expect(utf8Bytes("é".repeat(1000))).toBe(Buffer.byteLength("é".repeat(1000), "utf8"));
 });
