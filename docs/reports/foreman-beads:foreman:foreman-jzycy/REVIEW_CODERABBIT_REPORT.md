@@ -1,5 +1,3 @@
-Phase 3 done.
-
 ## CodeRabbit review — `beads:foreman:foreman-jzycy`
 
 **Engine**: coderabbit 0.9.6, `coderabbit review --agent --base "$FOREMAN_BASE_BRANCH"` (`=main`, set → correct base). Round 1 exit 0 (3 minor findings), Round 2 exit 0 (0 findings) → stopped.
@@ -21,3 +19,11 @@ Phase 3 done.
 **Report**: `docs/reports/foreman-beads:foreman:foreman-jzycy/REVIEW_CODERABBIT_REPORT.md` (5 sections + findings block: 2 fixed / 1 declined + risk judgement LOW). Fixes left uncommitted for Foreman. Kata issue `pes1` created + closed with the test command as evidence.
 
 Note: `ask_advisor` unavailable again (Anthropic `invalid_grant`, refresh token expired) — no advisor review of this phase.
+
+<!-- FOREMAN_REVIEW_FINDINGS_START -->
+{"schema": "foreman.review_findings/1", "reviewed": true, "findings": [{"severity": "minor", "path": "docs/reports/foreman-beads:foreman:foreman-jzycy/FIX_REPORT.md", "line": 1, "description": "The phase-2 deliverable contained only the placeholder sentence instead of the implementation report, so the bead's decision was never stated.", "disposition": "fixed", "source": "coderabbit"}, {"severity": "minor", "path": "packages/foreman_server/lib/foreman_server/review/analyzer.ex", "line": 57, "description": "The decision comment cited a pinning test that did not exist in analyzer_test.exs.", "disposition": "fixed", "source": "coderabbit"}, {"severity": "minor", "path": "docs/reports/foreman-beads:foreman:foreman-jzycy/PLAN.md", "line": 57, "description": "The plan's proof step tells the implementer to temporarily remove RunFailed and RunCancelled from the terminal-event list.", "disposition": "declined", "source": "coderabbit"}]}
+<!-- FOREMAN_REVIEW_FINDINGS_END -->
+
+<!-- FOREMAN_RISK_JUDGEMENT_START -->
+{"schema": "foreman.risk_judgement/1", "level": "LOW", "rationale": "The branch adds a decision comment and one test, and rewrites the phase report; no production code path, configuration or public identifier changed. The only behavioural change is the addition of a test that pins the already-documented behaviour."}
+<!-- FOREMAN_RISK_JUDGEMENT_END -->

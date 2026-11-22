@@ -52,11 +52,13 @@ defmodule ForemanServer.Review.Analyzer do
 
   # A failed or cancelled run is reviewed on purpose (foreman-jzycy): the review
   # of work that did not land is where `foreman-gap` beads come from, and the
-  # reviewer is a read-only `DetachedRun` in a scratch cwd, not an Overwatch
-  # worker in the run's worktree — it is neither a leaked worker nor a second
-  # writer. Pinned by "a run whose projection is already terminal is still
-  # reviewed, failed and cancelled alike" in
-  # test/foreman_server/review/analyzer_test.exs; documented at
+  # reviewer is a `DetachedRun` in a scratch cwd outside any git work tree, not
+  # an Overwatch worker in the run's worktree — it is neither a leaked worker
+  # nor a second writer. (Read-only is only requested: `sandbox_mode:
+  # :read_only` is not honoured by every provider, so the scratch cwd is the
+  # guarantee — see review/evaluator/agent.ex.) Pinned by "a run whose
+  # projection is already terminal is still reviewed, failed and cancelled
+  # alike" in test/foreman_server/review/analyzer_test.exs; documented at
   # docs/user-guide.md "Session archive and automated review" and in the
   # run-lifecycle list (docs/user-guide.md:1114).
   @terminal_events ~w(RunCompleted RunFailed RunCancelled JobsiteCompleted JobsiteFailed JobsiteCancelled)
