@@ -834,6 +834,41 @@ defmodule ForemanServer.Review.AnalyzerTest do
       end
     end
 
+    # Decision (foreman-jzycy): a run that is ALREADY terminal — failed or
+    # cancelled — is still reviewed, and that is the intended behaviour, not an
+    # oversight. The reviewer is why a failed run is useful: its gaps become
+    # `foreman-gap` beads. It runs as a read-only `DetachedRun` in a scratch cwd,
+    # outside Overwatch and outside the run's worktree, so it is neither a
+    # leaked worker nor a second writer (docs/user-guide.md:1114). Change this
+    # test first if that decision is ever reversed.
+    test "a run whose projection is already terminal is still reviewed, failed and cancelled alike",
+         %{repo: repo} do
+      base = cancelled_checkout(repo)
+
+      for {type, status} <- [{"RunFailed", "failed"}, {"RunCancelled", "cancelled"}] do
+        run_id = uid("run")
+        seed_run(run_id, repo, worktree_path: repo, base_ref: base)
+        init_archive(subject(:run, run_id, repo))
+
+        # The projection is updated before subscribers are notified, so the
+        # Analyzer saw a run that was already terminal.
+        assert :ok =
+                 ProjectionStore.apply_events([
+                   %{event_type: type, payload: %{run_id: run_id}}
+                 ])
+
+        run = ProjectionStore.run(run_id)
+        assert run.status == status
+        assert run.terminal?
+
+        review = await(fn -> ProjectionStore.review("run", run_id) end)
+        assert review.verdict == "met"
+
+        assert {:ok, %{"status" => ^status}} =
+                 Archive.read_manifest(Archive.dir(:run, run_id, repo))
+      end
+    end
+
     test "reacts to JobsiteCompleted and JobsiteFailed, ignoring JobsiteStarted", %{repo: repo} do
       for type <- ["JobsiteCompleted", "JobsiteFailed"] do
         id = uid("js")
