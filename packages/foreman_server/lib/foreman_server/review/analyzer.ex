@@ -50,6 +50,14 @@ defmodule ForemanServer.Review.Analyzer do
   alias ForemanServer.Review.Subject
   alias ForemanServer.Review.Verdict
 
+  # A failed or cancelled run is reviewed on purpose (foreman-jzycy): the review
+  # of work that did not land is where `foreman-gap` beads come from, and the
+  # reviewer is a read-only `DetachedRun` in a scratch cwd, not an Overwatch
+  # worker in the run's worktree — it is neither a leaked worker nor a second
+  # writer. Pinned by "a run whose projection is already terminal is still
+  # reviewed" in test/foreman_server/review/analyzer_test.exs; documented at
+  # docs/user-guide.md "Session archive and automated review" and in the
+  # run-lifecycle list (docs/user-guide.md:1114).
   @terminal_events ~w(RunCompleted RunFailed RunCancelled JobsiteCompleted JobsiteFailed JobsiteCancelled)
   @event_status %{
     "RunCompleted" => "completed",
