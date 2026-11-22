@@ -73,6 +73,9 @@ config :foreman_server, :start_beads_watcher?, false
 config :foreman_server, :start_lifecycle_reconciler?, false
 config :foreman_server, :start_boot_reconciliation?, false
 config :foreman_server, :start_jobsite_boot_recovery?, false
+# Reads every run the shared projection holds and archives reports under ~/.foreman/runs: its
+# own tests call `RunArtifacts.Backfill.run/1` with a scratch directory instead.
+config :foreman_server, :start_run_artifact_backfill?, false
 config :foreman_server, :start_beads_orphan_janitor?, false
 config :foreman_server, :pr_monitor_enabled, false
 # E9: tests start the PR watcher explicitly with start_supervised!.

@@ -51,6 +51,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   alias ForemanServer.Workflow.Catalog
   alias ForemanServer.Workflow.LiveSteer
   alias ForemanServer.RunControl
+  alias ForemanServer.RunArtifacts
   alias ForemanServer.Identity
   alias ForemanServer.PrAssociate
   alias ForemanServer.PrReadySignal
@@ -1799,8 +1800,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
   end
 
   # The tail of a phase, after its commit: the phase PR record when it asks for
-  # one, then `PhaseCompleted`, then the executor state that marks the phase
-  # done.
+  # one, then the report's archive copy, then `PhaseCompleted`, then the executor
+  # state that marks the phase done.
   @doc false
   def phase_finish(state, phase_spec, index, worktree_record, artifact_path) do
     phase_index = phase_number(phase_spec, index)
@@ -1809,6 +1810,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
          :ok <-
            maybe_record_phase_pr(state, phase_spec, phase_index, worktree_record, artifact_path),
          {:ok, artifact} <- __MODULE__.ArtifactTemplate.describe(artifact_path),
+         :ok <- archive_report(state, phase_index, artifact),
          {:ok, new_phase_statuses} <- emit_phase_complete(state, phase_index, artifact) do
       {:ok,
        %{
@@ -1818,6 +1820,32 @@ defmodule ForemanServer.Workflow.RunExecutor do
            completed: Enum.uniq((state.completed || []) ++ [index]),
            phase_statuses: new_phase_statuses
        }}
+    end
+  end
+
+  # The report usually sits in the run's worktree, which is reclaimed after the run, so a copy
+  # that outlives it is kept in the run's directory (`RunArtifacts.archive/5`, the one owner of
+  # the path). It is written BEFORE `PhaseCompleted`: from the moment the projection records the
+  # report, the archive copy exists too. It never fails the phase - the phase's work is done and
+  # the copy is a read-model convenience - so a failure is a warning, never swallowed
+  # (`RunArtifacts.warn_not_archived/4`). A report already inside the archive directory has no
+  # copy to make. An unsafe run id is not an archive failure but a corrupted identity: it raises.
+  defp archive_report(state, phase_index, artifact) do
+    case RunArtifacts.archive(
+           state.artifact_base,
+           state.run_id,
+           phase_index,
+           artifact.path,
+           artifact.sha256
+         ) do
+      {:ok, _archived_path} ->
+        :ok
+
+      :in_archive ->
+        :ok
+
+      {:error, reason} ->
+        RunArtifacts.warn_not_archived(state.run_id, phase_index, artifact.path, reason)
     end
   end
 
@@ -5955,7 +5983,11 @@ defmodule ForemanServer.Workflow.RunExecutor do
   @doc false
   def phase_number(phase_spec, index), do: PhaseSpec.number(phase_spec, index)
 
-  @doc "Directory under which runs write their default artifacts (`~/.foreman/runs`)."
+  @doc """
+  Directory under which runs write their default artifacts (`~/.foreman/runs`). The phase report
+  archive (`ForemanServer.RunArtifacts.archive_path/3`) lives under the same root, in
+  `<run_id>/archive/`.
+  """
   @spec artifact_base() :: String.t()
   def artifact_base, do: default_artifact_base()
 
