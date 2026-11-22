@@ -62,6 +62,21 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.Driver do
   end
 
   @doc """
+  Cancels `harness_run_id` and waits, for at most `timeout_ms`, until the OS processes the
+  harness started for it have exited (`await_exit/2`).
+
+  The cancel's own answer is not read: a run that is already over (or pruned) has nothing left
+  to cancel, and one that could not be cancelled is still running, which the wait reports.
+  `{:error, :timeout}` means the agent was still running when the wait ran out.
+  """
+  @spec stop(String.t(), non_neg_integer()) :: :ok | {:error, :timeout}
+  def stop(harness_run_id, timeout_ms \\ @exit_wait_ms)
+      when is_binary(harness_run_id) and is_integer(timeout_ms) and timeout_ms >= 0 do
+    _ = Run.cancel(harness_run_id)
+    await_exit(harness_run_id, timeout_ms)
+  end
+
+  @doc """
   The OS pid of every agent process the harness has running (still starting, running or
   being stopped), whichever run owns it.
   """

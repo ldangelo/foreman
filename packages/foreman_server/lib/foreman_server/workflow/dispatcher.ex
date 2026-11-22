@@ -26,6 +26,14 @@ defmodule ForemanServer.Workflow.Dispatcher do
       the dispatcher can fire them unconditionally once it has the
       lease key. The wire-up prevents a queued waiter from being
       promoted after its run has terminated.
+    * `RunCancelled`, `RunFlaggedStuck`, `RunFailed` and `RunDeleted`, and a
+      `RunPaused` run that is still paused, also stop the run's Overwatch
+      workers (`stop_run_workers_later/2`). `RunControl.cancel_agent/1` cancels
+      the agent first and the worker gets a wind-down window to finish on its
+      own; whatever the Overwatch registry still lists for the run afterwards is
+      stopped together with its agent. `RunControl` alone is not enough: the
+      executor wipes it when it stops, right after dispatching `run.fail`, so a
+      failed run's live worker would have nothing left to cancel.
     * `BeadsDbLeaseTransferred` — re-triggers admission for the run
       promoted to holder. Looks up the task projection by the new
       `acquired_task_id`, re-enters `RunAdmission.start/2`, and
@@ -67,7 +75,13 @@ defmodule ForemanServer.Workflow.Dispatcher do
     Worktree
   }
 
+  alias ForemanServer.Overwatch.{StopReport, WorkerSupervisor}
   alias ForemanServer.RunControl
+
+  # How long the workers of a cancelled, failed, stuck, deleted or paused run get to wind down on
+  # their own (the agent was just cancelled: the worker records its last events and exits)
+  # before the ones still alive are stopped.
+  @worker_wind_down_ms 10_000
 
   @spec start_link(term()) :: GenServer.on_start()
   def start_link(init_arg \\ []) do
@@ -76,10 +90,14 @@ defmodule ForemanServer.Workflow.Dispatcher do
 
   # `:now_fun` (`(-> DateTime.t())`, default `DateTime.utc_now/0`) is the clock the UTC-rollover
   # timer reads (`schedule_rollover/2`); a test injects one instead of waiting for midnight.
+  # `:worker_wind_down_ms` (default `@worker_wind_down_ms`) is how long a stopped run's workers
+  # get to finish on their own before they are stopped (`stop_run_workers_later/2`); a test
+  # injects a short one.
   @impl true
   def init(init_arg) do
     now_fun = Keyword.get(init_arg, :now_fun, &DateTime.utc_now/0)
-    state = schedule_rollover(%{now_fun: now_fun}, now_fun.())
+    wind_down_ms = Keyword.get(init_arg, :worker_wind_down_ms, @worker_wind_down_ms)
+    state = schedule_rollover(%{now_fun: now_fun, worker_wind_down_ms: wind_down_ms}, now_fun.())
 
     case safe_subscribe() do
       :ok ->
@@ -647,6 +665,7 @@ defmodule ForemanServer.Workflow.Dispatcher do
       if event_type in @agent_killing_terminal_event_types do
         RunControl.request(run_id, :cancel)
         RunControl.cancel_agent(run_id)
+        stop_run_workers_later(run_id, state)
       end
 
       if event_type == "RunDeleted", do: Worktree.clean_for_run(run_id)
@@ -693,6 +712,8 @@ defmodule ForemanServer.Workflow.Dispatcher do
           )
       end
 
+      stop_run_workers_later(run_id, state)
+
       terminate_lease(run_id, "run_paused")
       terminate_slot(run_id, "run_paused")
     end
@@ -707,6 +728,65 @@ defmodule ForemanServer.Workflow.Dispatcher do
 
   defp run_paused?(run_id) do
     match?(%{status: "paused"}, ProjectionStore.run(run_id))
+  end
+
+  # The run is stopped (paused, or over) and its agent has been told to stop. That alone does not
+  # make sure no agent is left: `RunControl` is an ETS cache the executor wipes in `terminate/2`,
+  # so by the time a `RunFailed` lands `cancel_agent/1` can find nothing to cancel while the run's
+  # worker is alive and still writing into the worktree, and a relaunch would add a second
+  # writer. The Overwatch registry is the authoritative list of a run's workers.
+  #
+  # The worker a cancel did reach winds down by itself (it records the cancelled turn's session
+  # and usage and delivers its result), so it gets `worker_wind_down_ms` to do that: stopping it
+  # in the same instant would race it and lose those events. Whatever is still registered when
+  # the time is up is a stray. Detached: stopping one can take seconds and must not hold up the
+  # projection subscriber.
+  defp stop_run_workers_later(run_id, state) do
+    wind_down_ms = Map.get(state, :worker_wind_down_ms, @worker_wind_down_ms)
+
+    Task.start(fn ->
+      case WorkerSupervisor.await_run_workers_exit(run_id, wind_down_ms) do
+        :ok -> :ok
+        {:error, :timeout} -> stop_stray_workers(run_id)
+      end
+    end)
+
+    :ok
+  end
+
+  defp stop_stray_workers(run_id) do
+    if run_stopped?(run_id) do
+      %StopReport{stopped: stopped} = WorkerSupervisor.stop_run_workers(run_id)
+
+      if stopped != [] do
+        Logger.warning(
+          "ForemanServer.Workflow.Dispatcher: run #{run_id} ended with #{length(stopped)} " <>
+            "worker(s) still alive; stopped them",
+          run_id: run_id,
+          operation: "dispatcher.stop_run_workers"
+        )
+      end
+    else
+      Logger.info(
+        "ForemanServer.Workflow.Dispatcher: run #{run_id} is running again (resumed or reset) " <>
+          "after its workers were given time to wind down; leaving its worker alone",
+        run_id: run_id,
+        operation: "dispatcher.stop_run_workers"
+      )
+    end
+  end
+
+  # Still stopped: terminal, paused, or no longer projected. A run resumed or reset while its
+  # workers wound down owns a live worker that must not be touched, and the same check keeps a
+  # replayed historical event (a restarted Dispatcher re-reads the whole log) from stopping the
+  # worker of a run that has been revived since.
+  defp run_stopped?(run_id) do
+    case ProjectionStore.run(run_id) do
+      nil -> true
+      %{terminal?: true} -> true
+      %{status: "paused"} -> true
+      %{} -> false
+    end
   end
 
   # ---------------------------------------------------------------------

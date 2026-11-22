@@ -28,7 +28,13 @@ defmodule ForemanServer.Overwatch do
 
   use Supervisor
 
+  require Logger
+
   alias ForemanServer.Overwatch.{Tracker, WorkerSupervisor}
+
+  # One writer per worktree: a worker that is already on its way out gets this
+  # long to disappear before a launch is refused (see `ensure_single_writer/1`).
+  @single_writer_wait_ms 2_000
 
   def start_link(opts \\ []) do
     case Keyword.get(opts, :name, __MODULE__) do
@@ -107,6 +113,11 @@ defmodule ForemanServer.Overwatch do
   appends `WorkerStarted` through `CommandRouter` before activating the
   adapter, ensuring the adapter may call `WorkerProtocol.emit/2` only
   after the liveness surface is wired.
+
+  A run has one writer at a time: while a worker of `run_id` is still alive
+  the launch waits a short while for it to exit, then refuses with
+  `{:error, {:worker_already_running, run_id}}` and starts nothing. A second
+  agent in the same worktree silently overwrites the first one's work.
   """
   @spec start_phase(String.t() | map(), keyword()) ::
           {:ok, map()} | {:error, term()}
@@ -121,7 +132,8 @@ defmodule ForemanServer.Overwatch do
 
     project_id = Keyword.get(opts, :project_id) || project_id_from_phase(phase)
 
-    with {:ok, env_map, resolved_secrets} <- build_launch_env(project_id, opts) do
+    with :ok <- ensure_single_writer(run_id),
+         {:ok, env_map, resolved_secrets} <- build_launch_env(project_id, opts) do
       launch_opts =
         [
           worker_id: worker_id,
@@ -192,6 +204,26 @@ defmodule ForemanServer.Overwatch do
 
       other ->
         {:ok, other, []}
+    end
+  end
+
+  # Single writer per worktree: refuse to launch while a worker of this run is
+  # alive. The previous phase's launcher is stopped by a detached task
+  # (`Exec.Runners.Overwatch`), so a short wait tells "still exiting" from a
+  # genuine second writer.
+  defp ensure_single_writer(run_id) do
+    case WorkerSupervisor.await_run_workers_exit(run_id, @single_writer_wait_ms) do
+      :ok ->
+        :ok
+
+      {:error, :timeout} ->
+        Logger.error(
+          "Overwatch: refusing to start a worker for run #{run_id}: a worker of that run is still alive",
+          run_id: run_id,
+          operation: "overwatch.start_phase"
+        )
+
+        {:error, {:worker_already_running, run_id}}
     end
   end
 
