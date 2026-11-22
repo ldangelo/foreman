@@ -278,6 +278,7 @@ defmodule ForemanServer.MCP.ToolsTest do
                :project_id,
                :provider_session_id,
                :provider_sessions,
+               :reason,
                :recovery,
                :run_id,
                :started_at_ms,
@@ -338,6 +339,54 @@ defmodule ForemanServer.MCP.ToolsTest do
 
       assert Tools.call_tool("foreman_run_status", %{run_id: "missing"}) ==
                {:error, %ToolError{code: "NOT_FOUND", message: "Run not found"}}
+    end
+
+    test "reports a run that is waiting for a slot as queued, not NOT_FOUND" do
+      replace_state(%{
+        runs: %{},
+        phases: %{},
+        tasks: %{
+          "task-q" => %{
+            task_id: "task-q",
+            project_id: "proj-1",
+            run_id: "run-queued",
+            status: "in_progress"
+          }
+        }
+      })
+
+      assert {:ok, dto} = Tools.call_tool("foreman_run_status", %{run_id: "run-queued"})
+      assert dto.run_id == "run-queued"
+      assert dto.status == "queued"
+      assert dto.terminal == false
+      assert dto.task_id == "task-q"
+      assert dto.project_id == "proj-1"
+      assert dto.current_phase == nil
+      assert dto.reason == nil
+      assert {:ok, _json} = Jason.encode(dto)
+    end
+
+    test "reports a deferred run with its refusal reason" do
+      replace_state(%{
+        runs: %{},
+        phases: %{},
+        tasks: %{
+          "task-d" => %{
+            task_id: "task-d",
+            project_id: "proj-1",
+            run_id: "run-deferred",
+            status: "in_progress"
+          }
+        },
+        project_deferrals: %{
+          "proj-1" => %{"2026-11-22" => %{"run_limit_exceeded" => MapSet.new(["task-d"])}}
+        }
+      })
+
+      assert {:ok, dto} = Tools.call_tool("foreman_run_status", %{run_id: "run-deferred"})
+      assert dto.status == "deferred"
+      assert dto.reason == "run_limit_exceeded"
+      assert dto.terminal == false
     end
 
     test "returns nil current_phase when run has no phases" do

@@ -1598,10 +1598,13 @@ system facts, and activity is heartbeat/liveness data.
 
 `foreman_run_status` returns a bounded projection DTO with `run_id`, `status`,
 `terminal`, `project_id`, `task_id`, `workflow_name`, `current_phase`,
-`started_at_ms`, `last_event_at_ms`, `failure_reason`, `provider_session_id`
+`started_at_ms`, `last_event_at_ms`, `failure_reason`, `reason` (the admission
+refusal that deferred a pending run, else `null`), `provider_session_id`
 (latest provider-reported session id, or `null`), and `provider_sessions` (ordered
 list of `{worker_id, provider, model, provider_session_id}`, empty when none); it
-does not scrape logs or raw events. It also carries `usage`
+does not scrape logs or raw events. A run id with no run projection yet (still
+waiting for a slot, or deferred by an admission refusal) answers `status`
+`queued` or `deferred` with the refusal in `reason`, not NOT_FOUND. It also carries `usage`
 (`input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`,
 `total_tokens`, `cost_usd`; every value `null` when the provider did not report it, and
 `usage` itself `null` for runs that predate usage capture); `cost_usd` is provider-reported
