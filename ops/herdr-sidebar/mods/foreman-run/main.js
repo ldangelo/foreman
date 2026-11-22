@@ -407,12 +407,7 @@ export default class ForemanRun extends View {
     let diskNote = "";
     try {
       if (RUN_ID.test(this.runId) && Number.isInteger(row.index)) {
-        const dir = `${home()}/.foreman/runs/${this.runId}`;
-        // The server's archived copy is keyed by run and phase number, whatever the phase's template; the default
-        // `phase-<n>.md` is only where a phase with no `artifact:` template wrote its report.
-        const candidates = [["archive", `${dir}/archive/phase-${row.index}.md`]];
-        if (row.reportName === null) candidates.push(["disk", `${dir}/phase-${row.index}.md`]);
-        for (const [source, path] of candidates) {
+        for (const { source, path } of M.reportCandidates(home(), this.runId, row.index, row.reportName)) {
           let text = null;
           try { text = await readTextFile(path); } catch (e) { diskNote = ` (could not read ${path}: ${firstLine(e?.message ?? e)})`; }
           if (text === null) continue;
@@ -424,22 +419,13 @@ export default class ForemanRun extends View {
       }
       const idx = await this.loadGitIndex(force);
       if (idx.error) throw new Error(idx.error);
-      const own = idx.commits.get(row.index) ?? null;
-      const diffNames = async (commit) => {
+      const names = async (commit) => {
         const res = await exec("git", ["-c", "core.quotepath=off", "-C", idx.repo, "diff-tree", "--no-commit-id", "--name-only", "-r", "--root", commit], { timeout: 15000 });
         if (res.code !== 0) throw new Error(firstLine(res.stderr) || `git diff-tree exited ${res.code}`);
         return res.stdout;
       };
-      let sha = own;
-      let via = null;
-      let paths = own ? M.pickReportFiles(await diffNames(own), row.reportName) : [];
-      if (paths.length === 0 && row.reportName) {
-        // A phase that declares `commit: false` has its work committed with a later phase.
-        for (const n of [...idx.commits.keys()].filter((k) => k > row.index).sort((a, b) => a - b)) {
-          const found = M.pickReportFiles(await diffNames(idx.commits.get(n)), row.reportName, true);
-          if (found.length > 0) { sha = idx.commits.get(n); paths = found; via = n; break; }
-        }
-      }
+      const own = idx.commits.get(row.index) ?? null;
+      const { sha, via, paths } = await M.pickReportCommit(idx.commits, row.index, row.reportName, names);
       const done = (reason, files = []) => this.gitReports.set(row.key, { status: "done", at: Date.now(), source: "git", repo: idx.repo, sha, via, files, reason });
       if (paths.length === 0) {
         return done(own === null

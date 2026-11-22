@@ -4,7 +4,7 @@ import { test, expect } from "bun:test";
 import {
   bytesText, buildPhaseRows, classifyFetchError, cleanText, compact, compressTurns, filterCounts, groupTurns, isBlankTurn,
   liveTail, markdownRows, matchesFilter, MAX_REPORT_ROWS, notableEvents, nowSummary, outcomeOf, parseBlob, parsePhaseCommits,
-  pickReportFiles, prepareTurn, prOverall, reassemble, span, splitThink, summarizePr, summarizePrs, utf8Bytes,
+  pickReportCommit, pickReportFiles, prepareTurn, prOverall, reassemble, reportCandidates, span, splitThink, summarizePr, summarizePrs, utf8Bytes,
 } from "../mods/foreman-run/model.js";
 
 const T0 = 1_700_000_000_000;
@@ -457,4 +457,44 @@ test("utf8Bytes counts bytes, not characters", () => {
   expect(utf8Bytes("😀")).toBe(4); // one code point, a surrogate pair in UTF-16
   expect(utf8Bytes("a✓😀")).toBe(8);
   expect(utf8Bytes("é".repeat(1000))).toBe(Buffer.byteLength("é".repeat(1000), "utf8"));
+});
+
+test("reportCandidates: the archive copy is tried for every phase, the default phase file only for a phase with no artifact template", () => {
+  const dir = "/h/.foreman/runs/run-1";
+  expect(reportCandidates("/h", "run-1", 3, "PRD.md")).toEqual([{ source: "archive", path: `${dir}/archive/phase-3.md` }]);
+  expect(reportCandidates("/h", "run-1", 3, null)).toEqual([
+    { source: "archive", path: `${dir}/archive/phase-3.md` },
+    { source: "disk", path: `${dir}/phase-3.md` },
+  ]);
+  expect(reportCandidates("/h", "run-1", 3, undefined).map((c) => c.source)).toEqual(["archive", "disk"]);
+});
+
+test("pickReportCommit: the phase's own commit wins; a later commit is searched only by exact name", async () => {
+  const files = { aaa: "src/x.js\nPLAN.md\n", bbb: "src/z.js\n", ccc: "other/PLAN.md\ndocs/reports/c.md\nsrc/y.js\n" };
+  const asked = [];
+  const namesOf = async (sha) => { asked.push(sha); return files[sha]; };
+  const commits = new Map([[1, "aaa"], [2, "bbb"], [3, "ccc"]]);
+
+  // own commit holds the named report: no later commit is asked
+  expect(await pickReportCommit(commits, 1, "PLAN.md", namesOf)).toEqual({ sha: "aaa", via: null, paths: ["PLAN.md"] });
+  expect(asked).toEqual(["aaa"]);
+
+  // commit: false phase: its own commit lacks the report, the later commits are tried in phase order, strictly by name
+  asked.length = 0;
+  expect(await pickReportCommit(commits, 2, "PLAN.md", namesOf)).toEqual({ sha: "ccc", via: 3, paths: ["other/PLAN.md"] });
+  expect(asked).toEqual(["bbb", "ccc"]);
+
+  // a later commit's docs/reports/ file is not taken for another phase's report (strict): nothing matches NOPE.md
+  const withReports = new Map([[1, "aaa"], [2, "ccc"]]);
+  expect(await pickReportCommit(withReports, 1, "NOPE.md", namesOf)).toEqual({ sha: "aaa", via: null, paths: [] });
+
+  // the phase's own docs/reports/ file is the fallback when it names no file there
+  expect(await pickReportCommit(new Map([[3, "ccc"]]), 3, "NOPE.md", namesOf)).toEqual({ sha: "ccc", via: null, paths: ["docs/reports/c.md"] });
+});
+
+test("pickReportCommit: no commit for the phase and no named report finds nothing; a named report is still searched in later commits", async () => {
+  const namesOf = async (sha) => ({ bbb: "PLAN.md\n" })[sha];
+  expect(await pickReportCommit(new Map([[2, "bbb"]]), 1, null, namesOf)).toEqual({ sha: null, via: null, paths: [] });
+  expect(await pickReportCommit(new Map([[2, "bbb"]]), 1, "PLAN.md", namesOf)).toEqual({ sha: "bbb", via: 2, paths: ["PLAN.md"] });
+  expect(await pickReportCommit(new Map(), 1, "PLAN.md", namesOf)).toEqual({ sha: null, via: null, paths: [] });
 });

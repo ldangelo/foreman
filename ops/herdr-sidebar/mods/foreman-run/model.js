@@ -697,6 +697,32 @@ export function pickReportFiles(names, reportName, strict = false) {
   return paths.filter((p) => /(^|\/)docs\/reports\//.test(p) && /\.(?:md|markdown|txt)$/i.test(p));
 }
 
+// The local files a phase's report may be read from, in the order they are tried. The server's archived copy is keyed
+// by run and phase number whatever the phase's template, so it is a candidate for every phase; the default
+// `phase-<n>.md` is where only a phase with no `artifact:` template wrote its report (a template phase has no file there).
+export function reportCandidates(homeDir, runId, index, reportName) {
+  const dir = `${homeDir}/.foreman/runs/${runId}`;
+  const out = [{ source: "archive", path: `${dir}/archive/phase-${index}.md` }];
+  if (reportName === null || reportName === undefined) out.push({ source: "disk", path: `${dir}/phase-${index}.md` });
+  return out;
+}
+
+// Which git commit holds a phase's report. `commits` maps phase number to the sha of the commit Foreman made for it;
+// `namesOf(sha)` resolves that commit's changed file names (async, asked lazily and in phase order). The phase's own
+// commit wins (with the docs/reports/ fallback); only when it holds nothing and the workflow names a report is a later
+// phase's commit searched, strictly by name: a phase that declares `commit: false` has its work committed with a later
+// phase. Result: {sha, via, paths}; sha is null when the phase has no commit, via the later phase's number or null.
+export async function pickReportCommit(commits, index, reportName, namesOf) {
+  const own = commits.get(index) ?? null;
+  const paths = own ? pickReportFiles(await namesOf(own), reportName) : [];
+  if (paths.length > 0 || !reportName) return { sha: own, via: null, paths };
+  for (const n of [...commits.keys()].filter((k) => k > index).sort((a, b) => a - b)) {
+    const found = pickReportFiles(await namesOf(commits.get(n)), reportName, true);
+    if (found.length > 0) return { sha: commits.get(n), via: n, paths: found };
+  }
+  return { sha: own, via: null, paths: [] };
+}
+
 // Output of `git cat-file -s` then `git show` of one blob: the size on the first line, the (capped) text after it.
 export function parseBlob(out, cap) {
   const s = String(out ?? "");
