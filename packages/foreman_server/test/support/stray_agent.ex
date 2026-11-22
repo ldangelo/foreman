@@ -110,7 +110,8 @@ defmodule ForemanServer.TestSupport.StrayAgent do
   end
 
   @doc "Sends SIGTERM to `pid`, whether or not it is running."
-  def terminate!(pid), do: System.cmd("kill", ["-TERM", Integer.to_string(pid)], stderr_to_stdout: true)
+  def terminate!(pid),
+    do: System.cmd("kill", ["-TERM", Integer.to_string(pid)], stderr_to_stdout: true)
 
   @doc "Kills `pid` with SIGKILL, whether or not it is running."
   def kill!(pid), do: System.cmd("kill", ["-9", Integer.to_string(pid)], stderr_to_stdout: true)
@@ -162,7 +163,10 @@ defmodule ForemanServer.TestSupport.StrayAgent do
     end
   end
 
-  defp await_agent_os_pid!(run_id) do
+  @doc """
+  Waits until the harness reports the OS pid of the agent of harness run `run_id` and returns it.
+  """
+  def await_agent_os_pid!(run_id) do
     await!("the harness to report the agent's pid", fn -> agent_os_pid(run_id) end)
     agent_os_pid(run_id)
   end

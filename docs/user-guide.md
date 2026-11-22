@@ -1098,6 +1098,22 @@ foreman run merge --id <run-id>
   the phase's partial work to the run branch and leaves the run resumable
   (`paused`) rather than terminal — it releases the run's slot and Beads
   lease without reopening the underlying task.
+- A run that stops, whether it failed, was cancelled, flagged stuck, removed or
+  paused, ends every worker Foreman started for it, including the `pi` or
+  `claude` process under it. The agent is cancelled first (as above) and its
+  worker gets 10 s to wind down by itself (it records the cancelled turn's
+  session and usage); a worker still alive after that is stopped through the
+  Overwatch registry, which cancels its harness run and waits up to 15 s for the
+  agent's process to exit. The registry, not `RunControl`, is what a failed run
+  is cleaned up from: the executor drops its `RunControl` entry when it stops, so
+  by the time `RunFailed` lands there can be nothing left to cancel. A worker that
+  will not stop is logged at `error`, naming the run. Foreman also keeps one
+  worker per run: a phase that starts while a worker of its run is still alive
+  waits 2 s for it to exit, then fails with `agent_start_failed`
+  (`{:overwatch_start_failed, {:worker_already_running, "<run-id>"}}`) instead of
+  putting a second agent into the worktree. The automated reviewer still runs on a
+  *failed* run on purpose (`ForemanServer.Review.Analyzer` treats `RunFailed` as a
+  terminal event), so a reviewer's `pi` after a failure is not a leaked worker.
 - `run resume` continues a `paused` run: it re-acquires a slot/lease,
   rehydrates the persisted worktree, and re-runs the interrupted phase from
   its last committed state onward. A resumed phase that produces no *new*

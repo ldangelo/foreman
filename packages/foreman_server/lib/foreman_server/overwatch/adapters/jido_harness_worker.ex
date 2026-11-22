@@ -35,6 +35,10 @@ defmodule ForemanServer.Overwatch.Adapters.JidoHarnessWorker do
        `:result_recipient` (the `RunExecutor` pid). Then exits `:normal` so
        `LaunchWorker` sees the DOWN and exits cleanly. It handles no message
        after that, so no log entry can follow `WorkerExited`.
+    8. If this worker is stopped while its harness run is live (the run ended or
+       was paused, an operator stopped the worker, its launcher died, or the
+       agent task crashed), `terminate/2` cancels the run and waits for the
+       agent's OS process to exit, so no agent outlives its worker.
 
   ## Result normalization
 
@@ -79,6 +83,11 @@ defmodule ForemanServer.Overwatch.Adapters.JidoHarnessWorker do
 
   @impl true
   def init(opts) do
+    # Trapping exits is what makes `terminate/2` run when this worker is shut down (by
+    # `LaunchWorker`, or because its launcher died): `terminate/2` cancels the live harness run,
+    # so the agent's OS process never outlives its worker.
+    Process.flag(:trap_exit, true)
+
     worker_id = Keyword.fetch!(opts, :worker_id)
     run_id = Keyword.fetch!(opts, :run_id)
     provider = Keyword.fetch!(opts, :provider)
@@ -106,14 +115,17 @@ defmodule ForemanServer.Overwatch.Adapters.JidoHarnessWorker do
       # `:drain_logs`.
       log_backlog: [],
       # The live log tail while the harness run is followed: `%{pid: pid, monitor: reference}`.
-      tail: nil
+      tail: nil,
+      # The live harness run this worker owns: set when the agent task reports it (`:on_start`),
+      # cleared once the agent is done. It is what `terminate/2` has to cancel.
+      harness_run_id: nil
     }
 
     {:ok, state}
   end
 
   # `Overwatch.start_phase/2` computes the worker's env map and forwards it
-  # to the adapter as `:env_map` (see `overwatch.ex:124`); every
+  # to the adapter as `:env_map` (see `build_launch_env/2` in `overwatch.ex`); every
   # `FOREMAN_*` export RunExecutor produces in `foreman_env/3` arrives here
   # and nowhere else. Until this hop existed the map was read by nothing:
   # `FOREMAN_ARTIFACT_PATH`, `FOREMAN_PRD_PATH`, `FOREMAN_TRD_PATH`,
@@ -156,9 +168,9 @@ defmodule ForemanServer.Overwatch.Adapters.JidoHarnessWorker do
     # immediately — WorkerStarted is LaunchWorker's responsibility.
     Process.send_after(self(), :heartbeat, state.interval)
 
-    # Spawn the agent in a Task tied to this GenServer's lifetime: `Task.async`
-    # links it and this worker does not trap exits, so either one dies with the
-    # other.
+    # Spawn the agent in a Task tied to this GenServer's lifetime: `Task.async` links it, so this
+    # worker's abnormal exit takes the task with it, and a crashed task reaches this worker as an
+    # `{:EXIT, task, reason}` message (it traps exits; see the `:EXIT` clauses below).
     parent_pid = self()
 
     task =
@@ -190,7 +202,7 @@ defmodule ForemanServer.Overwatch.Adapters.JidoHarnessWorker do
   # The harness run exists: follow it. Sent by the agent task's `:on_start` hook, always ahead of
   # that task's `:agent_done` (one sender, one receiver: order is guaranteed).
   def handle_info({:harness_run_started, harness_run_id}, %{tail: nil} = state) do
-    {:noreply, %{state | tail: start_tail(harness_run_id)}}
+    {:noreply, %{state | harness_run_id: harness_run_id, tail: start_tail(harness_run_id)}}
   end
 
   # One page of log entries from the live tail. Only the current tail is heard. The page joins
@@ -234,7 +246,8 @@ defmodule ForemanServer.Overwatch.Adapters.JidoHarnessWorker do
       send(state.result_recipient, {:worker_result, result})
     end
 
-    {:stop, :normal, state}
+    # The agent is done and its run is over: `terminate/2` has nothing left to cancel.
+    {:stop, :normal, %{state | harness_run_id: nil}}
   end
 
   # The tail ended on its own: the harness run is gone (`:normal`), or reading it failed. The
@@ -256,13 +269,46 @@ defmodule ForemanServer.Overwatch.Adapters.JidoHarnessWorker do
 
   def handle_info({:DOWN, _ref, :process, _pid, :normal}, state) do
     # The agent task exited normally. It sent `:agent_done` first, so that message is handled
-    # ahead of this one. There is no clause for a task that crashed: `Task.async` links it and
-    # this worker does not trap exits, so a crashed task takes the worker down with it, and
-    # `LaunchWorker` relaunches it.
+    # ahead of this one. A task that crashed is not ignored: it is linked and this worker traps
+    # exits, so its crash arrives as the `:EXIT` message below.
     {:noreply, state}
   end
 
+  # The agent task is linked: its crash must still take this worker down, with the same reason,
+  # because that reason is what `LaunchWorker` turns into the relaunch decision. Trapping exits
+  # makes the crash a message, and the catch-all below would swallow it and hang the phase.
+  def handle_info({:EXIT, _pid, :normal}, state), do: {:noreply, state}
+  def handle_info({:EXIT, _pid, reason}, state), do: {:stop, reason, state}
+
   def handle_info(_msg, state), do: {:noreply, state}
+
+  # Whatever ends this worker while its agent still runs (a stop through `LaunchWorker`, a
+  # crashed agent task, a dead launcher) has to end the agent too. The harness run is a process
+  # of its own, linked to nothing here: without this it keeps its OS agent alive, writing into
+  # the run's worktree, after the worker is gone, and a relaunch starts a second one beside it.
+  # `LaunchWorker` and the supervisor budget for this wait (see `LaunchWorker.terminate/2`). A
+  # worker whose agent finished has no run to cancel (`harness_run_id` is nil).
+  @impl true
+  def terminate(_reason, %{harness_run_id: harness_run_id} = state)
+      when is_binary(harness_run_id) do
+    case Driver.stop(harness_run_id) do
+      :ok ->
+        :ok
+
+      {:error, :timeout} ->
+        Logger.error(
+          "JidoHarnessWorker #{state.run_id}: agent #{harness_run_id} was still running when " <>
+            "the stop wait ran out; it may outlive the run",
+          run_id: state.run_id,
+          worker_id: state.worker_id,
+          operation: "worker.stop"
+        )
+    end
+
+    :ok
+  end
+
+  def terminate(_reason, _state), do: :ok
 
   # ------------------------------------------------------------------
   # Internals

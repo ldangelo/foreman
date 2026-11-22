@@ -33,7 +33,13 @@ defmodule ForemanServer.Overwatch.WorkerSupervisor do
 
   use DynamicSupervisor
 
+  require Logger
+
   alias ForemanServer.Overwatch.LaunchWorker
+  alias ForemanServer.Overwatch.StopReport
+
+  # How often `await_run_workers_exit/2` looks at the registry again.
+  @worker_poll_ms 50
 
   def start_link(opts \\ []) do
     case Keyword.get(opts, :name, __MODULE__) do
@@ -86,6 +92,12 @@ defmodule ForemanServer.Overwatch.WorkerSupervisor do
       id: {LaunchWorker, worker_id, run_id},
       start: {LaunchWorker, :start_link, [opts]},
       restart: :transient,
+      # `LaunchWorker.terminate/2` stops the worker it supervises, and that stop
+      # waits for the agent's OS process: the harness escalates SIGINT, SIGTERM,
+      # SIGKILL (15s wait in `Driver.stop/2`), `LaunchWorker` allows the worker
+      # 18s, and this budget has to outlast both. While one child is shutting
+      # down this supervisor serves no other call.
+      shutdown: 20_000,
       type: :worker
     }
 
@@ -162,4 +174,80 @@ defmodule ForemanServer.Overwatch.WorkerSupervisor do
   end
 
   def list_pids_for_run(_), do: []
+
+  @doc """
+  Stop every live worker of `run_id` and report what happened.
+
+  This is the authoritative stop path for a terminal or paused run: the
+  Overwatch registry, not `RunControl`, knows which workers are alive.
+  `RunControl` is an ETS cache the executor clears when the run ends, so
+  `RunControl.cancel_agent/1` can legitimately find no agent to cancel
+  while the worker is still running.
+
+  Each worker is stopped through this supervisor, which removes its child
+  spec (nothing is relaunched) and runs `LaunchWorker.terminate/2`: the worker
+  and the agent it owns go down with it. A worker still alive afterwards is
+  reported in `:unstopped` and logged instead of being folded into a
+  plausible success.
+  """
+  @spec stop_run_workers(String.t()) :: StopReport.t()
+  def stop_run_workers(run_id) when is_binary(run_id) and run_id != "" do
+    pids = live_pids_for_run(run_id)
+    Enum.each(pids, &terminate_worker/1)
+
+    # What is registered and alive now decides, not what each termination
+    # answered: a worker the supervisor restarted meanwhile is a live second
+    # writer and has to show up here.
+    unstopped = live_pids_for_run(run_id)
+
+    if unstopped != [] do
+      Logger.error(
+        "Overwatch: run #{run_id} keeps #{length(unstopped)} live worker(s) after the stop attempt: #{inspect(unstopped)}",
+        run_id: run_id,
+        operation: "worker_supervisor.stop_run_workers"
+      )
+    end
+
+    %StopReport{run_id: run_id, stopped: pids -- unstopped, unstopped: unstopped}
+  end
+
+  defp terminate_worker(pid) do
+    case Process.whereis(__MODULE__) do
+      nil -> :ok
+      supervisor -> DynamicSupervisor.terminate_child(supervisor, pid)
+    end
+  end
+
+  @doc """
+  Wait up to `timeout_ms` for every worker of `run_id` to exit on its own.
+
+  `:ok` as soon as none is alive, `{:error, :timeout}` when one still is at the
+  deadline. Nothing is stopped: this is how a caller gives a worker that is
+  already winding down (a cancelled agent recording its last events) the time
+  to finish before it stops that worker, or starts a second one beside it.
+  """
+  @spec await_run_workers_exit(String.t(), non_neg_integer()) :: :ok | {:error, :timeout}
+  def await_run_workers_exit(run_id, timeout_ms)
+      when is_integer(timeout_ms) and timeout_ms >= 0 do
+    await_workers_exit_until(run_id, System.monotonic_time(:millisecond) + timeout_ms)
+  end
+
+  defp await_workers_exit_until(run_id, deadline) do
+    cond do
+      live_pids_for_run(run_id) == [] ->
+        :ok
+
+      System.monotonic_time(:millisecond) >= deadline ->
+        {:error, :timeout}
+
+      true ->
+        Process.sleep(@worker_poll_ms)
+        await_workers_exit_until(run_id, deadline)
+    end
+  end
+
+  # The registry can still list a worker that has just died, until it has
+  # handled that exit; a dead worker writes nothing, so only live pids count.
+  defp live_pids_for_run(run_id),
+    do: run_id |> list_pids_for_run() |> Enum.filter(&Process.alive?/1)
 end

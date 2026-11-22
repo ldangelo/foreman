@@ -65,6 +65,17 @@ ForemanServer.Overwatch                              (permanent, :one_for_one)
   `WorkerSupervisor.stop_worker/2` is cleanup, not a guard — it is a race,
   and in run-de055c18749db5e9c702d24950268cf9 it lost by 56ms and the leaked
   agent ran 8m42s past `RunFailed`, overwriting the run's phase artifact.
+- A run that stops is cleaned up from the Overwatch registry, not from
+  `RunControl`: the executor's `terminate/2` clears `RunControl`, so a failed
+  run's live worker has nothing left to cancel. `Workflow.Dispatcher` calls
+  `RunControl.cancel_agent/1`, gives the run's workers a wind-down
+  (`@worker_wind_down_ms`) to finish by themselves, then
+  `WorkerSupervisor.stop_run_workers/1` stops what is left, provided the
+  projection still shows the run stopped. Stopping a `LaunchWorker` stops its
+  worker (`LaunchWorker.terminate/2`) and the worker's `terminate/2` cancels its
+  harness run (`Driver.stop/2`), so no agent outlives its worker.
+  `Overwatch.start_phase/2` refuses a second worker for a run that has one alive
+  (`{:worker_already_running, run_id}`).
 
 ## 3. Errors flow one way
 

@@ -46,3 +46,14 @@
   the run's own commits (`base_ref..HEAD`, newest first); no sha is sent when the run
   made no commit.
 - `foreman doctor task_provider` resolves its Kata runner at call time, like the adapter.
+
+### Fixed
+
+- A run that stops (failed, cancelled, flagged stuck, removed or paused) no longer leaves a live
+  Overwatch worker, and the `pi`/`claude` process under it, writing into its worktree.
+  `Workflow.Dispatcher` stops what the Overwatch registry still lists for the run once the
+  worker has had a wind-down to finish by itself (`WorkerSupervisor.stop_run_workers/1`;
+  `RunControl` cannot do it, the executor wipes it when it stops). `LaunchWorker` stops its
+  worker and `JidoHarnessWorker.terminate/2` cancels its harness run (`Driver.stop/2`), so a
+  worker that dies takes its agent with it. `Overwatch.start_phase/2` refuses a second worker
+  for a run that has one alive (`{:worker_already_running, run_id}`).

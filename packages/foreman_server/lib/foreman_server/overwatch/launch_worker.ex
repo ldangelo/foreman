@@ -7,7 +7,9 @@ defmodule ForemanServer.Overwatch.LaunchWorker do
     * emitting the initial `WorkerStarted` event through `WorkerProtocol.emit/2`,
     * activating the spawned worker so its adapter may begin emitting,
     * monitoring the spawned pid so the LaunchWorker terminates when
-      the worker runtime goes down.
+      the worker runtime goes down,
+    * stopping that worker, and through it the agent the worker owns, when the
+      LaunchWorker itself is shut down (`terminate/2`).
 
   ## Two-phase startup (contract)
 
@@ -80,6 +82,11 @@ defmodule ForemanServer.Overwatch.LaunchWorker do
   alias ForemanServer.Overwatch.WorkerProtocol
 
   @default_activation_timeout_ms 5_000
+
+  # How long `terminate/2` lets the worker stop its agent (cancel the harness run, then wait for
+  # the OS process: 15s in `Driver.stop/2`) before it kills the worker. `WorkerSupervisor`'s
+  # child `shutdown` has to outlast this.
+  @worker_stop_timeout_ms 18_000
 
   # ------------------------------------------------------------------
   # Public API
@@ -278,6 +285,36 @@ defmodule ForemanServer.Overwatch.LaunchWorker do
   end
 
   def handle_info(_msg, state), do: {:noreply, state}
+
+  # A launcher that goes down takes its worker with it, and the worker takes the agent it owns
+  # (`JidoHarnessWorker.terminate/2` cancels the harness run and waits for the OS process). That
+  # is what keeps a run stopped through the Overwatch registry
+  # (`WorkerSupervisor.stop_run_workers/1`), or a launcher that died, from leaving a worker
+  # editing the worktree unsupervised.
+  @impl true
+  def terminate(_reason, %{worker_pid: worker_pid} = state) when is_pid(worker_pid) do
+    if Process.alive?(worker_pid) do
+      try do
+        GenServer.stop(worker_pid, :shutdown, @worker_stop_timeout_ms)
+      catch
+        :exit, :timeout ->
+          Logger.error(
+            "LaunchWorker: worker for #{state.worker_id}/#{state.run_id} did not stop within " <>
+              "#{@worker_stop_timeout_ms}ms; killing it, its agent may outlive the run"
+          )
+
+          safe_stop(worker_pid)
+
+        # Already gone (`:noproc`), or it ended with another reason than the one asked for.
+        :exit, _reason ->
+          safe_stop(worker_pid)
+      end
+    end
+
+    :ok
+  end
+
+  def terminate(_reason, _state), do: :ok
 
   defp safe_stop(pid) when is_pid(pid), do: Process.exit(pid, :kill)
   defp safe_stop(_), do: :ok

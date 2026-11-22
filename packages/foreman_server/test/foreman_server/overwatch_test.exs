@@ -325,6 +325,10 @@ defmodule ForemanServer.OverwatchTest do
 
       assert first_launch.metadata.env_map == initial_env
 
+      # A run has one writer at a time, so the next phase launches only once the previous
+      # phase's worker is gone: `Exec.Runners.Overwatch` stops it after its result.
+      :ok = ForemanServer.Overwatch.WorkerSupervisor.stop_worker(first_worker_id, run_id)
+
       assert {:ok, _second_launch} =
                Overwatch.start_phase("phase-#{run_id}-2",
                  run_id: run_id,
