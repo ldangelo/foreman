@@ -80,9 +80,14 @@ git show foreman/foreman-zv8bi/run-59f7dec0c17ee9867d8c48735ac5416d:docs/user-gu
 git show foreman/foreman-qdt14/run-0c30344c74abc80ba7c2b40090d98819:docs/user-guide.md | grep -c behind_origin
 git show foreman/foreman-i3qol/run-d70bafc603ebda52f09c128e358f5b43:docs/user-guide.md | grep -c base_sha
 
-# 3. Nothing merged (expect: both print "no").
+# 3. Nothing merged (expect: all three print "no").
+# c489c0f3 = base_ref_policy (zv8bi), 295155d0 = branch.behind_origin (qdt14),
+# 887b82a7 = base_sha (i3qol) branch tip.
 git merge-base --is-ancestor c489c0f3 HEAD && echo yes || echo no
 git merge-base --is-ancestor c489c0f3 origin/dev && echo yes || echo no
+git merge-base --is-ancestor 295155d0 HEAD && echo yes || echo no
+git merge-base --is-ancestor 295155d0 origin/dev && echo yes || echo no
+git merge-base --is-ancestor 887b82a7 origin/dev && echo yes || echo no
 ```
 
 ## 4. Edits
