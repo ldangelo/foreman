@@ -9,7 +9,14 @@ defmodule ForemanServer.Projects.Recommendations.Facts do
       fixed files (`.git/config`, `.git/HEAD`); arbitrary repo content is never
       read, and no script from the repo is ever executed. External commands run
       by absolute path found on the server's own `PATH` (never the repo dir),
-      from a neutral working directory.
+      from a neutral working directory; the single command that targets the
+      project's own repository is described below.
+    * The one command run against the project's own repository is
+      `git rev-list --count`, a read-only range count fixed in `behind_argv/2`.
+      It never fetches, and `core.fsmonitor`/`extensions.partialclone` are
+      cleared with the pager disabled so a repository's own config cannot make
+      git run a program or reach the network. Any other repo-touching fact stays
+      file-read only.
     * Every external call is bounded by `:probe_timeout_ms` (default 5 000); a
       hanging command yields `:timeout`, never a hang. The whole collection is
       bounded by `:total_timeout_ms`.
