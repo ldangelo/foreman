@@ -1,7 +1,7 @@
 # FIX_REPORT — beads:foreman:foreman-a9e9d (fix workflow, phase 2)
 
 Run `run-6446bf4b0c969d12f787a0801b9879ce` · branch
-`foreman/foreman-a9e9d/run-6446bf4b0c969d12f787a0801b9879ce` · PR #953 · HEAD `c2666e72`
+`foreman/foreman-a9e9d/run-6446bf4b0c969d12f787a0801b9879ce` · no PR yet (none existed at phase 2; still none at phase 4, checked with `gh pr list --head …`) · HEAD `c2666e72` (the plan commit; the branch head when this report was recorded was `7aa7a22e`)
 
 **Changed in this phase: the report file only. No source or test file edited.** Per
 PLAN.md §6 (the plan this phase executes, committed at HEAD), the behaviours the bead asks
@@ -22,13 +22,15 @@ add tests for four other beads' features to a PR whose diff is exactly two files
 | 2 | `## PR body` section verbatim → next level-2 heading | no implementation | `foreman/foreman-2uziy/…` (PR #955, OPEN, does not compile) |
 | 3 | Template headings from a project setting | no implementation | `foreman/foreman-p0b23/…` (unpushed, no PR) |
 | 4 | Absolute paths absent from body | implemented, no test | `foreman/foreman-txkmy/…` (PR #959, OPEN) |
-| 5 | Review section carries link + findings | **implemented AND tested here** | this branch |
+| 5 | Review section carries link + findings | implemented AND tested on `main` | `main` (`phase_pr_body_test.exs`, since #487) |
 
 Target 5 is covered by the 298-line `packages/foreman_server/test/foreman_server/workflow/phase_pr_body_test.exs`
-committed at `6169c09c` on this branch (5 tests: unresolved-findings rendering, declined
+already on `main` (9 tests: unresolved-findings rendering, declined
 critical vs declined minor, `AutoPR`/`PhasePR` section equality across five artifact kinds,
 inert agent-written description, inert hostile path + "N more" line, absent-block
-"review evidence missing"). That is the one part of the requested scope this branch may
+"review evidence missing", nil artifact path, multiple-block/legacy-format, unreadable
+artifact) — added to `main` by #487 (`2fcddeef`, `2026-11-21`), not by this branch.
+That is the one part of the requested scope this branch may
 truthfully claim, and it is already green.
 
 ## 2. Test command actually run, and its result
@@ -103,7 +105,7 @@ The review finding ("this diff adds no tests for the requested behaviour", sever
 dimension tests) is **accurate about this diff** and is **deliberately not fixed here**.
 The correct disposition is a scope decision the plan made and this phase honoured: this
 bead's actual subject (review-evidence completeness in the PR body) is implemented and
-tested at `6169c09c`; the other four items belong to their own branches. Closing the
+already tested on `main`; the other four items belong to their own branches. Closing the
 finding requires the operator action in §5, not an edit on this branch.
 
 ## 5. Follow-ups / operator actions (none is this run's work)

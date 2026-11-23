@@ -7,7 +7,7 @@ exist in this worktree, and three of them already carry their own tests on their
 unmerged branches. Writing the tests here would mean implementing four sibling beads'
 features first — exactly the duplication the per-bead split was created to avoid.
 
-Evidence, all re-verified at HEAD `c209f8b4` (an ancestor of `origin/main`):
+Evidence, all re-verified against the commit this branch was cut from, `c209f8b4` (an ancestor of `origin/main`, not its tip):
 
 | Behaviour | At HEAD | Owner bead / branch | Tests already written there |
 | --- | --- | --- | --- |
