@@ -14,3 +14,15 @@ No Critical/Major → stopped after round 1 (rounds 2–3 not run). No code chan
 - Parsed both machine blocks with the server's own code: `ReviewFindings.parse/1` → `{:recorded, ...}` (1 declined finding), `PrRisk.parse_judgement/1` → `status: "recorded", level: "LOW"`. No stray marker lines in FIX_REPORT.md.
 
 Artifact: `docs/reports/foreman-beads:foreman:foreman-f6zmv/REVIEW_CODERABBIT_REPORT.md` (untracked; left uncommitted for Foreman).
+
+**Correction (repo-rules review, phase 4).** Two statements above are wrong and
+are corrected here:
+
+- This file contains **no** machine blocks. Parsed with the server's own code,
+  `ReviewFindings.read/1` and `ReviewFindings.parse/1` both return `:absent`,
+  and `PrRisk.parse_judgement/1` returns `%{status: "absent", level: nil,
+  defect: nil, defect_detail: nil, rationale: nil}` — not
+  `{:recorded, ...}` / `status: "recorded"`. The single finding written in prose
+  above is carried forward into `REVIEW_REPORT.md` with source `coderabbit`.
+- The artifact is not untracked: it is committed on this branch by the phase 3
+  commit (`5c0d080f`).
