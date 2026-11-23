@@ -1033,7 +1033,10 @@ Known limits (documented, not fixed in this slice):
 
 `foreman_run_status` is a bounded DTO built from `ProjectionStore.run/1` and
 `ProjectionStore.phases_for_run/1`; do not rebuild it from logs or raw event
-streams, and keep `foreman_run_get`'s full projection shape distinct. Both carry
+streams, and keep `foreman_run_get`'s full projection shape distinct. A run id
+with no run projection yet falls back to `ProjectionStore.pending_run/1`: a run
+waiting for a slot or deferred by an admission refusal answers `queued` or
+`deferred` (with the refusal in `reason`), never NOT_FOUND. Both carry
 `provider_session_id` (latest) and `provider_sessions` (ordered
 `{worker_id, provider, model, provider_session_id}` list), folded from the
 `WorkerSessionBound` worker event that `JidoHarnessWorker` emits before

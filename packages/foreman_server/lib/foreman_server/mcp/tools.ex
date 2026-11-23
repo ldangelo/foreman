@@ -32,6 +32,7 @@ defmodule ForemanServer.MCP.Tools do
     @type t :: %__MODULE__{
             run_id: String.t(),
             status: String.t(),
+            reason: String.t() | nil,
             terminal: boolean(),
             project_id: String.t() | nil,
             task_id: String.t() | nil,
@@ -50,6 +51,7 @@ defmodule ForemanServer.MCP.Tools do
     defstruct [
       :run_id,
       :status,
+      :reason,
       :terminal,
       :project_id,
       :task_id,
@@ -909,7 +911,9 @@ defmodule ForemanServer.MCP.Tools do
 
   @schema_foreman_run_status %{
     name: "foreman_run_status",
-    description: "Get a bounded run status DTO from run and phase projections",
+    description:
+      "Get a bounded run status DTO from run and phase projections; a run still " <>
+        "waiting for a slot or deferred by admission reports status queued or deferred",
     inputSchema: %{
       type: "object",
       properties: %{
@@ -1883,7 +1887,7 @@ defmodule ForemanServer.MCP.Tools do
 
     result =
       case ProjectionStore.run(run_id) do
-        nil -> nil
+        nil -> pending_run_status(run_id)
         run -> run_status_dto(run, ProjectionStore.phases_for_run(run_id))
       end
 
@@ -3578,6 +3582,45 @@ defmodule ForemanServer.MCP.Tools do
        code: "INVALID_PARAMS",
        message: "Invalid offset #{inspect(offset)}; expected integer >= 0"
      }}
+  end
+
+  # A run id minted by `task.approve` that has no run projection yet (waiting for a
+  # project run slot, or deferred by an admission refusal) is pending, not missing.
+  # Same honest shape the HTTP read model already serves
+  # (`ForemanServerWeb.RunController.show_pending/2`).
+  # The run can also start between the two projection reads, so re-read it before
+  # answering NOT_FOUND.
+  defp pending_run_status(run_id) do
+    case ProjectionStore.pending_run(run_id) do
+      nil ->
+        case ProjectionStore.run(run_id) do
+          nil -> nil
+          run -> run_status_dto(run, ProjectionStore.phases_for_run(run_id))
+        end
+
+      pending ->
+        pending_run_status_dto(pending)
+    end
+  end
+
+  defp pending_run_status_dto(pending) when is_map(pending) do
+    run_id = Map.get(pending, :run_id)
+    status = Map.get(pending, :status)
+
+    unless is_binary(run_id) and is_binary(status) do
+      raise ArgumentError,
+            "pending_run_status_dto: pending run missing required identity fields " <>
+              "(run_id: #{inspect(run_id)}, status: #{inspect(status)})"
+    end
+
+    %RunStatus{
+      run_id: run_id,
+      status: status,
+      terminal: false,
+      project_id: Map.get(pending, :project_id),
+      task_id: Map.get(pending, :task_id),
+      reason: Map.get(pending, :reason)
+    }
   end
 
   defp run_status_dto(run, phases) when is_map(run) and is_list(phases) do

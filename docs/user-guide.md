@@ -2213,11 +2213,15 @@ The write-gated thread tools are `foreman_thread_stop` and
 
 - `foreman_run_status` returns a bounded status DTO from run and phase
   projections (`run_id`, `status`, `terminal`, `project_id`, `task_id`,
-  `workflow_name`, `current_phase`, timestamps, `failure_reason`, and the
+  `workflow_name`, `current_phase`, timestamps, `failure_reason`, `reason`
+  (the admission refusal that deferred a pending run, else `null`), and the
   provider's own `provider_session_id` / `provider_sessions` once a phase's
   agent has reported one, and cumulative `usage` tokens and provider-reported
   `cost_usd`, `null` where unknown), plus `recovery`: the run's latest
   recovery record, or `null` ([Restart recovery and external effects](#restart-recovery-and-external-effects)).
+  A run that is still waiting for a slot, or deferred by an admission refusal, has
+  no run projection yet: the tool answers `status` `queued` (or `deferred`, with
+  the refusal in `reason`) instead of NOT_FOUND.
   `current_phase` is the phase in progress (else the latest) with `phase_id`,
   `run_id`, `task_id`, `index`, `name`, `status`, `attempt`, timestamps,
   `failure_reason`, `latest_stall` and four recorded facts about its launch:
