@@ -8,5 +8,8 @@
   "cmd-shift-y": "foreman-runs.copy-id",
   "cmd-shift-i": "foreman-runs.copy-bead",
   "cmd-shift-u": "foreman-runs.copy-pr",
+  "cmd-shift-x": "foreman-runs.clear-run",
+  "cmd-shift-k": "foreman-runs.clear-all",
+  "cmd-shift-t": "foreman-runs.restore-cleared",
   "cmd-shift-b": "foreman-runs.toggle-sidebar"
 }

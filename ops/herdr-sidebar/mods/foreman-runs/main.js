@@ -4,7 +4,7 @@
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, ScrollHandle } from "gpui-base";
 import { theme, checking, run, focused, nextCommand, notify, keys, layout, shared, setShared, exec, window } from "herdr";
-import { info, isActive, ago, clock, foreman, api, beadId, workflowName, prUrl, openUrlArgv } from "./common.js";
+import { info, isActive, ago, clock, foreman, api, beadId, workflowName, prUrl, openUrlArgv, isClearable, hideCleared, countCleared, clearRuns, pruneCleared, parseCleared } from "./common.js";
 
 const POLL_MS = 10000;
 const LIMIT = 40;
@@ -55,6 +55,9 @@ const HINTS = [
   ["copy-id", "copy id"],
   ["copy-bead", "copy bead"],
   ["copy-pr", "copy PR"],
+  ["clear-run", "clear"],
+  ["clear-all", "clear all"],
+  ["restore-cleared", "restore"],
   ["toggle-failed", "failed only"],
   ["refresh", "reload"],
   ["toggle-all", "fold projects"],
@@ -82,6 +85,9 @@ export default class ForemanRuns extends View {
     // Collapsed headers, kept across restarts (localStorage is a file; per mod copy). Keys are
     // project ids and "<project>::<status>" for a status group inside a project.
     try { this.collapsed = new Set(JSON.parse(localStorage.getItem("collapsed") ?? "[]")); } catch { this.collapsed = new Set(); }
+    // Runs cleared from the panel (run id -> the status it had when cleared): view state only, kept across restarts.
+    try { this.cleared = parseCleared(localStorage.getItem("cleared")); } catch { this.cleared = {}; }
+    this.allRuns = []; // the listing as the server gave it, cleared runs included (this.runs is it without them)
     this.error = null;
     this.loaded = false;
     this.busy = false;
@@ -112,6 +118,9 @@ export default class ForemanRuns extends View {
           else if (command === "open-pr") this.openPr();
           else if (command === "copy-id") this.copyRunId(cx);
           else if (command === "copy-bead") this.copyBead(cx);
+          else if (command === "clear-run") this.clearSelected(cx);
+          else if (command === "clear-all") this.clearAll(cx);
+          else if (command === "restore-cleared") this.restoreCleared(cx);
           else if (command === "copy-pr") this.copyPrUrl(cx);
           else if (command === "toggle-sidebar") this.toggleSidebar();
           // A bare "focus" is the app's own message (e.g. a popup closed over this copy): keep
@@ -199,7 +208,7 @@ export default class ForemanRuns extends View {
       try {
         const body = await foreman(["run", "list", "-limit", String(LIMIT)]);
         if (!Array.isArray(body?.runs)) throw new Error("unexpected output from foreman run list");
-        this.runs = body.runs;
+        this.setRuns(body.runs);
         this.error = null;
         this.updatedAt = Date.now();
         await this.loadProjects();
@@ -221,6 +230,65 @@ export default class ForemanRuns extends View {
       // The write goes to a background thread; flush so a quit right after a toggle keeps it.
       localStorage.flush().catch(() => {});
     } catch { /* in-memory state still toggles */ }
+  }
+
+  saveCleared() {
+    try {
+      localStorage.setItem("cleared", JSON.stringify(this.cleared));
+      localStorage.flush().catch(() => {});
+    } catch { /* the clearing still applies until the panel restarts */ }
+  }
+
+  // The runs the panel works on: the listing without the cleared ones. Counts, groups, the failed filter and the
+  // keyboard cursor all read this.runs, so a cleared run is simply not there.
+  setRuns(all) {
+    this.allRuns = all;
+    const kept = pruneCleared(this.cleared, all);
+    if (Object.keys(kept).length !== Object.keys(this.cleared).length) {
+      this.cleared = kept;
+      this.saveCleared();
+    }
+    this.runs = hideCleared(all, this.cleared);
+  }
+
+  // Hides these runs (the failed, stuck or cancelled ones among them) from the panel. Nothing is deleted or changed
+  // on the server; "↺ N cleared" under the list brings them back.
+  clear(rs, cx) {
+    const n = rs.filter(isClearable).length;
+    if (n === 0) return notify({ title: "Foreman", body: "Only failed, stuck or cancelled runs can be cleared.", level: "info" });
+    this.cleared = clearRuns(this.cleared, rs);
+    this.saveCleared();
+    this.runs = hideCleared(this.allRuns, this.cleared);
+    if (this.cursor && !this.runs.some((r) => r.run_id === this.cursor)) this.cursor = null;
+    notify({ title: "Foreman", body: `Cleared ${n} run${n === 1 ? "" : "s"} from the panel (nothing was deleted); ↺ under the list restores them.`, level: "success", timeout: 3000 });
+    cx.notify();
+  }
+
+  // Clears the selected run and moves the selection to its neighbour, so the keyboard can clear a list in a row.
+  clearSelected(cx) {
+    const shown = this.visibleRuns();
+    const at = shown.findIndex((x) => x.run_id === this.cursor);
+    if (at < 0) return notify({ title: "Foreman", body: "Select a run first (focus the panel, then ↑/↓).", level: "info" });
+    if (!isClearable(shown[at])) return this.clear([shown[at]], cx);
+    this.clear([shown[at]], cx);
+    const rest = this.visibleRuns();
+    this.cursor = rest.length === 0 ? null : rest[Math.min(at, rest.length - 1)].run_id;
+    cx.notify();
+  }
+
+  // Clears every failed, stuck or cancelled run the panel shows (with the failed filter on, the failed ones).
+  clearAll(cx) {
+    this.clear(this.shownRuns().filter(isClearable), cx);
+  }
+
+  restoreCleared(cx) {
+    const n = countCleared(this.allRuns, this.cleared);
+    if (n === 0) return notify({ title: "Foreman", body: "No cleared runs to restore.", level: "info" });
+    this.cleared = {};
+    this.saveCleared();
+    this.runs = hideCleared(this.allRuns, this.cleared);
+    notify({ title: "Foreman", body: `Restored ${n} cleared run${n === 1 ? "" : "s"}.`, level: "success", timeout: 2000 });
+    cx.notify();
   }
 
   toggle(id, cx) {
@@ -381,6 +449,7 @@ export default class ForemanRuns extends View {
     else if (e.key === "down") this.moveCursor(1, cx);
     else if (e.key === "up") this.moveCursor(-1, cx);
     else if (e.key === "enter") this.openCursor(cx);
+    else if (e.key === "backspace" || e.key === "delete") this.clearSelected(cx);
     else return;
     cx.stop_propagation();
   }
@@ -515,13 +584,28 @@ export default class ForemanRuns extends View {
         .when(rest, (el) => el.child(div().truncate().text_size(11).text_color(t.dim).child(rest)));
     };
 
+    // A small button that clears runs. The click is stopped here so it does not also open (or fold) what it sits in.
+    const clearButton = (id, label, runs) => div().id(id).px(4).rounded(3).text_size(11).text_color(t.dim).cursor_pointer().hover((s) => s.bg(t.hover))
+      .on_click((_e, cx) => { cx.stop_propagation(); this.clear(runs, cx); }).child(label);
+
+    // Under the list: clear what is shown (failed, stuck, cancelled) and bring back what was cleared.
+    const clearable = this.shownRuns().filter(isClearable);
+    const clearedN = countCleared(this.allRuns, this.cleared);
+    const bar = this.error || (clearable.length === 0 && clearedN === 0) ? null
+      : h_flex().px(12).py(3).gap(10).flex_wrap().items_center().border_t(1).border_color(t.border)
+        .when(clearable.length > 0, (el) => el.child(div().id("foreman-clear-all").px(4).rounded(3).cursor_pointer().text_size(10.5).text_color(t.dim)
+          .hover((s) => s.bg(t.hover)).on_click((_e, cx) => this.clearAll(cx)).child(`✕ clear ${clearable.length}`)))
+        .when(clearedN > 0, (el) => el.child(div().id("foreman-restore").px(4).rounded(3).cursor_pointer().text_size(10.5).text_color(t.dim)
+          .hover((s) => s.bg(t.hover)).on_click((_e, cx) => this.restoreCleared(cx)).child(`↺ ${clearedN} cleared`)));
+
     const row = (r) => {
       return v_flex().id(`run-${r.run_id}`).pl(38).pr(12).py(4).gap(1).cursor_pointer().hover((s) => s.bg(t.hover))
         .when(r.run_id === this.cursor, (el) => el.bg(t.selected))
         .on_click(() => this.open(r))
         .child(h_flex().gap(8).items_center()
           .child(div().flex_1().truncate().text_size(12.5).text_color(t.foreground).child(workflowName(r)))
-          .child(div().text_size(11).text_color(t.dim).child(ago(r.last_event_at_ms))))
+          .child(div().text_size(11).text_color(t.dim).child(ago(r.last_event_at_ms)))
+          .when(isClearable(r), (el) => el.child(clearButton(`clear-${r.run_id}`, "✕", [r]))))
         .child(idLine(r, r.run_id, r.task_id ?? r.run_id, ""));
     };
 
@@ -535,6 +619,7 @@ export default class ForemanRuns extends View {
         .child(div().w(10).text_size(10).text_color(t.dim).child(closed ? "▸" : "▾"))
         .child(div().size(7).rounded(4).bg(t[st.color] ?? t.dim))
         .child(div().flex_1().truncate().text_size(11.5).text_color(t[st.color] ?? t.dim).child(st.label))
+        .when(isClearable({ status }), (el) => el.child(clearButton(`clear-${key}`, "clear", rs)))
         .child(div().text_size(11).text_color(t.dim).child(`${rs.length}`));
     };
 
@@ -625,6 +710,7 @@ export default class ForemanRuns extends View {
       .when(!this.error && this.queueError, (el) => el.child(note(`Queue unavailable: ${this.queueError}`, t.dim)))
       .child(v_flex().id("foreman-runs-scroll").flex_1().min_h(0).overflow_y_scrollbar().track_scroll(this.scroll)
         .children(elements))
+      .when(bar, (el) => el.child(bar))
       .when(!narrow(), (el) => el.child(footer));
   }
 }

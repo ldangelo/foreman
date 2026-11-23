@@ -130,6 +130,9 @@ not shown; `GET /api/projects/<id>/usage` reports it as `limits.deferred_tasks`.
 | Copy the selected run's id | | `⇧⌘Y` |
 | Copy the selected run's bead id (`foreman-jzycy` of `beads:foreman:foreman-jzycy`) | click the bead id under a run or a queued item | `⇧⌘I` |
 | Copy the selected run's PR URL | | `⇧⌘U` |
+| Clear a failed, stuck or cancelled run from the panel | click the `✕` on its row | `⇧⌘X` (or `⌫` / `Del` while navigating); the selection moves to the next run |
+| Clear every failed, stuck and cancelled run the panel shows | click `clear` on a status header (that group), or `✕ clear N` under the list (all) | `⇧⌘K` |
+| Bring cleared runs back | click `↺ N cleared` under the list | `⇧⌘T` |
 | Switch the sidebar between the full panel and a compact rail | | `⇧⌘B` |
 
 On macOS the shortcuts are `cmd-shift-<letter>`; the footer under the list shows
@@ -137,6 +140,17 @@ whichever chords are actually bound in your `keys.json`. Collapsed groups are
 remembered across restarts. While the panel holds the keyboard (after `⇧⌘J` or
 turning the filter on) typing goes to the panel, not your terminal; `Esc`
 hands it back to the pane that had it.
+
+**Clearing runs.** Clearing a failed, stuck or cancelled run only hides it from this
+panel. Nothing is deleted or changed: the run, its events, its files and its pull
+request are exactly as before, `foreman run get` and the run-detail tab still show
+them, and the counts in the header and the `failed` filter simply stop counting it.
+`↺ N cleared` under the list shows how many are hidden and brings all of them back.
+A cleared run comes back by itself when its status changes (it is retried or
+resumed, or a stuck run turns failed), since that is news again. The cleared list is
+kept across restarts in the panel's own local storage (the same place as collapsed
+groups), per machine; entries for runs that have left the list of recent runs are
+dropped. A completed run cannot be cleared.
 
 **The rail.** When the sidebar is narrower than 160 px (the shipped chrome's fold
 button, or `⇧⌘B`) the panel draws a compact rail: a failed / active summary and
