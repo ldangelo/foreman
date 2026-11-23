@@ -19,6 +19,17 @@
   loudly (`{:finalize_run_failed, ...}`) instead of killing the executor with the run
   `in_progress`. The slowness of the lease actor itself is not addressed here.
 
+- **A run whose `run.fail` is rejected with `{:not_found, :run, _}` no longer retries forever
+  and keeps its run slot.** The run aggregate does not exist, so `run.fail` can never be
+  accepted and there is no stream to write `RunFailed` to. `RunExecutor`'s terminal-dispatch
+  retry treated the rejection like a transport error and retried it every 60 s with no ceiling,
+  so the executor never stopped and, with no `RunFailed` for the Dispatcher to release it from,
+  the run kept its slot. The retry now gives up on that rejection at its third attempt: it logs
+  one error, releases the run's slot itself (`RunSlots.release_command/3`) and the executor
+  stops. Every other rejection keeps the fast-then-slow retry, and `{:run_terminal, _}` still
+  stops at once. No terminal event is written, so the run still reads non-terminal in the
+  projection; why its aggregate was missing is not addressed here (foreman-j9sf8).
+
 ### Added
 
 - **Kata task provider.** `ForemanServer.TaskProviders.KataAdapter` implements the

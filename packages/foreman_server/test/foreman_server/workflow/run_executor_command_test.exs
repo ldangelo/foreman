@@ -1773,6 +1773,130 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
     assert failed_run.status == "failed"
   end
 
+  test "a run.fail that is rejected with not_found stops the executor and releases the slot" do
+    # `{:not_found, :run, id}` means the run aggregate does not exist
+    # (`Aggregates.Run.require_exists/2`): `run.fail` can never be accepted, so
+    # there is no `RunFailed` for the Dispatcher to release the run's slot from,
+    # and waiting does not create the aggregate. The terminal-dispatch helper
+    # used to retry that rejection forever (a 60 s slow loop with no ceiling),
+    # leaving the executor alive and the slot held (foreman-j9sf8). It now
+    # gives up after a few attempts: it logs an error, releases the slot itself
+    # and stops. Every other rejection keeps the fast-then-slow retry (the test
+    # above), and `{:run_terminal, _}` still stops at once.
+    #
+    # Same setup as the test above, except that EVERY `run.fail` dispatch is
+    # answered `not_found`, so the injection never falls through to the real
+    # aggregate.
+    expect_schema_boot_fetches()
+    start_supervised!(JsonSchemaCache)
+
+    test_pid = self()
+    project_id = unique_id("project")
+    task_id = unique_id("task")
+
+    run_id =
+      "run-" <> Base.encode16(:crypto.hash(:sha256, "task-#{task_id}-approve"), case: :lower)
+
+    script_key = unique_id("script")
+    database_path = unique_database_path(script_key)
+    artifact_dir = Path.join(System.tmp_dir!(), unique_id("artifacts"))
+
+    Application.put_env(
+      :foreman_server,
+      :run_executor_test_dispatch_attempt_count,
+      0
+    )
+
+    Application.put_env(
+      :foreman_server,
+      :run_executor_test_dispatch_failure,
+      fn attempt_count ->
+        send(test_pid, {:dispatch_injection_attempt, attempt_count})
+        {:error, {:not_found, :run, run_id}}
+      end
+    )
+
+    on_exit(fn ->
+      Application.delete_env(:foreman_server, :run_executor_test_dispatch_failure)
+      Application.delete_env(:foreman_server, :run_executor_test_dispatch_attempt_count)
+    end)
+
+    workflow_snapshot = %{
+      run_id: run_id,
+      workflow_name: "implement-trd-beads",
+      workflow_digest: "test-digest",
+      phases: [
+        %{
+          name: :will_never_run,
+          action: :bash,
+          command: "echo hello",
+          required_file: nil,
+          index: 1,
+          phase_id: Identity.phase_id(run_id, 1),
+          artifact_template: %{
+            path: Path.join([artifact_dir, "{run_id}-{task_id}-never.md"])
+          },
+          context: %{"script_key" => script_key}
+        }
+      ]
+    }
+
+    LifecycleStore.put(script_key, %{test_pid: test_pid})
+
+    seed_feature_project_task_and_run!(
+      project_id,
+      task_id,
+      run_id,
+      workflow_snapshot,
+      database_path
+    )
+
+    # `RunAdmission.start/2` took the run's slot. Without this the "slot
+    # released" assertion below could not fail.
+    assert %{running: [^run_id]} = ProjectionStore.queue_status(project_id)
+
+    expect(BrRunnerMock, :cmd, 1, fn {:update, %{flags: ["--claim", ^task_id]}}, _cfg, opts ->
+      send(test_pid, {:runner_cmd, :claim})
+      assert opts == [timeout_ms: 30_000]
+      claim_payload_json(task_id)
+    end)
+
+    task = ProjectionStore.task_projection(task_id)
+
+    run_pid =
+      start_supervised!(%{
+        id: {RunExecutor, run_id},
+        start: {RunExecutor, :start_link, [run_id, task]},
+        restart: :temporary,
+        shutdown: 5_000,
+        type: :worker
+      })
+
+    assert is_pid(run_pid)
+
+    # One dispatch from `emit_phase_failure` plus the helper's three bounded
+    # attempts; there is no fifth.
+    assert_receive {:dispatch_injection_attempt, 1}, @poll_timeout_ms
+    assert_receive {:dispatch_injection_attempt, 2}, @poll_timeout_ms
+    assert_receive {:dispatch_injection_attempt, 3}, @poll_timeout_ms
+    assert_receive {:dispatch_injection_attempt, 4}, @poll_timeout_ms
+    refute_receive {:dispatch_injection_attempt, 5}, 1_500
+
+    poll_until(
+      fn -> if Process.alive?(run_pid), do: {:error, :still_alive}, else: {:ok, :exited} end,
+      "executor exit"
+    )
+
+    {:ok, _} =
+      poll_until(
+        fn ->
+          %{running: running} = ProjectionStore.queue_status(project_id)
+          if run_id in running, do: {:error, running}, else: {:ok, :released}
+        end,
+        "run slot released"
+      )
+  end
+
   ### Setup helpers
 
   defp stop_schema_cache do
