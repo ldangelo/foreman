@@ -11,3 +11,11 @@ Phase complete.
 Docs gate: only `docs/user-guide.md` needed an edit; `CLAUDE.md`, `README.md`, `docs/cli-reference.md` none — no route, CLI verb, MCP tool, env var or config key changed.
 
 Remaining, not mine to decide: the run's actual task (PR title/body generation) is still unimplemented — phase 1 never produced a plan. Branch work left uncommitted for Foreman; kata `eaf5` opened and closed with the test as evidence.
+
+<!-- FOREMAN_REVIEW_FINDINGS_START -->
+{"schema": "foreman.review_findings/1", "reviewed": true, "findings": [{"severity": "major", "path": "packages/foreman_server/priv/defaults/workflows/fix.yaml", "line": 35, "description": "The bundled fix workflow ran the non-existent command \"/enseble:merge-pr --foreman\", a typo of the ensemble namespace, in a phase that also dropped the plan and review phases; restored main's prompt-driven fix workflow with its plan, fix, coderabbit-review and repo-rules-review phases.", "disposition": "fixed", "source": "coderabbit"}, {"severity": "major", "path": "packages/foreman_server/priv/defaults/workflows/prompts/fix.md", "line": 22, "description": "The bundled fix prompt tells the agent to run the plan's failing check before the new regression test exists; declined as pre-existing upstream main content and outside this run's task scope.", "disposition": "declined", "source": "coderabbit"}]}
+<!-- FOREMAN_REVIEW_FINDINGS_END -->
+
+<!-- FOREMAN_RISK_JUDGEMENT_START -->
+{"schema": "foreman.risk_judgement/1", "level": "MEDIUM", "rationale": "The phase's only code change restores upstream main's prompt-driven bundled fix workflow (plus its two prompts, the matching test expectations and the user-guide paragraph documenting the two model pins), so the branch no longer diverges from main on bundled workflow content and the repository's own workflow suite passes 1564/1564. The residual risk is that one major CodeRabbit finding on upstream's bundled fix.md prompt was declined as pre-existing and remains unresolved, and the run's actual PR title/body task was never implemented because phase 1 blocked on a missing PLAN.md."}
+<!-- FOREMAN_RISK_JUDGEMENT_END -->
