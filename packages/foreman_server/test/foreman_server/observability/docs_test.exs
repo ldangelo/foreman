@@ -21,7 +21,8 @@ defmodule ForemanServer.Observability.DocsTest do
     "README.md",
     "docs/user-guide.md",
     "docs/cli-reference.md",
-    "CLAUDE.md"
+    # CLAUDE.md is an index; the SigNoz section body lives in this lessons file.
+    "docs/lessons/run-slots-logs-and-signoz.md"
   ]
 
   test "operator docs list SigNoz env vars, retention, and Langfuse boundary" do

@@ -14,16 +14,16 @@ service in `packages/foreman_server`. This repository contains:
 | `docs/architecture/`, `docs/standards/`, `docs/guides/` | Architectural context, the project constitution, and step-by-step operator/developer guides. |
 | `JIDO_FORKS.md` | Pinned Jido fork manifest — single source of truth for which SHA each Jido dependency references in `packages/foreman_server/mix.exs`. |
 | `AGENTS.md` | Agent-context contract for coding subagents (read-only here). |
-| `CLAUDE.md` | Durable developer architecture conventions (start here when modifying the runtime). |
+| `CLAUDE.md` | Index of the durable developer architecture conventions; each section links to its full text in `docs/lessons/` (start here when modifying the runtime). |
 
 ## Subsystem documentation
 
 | Slice | Doc |
 |---|---|
-| `foreman_server` agent runtime (TRD-2026-6af02293) | [`CLAUDE.md`](./CLAUDE.md) §1–§10 (developer conventions), [`docs/user-guide.md`](./docs/user-guide.md) (operator config & adapter extension). |
+| `foreman_server` agent runtime (TRD-2026-6af02293) | [`CLAUDE.md`](./CLAUDE.md) §1–§10 (developer conventions, full text in [`docs/lessons/agent-runtime-conventions.md`](./docs/lessons/agent-runtime-conventions.md)), [`docs/user-guide.md`](./docs/user-guide.md) (operator config & adapter extension). |
 | Jido migration (TRD-2026-4212be7e) | `JIDO_FORKS.md` (fork inventory), `docs/guides/adding-a-jido-harness-provider.md` (provider extension), and per-PR notes in `docs/TRD/`. |
 | Claude Projects (epics E0-E16) | [`docs/guides/testing-claude-projects.md`](./docs/guides/testing-claude-projects.md) (what to try, in what order, known issues), [`docs/acceptance/README.md`](./docs/acceptance/README.md) (live evidence). |
-| Go/Elixir CQRS parity (TRD-2026-96872fc5) | per-PR notes in `docs/TRD/`; the `Workflow.Catalog` GenServer (CLAUDE.md §11) owns every manifest and prompt at runtime, hot-reloads on a 2 s poll, and auto-installs bundled templates when `~/.foreman/workflows` (or the `config :foreman_server, :workflow_root` override) has no `*.yaml`. |
+| Go/Elixir CQRS parity (TRD-2026-96872fc5) | per-PR notes in `docs/TRD/`; the `Workflow.Catalog` GenServer (CLAUDE.md §11, [`docs/lessons/workflow-catalog-and-worktree-contract.md`](./docs/lessons/workflow-catalog-and-worktree-contract.md)) owns every manifest and prompt at runtime, hot-reloads on a 2 s poll, and auto-installs bundled templates when `~/.foreman/workflows` (or the `config :foreman_server, :workflow_root` override) has no `*.yaml`. |
 
 ## Projects workflow
 
@@ -167,7 +167,9 @@ check (`ForemanServer.CLI.DoctorTaskProvider`) is not yet wired to the
 Go CLI — `foreman doctor task_provider` does not run today; see §10
 for the current invocation path. See
 [`docs/cli-reference.md`](./docs/cli-reference.md) for the CLI surface
-and [`CLAUDE.md`](./CLAUDE.md) §11–§13 for the architectural
+and [`CLAUDE.md`](./CLAUDE.md) §11–§13 (full text in
+[`docs/lessons/workflow-catalog-and-worktree-contract.md`](./docs/lessons/workflow-catalog-and-worktree-contract.md) and
+[`docs/lessons/durable-execution-and-dashboard.md`](./docs/lessons/durable-execution-and-dashboard.md)) for the architectural
 invariants.
 
 ## Kata task provider
@@ -247,7 +249,7 @@ register separate lease streams.
   Foreman-dispatched runs from racing on the same DB, not to mediate
   file-system access against unrelated processes.
 
-See [`CLAUDE.md`](./CLAUDE.md) §15 for the architectural invariants.
+See [`CLAUDE.md`](./CLAUDE.md) §15 (full text in [`docs/lessons/beads-sync-and-lease.md`](./docs/lessons/beads-sync-and-lease.md)) for the architectural invariants.
 
 ## Task-provider boundary overview
 
@@ -304,7 +306,7 @@ JHA-T002 / JCR-T001), which delegates to the vendored
 dispatcher reached through one of them, not a provider). Readiness is
 checked on every `execute/3` call, and workflow-phase `models.default`
 values are forwarded to the selected provider as the run model (see
-`CLAUDE.md` §1–§9).
+`CLAUDE.md` §1–§9, full text in `docs/lessons/agent-runtime-conventions.md`).
 
 ```elixir
 defmodule MyApp.ClaudeAdapter do

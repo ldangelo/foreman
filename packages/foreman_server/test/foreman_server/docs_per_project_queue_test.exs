@@ -9,7 +9,19 @@ defmodule ForemanServer.DocsPerProjectQueueTest do
   use ExUnit.Case, async: true
 
   @root Path.expand("../../../..", __DIR__)
-  @documents ["docs/user-guide.md", "docs/cli-reference.md", "README.md", "CLAUDE.md"]
+  # CLAUDE.md is an index; the architecture text it indexes lives in docs/lessons/.
+  @documents [
+    "docs/user-guide.md",
+    "docs/cli-reference.md",
+    "README.md",
+    "CLAUDE.md",
+    "docs/lessons/agent-runtime-conventions.md",
+    "docs/lessons/workflow-catalog-and-worktree-contract.md",
+    "docs/lessons/durable-execution-and-dashboard.md",
+    "docs/lessons/beads-sync-and-lease.md",
+    "docs/lessons/run-slots-logs-and-signoz.md",
+    "docs/lessons/claude-projects-invariants.md"
+  ]
   @retired ["global run slot", "global run-slot capacity", "capped by the global"]
 
   defp read!(rel), do: File.read!(Path.join(@root, rel))
@@ -24,7 +36,7 @@ defmodule ForemanServer.DocsPerProjectQueueTest do
   end
 
   test "the architecture notes describe per-project run slots (AC-015-1)" do
-    claude = read!("CLAUDE.md")
+    claude = read!("docs/lessons/run-slots-logs-and-signoz.md")
     assert claude =~ "Per-project run slots"
     assert claude =~ "run_slots:<project_id>"
   end
