@@ -128,6 +128,7 @@ not shown; `GET /api/projects/<id>/usage` reports it as `limits.deferred_tasks`.
 | Move the keyboard to the panel and select a run | | `⇧⌘J`, then `↑` / `↓`; `Esc` leaves |
 | Open the selected run's pull request in the browser | | `⇧⌘O` |
 | Copy the selected run's id | | `⇧⌘Y` |
+| Copy the selected run's bead id (`foreman-jzycy` of `beads:foreman:foreman-jzycy`) | click the bead id under a run or a queued item | `⇧⌘I` |
 | Copy the selected run's PR URL | | `⇧⌘U` |
 | Switch the sidebar between the full panel and a compact rail | | `⇧⌘B` |
 
@@ -222,7 +223,7 @@ shown with its reason and never turned into "nothing there"; a server that lacks
 that. All text that came from an agent or from GitHub is drawn as plain text: nothing in it is
 interpreted, linked or loaded.
 
-`PR ↗` opens the pull request, `raw` opens `foreman run get`, the id line copies the run id.
+`PR ↗` opens the pull request, `raw` opens `foreman run get`, the id line copies the run id. A run for a bead shows the bead id as a chip beside the workflow name (on every tab, Activity included): click it to copy the bead id. A run that is not for a bead (`coord-…`, `adhoc-…`) has no chip.
 
 Open it from the panel, or directly:
 `herdr-app do tab.new '{"name":"run","mod":"foreman-run","props":{"run_id":"run-…","tab":"phases","phase":"fix"}}'`

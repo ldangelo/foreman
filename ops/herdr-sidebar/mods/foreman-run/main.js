@@ -5,7 +5,7 @@
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, ScrollHandle } from "gpui-base";
 import { theme, checking, run, exec, home, notify, readTextFile, settings, props as tabProps } from "herdr";
-import { info, clock, api, foreman, foremanArgv, prUrl, workflowName, openUrlArgv } from "./common.js";
+import { info, clock, api, foreman, foremanArgv, prUrl, beadId, workflowName, openUrlArgv } from "./common.js";
 import * as M from "./model.js";
 
 const LIVE_POLL_MS = 3000; // while the run is active
@@ -651,12 +651,14 @@ export default class ForemanRun extends View {
       !vm.finished && r?.provider_sessions?.length && r.provider_sessions[r.provider_sessions.length - 1].model,
     ].filter(Boolean).join("   ·   ");
     const where = [this.runId, r?.project_id, this.thread?.branch].filter(Boolean).join("  ·  ");
+    const bead = r ? beadId(r) : null;
 
     const top = v_flex().gap(2).px(12).pt(10).pb(4)
       .child(h_flex().gap(8).items_center()
         .child(div().size(8).rounded(4).bg(col(th, st.color)))
         .child(div().text_size(13).font_semibold().text_color(col(th, st.color)).child(st.label))
         .child(div().text_size(13).font_semibold().text_color(th.foreground).child(r ? workflowName(r) : "run"))
+        .when(bead, (el) => el.child(pill("bead", bead, (_e, cx) => this.copy(bead, `bead id ${bead}`, cx))))
         .child(div().flex_1().truncate().text_size(12).text_color(th.muted).child(this.thread?.title ?? r?.task_id ?? ""))
         .when(r && prUrl(r), (el) => el.child(pill("pr", "PR ↗", () => this.openPr())))
         .child(pill("raw", "raw", () => this.openRaw()))
