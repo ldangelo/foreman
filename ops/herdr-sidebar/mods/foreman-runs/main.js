@@ -105,6 +105,10 @@ export default class ForemanRuns extends View {
     this.queue = { capacity: null, running: 0, entries: [] }; // see buildQueue()
     this.queueAt = 0; // ms of the last queue read (the poll reads it every QUEUE_EVERY_MS)
     this.queueError = null; // the last queue read failed: the runs still show, the queue says why it is missing
+    this.projectIdList = []; // registered project ids (see projectIds())
+    this.projectIdsAt = 0;
+    this.projectIdsError = null;
+    this.runsNote = null; // some run list could not be read: the panel may be missing runs, and says why
     cx.timer.every(POLL_MS, (cx) => this.refresh(cx));
     this.refresh(cx);
     // Key commands from keys.json ("<mod>.<command>"): "foreman-runs.toggle-failed" flips the
@@ -203,6 +207,46 @@ export default class ForemanRuns extends View {
     }
   }
 
+  // The runs to show: the LIMIT most recent overall plus the LIMIT most recent of each registered project. The overall
+  // list alone is crowded out by the busiest project: a quiet project's runs older than the newest LIMIT across every
+  // project never reached the panel (ensemble showed 3 of its 50 runs). A list that cannot be read is named in
+  // `runsNote`, so a partial panel is never presented as the whole picture.
+  async loadRuns() {
+    const overall = await foreman(["run", "list", "-limit", String(LIMIT)]);
+    if (!Array.isArray(overall?.runs)) throw new Error("unexpected output from foreman run list");
+    const byId = new Map(overall.runs.map((r) => [r.run_id, r]));
+    const problems = [];
+    await Promise.all((await this.projectIds()).map(async (id) => {
+      try {
+        const body = await foreman(["run", "list", "--project-id", id, "-limit", String(LIMIT)]);
+        if (!Array.isArray(body?.runs)) throw new Error("unexpected output from foreman run list");
+        for (const r of body.runs) byId.set(r.run_id, r);
+      } catch (e) {
+        problems.push(`${id}: ${String(e?.message ?? e).split("\n")[0]}`);
+      }
+    }));
+    if (this.projectIdsError) problems.push(`project list: ${this.projectIdsError}`);
+    this.runsNote = problems.length > 0 ? problems[0] : null;
+    return [...byId.values()];
+  }
+
+  // The registered projects' ids (it also fills the names), asked at most once a minute while it works; the last good
+  // list stands when the ask fails, and the failure is kept for loadRuns to report.
+  async projectIds() {
+    if (this.projectIdList.length > 0 && Date.now() - this.projectIdsAt < PROJECT_RETRY_MS) return this.projectIdList;
+    this.projectIdsAt = Date.now();
+    try {
+      const body = await foreman(["project", "list", "--format=json"]);
+      const projects = (Array.isArray(body) ? body : (body?.projects ?? [])).map((p) => ({ id: p.project_id ?? p.id, name: p.name })).filter((p) => p.id);
+      for (const p of projects) if (p.name) this.projectNames.set(p.id, p.name);
+      this.projectIdList = projects.map((p) => p.id);
+      this.projectIdsError = null;
+    } catch (e) {
+      this.projectIdsError = String(e?.message ?? e).split("\n")[0];
+    }
+    return this.projectIdList;
+  }
+
   refresh(cx, manual = false) {
     if (this.busy || checking()) return;
     this.busy = true;
@@ -212,9 +256,7 @@ export default class ForemanRuns extends View {
     }
     cx.spawn(async (cx) => {
       try {
-        const body = await foreman(["run", "list", "-limit", String(LIMIT)]);
-        if (!Array.isArray(body?.runs)) throw new Error("unexpected output from foreman run list");
-        this.setRuns(body.runs);
+        this.setRuns(await this.loadRuns());
         this.error = null;
         this.updatedAt = Date.now();
         await this.loadProjects();
@@ -753,6 +795,7 @@ export default class ForemanRuns extends View {
           .on_click((_e, cx) => this.refresh(cx, true))
           .child("↻")))
       .when(!this.error && this.queueError, (el) => el.child(note(`Queue unavailable: ${this.queueError}`, t.dim)))
+      .when(!this.error && this.runsNote, (el) => el.child(note(`Some runs may be missing: ${this.runsNote}`, t.dim)))
       .child(v_flex().id("foreman-runs-scroll").flex_1().min_h(0).overflow_y_scrollbar().track_scroll(this.scroll)
         .children(elements))
       .when(bar, (el) => el.child(bar))
