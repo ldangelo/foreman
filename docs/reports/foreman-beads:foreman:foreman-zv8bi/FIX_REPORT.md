@@ -1,0 +1,1 @@
+The working-tree `PLAN.md` was overwritten by the phase-1 summary; the real 215-line plan is in commit `9db30e48`. Reading the full plan from git.
