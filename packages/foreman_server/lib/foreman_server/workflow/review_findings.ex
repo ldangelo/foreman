@@ -378,6 +378,38 @@ defmodule ForemanServer.Workflow.ReviewFindings do
 
   # --- marker scan ---
 
+  @doc """
+  The lines of a markdown file that sit outside any fenced code block, in order.
+
+  Public because `ForemanServer.Workflow.PrBody` reads its `## PR body` heading
+  from the same fence-aware view this module uses for its marker scan: a heading
+  inside a fence is example text, never a real one (AGENTS.md §5.7 — one fence
+  rule, one owner). The caller that needs validity checks re-calls `load/1`, so
+  reading through this is not a second parse of the contract.
+  """
+  @spec unfenced_lines(binary()) :: [binary()]
+  def unfenced_lines(contents) when is_binary(contents) do
+    contents
+    |> String.split("\n")
+    |> Enum.reduce({[], nil}, fn raw, {kept, fence} ->
+      # A CRLF artifact: the line ending is not part of the line.
+      line = String.trim_trailing(raw, "\r")
+
+      case fence do
+        nil ->
+          case fence_open(line) do
+            nil -> {[line | kept], nil}
+            open -> {kept, open}
+          end
+
+        open ->
+          if fence_closes?(line, open), do: {kept, nil}, else: {kept, open}
+      end
+    end)
+    |> elem(0)
+    |> Enum.reverse()
+  end
+
   defp counted_markers(lines, start_marker, end_marker) do
     {_fence, starts, ends} =
       lines
