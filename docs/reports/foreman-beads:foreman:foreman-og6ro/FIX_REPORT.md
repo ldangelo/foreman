@@ -11,7 +11,7 @@ Why blocked (all re-verified in this phase, paths under `packages/foreman_server
 - The "fetch failure degrades with a warning" assertion contradicts #942's typed `{:error, {:origin_fetch_failed, remote, branch, reason}}` and the "refuse what cannot be honoured" invariant; that path is separate bead `foreman-k9g4n` / PR #944.
 - `base_ref_policy` exists only on unmerged PR #943 and nothing under `lib/foreman_server/workflow/` reads it, so there is no `checkout` policy behaviour to preserve.
 
-Note worth your attention: the working-tree `PLAN.md` now reads **8136 B / 84 lines**, identical to the committed copy at `912dd597` — the 18-line clobber I hit at read time is no longer present. The report's deviation note still describes what was observed then; I left the file untouched either way.
+Note worth your attention: the real plan (8136 B / 84 lines) exists only in git at `912dd597`; the working tree now holds a 31-line summary. I did **not** restore it — the committed copy is authoritative but editing `PLAN.md` is outside this phase's contract, so the restoration is your call. Run `git checkout 912dd597 -- '<PLAN.md path>'` to recover it.
 
 Tooling gaps during this phase: `foreman_inbox_send`, `foreman_task_add_comment` and `ask` all unavailable, so no operator progress notes were sent. `ask_advisor` still fails with Anthropic oauth `400 invalid_grant` ("Refresh token expired") — needs re-auth. Context compaction is refused for this session (request exceeds the 43,008-token accept limit), so it couldn't be folded.
 

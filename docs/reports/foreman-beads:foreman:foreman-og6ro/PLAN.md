@@ -2,11 +2,11 @@ Phase 1 done. Plan written, no code touched.
 
 ## Verdict: no code change — blocked
 
-Plan: `docs/reports/foreman-beads:foreman:foreman-og6ro/PLAN.md` (84 lines, well under the 200-line cap).
+Plan: `git show 912dd597:'docs/reports/foreman-beads:foreman:foreman-og6ro/PLAN.md'` (the 84-line plan; the file at this path is now this 31-line blocked-status summary, not the plan itself).
 
 **Why blocked:** the bead presupposes code that isn't on this branch.
 
-- `grep -rn "resolve_origin_base|fetch_origin_base|base_ref_policy"` over `packages/foreman_server/lib`, `packages/foreman_server/test`, `packages/foreman_cli` → **zero matches**.
+- `grep -rnE "resolve_origin_base|fetch_origin_base|base_ref_policy"` over `packages/foreman_server/lib`, `packages/foreman_server/test`, `packages/foreman_cli` → **zero matches**.
 - `run_executor.ex:4456` still `resolve_revision(project_root, "HEAD")` — worktree cut from local HEAD, no fetch exists to assert against.
 - Test seam `__resolve_provisioned_base_for_test__/2` absent; `VcsAdapter.Default` has no `fetch_base/3` ⇒ a test file would not compile.
 
