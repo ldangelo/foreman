@@ -4,7 +4,7 @@
 import { test, expect, mock } from "bun:test";
 
 mock.module("herdr", () => ({ exec: async () => ({ code: 0, stdout: "", stderr: "" }), home: () => "/h", window: () => ({ platform: "macos" }) }));
-const { beadId, clearRuns, countCleared, hideCleared, isClearable, isResettable, parseCleared, pruneCleared, resetPrompt } = await import("../common.js");
+const { approveBody, approvePrompt, beadId, clearRuns, countCleared, hideCleared, isApprovable, isClearable, isResettable, parseCleared, pruneCleared, resetPrompt } = await import("../common.js");
 
 test("beadId takes the bead id off a beads task id", () => {
   expect(beadId({ task_id: "beads:foreman:foreman-jzycy" })).toBe("foreman-jzycy");
@@ -91,4 +91,27 @@ test("the reset confirmation names the run and says what a reset does not do", (
 test("the reset confirmation falls back to the task id for a run that is not a bead, and to the workflow snapshot's name", () => {
   const { detail } = resetPrompt({ run_id: "run-x", workflow_snapshot: { workflow_name: "plan" }, task_id: "adhoc-1c2d3e", status: "failed" });
   expect(detail).toContain("plan adhoc-1c2d3e (run-x)");
+});
+
+test("only a queue entry that is awaiting approval and not stale is approvable", () => {
+  expect(isApprovable({ kind: "open", task_id: "beads:foreman:foreman-x", stale: false })).toBe(true);
+  expect(isApprovable({ kind: "slot", task_id: "beads:foreman:foreman-x" })).toBe(false); // approved already, waiting for a slot
+  expect(isApprovable({ kind: "open", task_id: "t", stale: true })).toBe(false);
+  for (const task_id of ["", null, undefined, 7]) expect(isApprovable({ kind: "open", task_id })).toBe(false);
+  expect(isApprovable(null)).toBe(false);
+});
+
+test("the approval request is the one the removed CLI verb sent: type, task_id and approved_by, nothing the gateway reserves", () => {
+  const body = approveBody("beads:foreman:foreman-x");
+  expect(body).toEqual({ type: "task.approve", payload: { task_id: "beads:foreman:foreman-x", approved_by: "herdr-sidebar" } });
+  for (const reserved of ["approval_id", "approved_at", "run_id", "workflow_snapshot"]) expect(body.payload).not.toHaveProperty(reserved);
+  expect(body).not.toHaveProperty("command_id");
+});
+
+test("the approval confirmation names the task and its project and says that it starts a run", () => {
+  const { title, detail } = approvePrompt({ kind: "open", task_id: "beads:foreman:foreman-x", project_id: "foreman", title: "Fix the thing" });
+  expect(title).toBe("Approve this task?");
+  expect(detail).toContain("Fix the thing · foreman-x (project foreman)");
+  expect(detail).toContain("starts a run");
+  expect(approvePrompt({ task_id: "adhoc-1" }).detail).toContain("adhoc-1. Approving");
 });

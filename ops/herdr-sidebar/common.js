@@ -55,15 +55,21 @@ const API_SCRIPT =
   `${LOAD_TOKEN} url="\${FOREMAN_API_URL:-http://127.0.0.1:4766}$1"; ` +
   'if [ -n "$FOREMAN_API_TOKEN" ]; then printf "Authorization: Bearer %s\\n" "$FOREMAN_API_TOKEN" | curl -sS --max-time 10 -w "\\n%{http_code}" -H @- "$url"; ' +
   'else curl -sS --max-time 10 -w "\\n%{http_code}" "$url"; fi';
+// The same, for a JSON POST (the command boundary: POST /api/commands). The body travels as an argument: it carries ids
+// and names, never a secret; the token still goes by pipe.
+const POST_SCRIPT =
+  `${LOAD_TOKEN} url="\${FOREMAN_API_URL:-http://127.0.0.1:4766}$1"; ` +
+  'if [ -n "$FOREMAN_API_TOKEN" ]; then printf "Authorization: Bearer %s\\n" "$FOREMAN_API_TOKEN" | curl -sS --max-time 15 -X POST -H @- -H "Content-Type: application/json" --data "$2" -w "\\n%{http_code}" "$url"; ' +
+  'else curl -sS --max-time 15 -X POST -H "Content-Type: application/json" --data "$2" -w "\\n%{http_code}" "$url"; fi';
 
 // An Error that carries the HTTP status (null when there was none) and, for a JSON {error: code} body, the code.
 // A body's `error` field is an error only on an HTTP error status: a 200 body may carry one as data (the
 // artifact route answers {state: "missing", error: "<why>"} with 200).
 const apiError = (message, status, code) => Object.assign(new Error(message), { status, code });
 
-export async function api(path) {
+async function callApi(script, path, extraArgs, timeout) {
   if (!/^\/api\/[A-Za-z0-9_.:\/?=&%-]+$/.test(path)) throw new Error(`refusing odd API path: ${path}`);
-  const r = await exec("sh", ["-c", API_SCRIPT, "sh", ENV_FILE, path], { timeout: 15000 });
+  const r = await exec("sh", ["-c", script, "sh", ENV_FILE, path, ...extraArgs], { timeout });
   if (r.code !== 0) throw new Error(r.stderr.trim().split("\n")[0] || `curl exited ${r.code}`);
   const route = path.split("?")[0];
   const cut = r.stdout.lastIndexOf("\n");
@@ -76,6 +82,9 @@ export async function api(path) {
   if (httpError) throw apiError(`HTTP ${status} from ${route}`, status);
   return body;
 }
+
+export const api = (path) => callApi(API_SCRIPT, path, [], 15000);
+export const apiPost = (path, body) => callApi(POST_SCRIPT, path, [JSON.stringify(body)], 20000);
 
 // The projection's top-level workflow_name can be null; the snapshot taken at run start has it.
 export const workflowName = (r) => r.workflow_name ?? r.workflow_snapshot?.workflow_name ?? "run";
@@ -134,6 +143,22 @@ export const resetPrompt = (r) => {
     title: "Reset this run?",
     detail: `${which} (${r.run_id}). This removes the run's record from Foreman's run list; its event history stays. ` +
       "It does not restart the work: to try again, submit the work as a new run. Foreman has no command to bring a reset run back.",
+  };
+};
+
+// Approving is the one action here that starts work: `task.approve` moves an open task to ready and a run is dispatched
+// for it. `foreman task approve` was removed (TRD-018), so the panel sends the command itself, with the body that verb
+// sent: task_id and approved_by. The server mints the command id and rejects an approval_id, approved_at, run_id or
+// workflow_snapshot from a client.
+export const isApprovable = (e) => e?.kind === "open" && e.stale !== true && typeof e.task_id === "string" && e.task_id !== "";
+export const approveBody = (taskId) => ({ type: "task.approve", payload: { task_id: taskId, approved_by: "herdr-sidebar" } });
+// The confirmation's wording for a queue entry that is awaiting approval.
+export const approvePrompt = (e) => {
+  const which = [e.title, beadId(e) ?? e.task_id].filter(Boolean).join(" · ");
+  return {
+    title: "Approve this task?",
+    detail: `${which}${e.project_id ? ` (project ${e.project_id})` : ""}. Approving it starts a run: an agent will work on the task. ` +
+      "The server picks the workflow from the task, and refuses if the task's dependencies are not closed or the project is paused.",
   };
 };
 

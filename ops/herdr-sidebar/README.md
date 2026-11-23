@@ -134,6 +134,7 @@ not shown; `GET /api/projects/<id>/usage` reports it as `limits.deferred_tasks`.
 | Clear every failed, stuck and cancelled run the panel shows | click `clear` on a status header (that group), or `✕ clear N` under the list (all) | `⇧⌘K` |
 | Bring cleared runs back | click `↺ N cleared` under the list | `⇧⌘T` |
 | Reset a failed run (asks first) | click `reset` on its row | `⇧⌘H` on the selected run |
+| Approve a task that is awaiting approval (asks first) | click `approve` on its row in the queue | `⇧⌘A` for the task that has waited longest |
 | Switch the sidebar between the full panel and a compact rail | | `⇧⌘B` |
 
 On macOS the shortcuts are `cmd-shift-<letter>`; the footer under the list shows
@@ -168,6 +169,19 @@ again, submit the work as a new run. Foreman has no command to bring a reset run
 Only failed runs are offered it here (the server also accepts stuck, blocked and paused
 runs; use `foreman run reset` for those). A confirmation that is answered more than a
 minute after it was asked is ignored.
+
+**Approving tasks.** A task that is awaiting approval is an `open` task with no run yet; it
+shows in its project's `queued` group as "awaiting approval", oldest first. (The other
+queued rows, "waiting for a slot", are already approved and wait for a free run slot: they
+need nothing from you.) `approve` on the row, or `⇧⌘A` for the one that has waited longest,
+opens Herdr's confirmation dialog; confirming sends `POST /api/commands` with
+`{"type":"task.approve","payload":{"task_id":…,"approved_by":"herdr-sidebar"}}`, the
+request `foreman task approve` sent before TRD-018 removed that verb. **Approving starts a
+run**: an agent works on the task. The server picks the workflow from the task and can
+refuse (unsatisfied dependencies, a paused project): its own error is shown. A task is
+normally approved by itself at bead import, so these are tasks created without
+auto-approve, such as a scheduled task with `auto_approve: false`. Only `open` tasks are
+listed; a `blocked` task, which the server would also accept, is not.
 
 **The rail.** When the sidebar is narrower than 160 px (the shipped chrome's fold
 button, or `⇧⌘B`) the panel draws a compact rail: a failed / active summary and
