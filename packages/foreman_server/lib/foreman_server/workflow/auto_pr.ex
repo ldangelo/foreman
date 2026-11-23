@@ -128,6 +128,8 @@ defmodule ForemanServer.Workflow.AutoPR do
           required(:run_id) => String.t(),
           required(:base_branch) => String.t(),
           optional(:artifact_path) => String.t() | nil,
+          # The repository root the artifact path is made relative to in the PR body.
+          optional(:artifact_root) => String.t() | nil,
           optional(:head_branch) => String.t() | nil,
           # Optional for the commit probe only: the push and the PR create are keyed
           # effects that record `cwd` and refuse to run without it (TRD-013).
@@ -717,7 +719,7 @@ defmodule ForemanServer.Workflow.AutoPR do
     artifact_path = Map.get(context, :artifact_path)
 
     "Foreman run `#{run_id}` complete.\n" <>
-      if(artifact_path, do: "\nArtifact: #{artifact_path}\n", else: "") <>
+      ForemanServer.Workflow.PrBodyPath.artifact_line(artifact_path, body_path_root(context)) <>
       findings_section(artifact_path)
   end
 
@@ -742,4 +744,10 @@ defmodule ForemanServer.Workflow.AutoPR do
 
   defp findings_section(artifact_path),
     do: ForemanServer.Workflow.ReviewFindings.pr_section(artifact_path, "AutoPR")
+
+  # The artifact lives in the run WORKTREE, while `cwd` is the repository the
+  # `gh` commands run in, so the worktree root is tried first; the artifact line
+  # is dropped when neither yields a relative path (`PrBodyPath`).
+  defp body_path_root(context),
+    do: Map.get(context, :artifact_root) || Map.get(context, :cwd)
 end

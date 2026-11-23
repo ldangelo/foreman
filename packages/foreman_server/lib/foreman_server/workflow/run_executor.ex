@@ -3124,6 +3124,9 @@ defmodule ForemanServer.Workflow.RunExecutor do
       run_id: state.run_id,
       base_branch: base_branch,
       artifact_path: completion_artifact_path(state),
+      # The repository root the artifact path is made relative to in the PR body:
+      # the artifact sits in the run worktree, while `cwd` is the project root.
+      artifact_root: get_in(state, [:last_worktree, :worktree_path]),
       head_branch: get_in(state, [:last_worktree, :branch]),
       cwd: vcs_working_directory(state)
     }

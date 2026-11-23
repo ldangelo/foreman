@@ -323,7 +323,7 @@ defmodule ForemanServer.Workflow.AutoPRTest do
                  run_id: "run-12",
                  base_branch: "main",
                  head_branch: "foreman/run-12/implement",
-                 cwd: "/work/tree",
+                 cwd: Path.dirname(artifact),
                  artifact_path: artifact,
                  command_runner: runner
                })
@@ -331,7 +331,7 @@ defmodule ForemanServer.Workflow.AutoPRTest do
       assert_receive {:gh_args, args}
       body = Enum.at(args, Enum.find_index(args, &(&1 == "--body")) + 1)
       assert body =~ "Foreman run `run-12` complete."
-      assert body =~ "Artifact: #{artifact}"
+      assert body =~ "Artifact: #{Path.basename(artifact)}"
       body
     end
 
