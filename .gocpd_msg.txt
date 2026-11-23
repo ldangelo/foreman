@@ -1,0 +1,17 @@
+fix(phase-pr): PR title defaults to run task title, not feat(phase)
+
+PhasePr.gh_pr_create/2 hard-coded `title = "feat(phase): #{phase_name}"`,
+so every phase PR opened with a generic title regardless of what the run was
+about. Build the title through a new pr_title/1 with the precedence
+task title -> first conventional-commit subject in base..head ->
+"feat(phase): <phase_name>".
+
+%PhasePR.Request{} gains :task_title. A non-nil task_title that is not a
+non-empty string is rejected up-front with the existing typed-error path
+(:task_title_invalid) before any work is done, so an empty title can never
+reach gh_pr_create after commits were pushed.
+
+RunExecutor passes task_title into every PhasePR.Request it builds, reusing
+the same RunState field AutoPR already reads via fetch_task_field.
+
+Bead: foreman-gocpd

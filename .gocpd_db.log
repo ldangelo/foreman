@@ -1,0 +1,17 @@
+=== 55434 foreman_dev ===
+psql: error: connection to server at "localhost" (::1), port 55434 failed: FATAL:  password authentication failed for user "postgres"
+=== 55434 foreman_test ===
+psql: error: connection to server at "localhost" (::1), port 55434 failed: FATAL:  password authentication failed for user "postgres"
+=== 55432 foreman_test ===
+55432-test-OK
+=== databases on 55432 ===
+postgres
+foreman_test_j9sf8
+template1
+template0
+foreman_test_pjugt
+foreman_test_tepov
+foreman_test_jzycy
+foreman_dev
+foreman_test_laju1p4
+foreman_test_r24jxg
