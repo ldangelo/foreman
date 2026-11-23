@@ -112,7 +112,7 @@ export default class ForemanRuns extends View {
     this.projectIdsError = null;
     this.runsNote = null; // some run list could not be read: the panel may be missing runs, and says why
     this.history = new Map(); // project id -> its runs as last read (see loadRuns())
-    this.historyAt = 0;
+    this.historyAt = new Map(); // project id -> ms of the last attempt to read its history, whether it worked or not
     this.historyProblems = new Map(); // project id -> why its history could not be read
     cx.timer.every(POLL_MS, (cx) => this.refresh(cx));
     this.refresh(cx);
@@ -213,28 +213,29 @@ export default class ForemanRuns extends View {
   }
 
   // The runs to show. Every poll reads the LIMIT newest overall: whatever just happened (a run that fails, is retried or
-  // finishes gets a new last event, so it is among them). Once a minute, or on a manual refresh, it also reads up to
-  // HISTORY_LIMIT of each registered project (`--project-id`): the older runs the overall list never reaches. A busy
-  // project crowds a quiet one out of the overall list (ensemble showed 3 of its 50 runs), and a window would
-  // undercount `N failed`. For a run in both, the recent read wins. A list that cannot be read is named in `runsNote`
-  // so a partial panel is never presented as the whole picture; that project keeps its previous history until a read works.
+  // finishes gets a new last event, so it is among them). A project's history, up to HISTORY_LIMIT of its runs
+  // (`--project-id`), is read when it is a minute old or on a manual refresh: the older runs the overall list never
+  // reaches. A busy project crowds a quiet one out of the overall list (ensemble showed 3 of its 50 runs), and a window
+  // would undercount `N failed`. Each project is timed on its own, a failed read included, so one project that keeps
+  // failing cannot make the others (about 1 MB) be read on every poll. For a run in both, the recent read wins. A list
+  // that cannot be read is named in `runsNote`, so a partial panel is never presented as the whole picture; that
+  // project keeps its previous history until a read works.
   async loadRuns(force) {
     const overall = await foreman(["run", "list", "-limit", String(LIMIT)]);
     if (!Array.isArray(overall?.runs)) throw new Error("unexpected output from foreman run list");
     const ids = await this.projectIds();
-    if (force || Date.now() - this.historyAt >= HISTORY_EVERY_MS) {
-      await Promise.all(ids.map(async (id) => {
-        try {
-          const body = await foreman(["run", "list", "--project-id", id, "-limit", String(HISTORY_LIMIT)]);
-          if (!Array.isArray(body?.runs)) throw new Error("unexpected output from foreman run list");
-          this.history.set(id, body.runs);
-          this.historyProblems.delete(id);
-        } catch (e) {
-          this.historyProblems.set(id, `${id}: ${String(e?.message ?? e).split("\n")[0]}`);
-        }
-      }));
-      if (this.historyProblems.size === 0) this.historyAt = Date.now(); // after a failure the next poll tries again
-    }
+    const now = Date.now();
+    await Promise.all(ids.filter((id) => force || now - (this.historyAt.get(id) ?? 0) >= HISTORY_EVERY_MS).map(async (id) => {
+      this.historyAt.set(id, now);
+      try {
+        const body = await foreman(["run", "list", "--project-id", id, "-limit", String(HISTORY_LIMIT)]);
+        if (!Array.isArray(body?.runs)) throw new Error("unexpected output from foreman run list");
+        this.history.set(id, body.runs);
+        this.historyProblems.delete(id);
+      } catch (e) {
+        this.historyProblems.set(id, `${id}: ${String(e?.message ?? e).split("\n")[0]}`);
+      }
+    }));
     const byId = new Map();
     for (const id of ids) for (const r of this.history.get(id) ?? []) byId.set(r.run_id, r);
     for (const r of overall.runs) byId.set(r.run_id, r);
