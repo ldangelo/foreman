@@ -8,12 +8,15 @@ defmodule ForemanServer.VcsAdapter.Default do
   `ForemanServer.VcsAdapter.run/4` to obtain retry-on-transient semantics.
 
   All operations route through `CommandRouter` for event emission
-  (`VcsOperationStarted` → `VcsOperationCompleted` | `VcsOperationFailed`).
+  (`VcsOperationStarted` → `VcsOperationCompleted` | `VcsOperationFailed`),
+  except `fetch_base/3`: it carries no operation id and emits no events, so
+  reading a remote's tip never writes to the event store.
   """
 
   @behaviour ForemanServer.VcsAdapter
 
   alias ForemanServer.CommandGateway
+  alias ForemanServer.Exec.Error, as: GitError
   alias ForemanServer.Exec.Git
 
   @impl true
@@ -129,6 +132,36 @@ defmodule ForemanServer.VcsAdapter.Default do
     end
   end
 
+  # Fetch `branch` from `remote` and return the fetched remote tip.
+  #
+  # Only `refs/remotes/<remote>/<branch>` advances: the checkout's working
+  # tree and branch pointer are never touched. No `vcs_operation.*` events are
+  # emitted — this callback carries no operation id, and a transient failure
+  # is tagged so `VcsAdapter.run/4` retries it.
+  @impl true
+  def fetch_base(repo_path, remote, branch) do
+    if Git.remote_exists?(repo_path, remote) do
+      case Git.fetch_branch(repo_path, remote, branch) do
+        :ok ->
+          case Git.ref_sha(repo_path, "refs/remotes/#{remote}/#{branch}") do
+            {:ok, sha} -> {:ok, sha}
+            {:error, reason} -> {:error, {:remote_tip_unresolvable, remote, branch, reason}}
+          end
+
+        {:error, %GitError{details: details}} ->
+          output = Map.get(details, :output, "")
+
+          if output =~ "couldn't find remote ref" do
+            {:ok, :no_remote_tracking}
+          else
+            {:error, {:transient, output}}
+          end
+      end
+    else
+      {:ok, :no_remote_tracking}
+    end
+  end
+
   # Apply a per-worktree sparse-checkout exclusion so a tracked `.beads/`
   # in the source repository is NOT materialized into the fresh worktree.
   # The user-guide contract requires "The worktree must not bring its own
@@ -220,7 +253,7 @@ defmodule ForemanServer.VcsAdapter.Default do
   dispatches `VcsOperationStarted`/`Completed`/`Failed` events.
   """
   @spec run(
-          :clone | :branch | :create_pr | :create_worktree | :clean_worktree,
+          :clone | :branch | :create_pr | :create_worktree | :clean_worktree | :fetch_base,
           [term()],
           keyword()
         ) ::

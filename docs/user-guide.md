@@ -117,8 +117,16 @@ files so you can judge.
 `base` may pin the checkout to a specific ref. For `implement-trd` and
 `implement-trd-beads` it must resolve to the ImplementationContext's frozen
 `source_revision`, and Foreman fails the run if it does not; for every other
-workflow the base is the project checkout's `HEAD` when the run's first phase
-starts.
+workflow that does not declare a `base` the base is the fetched
+`origin/<branch>` tip of the project checkout when the run's first phase
+starts: Foreman runs `git fetch origin <branch>` in the
+registered checkout — which advances only
+`refs/remotes/origin/<branch>` and never touches the checkout's working tree
+or branch pointer — and pins the run worktree to that commit. A declared
+`base` is resolved locally in the checkout and is never fetched. If the checkout
+has no `origin` remote, or the remote does not carry the branch, the base falls
+back to the local `HEAD`; a fetch that fails for any other reason fails the run
+rather than silently using a stale base.
 
 Manifests are read by a small YAML-subset parser (not a full YAML library). A
 mapping may be written in **block** style (indented `key: value` lines) or in
@@ -564,7 +572,11 @@ a real secret store is a separate, later feature.
 **Context window for gateway models.** The claude CLI assumes a 200k window for a model name it does not recognise (e.g. a LiteLLM alias such as `Minimax-M3`) and may compact or refuse near 200k. Declare the real window in the project environment, e.g. `CLAUDE_CODE_MAX_CONTEXT_TOKENS=512000` (the LiteLLM entry's `max_input_tokens`). Foreman never infers it from the model name. The agent images pin the CLI via the `CLAUDE_CODE_VERSION` build arg (>= 2.1.308). Measured 2026-10-31 against a stand-in gateway with no provider (`docs/acceptance/context-window-probe.md`): CLI 2.1.308 auto-compacts at about 176k claimed tokens for such a name and at about 488k with the variable set to 512000. Verified live 2026-11-01 (`docs/acceptance/context-window-live-run.md`, foreman-gppjx): a real claude 2.1.309 run through a LiteLLM proxy for `Minimax-M3`, with the variable in the project environment and the key as a project secret, made 16 requests up to 252,542 tokens, 5 of them above 200k, with no compaction, and the CLI's own record named a 512000 window (200000 without the variable). Not verified: a docker jobsite, and a per-model window declared once in configuration (not built: the project environment is the only channel).
 
 **Base branch.** A run's base branch is the registered checkout's `HEAD` at the
-moment the run's first phase starts, latched for the run. There is no
+moment the run's first phase starts, latched for the run. The base COMMIT the
+run's worktree is cut from is that branch's fetched `origin/<branch>` tip, not
+the checkout's local `HEAD`; the fetch never moves the checkout's working tree
+or branch pointer. A run that declares a `worktree.base` instead resolves that
+ref locally and is never fetched. There is no
 per-project `default_branch` setting: `project update`/`register` payloads that
 carry one are rejected with `setting_removed: default_branch`.
 

@@ -21,6 +21,9 @@ defmodule ForemanServer.VcsAdapterTest do
 
     @impl true
     def clean_worktree(_worktree_path, _opts), do: raise("not used")
+
+    @impl true
+    def fetch_base(_repo_path, _remote, _branch), do: raise("not used")
   end
 
   defmodule StubTransient do
@@ -47,6 +50,9 @@ defmodule ForemanServer.VcsAdapterTest do
 
     @impl true
     def clean_worktree(_worktree_path, _opts), do: raise("not used")
+
+    @impl true
+    def fetch_base(_repo_path, _remote, _branch), do: raise("not used")
   end
 
   defmodule StubAuth do
@@ -73,6 +79,9 @@ defmodule ForemanServer.VcsAdapterTest do
 
     @impl true
     def clean_worktree(_worktree_path, _opts), do: raise("not used")
+
+    @impl true
+    def fetch_base(_repo_path, _remote, _branch), do: raise("not used")
   end
 
   defmodule StubSucceedAfterTwo do
@@ -104,6 +113,9 @@ defmodule ForemanServer.VcsAdapterTest do
 
     @impl true
     def clean_worktree(_worktree_path, _opts), do: raise("not used")
+
+    @impl true
+    def fetch_base(_repo_path, _remote, _branch), do: raise("not used")
   end
 
   setup do

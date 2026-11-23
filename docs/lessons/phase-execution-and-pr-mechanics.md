@@ -210,10 +210,16 @@ is strictly more robust than depending on an agent to print exact lines.
 default.** `RunExecutor.remember_run_base_branch/1` records it once, when the
 run's FIRST phase starts, as `git symbolic-ref --quiet --short HEAD` of
 `vcs_working_directory/1` — the same checkout AutoPR later runs `git rev-list`,
-`git push`, and `gh pr create` in, read at the same moment
-`resolve_run_base/2` reads that same checkout's `HEAD` to give the run worktree
-its `base_ref` (the worktree is PINNED to that commit; it does not supply it),
-so branch name and base commit describe one repository state. It
+`git push`, and `gh pr create` in. The run worktree's `base_ref` is that
+branch's FETCHED `origin/<branch>` tip (`resolve_run_base/2` →
+`resolve_origin_base/2` → `fetch_origin_base/3`, which runs
+`git fetch origin <branch>` through the `VcsAdapter` seam and advances only
+`refs/remotes/origin/<branch>` — never the checkout's working tree or branch
+pointer), so the worktree is PINNED to the remote tip, not to the checkout's
+stale local `HEAD`. No `origin` remote, or a remote that does not carry the
+branch, falls back to the local `HEAD`; any other fetch failure fails the run
+instead of silently pinning a stale base. A declared `worktree.base` still
+resolves locally and is never fetched. It
 is latched on key presence, so an operator switching branches mid-run cannot
 retarget the PR, and it does not hang off `remember_worktree/2` — a workflow
 declaring `worktree: enabled: false` provisions no worktree yet can still land

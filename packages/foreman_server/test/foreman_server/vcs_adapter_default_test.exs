@@ -20,6 +20,9 @@ defmodule ForemanServer.VcsAdapter.DefaultTest do
 
     @impl true
     def clean_worktree(_worktree_path, _opts), do: raise("not used")
+
+    @impl true
+    def fetch_base(_repo_path, _remote, _branch), do: raise("not used")
   end
 
   describe "transient?/1" do

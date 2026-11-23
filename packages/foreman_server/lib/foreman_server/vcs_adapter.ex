@@ -1,6 +1,6 @@
 defmodule ForemanServer.VcsAdapter do
   @moduledoc """
-  Behaviour contract for VCS adapters (clone/branch/create_pr/worktree).
+  Behaviour contract for VCS adapters (clone/branch/create_pr/worktree/fetch_base).
   """
 
   @doc """
@@ -44,6 +44,21 @@ defmodule ForemanServer.VcsAdapter do
               | {:error, term()}
 
   @doc """
+  Implementation callback for fetching `branch` from `remote` and returning the
+  fetched remote tip.
+
+  Read-only with respect to the checkout: only `refs/remotes/<remote>/<branch>`
+  may advance — the working tree and the branch pointer the operator has
+  checked out are never touched.
+
+  `{:ok, :no_remote_tracking}` is the ABSENT case (no such remote, or the
+  remote does not have that branch); the caller then falls back to the local
+  `HEAD`. Any other failure is an error, never an absent tip.
+  """
+  @callback fetch_base(repo_path :: String.t(), remote :: String.t(), branch :: String.t()) ::
+              {:ok, String.t()} | {:ok, :no_remote_tracking} | {:error, term()}
+
+  @doc """
   Implementation callback for cleaning a worktree.
 
   Required opts (all `Keyword.fetch!/2`): `:operation_id`, `:repo_path`,
@@ -73,7 +88,7 @@ defmodule ForemanServer.VcsAdapter do
   """
   @spec run(
           module(),
-          :clone | :branch | :create_pr | :create_worktree | :clean_worktree,
+          :clone | :branch | :create_pr | :create_worktree | :clean_worktree | :fetch_base,
           [term()],
           keyword()
         ) ::
@@ -111,6 +126,11 @@ defmodule ForemanServer.VcsAdapter do
   defp build_fun(module, :create_worktree),
     do: fn args ->
       module.create_worktree(Enum.at(args, 0), Enum.at(args, 1), Enum.at(args, 2) || [])
+    end
+
+  defp build_fun(module, :fetch_base),
+    do: fn args ->
+      module.fetch_base(Enum.at(args, 0), Enum.at(args, 1), Enum.at(args, 2))
     end
 
   defp build_fun(module, :clean_worktree),

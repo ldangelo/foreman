@@ -593,6 +593,19 @@ defmodule ForemanServer.Exec.Git do
     end
   end
 
+  @doc "Whether `remote` is configured in `repo` (`git remote get-url`)."
+  @spec remote_exists?(String.t(), String.t()) :: boolean()
+  def remote_exists?(repo, remote) do
+    with :ok <- check_ref(:remote, remote) do
+      match?(
+        {_output, 0},
+        System.cmd("git", ["-C", repo, "remote", "get-url", remote], stderr_to_stdout: true)
+      )
+    else
+      {:error, _} -> false
+    end
+  end
+
   @doc "Full SHA a fully-qualified `ref` (for example `refs/heads/x`) points at in `repo`."
   @spec ref_sha(String.t(), String.t()) :: {:ok, String.t()} | {:error, Error.t()}
   def ref_sha(repo, ref) do

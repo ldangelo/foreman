@@ -73,6 +73,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
   alias ForemanServer.Exec.Git, as: JobsiteGit
   alias ForemanServer.Exec.Error, as: JobsiteError
   alias ForemanServer.Exec.Runners.Overwatch, as: OverwatchRunner
+  alias ForemanServer.VcsAdapter
+  alias ForemanServer.VcsAdapter.Default, as: DefaultAdapter
   alias ForemanServer.Workflow.JobsiteObserver
   alias ForemanServer.Workflow.Lowering
   alias ForemanServer.AgentRuntime.JidoHarness.FailureCause
@@ -4438,13 +4440,13 @@ defmodule ForemanServer.Workflow.RunExecutor do
         with {:ok, project_id} <- fetch_project_id(state),
              {:ok, project_root} <- default_project_root(project_id, state),
              :ok <- assert_git_repo(project_root),
-             {:ok, base_ref} <- resolve_declared_base(spec, project_root) do
+             {:ok, base_ref} <- resolve_declared_base(state, spec, project_root) do
           {:ok, project_root, base_ref, nil, nil}
         end
     end
   end
 
-  defp resolve_declared_base(spec, project_root) do
+  defp resolve_declared_base(state, spec, project_root) do
     case Map.get(spec, :base) do
       declared when is_binary(declared) and declared != "" ->
         case resolve_revision(project_root, declared) do
@@ -4453,7 +4455,38 @@ defmodule ForemanServer.Workflow.RunExecutor do
         end
 
       _ ->
+        resolve_origin_base(state, project_root)
+    end
+  end
+
+  # A NEW run is cut from the FETCHED `origin/<branch>` tip, not from the
+  # operator checkout's (possibly stale) `HEAD`: `git fetch` only advances
+  # `refs/remotes/origin/<branch>`, the checkout's working tree and branch
+  # pointer are never touched.
+  #
+  # The ABSENT cases fall back to the local `HEAD` (no `origin` remote
+  # configured, the remote does not carry that branch, a detached checkout, or
+  # a task that names its own `source_branch` — applied locally afterwards by
+  # `apply_source_branch/4`). A fetch that FAILS is a typed error, never a
+  # silent fallback to a stale base.
+  defp resolve_origin_base(state, project_root) do
+    case source_branch(state) do
+      nil ->
+        case checkout_branch(project_root) do
+          {:ok, branch} -> fetch_origin_base(project_root, "origin", branch)
+          {:error, _reason} -> resolve_revision(project_root, "HEAD")
+        end
+
+      _source_branch ->
         resolve_revision(project_root, "HEAD")
+    end
+  end
+
+  defp fetch_origin_base(project_root, remote, branch) do
+    case VcsAdapter.run(DefaultAdapter, :fetch_base, [project_root, remote, branch], []) do
+      {:ok, sha} when is_binary(sha) -> {:ok, sha}
+      {:ok, :no_remote_tracking} -> resolve_revision(project_root, "HEAD")
+      {:error, reason} -> {:error, {:origin_fetch_failed, remote, branch, reason}}
     end
   end
 
@@ -5926,6 +5959,10 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   @doc false
   def __resolve_run_repo_set_for_test__(state), do: resolve_run_repo_set(state)
+
+  @doc false
+  def __resolve_provisioned_base_for_test__(state, spec),
+    do: resolve_provisioned_base(state, spec)
 
   @doc false
   def __run_sandbox_for_test__(state), do: run_sandbox(state)
