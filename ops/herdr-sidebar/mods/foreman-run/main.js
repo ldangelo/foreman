@@ -4,7 +4,7 @@
 // server itself and only ever reads from it. The logic that is not drawing lives in ./model.js.
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, ScrollHandle } from "gpui-base";
-import { theme, checking, run, exec, home, notify, readTextFile, settings, props as tabProps } from "herdr";
+import { theme, checking, run, exec, home, notify, readTextFile, settings, nextCommand, props as tabProps } from "herdr";
 import { info, clock, api, foreman, foremanArgv, prUrl, beadId, workflowName, openUrlArgv } from "./common.js";
 import * as M from "./model.js";
 
@@ -124,6 +124,16 @@ export default class ForemanRun extends View {
       if (!this.run || !M.isFinished(this.run) || Date.now() - this.lastLoadAt >= DONE_POLL_MS) this.refresh(cx);
     });
     this.refresh(cx);
+    // Key commands from keys.json ("foreman-run.next-tab" / "foreman-run.prev-tab") switch the tab.
+    if (!checking()) {
+      cx.spawn(async (cx) => {
+        for (;;) {
+          const command = String(await nextCommand()).split(/[.:]/).pop();
+          if (command === "next-tab") this.stepTab(1, cx);
+          else if (command === "prev-tab") this.stepTab(-1, cx);
+        }
+      });
+    }
   }
 
   refresh(cx, manual = false) {
@@ -550,6 +560,12 @@ export default class ForemanRun extends View {
     if (tab === "activity" && this.follow) this.pendingScroll = true;
     else this.pendingTop = true;
     cx.notify();
+  }
+
+  // Moves to the next (+1) or previous (-1) tab, wrapping around.
+  stepTab(delta, cx) {
+    const i = TABS.findIndex(([id]) => id === (this.tab ?? "overview"));
+    this.setTab(TABS[(i + delta + TABS.length) % TABS.length][0], cx);
   }
 
   setFilter(id, cx) {
