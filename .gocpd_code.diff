@@ -1,0 +1,563 @@
+diff --git a/packages/foreman_server/lib/foreman_server/workflow/auto_pr.ex b/packages/foreman_server/lib/foreman_server/workflow/auto_pr.ex
+index 6b4def0a..02debd64 100644
+--- a/packages/foreman_server/lib/foreman_server/workflow/auto_pr.ex
++++ b/packages/foreman_server/lib/foreman_server/workflow/auto_pr.ex
+@@ -128,6 +128,8 @@ defmodule ForemanServer.Workflow.AutoPR do
+           required(:run_id) => String.t(),
+           required(:base_branch) => String.t(),
+           optional(:artifact_path) => String.t() | nil,
++          # The repository root the artifact path is made relative to in the PR body.
++          optional(:artifact_root) => String.t() | nil,
+           optional(:head_branch) => String.t() | nil,
+           # Optional for the commit probe only: the push and the PR create are keyed
+           # effects that record `cwd` and refuse to run without it (TRD-013).
+@@ -717,7 +719,7 @@ defmodule ForemanServer.Workflow.AutoPR do
+     artifact_path = Map.get(context, :artifact_path)
+ 
+     "Foreman run `#{run_id}` complete.\n" <>
+-      if(artifact_path, do: "\nArtifact: #{artifact_path}\n", else: "") <>
++      ForemanServer.Workflow.PrBodyPath.artifact_line(artifact_path, body_path_root(context)) <>
+       findings_section(artifact_path)
+   end
+ 
+@@ -742,4 +744,10 @@ defmodule ForemanServer.Workflow.AutoPR do
+ 
+   defp findings_section(artifact_path),
+     do: ForemanServer.Workflow.ReviewFindings.pr_section(artifact_path, "AutoPR")
++
++  # The artifact lives in the run WORKTREE, while `cwd` is the repository the
++  # `gh` commands run in, so the worktree root is tried first; the artifact line
++  # is dropped when neither yields a relative path (`PrBodyPath`).
++  defp body_path_root(context),
++    do: Map.get(context, :artifact_root) || Map.get(context, :cwd)
+ end
+diff --git a/packages/foreman_server/lib/foreman_server/workflow/phase_pr.ex b/packages/foreman_server/lib/foreman_server/workflow/phase_pr.ex
+index 38bbcba0..7dcae835 100644
+--- a/packages/foreman_server/lib/foreman_server/workflow/phase_pr.ex
++++ b/packages/foreman_server/lib/foreman_server/workflow/phase_pr.ex
+@@ -47,6 +47,7 @@ defmodule ForemanServer.Workflow.PhasePR do
+   alias ForemanServer.Idempotency.Effect
+   alias ForemanServer.Idempotency.Reconcilers.BranchPush
+   alias ForemanServer.Idempotency.Reconcilers.PrCreate, as: PrCreateEffect
++  alias ForemanServer.Workflow.PrBodyPath
+ 
+   require Logger
+ 
+@@ -346,7 +347,7 @@ defmodule ForemanServer.Workflow.PhasePR do
+ 
+     body =
+       "Foreman run `#{request.run_id}` phase `#{request.phase_name}` complete.\n" <>
+-        if(request.artifact_path, do: "\nArtifact: #{request.artifact_path}\n", else: "") <>
++        PrBodyPath.artifact_line(request.artifact_path, request.cwd) <>
+         findings_section(request.artifact_path)
+ 
+     args = [
+diff --git a/packages/foreman_server/lib/foreman_server/workflow/pr_body_path.ex b/packages/foreman_server/lib/foreman_server/workflow/pr_body_path.ex
+new file mode 100644
+index 00000000..a514d15d
+--- /dev/null
++++ b/packages/foreman_server/lib/foreman_server/workflow/pr_body_path.ex
+@@ -0,0 +1,116 @@
++defmodule ForemanServer.Workflow.PrBodyPath do
++  @moduledoc """
++  Turns host-local paths into something safe to paste into a GitHub PR body.
++
++  An artifact path or a review-finding path is an absolute path on the machine
++  that produced it (`/Users/<user>/.foreman/worktrees/<project>/<run>/workspace/
++  docs/reports/.../FIX_REPORT.md`). Once the worktree is cleaned up the path
++  resolves to nothing, and the body has leaked the operator's home layout. The
++  artifact is committed into the run branch, so the path relative to the repo
++  root is the form that is both linkable and leak-free; a path outside the repo
++  has no such form and is omitted or reduced to its basename.
++  """
++
++  @doc """
++  Express `path` relative to `repo_root`.
++
++  An already-relative path is returned unchanged. An absolute path inside the
++  repo is returned relative to `repo_root`. A path outside the repo, or an
++  absolute path with no root to compare it against, returns `:outside_repo`.
++
++  A malformed path or root raises. A PR body that quietly drops the artifact
++  because the producer passed nonsense is a lie, not a review.
++  """
++  @spec repo_relative(Path.t() | nil, String.t() | nil) :: {:ok, String.t()} | :outside_repo
++  def repo_relative(path, repo_root)
++
++  def repo_relative(path, repo_root) when is_binary(path) do
++    trimmed = String.trim(path)
++
++    if trimmed == "" do
++      raise ArgumentError,
++            "PrBodyPath.repo_relative/2 expects a path string or nil, got: #{inspect(path)}"
++    end
++
++    # Relative first, before expansion: `Path.expand/1` resolves a relative
++    # path against the *server's* cwd, which would silently rebase
++    # "lib/foo.ex" onto whatever directory the Phoenix process runs in.
++    case Path.type(trimmed) do
++      :relative -> {:ok, trimmed}
++      :absolute -> relative_to_root(trimmed, repo_root)
++      _ -> :outside_repo
++    end
++  end
++
++  def repo_relative(nil, _repo_root), do: :outside_repo
++
++  def repo_relative(path, _repo_root) do
++    raise ArgumentError,
++          "PrBodyPath.repo_relative/2 expects a path string or nil, got: #{inspect(path)}"
++  end
++
++  defp relative_to_root(_path, nil), do: :outside_repo
++
++  defp relative_to_root(path, repo_root) when is_binary(repo_root) do
++    root = String.trim(repo_root)
++
++    if root == "" do
++      raise ArgumentError,
++            "PrBodyPath.repo_relative/2 expects a repository root path, got: #{inspect(repo_root)}"
++    end
++
++    expanded_root = Path.expand(root)
++    expanded_path = Path.expand(path)
++
++    if String.starts_with?(expanded_path, expanded_root <> "/") do
++      {:ok, Path.relative_to(expanded_path, expanded_root)}
++    else
++      :outside_repo
++    end
++  end
++
++  defp relative_to_root(_path, repo_root) do
++    raise ArgumentError,
++          "PrBodyPath.repo_relative/2 expects a repository root path or nil, got: #{inspect(repo_root)}"
++  end
++
++  @doc """
++  The `Artifact:` line of a PR body, or `""` when the artifact cannot be made
++  relative to the repository.
++  """
++  @spec artifact_line(String.t() | nil, String.t() | nil) :: String.t()
++  def artifact_line(path, repo_root)
++
++  def artifact_line(nil, _repo_root), do: ""
++
++  def artifact_line(path, repo_root) when is_binary(path) do
++    case repo_relative(path, repo_root) do
++      {:ok, relative} -> "\nArtifact: #{relative}\n"
++      :outside_repo -> ""
++    end
++  end
++
++  def artifact_line(path, _repo_root) do
++    raise ArgumentError,
++          "PrBodyPath.artifact_line/2 expects a path string or nil, got: #{inspect(path)}"
++  end
++
++  @doc """
++  The shortest leak-free form of a path for prose: a relative path passes
++  through, an absolute one keeps only its basename behind an ellipsis.
++  """
++  @spec display_path(String.t()) :: String.t()
++  def display_path(path) when is_binary(path) do
++    trimmed = String.trim(path)
++
++    case Path.type(trimmed) do
++      :relative -> trimmed
++      _ -> "…/" <> Path.basename(trimmed)
++    end
++  end
++
++  def display_path(path) do
++    raise ArgumentError,
++          "PrBodyPath.display_path/1 expects a path string, got: #{inspect(path)}"
++  end
++end
+diff --git a/packages/foreman_server/lib/foreman_server/workflow/review_findings.ex b/packages/foreman_server/lib/foreman_server/workflow/review_findings.ex
+index 10d3c181..1bc1bb83 100644
+--- a/packages/foreman_server/lib/foreman_server/workflow/review_findings.ex
++++ b/packages/foreman_server/lib/foreman_server/workflow/review_findings.ex
+@@ -335,7 +335,7 @@ defmodule ForemanServer.Workflow.ReviewFindings do
+   end
+ 
+   defp finding_line(%Finding{} = f) do
+-    path = flatten(f.path, @listed_path)
++    path = f.path |> ForemanServer.Workflow.PrBodyPath.display_path() |> flatten(@listed_path)
+     location = if f.line, do: "#{path}:#{f.line}", else: path
+     declined = if f.disposition == :declined, do: " (declined by the agent)", else: ""
+ 
+diff --git a/packages/foreman_server/lib/foreman_server/workflow/run_executor.ex b/packages/foreman_server/lib/foreman_server/workflow/run_executor.ex
+index dd4b464c..a4d41220 100644
+--- a/packages/foreman_server/lib/foreman_server/workflow/run_executor.ex
++++ b/packages/foreman_server/lib/foreman_server/workflow/run_executor.ex
+@@ -3124,6 +3124,9 @@ defmodule ForemanServer.Workflow.RunExecutor do
+       run_id: state.run_id,
+       base_branch: base_branch,
+       artifact_path: completion_artifact_path(state),
++      # The repository root the artifact path is made relative to in the PR body:
++      # the artifact sits in the run worktree, while `cwd` is the project root.
++      artifact_root: get_in(state, [:last_worktree, :worktree_path]),
+       head_branch: get_in(state, [:last_worktree, :branch]),
+       cwd: vcs_working_directory(state)
+     }
+diff --git a/packages/foreman_server/test/foreman_server/workflow/auto_pr_test.exs b/packages/foreman_server/test/foreman_server/workflow/auto_pr_test.exs
+index ce68d826..efe05de0 100644
+--- a/packages/foreman_server/test/foreman_server/workflow/auto_pr_test.exs
++++ b/packages/foreman_server/test/foreman_server/workflow/auto_pr_test.exs
+@@ -323,7 +323,7 @@ defmodule ForemanServer.Workflow.AutoPRTest do
+                  run_id: "run-12",
+                  base_branch: "main",
+                  head_branch: "foreman/run-12/implement",
+-                 cwd: "/work/tree",
++                 cwd: Path.dirname(artifact),
+                  artifact_path: artifact,
+                  command_runner: runner
+                })
+@@ -331,7 +331,7 @@ defmodule ForemanServer.Workflow.AutoPRTest do
+       assert_receive {:gh_args, args}
+       body = Enum.at(args, Enum.find_index(args, &(&1 == "--body")) + 1)
+       assert body =~ "Foreman run `run-12` complete."
+-      assert body =~ "Artifact: #{artifact}"
++      assert body =~ "Artifact: #{Path.basename(artifact)}"
+       body
+     end
+ 
+diff --git a/packages/foreman_server/test/foreman_server/workflow/pr_body_paths_test.exs b/packages/foreman_server/test/foreman_server/workflow/pr_body_paths_test.exs
+new file mode 100644
+index 00000000..e79632b0
+--- /dev/null
++++ b/packages/foreman_server/test/foreman_server/workflow/pr_body_paths_test.exs
+@@ -0,0 +1,332 @@
++defmodule ForemanServer.Workflow.PrBodyPathsTest do
++  @moduledoc """
++  A PR body is public; the worktree it was written in is not.
++
++  Both PR body builders interpolated the artifact path verbatim, so the body
++  carried `/Users/<operator>/.foreman/worktrees/<project>/<run>/workspace/...`
++  and a review finding could carry the same absolute prefix. Once the worktree
++  is cleaned up the path resolves to nothing anyway, so the leak bought nothing.
++
++  These tests drive the real `PhasePR` / `AutoPR` creation paths with a stubbed
++  command runner and assert on the `--body` argument that would reach GitHub.
++  """
++  use ExUnit.Case, async: true
++
++  alias ForemanServer.Workflow.AutoPR
++  alias ForemanServer.Workflow.PhasePR
++  alias ForemanServer.Workflow.PrBodyPath
++
++  setup do
++    # A real directory whose absolute path contains `/Users/` and
++    # `.foreman/worktrees/`, so the leak assertions fail on the old behaviour
++    # instead of passing vacuously.
++    root = Path.join(System.tmp_dir!(), "pr-body-path-test-#{System.unique_integer([:positive])}")
++
++    worktree =
++      Path.join([
++        root,
++        "Users",
++        "tester",
++        ".foreman",
++        "worktrees",
++        "foreman",
++        "run-1",
++        "workspace"
++      ])
++
++    File.mkdir_p!(worktree)
++    on_exit(fn -> File.rm_rf(root) end)
++
++    artifact =
++      Path.join([worktree, "docs", "reports", "foreman-beads:foreman:task-1", "FIX_REPORT.md"])
++
++    {:ok, worktree: worktree, artifact: artifact, root: root}
++  end
++
++  describe "repo_relative/2" do
++    test "returns an already-relative path unchanged", %{worktree: worktree} do
++      assert {:ok, "docs/reports/foreman/FIX_REPORT.md"} =
++               PrBodyPath.repo_relative("docs/reports/foreman/FIX_REPORT.md", worktree)
++    end
++
++    test "returns a relative path unchanged even when the root is unknown" do
++      assert {:ok, "lib/foo.ex"} = PrBodyPath.repo_relative("lib/foo.ex", nil)
++    end
++
++    test "rewrites an absolute path inside the root relative to it", %{
++      worktree: worktree,
++      artifact: artifact
++    } do
++      assert {:ok, "docs/reports/foreman-beads:foreman:task-1/FIX_REPORT.md"} =
++               PrBodyPath.repo_relative(artifact, worktree)
++    end
++
++    test "refuses an absolute path outside the root", %{worktree: worktree} do
++      assert :outside_repo = PrBodyPath.repo_relative("/etc/passwd", worktree)
++    end
++
++    test "refuses an absolute path when the root is unknown", %{artifact: artifact} do
++      assert :outside_repo = PrBodyPath.repo_relative(artifact, nil)
++    end
++
++    test "treats no path as outside the repo", %{worktree: worktree} do
++      assert :outside_repo = PrBodyPath.repo_relative(nil, worktree)
++    end
++
++    test "trims surrounding whitespace before classifying the path", %{worktree: worktree} do
++      assert {:ok, "lib/foo.ex"} = PrBodyPath.repo_relative("  lib/foo.ex  ", worktree)
++
++      assert :outside_repo =
++               PrBodyPath.repo_relative(" /Users/alice/work/lib/foo.ex ", worktree)
++    end
++
++    test "raises on a path that is neither a string nor nil", %{worktree: worktree} do
++      assert_raise ArgumentError, fn -> PrBodyPath.repo_relative(%{}, worktree) end
++      assert_raise ArgumentError, fn -> PrBodyPath.repo_relative(:worktree, worktree) end
++    end
++
++    test "raises on a blank path", %{worktree: worktree} do
++      assert_raise ArgumentError, fn -> PrBodyPath.repo_relative("   ", worktree) end
++    end
++
++    test "raises on a root that is blank or not a string", %{artifact: artifact} do
++      assert_raise ArgumentError, fn -> PrBodyPath.repo_relative(artifact, "") end
++      assert_raise ArgumentError, fn -> PrBodyPath.repo_relative(artifact, "   ") end
++      assert_raise ArgumentError, fn -> PrBodyPath.repo_relative(artifact, 123) end
++    end
++  end
++
++  describe "artifact_line/2" do
++    test "emits the repo-relative path", %{worktree: worktree, artifact: artifact} do
++      assert PrBodyPath.artifact_line(artifact, worktree) ==
++               "\nArtifact: docs/reports/foreman-beads:foreman:task-1/FIX_REPORT.md\n"
++    end
++
++    test "omits the line when there is no artifact", %{worktree: worktree} do
++      assert PrBodyPath.artifact_line(nil, worktree) == ""
++    end
++
++    test "omits the line when no relative form can be computed", %{
++      worktree: worktree,
++      artifact: artifact
++    } do
++      assert PrBodyPath.artifact_line("/tmp/elsewhere/REPORT.md", worktree) == ""
++      assert PrBodyPath.artifact_line(artifact, nil) == ""
++    end
++
++    test "raises on a path that is neither a string nor nil", %{worktree: worktree} do
++      assert_raise ArgumentError, fn -> PrBodyPath.artifact_line(:artifact, worktree) end
++    end
++
++    test "raises on a root that is blank or not a string", %{artifact: artifact} do
++      assert_raise ArgumentError, fn -> PrBodyPath.artifact_line(artifact, "") end
++      assert_raise ArgumentError, fn -> PrBodyPath.artifact_line(artifact, 123) end
++    end
++  end
++
++  describe "display_path/1" do
++    test "keeps a repo-relative path as written" do
++      assert PrBodyPath.display_path("lib/foo.ex") == "lib/foo.ex"
++    end
++
++    test "reduces an absolute path to its basename", %{artifact: artifact} do
++      assert PrBodyPath.display_path(artifact) == "…/FIX_REPORT.md"
++    end
++
++    test "trims surrounding whitespace before classifying the path" do
++      assert PrBodyPath.display_path("  lib/foo.ex  ") == "lib/foo.ex"
++      assert PrBodyPath.display_path(" /Users/alice/work/lib/foo.ex ") == "…/foo.ex"
++    end
++
++    test "raises on a path that is not a string" do
++      assert_raise ArgumentError, fn -> PrBodyPath.display_path(nil) end
++    end
++  end
++
++  describe "PhasePR body" do
++    test "carries the artifact relative to the worktree and no host path", ctx do
++      body = phase_body(ctx, [%{"path" => "lib/foo.ex", "line" => 12}])
++
++      assert body =~ "Artifact: docs/reports/foreman-beads:foreman:task-1/FIX_REPORT.md"
++      assert body =~ "`lib/foo.ex:12`"
++      refute_leaks(body)
++    end
++
++    test "omits the artifact line when the artifact sits outside the worktree", ctx do
++      outside = Path.join([ctx.root, "outside", "REPORT.md"])
++      body = phase_body(ctx, [], outside)
++
++      refute body =~ "Artifact:"
++      refute body =~ "outside"
++      refute_leaks(body)
++    end
++
++    test "reduces an absolute finding path to its basename", ctx do
++      body =
++        phase_body(ctx, [
++          %{
++            "path" => Path.join([ctx.worktree, "lib", "private.ex"]),
++            "line" => 7
++          }
++        ])
++
++      assert body =~ "…/private.ex:7"
++      refute_leaks(body)
++    end
++  end
++
++  describe "AutoPR body" do
++    test "carries the artifact relative to the run worktree and no host path", ctx do
++      body = auto_body(ctx, ctx.artifact, ctx.worktree)
++
++      assert body =~ "Artifact: docs/reports/foreman-beads:foreman:task-1/FIX_REPORT.md"
++      refute_leaks(body)
++    end
++
++    test "omits the artifact line when the artifact sits outside the root", ctx do
++      outside = Path.join([ctx.root, "outside", "REPORT.md"])
++      body = auto_body(ctx, outside, ctx.worktree)
++
++      refute body =~ "Artifact:"
++      refute_leaks(body)
++    end
++  end
++
++  defp phase_body(ctx, findings, artifact_path \\ nil) do
++    artifact_path = artifact_path || ctx.artifact
++    File.mkdir_p!(Path.dirname(artifact_path))
++    File.write!(artifact_path, block(findings))
++    parent = self()
++
++    # The `pr_create` effect key is global per (run_id, head_branch,
++    # base_branch), so every test needs its own identifiers or the second one
++    # is refused as `:effect_undecided`.
++    uniq = System.unique_integer([:positive])
++    run_id = "run-pr-body-#{uniq}"
++    head_branch = "foreman/pr-body-#{uniq}/run-#{uniq}"
++
++    runner = fn
++      "git", ["rev-list", "--count", _range], _opts ->
++        {"1", 0}
++
++      "git", ["rev-parse", "--verify", _ref], _opts ->
++        {"0123456789abcdef0123456789abcdef01234567", 0}
++
++      "git", ["ls-remote", "origin", _ref], _opts ->
++        {"", 0}
++
++      "git", ["push", "-u", "origin", _branch], _opts ->
++        {"", 0}
++
++      "gh", ["pr", "list" | _rest], _opts ->
++        {"[]", 0}
++
++      "gh", ["pr", "create" | _rest] = args, _opts ->
++        send(parent, {:phase_pr_create_args, args})
++        {"https://github.com/example/repo/pull/1", 0}
++    end
++
++    request = %PhasePR.Request{
++      run_id: run_id,
++      phase_id: "phase-pr-body-#{uniq}",
++      phase_index: 1,
++      phase_name: "coderabbit-review",
++      base_branch: "main",
++      head_branch: head_branch,
++      cwd: ctx.worktree,
++      artifact_path: artifact_path,
++      command_runner: runner
++    }
++
++    assert {:ok, %PhasePR.Record{status: "created"}} = PhasePR.maybe_create(request)
++    assert_receive {:phase_pr_create_args, args}
++    body_arg(args)
++  end
++
++  defp auto_body(ctx, artifact_path, artifact_root) do
++    File.mkdir_p!(Path.dirname(artifact_path))
++    File.write!(artifact_path, block([]))
++    parent = self()
++
++    uniq = System.unique_integer([:positive])
++    run_id = "run-pr-body-#{uniq}"
++    head_branch = "foreman/pr-body-#{uniq}/run-#{uniq}"
++
++    runner = fn
++      "git", ["rev-list", "--count", _range], _opts ->
++        {"1\n", 0}
++
++      "git", ["rev-parse", "--verify", _ref], _opts ->
++        {"0123456789abcdef0123456789abcdef01234567\n", 0}
++
++      "git", ["ls-remote", "origin", _ref], _opts ->
++        {"", 0}
++
++      "git", ["push" | _rest], _opts ->
++        {"", 0}
++
++      "gh", ["pr", "list" | _rest], _opts ->
++        {"[]\n", 0}
++
++      "gh", args, _opts ->
++        send(parent, {:auto_gh_args, args})
++        {"https://github.com/example/repo/pull/2\n", 0}
++    end
++
++    assert {:ok, "https://github.com/example/repo/pull/2"} =
++             AutoPR.maybe_create_pr(%{
++               run_id: run_id,
++               base_branch: "main",
++               head_branch: head_branch,
++               cwd: ctx.worktree,
++               artifact_root: artifact_root,
++               artifact_path: artifact_path,
++               command_runner: runner
++             })
++
++    assert_receive {:auto_gh_args, args}
++    body_arg(args)
++  end
++
++  # `gh_pr_create/2` passes the body as the argv element after `--body`.
++  defp body_arg(args) do
++    args
++    |> Enum.chunk_every(2, 1, :discard)
++    |> Enum.find_value(fn
++      ["--body", body] -> body
++      _ -> nil
++    end)
++  end
++
++  defp refute_leaks(body) do
++    refute body =~ "/Users/"
++    refute body =~ "/home/"
++    refute body =~ ".foreman/worktrees/"
++    refute body =~ System.tmp_dir!()
++  end
++
++  defp block(findings) do
++    json =
++      Jason.encode!(%{
++        "schema" => "foreman.review_findings/1",
++        "reviewed" => true,
++        "findings" => Enum.map(findings, &finding/1)
++      })
++
++    "# Report\n\n<!-- FOREMAN_REVIEW_FINDINGS_START -->\n#{json}\n<!-- FOREMAN_REVIEW_FINDINGS_END -->\n"
++  end
++
++  defp finding(overrides) do
++    Map.merge(
++      %{
++        "severity" => "minor",
++        "path" => "lib/foo.ex",
++        "line" => 12,
++        "description" => "stale assert",
++        "disposition" => "open",
++        "source" => "coderabbit"
++      },
++      overrides
++    )
++  end
++end
