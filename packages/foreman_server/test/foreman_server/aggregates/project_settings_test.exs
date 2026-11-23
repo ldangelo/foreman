@@ -187,6 +187,36 @@ defmodule ForemanServer.Aggregates.ProjectSettingsTest do
     end
   end
 
+  describe "base_ref_policy" do
+    test "accepts origin and checkout, normalising case and whitespace" do
+      for policy <- ~w(origin checkout) do
+        assert {:ok, %{base_ref_policy: ^policy}} =
+                 Settings.normalize(%{base_ref_policy: " " <> String.upcase(policy) <> " "})
+      end
+    end
+
+    test "rejects anything else with a distinct tuple listing the allowed values" do
+      assert {:error, {:base_ref_policy_invalid, "upstream", allowed}} =
+               update(registered(), %{base_ref_policy: "upstream"})
+
+      assert allowed == ~w(origin checkout)
+
+      assert {:error, {:base_ref_policy_invalid, true, _}} =
+               update(registered(), %{base_ref_policy: true})
+    end
+
+    test "nil and blank clear the setting" do
+      assert {:ok, %{base_ref_policy: nil}} = Settings.normalize(%{base_ref_policy: nil})
+      assert {:ok, %{base_ref_policy: nil}} = Settings.normalize(%{"base_ref_policy" => "  "})
+    end
+
+    test "a cleared base_ref_policy is reported as a cleared setting" do
+      assert {:ok, %{payload: payload}} = update(registered(), %{base_ref_policy: "  "})
+      refute Map.has_key?(payload, :base_ref_policy)
+      assert payload.cleared_settings == ["base_ref_policy"]
+    end
+  end
+
   describe "config whitelist" do
     test "an unknown config key is rejected" do
       assert {:error, {:unknown_setting, "foo"}} = update(registered(), %{config: %{foo: 1}})

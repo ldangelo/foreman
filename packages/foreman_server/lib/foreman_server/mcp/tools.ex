@@ -1444,6 +1444,7 @@ defmodule ForemanServer.MCP.Tools do
     string_keys = Enum.filter(Map.keys(args), &is_binary/1)
     declared_string_keys = Enum.filter(string_keys, &(&1 in declared))
     undeclared_string_keys = string_keys -- declared
+    operator_only_arg = operator_only_atom_arg(args)
 
     cond do
       declared_string_keys != [] ->
@@ -1460,11 +1461,12 @@ defmodule ForemanServer.MCP.Tools do
            message: "Unknown arguments: #{Enum.join(undeclared_string_keys, ", ")}"
          }}
 
-      # An atom-keyed `required_checks` would otherwise be dropped silently by the tool's
-      # whitelist; it is not an argument of any tool (operator-only, TRD-028).
-      Map.has_key?(args, :required_checks) ->
+      # An atom-keyed `required_checks` or `base_ref_policy` would otherwise be dropped
+      # silently by the tool's whitelist; neither is an argument of any tool
+      # (operator-only, TRD-028).
+      operator_only_arg != nil ->
         {:error,
-         %ToolError{code: "INVALID_PARAMS", message: "Unknown arguments: required_checks"}}
+         %ToolError{code: "INVALID_PARAMS", message: "Unknown arguments: #{operator_only_arg}"}}
 
       true ->
         case Enum.reject(required, &Map.has_key?(args, &1)) do
@@ -1481,6 +1483,12 @@ defmodule ForemanServer.MCP.Tools do
              }}
         end
     end
+  end
+
+  # Settings an agent may not set over MCP. An atom-keyed one would otherwise be
+  # dropped silently by the tool's whitelist instead of failing loudly.
+  defp operator_only_atom_arg(args) do
+    Enum.find([:required_checks, :base_ref_policy], &Map.has_key?(args, &1))
   end
 
   defp tool_foreman_run_get(%{run_id: run_id}) do

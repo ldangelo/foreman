@@ -43,12 +43,14 @@ defmodule ForemanServer.Aggregates.Project.Settings do
   @efforts ~w(low medium high)
   # Notification preference (E10): every turn, only when blocked, or off.
   @notification_preferences ~w(every_turn blocked_only off)
+  # PR base reference policy: `origin` (the default) or `checkout`.
+  @base_ref_policies ~w(origin checkout)
 
   @keys ~w(goal instructions thread_model thread_effort coordinator_provider coordinator_model
            coordinator_effort max_concurrent_runs daily_thread_cap pr_auto_fix
            coordinator_propose_before_start coordinator_max_active_threads
            coordinator_reuse_threads library_collect_produced repo_allowlist max_repos_per_run
-           notification_preference required_checks)a
+           notification_preference required_checks base_ref_policy)a
 
   # Config keys that existing callers send and that are not settings: the
   # registered display name, task-provider routing, the beads database path and
@@ -74,6 +76,7 @@ defmodule ForemanServer.Aggregates.Project.Settings do
           | :coordinator_reuse_threads
           | :notification_preference
           | :required_checks
+          | :base_ref_policy
 
   @type error ::
           {:goal_too_long, non_neg_integer(), pos_integer()}
@@ -100,6 +103,7 @@ defmodule ForemanServer.Aggregates.Project.Settings do
           | {:coordinator_propose_before_start_invalid, term()}
           | {:coordinator_reuse_threads_invalid, term()}
           | {:notification_preference_invalid, term(), [String.t()]}
+          | {:base_ref_policy_invalid, term(), [String.t()]}
           | {:required_checks_invalid, term()}
           | {:required_checks_too_many, non_neg_integer(), pos_integer()}
           | {:required_checks_name_invalid, term()}
@@ -129,6 +133,10 @@ defmodule ForemanServer.Aggregates.Project.Settings do
   @doc "Values accepted for the `notification_preference` setting."
   @spec notification_preferences() :: [String.t()]
   def notification_preferences, do: @notification_preferences
+
+  @doc "Values accepted for the `base_ref_policy` setting."
+  @spec base_ref_policies() :: [String.t()]
+  def base_ref_policies, do: @base_ref_policies
 
   @doc "Setting keys, in declaration order."
   @spec keys() :: [key()]
@@ -341,6 +349,19 @@ defmodule ForemanServer.Aggregates.Project.Settings do
 
   defp validate(:notification_preference, value),
     do: {:error, {:notification_preference_invalid, value, @notification_preferences}}
+
+  defp validate(:base_ref_policy, nil), do: {:ok, nil}
+
+  defp validate(:base_ref_policy, value) when is_binary(value) do
+    case value |> String.trim() |> String.downcase() do
+      "" -> {:ok, nil}
+      policy when policy in @base_ref_policies -> {:ok, policy}
+      _ -> {:error, {:base_ref_policy_invalid, value, @base_ref_policies}}
+    end
+  end
+
+  defp validate(:base_ref_policy, value),
+    do: {:error, {:base_ref_policy_invalid, value, @base_ref_policies}}
 
   defp validate(:required_checks, nil), do: {:ok, nil}
 

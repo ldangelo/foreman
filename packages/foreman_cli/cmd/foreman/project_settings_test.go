@@ -136,6 +136,7 @@ func TestProjectUpdateSettingsPayload(t *testing.T) {
 		"--coordinator-provider", "claude", "--coordinator-model", "m2", "--coordinator-effort", "low",
 		"--max-concurrent-runs", "4", "--daily-thread-cap", "20",
 		"--coordinator-propose-before-start=false", "--coordinator-max-active-threads", "7", "--coordinator-reuse-threads", "--notification-preference", "every_turn",
+		"--base-ref-policy", "checkout",
 		"--clear", "goal", "--clear", "thread_model",
 		"p1")
 	if err != nil {
@@ -148,6 +149,7 @@ func TestProjectUpdateSettingsPayload(t *testing.T) {
 		"max_concurrent_runs": float64(4), "daily_thread_cap": float64(20),
 		"coordinator_propose_before_start": false, "coordinator_max_active_threads": float64(7), "coordinator_reuse_threads": true,
 		"notification_preference": "every_turn",
+		"base_ref_policy":         "checkout",
 		"cleared_settings":        []any{"goal", "thread_model"},
 	}
 	if !reflect.DeepEqual(env.Payload, want) {

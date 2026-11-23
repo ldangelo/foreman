@@ -15,3 +15,13 @@ Phase 3 (coderabbit-review) done.
 **Noted**: the `base_ref_policy` feature itself is still unimplemented (zero hits in `packages/foreman_server/lib|test`) — that is the next phase's work, per PLAN.md §4.1–§4.11.
 
 **Also**: kata issue `afjh` created/claimed/commented/closed; operator inbox note sent and task Work Log comment added (both tools worked).
+
+**Restored in phase 4**: Foreman's phase-3 commit replaced this artifact with the summary above and dropped both machine-read blocks (the phase-3 agent's own version is in commit `c678205f`). The findings block below is restored verbatim from that commit. The judgement block keeps phase 3's level (`LOW`); its rationale is rewritten here, because the rationale stored in `c678205f` is a compression placeholder rather than text.
+
+<!-- FOREMAN_REVIEW_FINDINGS_START -->
+{"schema":"foreman.review_findings/1","reviewed":true,"findings":[{"severity":"minor","path":"docs/reports/foreman-beads:foreman:foreman-zv8bi/PLAN.md","line":5,"description":"The phase-2 commit replaced the 215-line executable plan with a 20-line summary, so the plan path later phases read contained no plan.","disposition":"fixed","source":"coderabbit"},{"severity":"minor","path":"docs/reports/foreman-beads:foreman:foreman-zv8bi/PLAN.md","line":113,"description":"The proposed HEEx referenced an undefined @base_ref_policy_id assign and never supplied the option list, so the settings page would raise undefined assign.","disposition":"fixed","source":"coderabbit"},{"severity":"minor","path":"docs/reports/foreman-beads:foreman:foreman-zv8bi/PLAN.md","line":84,"description":"The validator clause omitted `when` before is_binary(value), so the snippet would not compile if copied into settings.ex.","disposition":"fixed","source":"coderabbit"},{"severity":"minor","path":"docs/reports/foreman-beads:foreman:foreman-zv8bi/PLAN.md","line":116,"description":"The form help text promised the selection controls the PR base although no run code reads the key, letting an operator choose checkout and see no effect.","disposition":"fixed","source":"coderabbit"}]}
+<!-- FOREMAN_REVIEW_FINDINGS_END -->
+
+<!-- FOREMAN_RISK_JUDGEMENT_START -->
+{"schema":"foreman.risk_judgement/1","level":"LOW","rationale":"Phase 3 reviewed only the plan document: the branch carried no production code, so the four minor findings were all plan-text fixes and no runtime behaviour was at risk."}
+<!-- FOREMAN_RISK_JUDGEMENT_END -->

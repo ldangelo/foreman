@@ -24,7 +24,8 @@ defmodule ForemanServer.ProjectSettings do
           max_repos_per_run: pos_integer() | nil,
           library_collect_produced: boolean() | nil,
           notification_preference: String.t() | nil,
-          required_checks: [map()] | nil
+          required_checks: [map()] | nil,
+          base_ref_policy: String.t() | nil
         }
 
   defstruct @keys

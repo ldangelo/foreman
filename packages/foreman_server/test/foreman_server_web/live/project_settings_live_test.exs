@@ -351,6 +351,36 @@ defmodule ForemanServerWeb.ProjectSettingsLiveTest do
     assert settings(id).notification_preference == nil
   end
 
+  test "the PR base reference policy saves and (default) clears it", %{id: id} do
+    {view, _} = mount_view(id)
+
+    html =
+      view
+      |> form("#settings-form", settings: %{base_ref_policy: "checkout"})
+      |> render_submit()
+
+    assert html =~ "Settings saved."
+    refute html =~ ~s(id="base_ref_policy-error")
+    assert settings(id).base_ref_policy == "checkout"
+
+    view
+    |> form("#settings-form", settings: %{base_ref_policy: ""})
+    |> render_submit()
+
+    assert settings(id).base_ref_policy == nil
+  end
+
+  test "an invalid PR base reference policy is refused at its field", %{id: id} do
+    {view, _} = mount_view(id)
+
+    # the select cannot offer this value, a forged event can
+    html = render_submit(view, "save", %{"settings" => %{"base_ref_policy" => "upstream"}})
+
+    assert html =~ ~s(id="base_ref_policy-error")
+    assert html =~ "base_ref_policy_invalid"
+    assert settings(id).base_ref_policy == nil
+  end
+
   test "the repository allowlist and the per-run cap save as typed", %{id: id} do
     {view, _} = mount_view(id)
 
@@ -520,7 +550,7 @@ defmodule ForemanServerWeb.ProjectSettingsLiveTest do
           ~w(goal instructions thread_model thread_effort coordinator_provider coordinator_model
                    coordinator_effort max_concurrent_runs daily_thread_cap
                    coordinator_max_active_threads coordinator_propose_before_start coordinator_reuse_threads
-                   notification_preference repo_allowlist max_repos_per_run) do
+                   notification_preference repo_allowlist max_repos_per_run base_ref_policy) do
       assert html =~ ~s(for="settings_#{name}")
       assert html =~ ~s(id="settings_#{name}")
     end

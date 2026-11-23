@@ -733,6 +733,7 @@ foreman project settings project-123
 | `repo_allowlist` | `--repo-allowlist <abs-path-prefix>` (repeatable) | Operator-only: absolute path prefixes under which a thread may attach repositories to its run (off while empty; `--clear repo_allowlist` turns it off; see [Repositories](#repositories)). Not settable over MCP |
 | `max_repos_per_run` | 1..1000 (`--max-repos-per-run`, default 4) | Operator-only: most repositories one run may hold, primary included. Not settable over MCP |
 | `required_checks` | `--required-checks <json>` (a JSON array of at most 20 entries `{"name", "kind": "check_run"\|"status_context", "workflow"?, "allow_skipped"?}`; `[]` = gate on with no checks; unset or `--clear required_checks` = off) | Operator-only: the checks a PR must show before the merge gate accepts it (see [PR watching and auto-fix](#pr-watching-and-auto-fix)). Not settable over MCP or by the coordinator. Setting it needs a durable idempotency store while `:require_durable_store_for_gating` is on. Since Phase 1 PR 8 a project with it set has `approve-merge` refused unless the PR's evidence for the approved head is eligible or waived (unset: no evidence refusal) |
+| `base_ref_policy` | `--base-ref-policy` | `origin` (default when unset) or `checkout`: where a run's pull-request base comes from. Operator-only: the setting is registered now, but no run reads it yet. Not settable over MCP |
 
 Text values are trimmed and `CRLF` is normalised to `LF`; a blank value clears the
 setting. Validation is done once, by the server, and its error is shown verbatim

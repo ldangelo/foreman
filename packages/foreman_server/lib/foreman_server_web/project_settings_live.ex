@@ -55,7 +55,7 @@ defmodule ForemanServerWeb.ProjectSettingsLive do
   alias ForemanServerWeb.Workspace.{Actions, Components, ProjectNotFound, ProjectView, Refresh}
 
   @text_fields ~w(goal instructions thread_model thread_effort coordinator_provider coordinator_model
-                  coordinator_effort notification_preference)a
+                  coordinator_effort notification_preference base_ref_policy)a
   @int_fields ~w(max_concurrent_runs daily_thread_cap coordinator_max_active_threads
                  max_repos_per_run)a
   @bool_fields ~w(coordinator_propose_before_start coordinator_reuse_threads)a
@@ -831,6 +831,7 @@ defmodule ForemanServerWeb.ProjectSettingsLive do
         efforts: Settings.efforts(),
         providers: Enum.map(JidoHarness.providers(), &Atom.to_string/1),
         notification_preferences: Settings.notification_preferences(),
+        base_ref_policies: Settings.base_ref_policies(),
         default_max_repos: Settings.default_max_repos_per_run(),
         max_instructions: Settings.max_instructions_chars(),
         max_script_bytes: Environment.max_script_bytes(),
@@ -878,6 +879,7 @@ defmodule ForemanServerWeb.ProjectSettingsLive do
         <.field name="coordinator_propose_before_start" label="Propose before starting" errors={@errors} form={@form} options={["true", "false"]} />
         <.field name="coordinator_reuse_threads" label="Reuse threads" errors={@errors} form={@form} options={["true", "false"]} />
         <.field name="notification_preference" label="Notifications" errors={@errors} form={@form} options={@notification_preferences} help="Which updates reach the project's notification channel. (default) is blocked_only: failures, stalls and requests that need you." />
+        <.field name="base_ref_policy" label="PR base reference" errors={@errors} form={@form} options={@base_ref_policies} help="Where a run's pull request base comes from. (default) is origin: the base is the remote branch. checkout keeps the base on the local checkout, even when it is ahead of origin. Registered only: no run reads it yet." />
         <fieldset>
           <legend>Repository requests by agents</legend>
           <p id="repo_allowlist-warning" class="ws-error">Warning: only an operator can change this. Agents of this project may attach any repository under these path prefixes to a run. Leave the list empty to forbid that. The coordinator and agents cannot change it.</p>

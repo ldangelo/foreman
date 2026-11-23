@@ -237,10 +237,37 @@ defmodule ForemanServer.MCP.ToolsProjectSettingsTest do
              Tools.call_tool("foreman_project_settings_update", %{project_id: id, clear: ["goal"]})
   end
 
+  test "base_ref_policy is refused as an argument (atom or string key)", %{id: id} do
+    writes(true)
+
+    for key <- [:base_ref_policy, "base_ref_policy"] do
+      assert {:error,
+              %ToolError{
+                code: "INVALID_PARAMS",
+                message: "Unknown arguments: base_ref_policy"
+              }} =
+               Tools.call_tool("foreman_project_settings_update", %{
+                 :project_id => id,
+                 :goal => "g",
+                 key => "checkout"
+               })
+    end
+
+    assert events(id, "ProjectUpdated") == []
+
+    # Clearing is a reset to the default, not a set: it stays available over MCP, like
+    # `repo_allowlist` (only `required_checks` is refused a clear).
+    assert {:ok, _} =
+             Tools.call_tool("foreman_project_settings_update", %{
+               project_id: id,
+               clear: ["base_ref_policy"]
+             })
+  end
+
   # The whitelist (`Aggregates.Project.Settings`) and this tool's schema must not drift apart: a
   # new setting is either settable over MCP or named here as operator-only, never silently neither.
   test "every project setting is either settable over MCP or declared operator-only" do
-    operator_only = ~w(repo_allowlist max_repos_per_run required_checks)
+    operator_only = ~w(repo_allowlist max_repos_per_run required_checks base_ref_policy)
 
     settable =
       schema_properties("foreman_project_settings_update") --
