@@ -37,7 +37,7 @@ at line 257):
   end
 ```
 
-Fails before the fix (no `Review report:` text). Command (from `packages/foreman_server`):
+Fails before the fix (no `Review report:` text). Command (run from the repository root):
 
 ```
 devbox run -- bash -c 'cd packages/foreman_server && MIX_ENV=test mix test test/foreman_server/workflow/phase_pr_body_test.exs'

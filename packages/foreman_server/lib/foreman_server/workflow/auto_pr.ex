@@ -718,7 +718,7 @@ defmodule ForemanServer.Workflow.AutoPR do
 
     "Foreman run `#{run_id}` complete.\n" <>
       if(artifact_path, do: "\nArtifact: #{artifact_path}\n", else: "") <>
-      findings_section(artifact_path)
+      findings_section(context)
   end
 
   defp legacy_pr_content(context) do
@@ -740,6 +740,15 @@ defmodule ForemanServer.Workflow.AutoPR do
     end
   end
 
-  defp findings_section(artifact_path),
-    do: ForemanServer.Workflow.ReviewFindings.pr_section(artifact_path, "AutoPR")
+  defp findings_section(context),
+    do:
+      ForemanServer.Workflow.ReviewFindings.pr_section(
+        %ForemanServer.Workflow.ReviewFindings.Context{
+          artifact_path: Map.get(context, :artifact_path),
+          run_id: Map.fetch!(context, :run_id),
+          phase_name: nil,
+          repo_root: Map.get(context, :cwd)
+        },
+        "AutoPR"
+      )
 end

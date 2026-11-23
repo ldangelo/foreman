@@ -287,8 +287,14 @@ defmodule ForemanServer.Workflow.AutoPRTest do
 
     defp generated_body(artifact_contents) do
       artifact =
-        Path.join(System.tmp_dir!(), "autopr-findings-#{System.unique_integer([:positive])}.md")
+        Path.join([
+          System.tmp_dir!(),
+          "docs",
+          "reports",
+          "autopr-findings-#{System.unique_integer([:positive])}.md"
+        ])
 
+      File.mkdir_p!(Path.dirname(artifact))
       File.write!(artifact, artifact_contents)
       on_exit(fn -> File.rm_rf(artifact) end)
       generated_body_at(artifact)
@@ -380,12 +386,32 @@ defmodule ForemanServer.Workflow.AutoPRTest do
     end
 
     test "an absent block says the review evidence is missing, never a clean review" do
-      body = generated_body("report with no block\n")
+      artifact = "report with no block\n"
+      body = generated_body(artifact)
 
       assert body =~ "## Review findings (the review agent's report)"
       assert body =~ "review evidence is missing"
       assert body =~ "not a clean review"
       refute body =~ "nothing unresolved"
+      assert body =~ "Review report: ["
+      assert body =~ "autopr-findings-"
+      assert body =~ "run `run-12`"
+      refute body =~ "phase `"
+    end
+
+    test "a report outside the repository tree is named as inert text, not as a link" do
+      artifact =
+        Path.join(System.tmp_dir!(), "autopr-outside-#{System.unique_integer([:positive])}.md")
+
+      File.write!(artifact, "report with no block\n")
+      on_exit(fn -> File.rm_rf(artifact) end)
+      body = generated_body_at(artifact)
+
+      assert body =~ "review evidence is missing"
+      assert body =~ "not a clean review"
+      assert body =~ "run `run-12`"
+      refute body =~ "Review report: ["
+      assert body =~ "`#{artifact}`"
     end
 
     test "an unreadable artifact logs a warning, still creates the PR and says so in the body" do
