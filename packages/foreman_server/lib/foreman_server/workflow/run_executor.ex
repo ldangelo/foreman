@@ -85,6 +85,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   alias ForemanServer.TaskProvider.Registry, as: TaskProviderRegistry
   alias ForemanServer.Aggregate.Actor
   alias ForemanServer.Aggregates.BeadsDbLease
+  alias ForemanServer.Aggregates.RunSlots
   alias ForemanServer.Incarnation
   alias ForemanServer.PrRisk
   alias ForemanServer.TaskProvider.StorageBinding
@@ -6179,7 +6180,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # StuckDetector's 15-min idle threshold fires.
   #
   # This helper implements a fast bounded retry followed by an indefinite
-  # slow retry:
+  # slow retry, except for a `{:not_found, :run, _}` rejection, which gets a
+  # ceiling (`@max_not_found_dispatch_attempts`, below):
   #
   #   * Fast budget: up to `@max_terminal_dispatch_attempts` attempts with
   #     exponential backoff capped at `@terminal_dispatch_backoff_cap_ms`
@@ -6204,6 +6206,12 @@ defmodule ForemanServer.Workflow.RunExecutor do
   @terminal_dispatch_backoff_cap_ms 2_000
   @terminal_dispatch_slow_interval_ms 60_000
 
+  # `{:not_found, :run, _}` means the run aggregate does not exist
+  # (`ForemanServer.Aggregates.Run.require_exists/2`). Waiting cannot create it, so this
+  # rejection gets a small ceiling instead of the unbounded slow loop. Every other
+  # error keeps the fast-then-slow behaviour described above.
+  @max_not_found_dispatch_attempts 3
+
   # Returns `:ok` when the executor may stop normally, or `:retry` when
   # the helper has scheduled another attempt and the executor must stay
   # alive (`{:noreply, ...}`).
@@ -6226,6 +6234,18 @@ defmodule ForemanServer.Workflow.RunExecutor do
             "(#{attempt_kind} attempt #{attempt})"
         )
 
+        :ok
+
+      {:error, {:not_found, :run, _id}} when attempt >= @max_not_found_dispatch_attempts ->
+        # No aggregate, so there is no stream to write `RunFailed` to: there is no terminal
+        # event to emit here. Ending the loop and releasing the slot IS the outcome.
+        Logger.error(
+          "RunExecutor #{state.run_id} terminal dispatch #{attempt_kind} attempt #{attempt} " <>
+            "gave up: the run aggregate does not exist, so run.fail can never be accepted; " <>
+            "releasing the run slot and stopping"
+        )
+
+        release_run_slot(state, "run_aggregate_not_found")
         :ok
 
       {:error, dispatch_reason} ->
@@ -6263,6 +6283,51 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   defp next_terminal_dispatch_step(:slow, _attempt) do
     {@terminal_dispatch_slow_interval_ms, :slow}
+  end
+
+  # `RunFailed` is what makes the Dispatcher release a run's slot (`terminate_slot/2`), and a
+  # run whose aggregate does not exist can never be failed, so the executor releases the slot
+  # itself, through the ONE release builder (`RunSlots.release_command/3`, TRD-002); releasing a
+  # run that holds no slot is a no-op. A `GenServer.call` exit (the slot actor died or is not
+  # registered) must not crash the executor: an abnormal exit restarts it and spends the
+  # supervisor restart budget every run shares. A release that fails is logged and the executor
+  # still stops; the slot then stays held until something releases it, and the
+  # `RunLifecycleReconciler` backstop sweep does not while the run's task is `in_progress`
+  # (`admission_in_flight?/1`).
+  defp release_run_slot(state, reason) do
+    case project_id(state) do
+      project_id when is_binary(project_id) and project_id != "" ->
+        case CommandGateway.dispatch_system(
+               RunSlots.release_command(project_id, state.run_id, reason)
+             ) do
+          {:ok, _} ->
+            :ok
+
+          {:error, release_reason} ->
+            Logger.error(
+              "RunExecutor #{state.run_id} run_slots.release (#{reason}) failed: " <>
+                "#{inspect(release_reason)}; the run slot stays held"
+            )
+
+            :ok
+        end
+
+      _ ->
+        Logger.error(
+          "RunExecutor #{state.run_id} cannot resolve a project id; run_slots.release " <>
+            "(#{reason}) skipped, the run slot stays held"
+        )
+
+        :ok
+    end
+  catch
+    :exit, exit_reason ->
+      Logger.error(
+        "RunExecutor #{state.run_id} run_slots.release (#{reason}) exited: " <>
+          "#{inspect(exit_reason)}; the run slot stays held"
+      )
+
+      :ok
   end
 
   # Centralizes the `:stop, :normal` after a `run.fail` dispatch so the
