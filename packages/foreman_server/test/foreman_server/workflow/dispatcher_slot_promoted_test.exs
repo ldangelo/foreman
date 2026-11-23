@@ -165,6 +165,108 @@ defmodule ForemanServer.Workflow.DispatcherSlotPromotedTest do
       assert :meck.called(ForemanServer.Workflow.RunSupervisor, :start_run, :_)
     end
 
+    # A promo is an async hand-off: the queue snapshot is taken when the waiter is
+    # enqueued, not when the slot frees. The task can be closed or failed in between.
+    test "does not start the run when its task is no longer promotable" do
+      run_id = "run-stale-#{unique_id()}"
+
+      :meck.expect(ForemanServer.ProjectionStore, :tasks_by_run_id, fn ^run_id ->
+        [%{task_id: "task-#{run_id}", status: "closed", project_id: "p1", approval_id: "a1"}]
+      end)
+
+      # The dispatch door and the run supervisor must stay untouched: if the guard
+      # failed to short-circuit, meck would raise on the unexpected call.
+      :meck.expect(ForemanServer.RunAdmission, :start, fn _project_id, _payload ->
+        {:ok, %{event_type: "RunStarted"}}
+      end)
+
+      :meck.expect(ForemanServer.Workflow.RunSupervisor, :start_run, fn _run_id, _task ->
+        {:ok, :child_started}
+      end)
+
+      test_pid = self()
+
+      # `terminate_slot/2` hands the slot back through `CommandGateway.dispatch_system/1`.
+      :meck.new(ForemanServer.CommandGateway, [:no_link])
+
+      :meck.expect(ForemanServer.CommandGateway, :dispatch_system, fn command ->
+        send(test_pid, {:dispatched, command})
+        {:ok, :dispatched}
+      end)
+
+      on_exit(fn ->
+        if :meck.validate(ForemanServer.CommandGateway) do
+          :meck.unload(ForemanServer.CommandGateway)
+        end
+      end)
+
+      {:noreply, _state} =
+        Dispatcher.handle_info({:projection_event, transferred_envelope(run_id)}, %{})
+
+      refute :meck.called(ForemanServer.RunAdmission, :start, :_)
+      refute :meck.called(ForemanServer.Workflow.RunSupervisor, :start_run, :_)
+
+      # The slot the dead task held goes back to the queue, and its waiter is dropped.
+      assert_receive {:dispatched,
+                      %{
+                        type: "run_slots.release",
+                        payload: %{run_id: ^run_id, reason: "task_closed"}
+                      }},
+                     1_000
+
+      assert_receive {:dispatched,
+                      %{type: "run_slots.remove_waiter", payload: %{run_id: ^run_id}}},
+                     1_000
+    end
+
+    test "still starts the run when the task is promotable (open or in_progress)" do
+      run_id = "run-ok-#{unique_id()}"
+
+      # `status: "open"` plus an approval_id is the shape the guard must let through.
+      :meck.expect(ForemanServer.ProjectionStore, :tasks_by_run_id, fn ^run_id ->
+        [
+          %{
+            task_id: "task-#{run_id}",
+            status: "open",
+            approval_id: "approval-#{run_id}",
+            project_id: "project-admit-test",
+            workflow_snapshot: %{implementation: %{}}
+          }
+        ]
+      end)
+
+      :meck.expect(ForemanServer.RunAdmission, :start, fn _project_id, _payload ->
+        {:ok, %{event_type: "RunStarted"}}
+      end)
+
+      :meck.expect(ForemanServer.Workflow.RunSupervisor, :start_run, fn ^run_id, _task ->
+        {:ok, :child_started}
+      end)
+
+      test_pid = self()
+
+      :meck.new(ForemanServer.CommandGateway, [:no_link])
+
+      :meck.expect(ForemanServer.CommandGateway, :dispatch_system, fn command ->
+        send(test_pid, {:dispatched, command})
+        {:ok, :dispatched}
+      end)
+
+      on_exit(fn ->
+        if :meck.validate(ForemanServer.CommandGateway) do
+          :meck.unload(ForemanServer.CommandGateway)
+        end
+      end)
+
+      {:noreply, _state} =
+        Dispatcher.handle_info({:projection_event, transferred_envelope(run_id)}, %{})
+
+      assert :meck.called(ForemanServer.Workflow.RunSupervisor, :start_run, :_)
+
+      refute_receive {:dispatched, %{type: "run_slots.release"}}
+      refute_receive {:dispatched, %{type: "run_slots.remove_waiter"}}
+    end
+
     test "calls RunSupervisor.start_run when admission returns {:ok, nil} (already started)" do
       task_id = "task-admit-nil-#{unique_id()}"
       run_id = "run-admit-nil-#{unique_id()}"
@@ -338,6 +440,17 @@ defmodule ForemanServer.Workflow.DispatcherSlotPromotedTest do
   # ---------------------------------------------------------------------------
 
   defp unique_id, do: System.unique_integer([:positive])
+
+  defp transferred_envelope(run_id) do
+    %{
+      event_type: "RunSlotTransferred",
+      data: %{
+        released_run_id: "run-old",
+        acquired_run_id: run_id,
+        acquired_at_ms: System.system_time(:millisecond)
+      }
+    }
+  end
 
   defp ensure_started(child_spec, name) do
     case Process.whereis(name) do
