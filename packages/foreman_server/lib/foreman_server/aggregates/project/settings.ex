@@ -35,7 +35,9 @@ defmodule ForemanServer.Aggregates.Project.Settings do
   @pr_fix_cooldown_range 0..86_400
   @max_active_threads_range 1..50
   @max_required_checks 20
+  @max_pr_body_headings 10
   @max_check_text_chars 200
+  @pr_body_heading_regex ~r/\A#{1,6} \S/
   @required_check_kinds ~w(check_run status_context)
   @required_check_entry_keys ~w(name kind workflow allow_skipped)
   # What `Jido.Harness.RunRequest` accepts for `reasoning_effort`; a wider value
@@ -48,7 +50,7 @@ defmodule ForemanServer.Aggregates.Project.Settings do
            coordinator_effort max_concurrent_runs daily_thread_cap pr_auto_fix
            coordinator_propose_before_start coordinator_max_active_threads
            coordinator_reuse_threads library_collect_produced repo_allowlist max_repos_per_run
-           notification_preference required_checks)a
+           notification_preference required_checks pr_body_headings)a
 
   # Config keys that existing callers send and that are not settings: the
   # registered display name, task-provider routing, the beads database path and
@@ -74,6 +76,7 @@ defmodule ForemanServer.Aggregates.Project.Settings do
           | :coordinator_reuse_threads
           | :notification_preference
           | :required_checks
+          | :pr_body_headings
 
   @type error ::
           {:goal_too_long, non_neg_integer(), pos_integer()}
@@ -108,6 +111,9 @@ defmodule ForemanServer.Aggregates.Project.Settings do
           | {:required_checks_allow_skipped_invalid, term()}
           | {:required_checks_unknown_key, String.t()}
           | {:required_checks_conflicting_entry, String.t(), String.t(), String.t() | nil}
+          | {:pr_body_headings_invalid, term()}
+          | {:pr_body_headings_too_many, non_neg_integer(), pos_integer()}
+          | {:pr_body_heading_invalid, term()}
           | {:unknown_setting, String.t()}
 
   @doc "Default `max_repos_per_run` when the project does not set one."
@@ -356,6 +362,48 @@ defmodule ForemanServer.Aggregates.Project.Settings do
   end
 
   defp validate(:required_checks, other), do: {:error, {:required_checks_invalid, other}}
+
+  defp validate(:pr_body_headings, nil), do: {:ok, nil}
+
+  defp validate(:pr_body_headings, headings) when is_list(headings) do
+    if length(headings) > @max_pr_body_headings do
+      {:error, {:pr_body_headings_too_many, length(headings), @max_pr_body_headings}}
+    else
+      pr_body_heading_entries(headings)
+    end
+  end
+
+  defp validate(:pr_body_headings, other), do: {:error, {:pr_body_headings_invalid, other}}
+
+  defp pr_body_heading_entries(headings) do
+    Enum.reduce_while(headings, {:ok, []}, fn heading, {:ok, acc} ->
+      case pr_body_heading(heading) do
+        {:ok, clean} -> {:cont, {:ok, [clean | acc]}}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, acc} -> {:ok, Enum.reverse(acc)}
+      error -> error
+    end
+  end
+
+  # A markdown heading line: 1-6 `#`, a space, then a non-space char. Control
+  # chars and over-long entries are rejected so the value can never smuggle a
+  # line break into the `gh pr create --body` argument.
+  defp pr_body_heading(heading) when is_binary(heading) do
+    trimmed = String.trim(heading)
+
+    cond do
+      not String.valid?(trimmed) -> {:error, {:pr_body_heading_invalid, heading}}
+      String.length(trimmed) > @max_check_text_chars -> {:error, {:pr_body_heading_invalid, heading}}
+      String.match?(trimmed, ~r/[[:cntrl:]]/u) -> {:error, {:pr_body_heading_invalid, heading}}
+      !String.match?(trimmed, @pr_body_heading_regex) -> {:error, {:pr_body_heading_invalid, heading}}
+      true -> {:ok, trimmed}
+    end
+  end
+
+  defp pr_body_heading(heading), do: {:error, {:pr_body_heading_invalid, heading}}
 
   defp boolean(nil, _name), do: {:ok, nil}
   defp boolean(value, _name) when is_boolean(value), do: {:ok, value}
