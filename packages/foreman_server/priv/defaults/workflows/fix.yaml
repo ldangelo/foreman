@@ -32,7 +32,7 @@ phases:
     commit: true
     stack_pr: true
   - name: pr-review
-    command: "/enseble:merge-pr --foreman"
+    command: "/ensemble:pr-merge --foreman"
     provider: pi
     artifact: "{task.projectReportsDir}/REVIEW_CODERABBIT_REPORT.md"
     commit: true
