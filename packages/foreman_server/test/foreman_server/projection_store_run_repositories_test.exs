@@ -44,7 +44,7 @@ defmodule ForemanServer.ProjectionStoreRunRepositoriesTest do
                },
                %{
                  event_type: "RunBaseBranchRecorded",
-                 payload: %{run_id: "run-1", base_branch: "dev"}
+                 payload: %{run_id: "run-1", base_branch: "dev", base_sha: "deadbeef"}
                },
                wt("wt-run-1", "run-1", %{}),
                %{
@@ -59,6 +59,7 @@ defmodule ForemanServer.ProjectionStoreRunRepositoriesTest do
                primary?: true,
                worktree: %{operation_id: "wt-run-1", worktree_path: "/w/wt-run-1"},
                base_branch: "dev",
+               base_sha: "deadbeef",
                pr_association: %{pr_url: "https://x/pull/1"},
                gate: :none
              }
@@ -83,7 +84,12 @@ defmodule ForemanServer.ProjectionStoreRunRepositoriesTest do
                },
                %{
                  event_type: "RunBaseBranchRecorded",
-                 payload: %{run_id: "run-2", repo_id: "api", base_branch: "api-b"}
+                 payload: %{
+                   run_id: "run-2",
+                   repo_id: "api",
+                   base_branch: "api-b",
+                   base_sha: "cafe01"
+                 }
                },
                wt("zz-primary", "run-2", %{}),
                wt("aa-web", "run-2", %{repo_id: "web"}),
@@ -97,6 +103,7 @@ defmodule ForemanServer.ProjectionStoreRunRepositoriesTest do
                primary?: false,
                worktree: %{operation_id: "bb-api"},
                base_branch: "api-b",
+               base_sha: "cafe01",
                pr_association: nil,
                gate: nil,
                pr_state: nil

@@ -219,7 +219,7 @@ sync; per **§5.5**, a hand-maintained second list is the defect, not the fix.
 | `RunCancelled` | `Run.handle_command/2` | Marks run cancelled; `Dispatcher` also kills the dispatched agent via `RunControl.cancel_agent/1` |
 | `RunPaused` | `Run.handle_command/2` | Stops the run resumably; `Dispatcher` kills the dispatched agent (after the executor commits partial work) and releases the run slot/lease without reopening the task |
 | `RunResumed` | `Run.handle_command/2` | Re-enters a paused run at its first non-completed phase |
-| `RunBaseBranchRecorded` | `Run.handle_command/2` | Persists the run's PR base branch so a resumed run cannot retarget it |
+| `RunBaseBranchRecorded` | `Run.handle_command/2` | Persists the run's PR base branch so a resumed run cannot retarget it, with the optional `base_sha` the branch pointed at and the optional `repo_id` of a secondary repository |
 | `RunDeleted`\* | `Run.handle_command/2` | Marks run removed and triggers cleanup fan-out |
 | `RunReset`\* | `Run.handle_command/2` | Clears failed/stuck run projection state for fresh submission |
 | `RunCompleted` | `Run.handle_command/2` | Marks run terminal success |

@@ -1193,6 +1193,7 @@ defmodule ForemanServer.ProjectionStore do
           primary?: boolean(),
           worktree: map() | nil,
           base_branch: String.t() | nil,
+          base_sha: String.t() | nil,
           pr_association: map() | nil,
           gate: :none | :pending | :approved | nil,
           pr_state: :open | :merged | :closed | :conflicted | :create_failed | nil,
@@ -2825,19 +2826,39 @@ defmodule ForemanServer.ProjectionStore do
     end)
   end
 
+  # `base_sha` (the commit `base_branch` pointed at when the worktree was cut) is
+  # stored beside the branch in the same shape, and only when present: an absent
+  # SHA leaves `repo_base_shas` / `base_sha` untouched rather than storing `nil`
+  # (AGENTS.md 5.4b).
   defp apply_event_by_type(state, "RunBaseBranchRecorded", payload) do
+    base_sha = get(payload, :base_sha)
+
     update_run_projection(state, get(payload, :run_id), payload_event_at_ms(payload), fn run ->
       case get(payload, :repo_id) do
         repo_id when is_binary(repo_id) ->
-          Map.update(
-            run,
-            :repo_base_branches,
-            %{repo_id => get(payload, :base_branch)},
-            &Map.put(&1, repo_id, get(payload, :base_branch))
-          )
+          run =
+            Map.update(
+              run,
+              :repo_base_branches,
+              %{repo_id => get(payload, :base_branch)},
+              &Map.put(&1, repo_id, get(payload, :base_branch))
+            )
+
+          if is_binary(base_sha) do
+            Map.update(
+              run,
+              :repo_base_shas,
+              %{repo_id => base_sha},
+              &Map.put(&1, repo_id, base_sha)
+            )
+          else
+            run
+          end
 
         _ ->
-          maybe_put(run, :base_branch, get(payload, :base_branch))
+          run
+          |> maybe_put(:base_branch, get(payload, :base_branch))
+          |> maybe_put(:base_sha, base_sha)
       end
     end)
   end
@@ -4537,6 +4558,7 @@ defmodule ForemanServer.ProjectionStore do
         end)
 
       base_branches = (run && get(run, :repo_base_branches)) || %{}
+      base_shas = (run && get(run, :repo_base_shas)) || %{}
 
       others =
         [(run && get(run, :repo_ids)) || [], Map.keys(by_repo), Map.keys(base_branches)]
@@ -4555,6 +4577,7 @@ defmodule ForemanServer.ProjectionStore do
         primary?: true,
         worktree: Map.get(by_repo, primary_id),
         base_branch: run && get(run, :base_branch),
+        base_sha: run && get(run, :base_sha),
         pr_association: Map.get(state.pr_associations, run_id),
         gate: nil,
         pr_state: nil,
@@ -4580,6 +4603,7 @@ defmodule ForemanServer.ProjectionStore do
               repo_id,
               by_repo,
               base_branches,
+              base_shas,
               repo_prs,
               Map.get(repo_states, repo_id),
               Map.get(repo_failures, repo_id)
@@ -4589,12 +4613,21 @@ defmodule ForemanServer.ProjectionStore do
     end
   end
 
-  defp secondary_run_repository(repo_id, by_repo, base_branches, repo_prs, entry, failure) do
+  defp secondary_run_repository(
+         repo_id,
+         by_repo,
+         base_branches,
+         base_shas,
+         repo_prs,
+         entry,
+         failure
+       ) do
     %{
       repo_id: repo_id,
       primary?: false,
       worktree: Map.get(by_repo, repo_id),
       base_branch: Map.get(base_branches, repo_id),
+      base_sha: Map.get(base_shas, repo_id),
       pr_association: Map.get(repo_prs, repo_id),
       gate: entry && entry.merge_gate,
       pr_state: entry && entry.pr_state,

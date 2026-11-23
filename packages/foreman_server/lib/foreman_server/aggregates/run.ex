@@ -69,9 +69,6 @@ defmodule ForemanServer.Aggregates.Run do
       :terminal?,
       :last_sequence,
       :base_branch,
-      # Commit `base_branch` pointed at when the worktree was cut; folded from
-      # `RunBaseBranchRecorded.base_sha`. See the event moduledoc.
-      :base_sha,
       merge_gates: %{},
       merge_pins: %{},
       phase_status: %{},
@@ -98,7 +95,6 @@ defmodule ForemanServer.Aggregates.Run do
       merge_gates: %{},
       merge_pins: %{},
       base_branch: nil,
-      base_sha: nil,
       phase_status: %{},
       worker_status: %{},
       retry_history: [],
@@ -108,15 +104,6 @@ defmodule ForemanServer.Aggregates.Run do
       pr_watch: %{},
       pr_fixes: %{}
     }
-
-  @doc """
-  What `base_sha` records the commit the primary `base_branch` pointed at when
-  the run worktree was cut, or `nil` when the run never recorded it — pre-existing
-  events, and runs cut before the SHA was captured. Read by
-  `AutoPR.resolve_base_ref/1`; see `ForemanServer.Events.RunBaseBranchRecorded`.
-  """
-  @spec base_sha(%State{}) :: String.t() | nil
-  def base_sha(%State{base_sha: sha}), do: sha
 
   @doc """
   The merge gate of one repository's PR: `:pending`, `:approved`, or `nil`
@@ -422,6 +409,10 @@ defmodule ForemanServer.Aggregates.Run do
 
       # A secondary repository's base branch (`repo_id` present) is a read-model
       # fact only: `State.base_branch` stays the run primary's.
+      #
+      # `base_sha` is deliberately not folded into the aggregate: it is a
+      # read-model fact the projection surfaces on the run view, and the
+      # aggregate keeps no field for it.
       "RunBaseBranchRecorded" ->
         base_branch =
           if Aggregate.get(payload, :repo_id),
@@ -431,7 +422,6 @@ defmodule ForemanServer.Aggregates.Run do
         %State{
           state
           | base_branch: base_branch,
-            base_sha: base_sha_payload_value(payload),
             run_id: Aggregate.get(payload, :run_id) || state.run_id
         }
 
@@ -793,20 +783,28 @@ defmodule ForemanServer.Aggregates.Run do
   # of re-deriving it from whatever branch the checkout is on at resume
   # time. Dispatched via `CommandGateway.dispatch_system/2` by
   # `RunExecutor.remember_run_base_branch/1`.
+  #
+  # `base_sha` is the optional companion field: the commit `base_branch`
+  # pointed at when the run worktree was cut. Absent (rather than `nil`)
+  # when the producer could not resolve it, so `EventCodec.build_struct/3`
+  # keeps the struct's declared default. A present but non-binary value is
+  # refused here rather than being written into the event and blowing up on
+  # replay. `repo_id` names the secondary repository the branch belongs to;
+  # a malformed one is refused here too, rather than dropped, where it would
+  # silently read as the run primary's branch.
   def handle_command(state, %{type: "run.record_base_branch", payload: payload}) do
     with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
          {:ok, base_branch} <-
            Aggregate.required_binary(Aggregate.get(payload, :base_branch), :base_branch),
+         :ok <- require_optional_binary(payload, :base_sha),
+         :ok <- require_optional_binary(payload, :repo_id),
          :ok <- require_exists(state, run_id),
          :ok <- reject_terminal_mutation(state) do
       {:ok,
        %{
          stream_id: "run:#{run_id}",
          event_type: "RunBaseBranchRecorded",
-         payload:
-           payload
-           |> Map.put(:run_id, run_id)
-           |> Map.put(:base_branch, base_branch)
+         payload: base_branch_payload(payload, run_id, base_branch)
        }}
     end
   end
@@ -1584,6 +1582,28 @@ defmodule ForemanServer.Aggregates.Run do
       nil -> :ok
       value when is_binary(value) -> :ok
       value -> {:error, {:missing_or_invalid, key, value}}
+    end
+  end
+
+  # Only declared `RunBaseBranchRecorded` fields reach the stream
+  # (AGENTS.md 5.4b): an undeclared key makes `EventCodec.decode!/2` raise on
+  # replay, and an atom/string duplicate form of a declared key raises the
+  # same way. The payload is therefore rebuilt from the declared fields with
+  # atom keys, and every other key is dropped. `base_sha` is optional — absent
+  # stays absent (never `nil`) — and `repo_id` is the secondary repository the
+  # branch belongs to.
+  defp base_branch_payload(payload, run_id, base_branch) do
+    event_payload = %{run_id: run_id, base_branch: base_branch}
+
+    event_payload
+    |> put_optional_binary(payload, :base_sha)
+    |> put_optional_binary(payload, :repo_id)
+  end
+
+  defp put_optional_binary(event_payload, payload, key) do
+    case Aggregate.get(payload, key) do
+      value when is_binary(value) -> Map.put(event_payload, key, value)
+      _ -> event_payload
     end
   end
 

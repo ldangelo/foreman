@@ -120,3 +120,7 @@ packages/*/deps/**/*.credo.exs
 /.ensemble/pr-review/
 *.coverdata
 .kata.local.toml
+# Agent scratch transcripts: the fix phase's implementation agent wrote its
+# session prompt into .dev/ in the repository root, and the file was committed
+# to the branch as a side effect. Machine-local scratch, never review material.
+/.dev/

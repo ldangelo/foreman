@@ -1539,7 +1539,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
         :error ->
           resolved = resolve_run_base_branch(state)
-          dispatch_run_base_branch(state.run_id, resolved)
+          dispatch_run_base_branch(state, resolved)
           Map.put(state, :run_base_branch, resolved)
       end
     end
@@ -1581,16 +1581,28 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # but a dispatch failure here must not fail the run — the caller already
   # stores the resolved value for THIS attempt regardless of whether the
   # dispatch below lands.
-  defp dispatch_run_base_branch(run_id, {:ok, branch}) do
+  #
+  # The commit the branch points at is recorded alongside it when the revision
+  # reads, and omitted when it does not: an unresolvable revision records the
+  # branch alone (AGENTS.md 5.3 — absent is not malformed).
+  defp dispatch_run_base_branch(state, {:ok, branch}) do
+    payload = %{run_id: state.run_id, base_branch: branch}
+
+    payload =
+      case resolve_revision(vcs_working_directory(state), branch) do
+        {:ok, sha} -> Map.put(payload, :base_sha, sha)
+        {:error, _reason} -> payload
+      end
+
     CommandGateway.dispatch_system(%{
       type: "run.record_base_branch",
-      command_id: "run_executor:base-branch:" <> run_id,
-      aggregate_id: "run:#{run_id}",
-      payload: %{run_id: run_id, base_branch: branch}
+      command_id: "run_executor:base-branch:" <> state.run_id,
+      aggregate_id: "run:#{state.run_id}",
+      payload: payload
     })
   end
 
-  defp dispatch_run_base_branch(_run_id, {:error, _reason}), do: :ok
+  defp dispatch_run_base_branch(_state, {:error, _reason}), do: :ok
 
   # `Exec.Git.current_branch/1` is `git symbolic-ref --quiet --short HEAD`,
   # which names the checked-out branch and exits non-zero on a detached HEAD.
@@ -4227,7 +4239,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
              branch: primary_record.branch,
              repo_id: repo.id
            }) do
-      dispatch_repo_base_branch(state.run_id, repo.id, base_branch)
+      dispatch_repo_base_branch(state.run_id, repo.id, base_branch, base_ref)
 
       {:ok,
        %{
@@ -4271,12 +4283,12 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   # Best-effort, like the primary's: persisting the base is what makes it
   # resume-safe, but a dispatch failure must not fail the run.
-  defp dispatch_repo_base_branch(run_id, repo_id, branch) do
+  defp dispatch_repo_base_branch(run_id, repo_id, branch, base_sha) do
     CommandGateway.dispatch_system(%{
       type: "run.record_base_branch",
       command_id: "run_executor:base-branch:" <> run_id <> ":" <> repo_id,
       aggregate_id: "run:#{run_id}",
-      payload: %{run_id: run_id, base_branch: branch, repo_id: repo_id}
+      payload: %{run_id: run_id, base_branch: branch, base_sha: base_sha, repo_id: repo_id}
     })
   end
 

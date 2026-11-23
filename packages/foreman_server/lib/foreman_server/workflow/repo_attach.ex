@@ -72,7 +72,12 @@ defmodule ForemanServer.Workflow.RepoAttach do
           type: "run.record_base_branch",
           command_id: "run_executor:base-branch:" <> run_id <> ":" <> repo.id,
           aggregate_id: "run:#{run_id}",
-          payload: %{run_id: run_id, base_branch: base_branch, repo_id: repo.id}
+          payload: %{
+            run_id: run_id,
+            base_branch: base_branch,
+            base_sha: base_ref,
+            repo_id: repo.id
+          }
         })
 
       {:ok, :attached}

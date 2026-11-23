@@ -1362,7 +1362,9 @@ Read endpoints are projection-only:
   `{error: "run_not_found", run_id: "..."}` with `404`. Every projected
   run carries `pr_url` — the URL of the PR the run opened, or `null`
   when Foreman recorded none. `GET /api/runs` carries the same field on
-  each listed run.
+  each listed run. A run that recorded its PR base branch also carries
+  `base_branch` and, when the commit behind it was resolved, `base_sha`
+  — the commit `base_branch` pointed at when the worktree was cut.
 - `GET /api/tasks/{id}`, `GET /api/projects`, `GET /api/projects/{id}`,
   and `GET /api/queue?project_id=<id>` (the one project's own run-slot queue; 422 `project_required` without `project_id`, there is no machine-wide queue view) expose corresponding projections. `GET /api/queue?project_id=<id>`
   returns `project_id`, `limit`, `running_runs`, `waiting_runs`, `running`, `waiting` and `orphan_recovery` (the boot

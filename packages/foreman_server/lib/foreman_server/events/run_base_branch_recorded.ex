@@ -13,9 +13,14 @@ defmodule ForemanServer.Events.RunBaseBranchRecorded do
   secondary repository's base branch.
 
   `base_sha` is the commit `base_branch` pointed at when the run worktree was
-  cut (`RunExecutor.foreman_env/3` exports it as `FOREMAN_BASE_SHA`). Recording
-  it keeps the PR comparison base reproducible after the branch moves. It is
-  absent on pre-existing events and on the secondary-repo recording path.
+  cut. Recording it keeps the PR comparison base reproducible after the branch
+  moves. Producers omit the field when no commit could be resolved, so it is
+  absent from the event rather than stored as `nil`, and it stays absent on
+  pre-existing events. It is written by the producers of this event
+  (`RunExecutor` for the primary and for a secondary repository,
+  `Workflow.RepoAttach` for a secondary repository) and read by
+  `ProjectionStore`, which surfaces it on the run view as `base_sha`
+  (`repo_base_shas`, keyed by `repo_id`, for a secondary repository).
   """
   @enforce_keys [:run_id, :base_branch]
   @type t :: %__MODULE__{

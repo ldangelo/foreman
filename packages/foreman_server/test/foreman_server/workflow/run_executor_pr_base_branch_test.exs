@@ -101,6 +101,31 @@ defmodule ForemanServer.Workflow.RunExecutorPrBaseBranchTest do
       assert RunExecutor.__run_base_branch_for_test__(resumed) == {:ok, "feat/original-work"},
              "resume must read the ORIGINAL base branch from the projection, never the checkout's current branch"
     end
+
+    # The commit the base branch pointed at is recorded alongside the branch,
+    # so the PR comparison base stays reproducible after the branch moves.
+    test "the recorded base carries the commit the branch pointed at", %{repo: repo} do
+      run_id = "run-sha-#{System.unique_integer([:positive])}"
+      started_payload = %{run_id: run_id, project_id: "project-sha"}
+
+      :ok =
+        ForemanServer.EventStore.append_to_stream("run:#{run_id}", 0, [
+          %EventStore.EventData{event_type: "RunStarted", data: started_payload, metadata: %{}}
+        ])
+
+      :ok =
+        ForemanServer.ProjectionStore.apply_events([
+          %{event_type: "RunStarted", payload: started_payload}
+        ])
+
+      git!(repo, ["checkout", "-b", "feat/sha-work", "--quiet"])
+      head = String.trim(git!(repo, ["rev-parse", "HEAD"]))
+
+      RunExecutor.__remember_run_base_branch_for_test__(state(repo, run_id))
+
+      assert %{base_branch: "feat/sha-work", base_sha: ^head} =
+               ForemanServer.ProjectionStore.run(run_id)
+    end
   end
 
   describe "an undeterminable base is a typed failure, never a default" do
