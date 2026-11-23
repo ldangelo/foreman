@@ -150,10 +150,15 @@ them, and the counts in the header and the `failed` filter simply stop counting 
 A cleared run comes back by itself when its status changes (it is retried or
 resumed, or a stuck run turns failed), since that is news again. The cleared list is
 kept across restarts in the panel's own local storage (the same place as collapsed
-groups), per machine. The panel reads only the 40 most recent runs, and an entry for a
-run that has left that list is dropped so the stored list cannot grow forever: a
-cleared run that falls out of the window and later returns to it shows again. A
-completed run cannot be cleared.
+groups), per machine. Every 10 s the panel reads the 40 newest runs overall; once a
+minute (or on `↻`) it also reads up to the 500 newest runs of each project, the older
+history the overall list never reaches (a busy project would otherwise crowd a quiet
+one out, and `N failed` would count a window, not the failed runs). An entry for a run
+that has left those lists is dropped so the stored list cannot grow forever: a cleared
+run that falls out of the window and later returns to it shows again. A completed run
+cannot be cleared. If a project's run list cannot be read, a note under the header says
+that some runs may be missing and why. A run that was reset or changed since the last
+history read can show its old state for up to a minute; `↻` re-reads it at once.
 
 **Resetting a run.** Unlike clearing, a reset changes the server. `reset` on a failed row
 (or `⇧⌘H` on the selected failed run) opens Herdr's confirmation dialog; confirming
