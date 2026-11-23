@@ -1,0 +1,29 @@
+psql:.es_schema_dump.sql:43: ERROR:  function "event_store_delete" already exists with same argument types
+psql:.es_schema_dump.sql:62: ERROR:  function "event_store_exception" already exists with same argument types
+psql:.es_schema_dump.sql:100: ERROR:  function "notify_events" already exists with same argument types
+psql:.es_schema_dump.sql:121: ERROR:  relation "events" already exists
+psql:.es_schema_dump.sql:136: ERROR:  relation "schema_migrations" already exists
+psql:.es_schema_dump.sql:152: ERROR:  relation "snapshots" already exists
+psql:.es_schema_dump.sql:167: ERROR:  relation "stream_events" already exists
+psql:.es_schema_dump.sql:182: ERROR:  relation "streams" already exists
+psql:.es_schema_dump.sql:196: ERROR:  relation "streams_stream_id_seq" already exists
+psql:.es_schema_dump.sql:218: ERROR:  relation "subscriptions" already exists
+psql:.es_schema_dump.sql:232: ERROR:  relation "subscriptions_subscription_id_seq" already exists
+psql:.es_schema_dump.sql:263: ERROR:  multiple primary keys for table "events" are not allowed
+psql:.es_schema_dump.sql:271: ERROR:  multiple primary keys for table "schema_migrations" are not allowed
+psql:.es_schema_dump.sql:279: ERROR:  multiple primary keys for table "snapshots" are not allowed
+psql:.es_schema_dump.sql:287: ERROR:  multiple primary keys for table "stream_events" are not allowed
+psql:.es_schema_dump.sql:295: ERROR:  multiple primary keys for table "streams" are not allowed
+psql:.es_schema_dump.sql:303: ERROR:  multiple primary keys for table "subscriptions" are not allowed
+psql:.es_schema_dump.sql:310: ERROR:  relation "ix_stream_events" already exists
+psql:.es_schema_dump.sql:317: ERROR:  relation "ix_streams_stream_uuid" already exists
+psql:.es_schema_dump.sql:324: ERROR:  relation "ix_subscriptions_stream_uuid_subscription_name" already exists
+psql:.es_schema_dump.sql:331: ERROR:  trigger "event_notification" for relation "streams" already exists
+psql:.es_schema_dump.sql:338: ERROR:  trigger "no_delete_events" for relation "events" already exists
+psql:.es_schema_dump.sql:345: ERROR:  trigger "no_delete_stream_events" for relation "stream_events" already exists
+psql:.es_schema_dump.sql:352: ERROR:  trigger "no_delete_streams" for relation "streams" already exists
+psql:.es_schema_dump.sql:359: ERROR:  trigger "no_update_events" for relation "events" already exists
+psql:.es_schema_dump.sql:366: ERROR:  trigger "no_update_stream_events" for relation "stream_events" already exists
+psql:.es_schema_dump.sql:374: ERROR:  constraint "stream_events_event_id_fkey" for relation "stream_events" already exists
+psql:.es_schema_dump.sql:382: ERROR:  constraint "stream_events_original_stream_id_fkey" for relation "stream_events" already exists
+psql:.es_schema_dump.sql:390: ERROR:  constraint "stream_events_stream_id_fkey" for relation "stream_events" already exists
