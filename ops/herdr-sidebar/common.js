@@ -81,6 +81,13 @@ export async function api(path) {
 export const workflowName = (r) => r.workflow_name ?? r.workflow_snapshot?.workflow_name ?? "run";
 // The run's pull request URL when it has a usable (http/https) one, else null.
 export const prUrl = (r) => (typeof r.pr_url === "string" && /^https?:\/\//.test(r.pr_url) ? r.pr_url : null);
+// The bead a run (or queued item) works on, for copying into `br show <id>`. A beads task's id is
+// "beads:<project>:<bead id>" and the bead id may itself hold dots ("foreman-vbfmo.1"); anything else
+// (coord-…, adhoc-…, another provider) is not a bead and gives null. Takes anything with a `task_id`.
+export const beadId = (x) => {
+  const m = /^beads:[^:]+:(.+)$/.exec(typeof x?.task_id === "string" ? x.task_id : "");
+  return m ? m[1] : null;
+};
 
 // The command that opens a URL in the default browser on this platform.
 export const openUrlArgv = (url) => {

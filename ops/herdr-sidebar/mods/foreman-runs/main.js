@@ -4,7 +4,7 @@
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, ScrollHandle } from "gpui-base";
 import { theme, checking, run, focused, nextCommand, notify, keys, layout, shared, setShared, exec, window } from "herdr";
-import { info, isActive, ago, clock, foreman, api, workflowName, prUrl, openUrlArgv } from "./common.js";
+import { info, isActive, ago, clock, foreman, api, beadId, workflowName, prUrl, openUrlArgv } from "./common.js";
 
 const POLL_MS = 10000;
 const LIMIT = 40;
@@ -53,6 +53,7 @@ const HINTS = [
   ["focus-panel", "select"],
   ["open-pr", "open PR"],
   ["copy-id", "copy id"],
+  ["copy-bead", "copy bead"],
   ["copy-pr", "copy PR"],
   ["toggle-failed", "failed only"],
   ["refresh", "reload"],
@@ -110,6 +111,7 @@ export default class ForemanRuns extends View {
           else if (command === "focus-panel") this.focusPanel(cx);
           else if (command === "open-pr") this.openPr();
           else if (command === "copy-id") this.copyRunId(cx);
+          else if (command === "copy-bead") this.copyBead(cx);
           else if (command === "copy-pr") this.copyPrUrl(cx);
           else if (command === "toggle-sidebar") this.toggleSidebar();
           // A bare "focus" is the app's own message (e.g. a popup closed over this copy): keep
@@ -256,7 +258,8 @@ export default class ForemanRuns extends View {
   // Opens the run-detail tab (the foreman-run mod): phases, live activity, changes, PR and anything
   // waiting on the operator. It looks the run up itself, so it only needs the id.
   open(r) {
-    const short = String(r.task_id ?? r.run_id).slice(0, 24);
+    // The tab is named after the bead when there is one: the id is the end of the task id, which a cut-off name loses.
+    const short = beadId(r) ?? String(r.task_id ?? r.run_id).slice(0, 24);
     run("tab.new", { name: `${workflowName(r)} ${short}`, mod: "foreman-run", props: { run_id: r.run_id } });
   }
 
@@ -345,6 +348,20 @@ export default class ForemanRuns extends View {
     if (!r) return notify({ title: "Foreman", body: "Select a run first (focus the panel, then ↑/↓).", level: "info" });
     cx.write_to_clipboard(r.run_id);
     notify({ title: "Foreman", body: `Copied ${r.run_id}`, level: "success", timeout: 2000 });
+  }
+
+  copyText(text, what, cx) {
+    cx.write_to_clipboard(text);
+    notify({ title: "Foreman", body: `Copied ${what}`, level: "success", timeout: 2000 });
+  }
+
+  // Copies the selected run's bead id (the part of its task id after "beads:<project>:").
+  copyBead(cx) {
+    const r = this.runs.find((x) => x.run_id === this.cursor);
+    if (!r) return notify({ title: "Foreman", body: "Select a run first (focus the panel, then ↑/↓).", level: "info" });
+    const b = beadId(r);
+    if (!b) return notify({ title: "Foreman", body: `${workflowName(r)} ${r.task_id ?? r.run_id} is not a bead.`, level: "info" });
+    this.copyText(b, `bead id ${b}`, cx);
   }
 
   // Copies the selected run's pull request URL to the system clipboard.
@@ -487,6 +504,17 @@ export default class ForemanRuns extends View {
     const active = this.runs.filter(isActive).length;
     const failed = this.runs.filter((r) => r.status === "failed").length;
 
+    // A run's or queued item's second line: the bead id as a label that copies itself on click (stopped there, so the click
+    // does not also open the run), then `rest`. Anything that is not a bead keeps its task id as plain text.
+    const idLine = (item, key, who, rest) => {
+      const b = beadId(item);
+      if (!b) return div().truncate().text_size(11).text_color(t.dim).child(`${who}${rest}`);
+      return h_flex().items_center().overflow_hidden()
+        .child(div().id(`bead-${key}`).truncate().rounded(3).text_size(11).text_color(t.dim).cursor_pointer().hover((s) => s.bg(t.hover))
+          .on_click((_e, cx) => { cx.stop_propagation(); this.copyText(b, `bead id ${b}`, cx); }).child(b))
+        .when(rest, (el) => el.child(div().truncate().text_size(11).text_color(t.dim).child(rest)));
+    };
+
     const row = (r) => {
       return v_flex().id(`run-${r.run_id}`).pl(38).pr(12).py(4).gap(1).cursor_pointer().hover((s) => s.bg(t.hover))
         .when(r.run_id === this.cursor, (el) => el.bg(t.selected))
@@ -494,7 +522,7 @@ export default class ForemanRuns extends View {
         .child(h_flex().gap(8).items_center()
           .child(div().flex_1().truncate().text_size(12.5).text_color(t.foreground).child(workflowName(r)))
           .child(div().text_size(11).text_color(t.dim).child(ago(r.last_event_at_ms))))
-        .child(div().truncate().text_size(11).text_color(t.dim).child(r.task_id ?? r.run_id));
+        .child(idLine(r, r.run_id, r.task_id ?? r.run_id, ""));
     };
 
     // Status subgroup header inside a project; each collapses on its own.
@@ -533,14 +561,15 @@ export default class ForemanRuns extends View {
     // A queued item. Display only: a queued run has no transcript or phases to open yet.
     const queuedRow = (e) => {
       const what = e.title ?? e.task_id ?? e.run_id ?? "unknown";
-      const sub = e.stale ? `${e.task_id ?? e.run_id ?? "?"} · stale: ${e.task_id ? "its run has ended" : "the server has no such run"}`
-        : e.kind === "slot" ? `${e.task_id ?? e.run_id} · waiting for a slot`
-        : `${e.task_id} · awaiting approval${e.created ? ` · ${ago(e.created)}` : ""}`;
+      const who = e.task_id ?? e.run_id ?? "?";
+      const tail = e.stale ? `stale: ${e.task_id ? "its run has ended" : "the server has no such run"}`
+        : e.kind === "slot" ? "waiting for a slot"
+        : `awaiting approval${e.created ? ` · ${ago(e.created)}` : ""}`;
       return v_flex().id(`queued-${e.run_id ?? e.task_id}`).pl(38).pr(12).py(4).gap(1)
         .child(h_flex().gap(8).items_center()
           .child(div().flex_1().truncate().text_size(12.5).text_color(e.stale ? t.dim : t.foreground).child(what))
           .child(div().text_size(11).text_color(t.dim).child(e.kind === "slot" ? `#${e.pos}` : "")))
-        .child(div().truncate().text_size(11).text_color(t.dim).child(sub));
+        .child(idLine(e, e.run_id ?? e.task_id, who, ` · ${tail}`));
     };
 
     const projectHead = (g) => {
