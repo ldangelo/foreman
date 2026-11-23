@@ -123,6 +123,20 @@ export const parseCleared = (text) => {
   }
 };
 
+// Unlike clearing, a reset changes the server: `foreman run reset` (run.reset) drops the run's record from the run
+// list; its event history stays and the work is not restarted (docs/user-guide.md, `run reset`). The server accepts
+// a failed, stuck, blocked or paused run; the panel offers it on failed runs only.
+export const isResettable = (r) => r?.status === "failed";
+// The confirmation's wording: which run, and what a reset does and does not do.
+export const resetPrompt = (r) => {
+  const which = [workflowName(r), beadId(r) ?? r.task_id].filter(Boolean).join(" ");
+  return {
+    title: "Reset this run?",
+    detail: `${which} (${r.run_id}). This removes the run's record from Foreman's run list; its event history stays. ` +
+      "It does not restart the work: to try again, submit the work as a new run. Foreman has no command to bring a reset run back.",
+  };
+};
+
 // The command that opens a URL in the default browser on this platform.
 export const openUrlArgv = (url) => {
   const platform = window()?.platform;

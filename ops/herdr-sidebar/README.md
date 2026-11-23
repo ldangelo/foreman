@@ -133,6 +133,7 @@ not shown; `GET /api/projects/<id>/usage` reports it as `limits.deferred_tasks`.
 | Clear a failed, stuck or cancelled run from the panel | click the `✕` on its row | `⇧⌘X` (or `⌫` / `Del` while navigating); the selection moves to the next run |
 | Clear every failed, stuck and cancelled run the panel shows | click `clear` on a status header (that group), or `✕ clear N` under the list (all) | `⇧⌘K` |
 | Bring cleared runs back | click `↺ N cleared` under the list | `⇧⌘T` |
+| Reset a failed run (asks first) | click `reset` on its row | `⇧⌘H` on the selected run |
 | Switch the sidebar between the full panel and a compact rail | | `⇧⌘B` |
 
 On macOS the shortcuts are `cmd-shift-<letter>`; the footer under the list shows
@@ -153,6 +154,15 @@ groups), per machine. The panel reads only the 40 most recent runs, and an entry
 run that has left that list is dropped so the stored list cannot grow forever: a
 cleared run that falls out of the window and later returns to it shows again. A
 completed run cannot be cleared.
+
+**Resetting a run.** Unlike clearing, a reset changes the server. `reset` on a failed row
+(or `⇧⌘H` on the selected failed run) opens Herdr's confirmation dialog; confirming
+runs `foreman run reset --id <run-id>`. The server then drops that run's record from
+Foreman's run list (its event history stays) and does **not** restart the work: to try
+again, submit the work as a new run. Foreman has no command to bring a reset run back.
+Only failed runs are offered it here (the server also accepts stuck, blocked and paused
+runs; use `foreman run reset` for those). A confirmation that is answered more than a
+minute after it was asked is ignored.
 
 **The rail.** When the sidebar is narrower than 160 px (the shipped chrome's fold
 button, or `⇧⌘B`) the panel draws a compact rail: a failed / active summary and
