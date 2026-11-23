@@ -149,8 +149,10 @@ them, and the counts in the header and the `failed` filter simply stop counting 
 A cleared run comes back by itself when its status changes (it is retried or
 resumed, or a stuck run turns failed), since that is news again. The cleared list is
 kept across restarts in the panel's own local storage (the same place as collapsed
-groups), per machine; entries for runs that have left the list of recent runs are
-dropped. A completed run cannot be cleared.
+groups), per machine. The panel reads only the 40 most recent runs, and an entry for a
+run that has left that list is dropped so the stored list cannot grow forever: a
+cleared run that falls out of the window and later returns to it shows again. A
+completed run cannot be cleared.
 
 **The rail.** When the sidebar is narrower than 160 px (the shipped chrome's fold
 button, or `⇧⌘B`) the panel draws a compact rail: a failed / active summary and
