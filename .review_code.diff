@@ -1,0 +1,117 @@
+diff --git a/packages/foreman_server/lib/foreman_server/workflow/phase_pr.ex b/packages/foreman_server/lib/foreman_server/workflow/phase_pr.ex
+index 38bbcba0..2b4f2ba9 100644
+--- a/packages/foreman_server/lib/foreman_server/workflow/phase_pr.ex
++++ b/packages/foreman_server/lib/foreman_server/workflow/phase_pr.ex
+@@ -41,6 +41,12 @@ defmodule ForemanServer.Workflow.PhasePR do
+   `reason` in `details`): only the answer "no PR" lets creation go ahead. A `gh pr create`
+   that fails is followed by one more open-PR lookup, as in `AutoPR` (it too reads a lagging head
+   again, three tries): the PR with the tip is adopted.
++
++  The PR title is the run's task title (`task_title`, passed by `RunExecutor` through the same
++  task plumbing the final `AutoPR` uses); without one, the first conventional-commit subject
++  among the run's commits, and without that, `feat(phase): <phase_name>`. A `task_title` that is
++  present but blank or not a binary is `%Error{reason: :task_title_invalid}` before anything is
++  pushed.
+   """
+ 
+   alias ForemanServer.GitHub.PrLookup
+@@ -70,6 +76,7 @@ defmodule ForemanServer.Workflow.PhasePR do
+       :head_branch,
+       :cwd,
+       :artifact_path,
++      :task_title,
+       :now,
+       :command_runner,
+       existing_records: [],
+@@ -167,11 +174,22 @@ defmodule ForemanServer.Workflow.PhasePR do
+       blank?(request.cwd) ->
+         typed_error(request, :phase_pr_worktree_unresolved, request)
+ 
++      invalid_task_title?(request) ->
++        typed_error(request, :task_title_invalid, %{task_title: request.task_title})
++
+       true ->
+         :ok
+     end
+   end
+ 
++  # `nil` means "this run has no task title" (the executor omits an unset field); anything
++  # else that is not a non-blank binary is a producer bug, typed here before a branch is
++  # published silently mis-titled (AGENTS.md §5.3).
++  defp invalid_task_title?(%Request{task_title: nil}), do: false
++
++  defp invalid_task_title?(%Request{task_title: title}),
++    do: not is_binary(title) or String.trim(title) == ""
++
+   defp existing_record(%Request{} = request) do
+     request.existing_records
+     |> Enum.find(fn record ->
+@@ -341,8 +359,39 @@ defmodule ForemanServer.Workflow.PhasePR do
+     |> effect_result(request, :pr_create)
+   end
+ 
++  # Title an operator recognises: the run's task title, else the first conventional-commit
++  # subject among the run's own commits (Foreman's phase commits, "Foreman run <id> phase <n>",
++  # are not conventional and never match), else the phase-named legacy form. `git log` can only
++  # read, so it costs the subject fallback: the PR still opens with the legacy title.
++  defp pr_title(%Request{task_title: title}) when is_binary(title), do: title
++
++  defp pr_title(request),
++    do: first_conventional_subject(request) || "feat(phase): #{request.phase_name}"
++
++  defp first_conventional_subject(request) do
++    case run(request, "git", [
++           "log",
++           "--reverse",
++           "--format=%s",
++           request.base_branch <> ".." <> request.head_branch
++         ]) do
++      {output, 0} ->
++        output
++        |> String.split("\n", trim: true)
++        |> Enum.map(&String.trim/1)
++        |> Enum.find(&conventional_subject?/1)
++
++      {_output, _exit_code} ->
++        nil
++    end
++  end
++
++  @conventional_subject ~r/^[a-z]+(\([^()]+\))?!?: \S/
++
++  defp conventional_subject?(subject), do: Regex.match?(@conventional_subject, subject)
++
+   defp gh_pr_create(request, tip) do
+-    title = "feat(phase): #{request.phase_name}"
++    title = pr_title(request)
+ 
+     body =
+       "Foreman run `#{request.run_id}` phase `#{request.phase_name}` complete.\n" <>
+diff --git a/packages/foreman_server/lib/foreman_server/workflow/run_executor.ex b/packages/foreman_server/lib/foreman_server/workflow/run_executor.ex
+index 895bcb37..2c671e3e 100644
+--- a/packages/foreman_server/lib/foreman_server/workflow/run_executor.ex
++++ b/packages/foreman_server/lib/foreman_server/workflow/run_executor.ex
+@@ -3025,6 +3025,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
+                head_branch: head_branch,
+                cwd: cwd,
+                artifact_path: artifact_path,
++               task_title: phase_pr_task_title(state),
+                existing_records: phase_pr_records(state.run_id)
+              }) do
+         record_phase_pr(record)
+@@ -3049,6 +3050,15 @@ defmodule ForemanServer.Workflow.RunExecutor do
+     end
+   end
+ 
++  # The phase PR's title source, read through the same plumbing the final AutoPR uses
++  # (`task_backed?/1` + `task_field/2`): no new channel. A run with no task, or a task with no
++  # title, leaves the field nil and `PhasePR` falls back itself.
++  defp phase_pr_task_title(state) do
++    if task_backed?(state) do
++      task_field(Map.get(state, :task) || %{}, :title)
++    end
++  end
++
+   defp record_phase_pr(%PhasePR.Record{} = record) do
+     payload = Map.from_struct(record)
+ 

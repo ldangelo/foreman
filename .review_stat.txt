@@ -1,0 +1,14 @@
+ .gocpd_db.log                                      |   17 +
+ .gocpd_msg.txt                                     |   17 +
+ .gocpd_narrow.log                                  |  433 ++++++
+ .gocpd_narrow2.sh                                  |   18 +
+ .gocpd_push.log                                    |   12 +
+ .gocpd_push.sh                                     |   18 +
+ .gocpd_test.log                                    | 1465 ++++++++++++++++++++
+ .gocpd_verify.sh                                   |   32 +
+ .../FIX_REPORT.md                                  |    1 +
+ .../foreman-beads:foreman:foreman-gocpd/PLAN.md    |  244 ++++
+ .../REVIEW_CODERABBIT_REPORT.md                    |    1 +
+ .../lib/foreman_server/workflow/phase_pr.ex        |   51 +-
+ .../lib/foreman_server/workflow/run_executor.ex    |   10 +
+ 13 files changed, 2318 insertions(+), 1 deletion(-)
