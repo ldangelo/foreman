@@ -12,5 +12,7 @@
   "cmd-shift-k": "foreman-runs.clear-all",
   "cmd-shift-t": "foreman-runs.restore-cleared",
   "cmd-shift-h": "foreman-runs.reset-run",
+  "ctrl-alt-right": "foreman-run.next-tab",
+  "ctrl-alt-left": "foreman-run.prev-tab",
   "cmd-shift-b": "foreman-runs.toggle-sidebar"
 }
