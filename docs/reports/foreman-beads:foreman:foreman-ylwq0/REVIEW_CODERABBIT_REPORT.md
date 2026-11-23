@@ -1,0 +1,1 @@
+Branch diff vs `main` contains only report files — no implementation code. Running review round 1 anyway (per contract, the engine must run).
