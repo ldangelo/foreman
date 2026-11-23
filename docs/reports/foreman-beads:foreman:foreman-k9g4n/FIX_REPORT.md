@@ -1,0 +1,1 @@
+Confirmed: fetch code exists only on the unmerged sibling branch. Step-0 gate fires. Writing the Blocked report.
