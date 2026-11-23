@@ -69,6 +69,9 @@ defmodule ForemanServer.Aggregates.Run do
       :terminal?,
       :last_sequence,
       :base_branch,
+      # Commit `base_branch` pointed at when the worktree was cut; folded from
+      # `RunBaseBranchRecorded.base_sha`. See the event moduledoc.
+      :base_sha,
       merge_gates: %{},
       merge_pins: %{},
       phase_status: %{},
@@ -95,6 +98,7 @@ defmodule ForemanServer.Aggregates.Run do
       merge_gates: %{},
       merge_pins: %{},
       base_branch: nil,
+      base_sha: nil,
       phase_status: %{},
       worker_status: %{},
       retry_history: [],
@@ -104,6 +108,15 @@ defmodule ForemanServer.Aggregates.Run do
       pr_watch: %{},
       pr_fixes: %{}
     }
+
+  @doc """
+  What `base_sha` records the commit the primary `base_branch` pointed at when
+  the run worktree was cut, or `nil` when the run never recorded it — pre-existing
+  events, and runs cut before the SHA was captured. Read by
+  `AutoPR.resolve_base_ref/1`; see `ForemanServer.Events.RunBaseBranchRecorded`.
+  """
+  @spec base_sha(%State{}) :: String.t() | nil
+  def base_sha(%State{base_sha: sha}), do: sha
 
   @doc """
   The merge gate of one repository's PR: `:pending`, `:approved`, or `nil`
@@ -418,6 +431,7 @@ defmodule ForemanServer.Aggregates.Run do
         %State{
           state
           | base_branch: base_branch,
+            base_sha: base_sha_payload_value(payload),
             run_id: Aggregate.get(payload, :run_id) || state.run_id
         }
 

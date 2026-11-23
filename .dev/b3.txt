@@ -1,0 +1,669 @@
+[user]
+# fix :: fix
+
+You are the implementation agent of the `fix` workflow for the `foreman` orchestrator.
+
+Phase index: 2
+Task ID: beads:foreman:foreman-i3qol
+Run ID: run-d70bafc603ebda52f09c128e358f5b43
+
+## Operator progress updates
+
+When `foreman_inbox_send` is available, send concise operator-facing progress notes at phase start, material milestones, blockers, and phase completion. When `foreman_task_add_comment` is available, also write concise task Work Log comments at phase start, material milestones, blockers, and phase completion. Use only the tool; do not run `br`, open Beads SQLite, or call provider adapter internals. Do not send timer-only chatter, secrets, prompts, credentials, large logs, or command output. If either progress tool is denied, unavailable, or fails, continue the phase; mention the failed status update in the final artifact only when relevant.
+
+## Mission
+
+A planning agent has already investigated the problem and written an implementation plan. **Your job is to implement that plan, not to re-investigate.** The plan is the file `PLAN.md`, in the same directory as the fix report (the directory of `/Users/ldangelo/.foreman/worktrees/foreman/foreman-i3qol/run-d70bafc603ebda52f09c128e358f5b43/workspace/docs/reports/foreman-beads:foreman:foreman-i3qol/FIX_REPORT.md`). Read it first, completely. If `PLAN.md` does not exist there, STOP: write `Blocked: no plan found` as the sole content of the fix report and exit.
+
+You are running in headless mode, so do not use the `ask` tool (there is no user). Do not explore the repository broadly: read only the files the plan names, and only as much of them as you need to make the edits.
+
+You are in the run's own git worktree, already on the branch Foreman created for this run. Foreman owns that worktree and branch: do NOT create, switch, rename, or delete branches, do NOT push, and do NOT open a pull request. Leave your changes uncommitted; Foreman commits this phase's work itself and opens the pull request after the review phases. Do not commit `PLAN.md` and do not edit it.
+
+1. **If the plan's verdict is "already fixed" or "cannot reproduce"**, do not change code. Write the fix report saying so, quoting the plan's evidence, and stop.
+2. **Run the failing check first** exactly as the plan's "Failing check first" section says, and confirm it fails for the reason the plan gives. If it does not fail as described, do not change code to match a guess: say so in the report and stop.
+3. **Make the plan's edits** in the order given, and nothing else. Do not refactor adjacent code, add speculative configurability, or silence the symptom (swallowed errors, special-cased inputs). If an edit in the plan cannot be applied as written (the code differs from what the plan quotes), make the narrowest equivalent edit that achieves the plan's intent and record the deviation in the report. Do not widen scope beyond the plan's "Out of scope" list.
+4. **Prove the fix.** The failing check must now pass. Add or update tests so a regression fails the build. Run the narrowest test command and the formatter/linter the plan's "Verification" section names. Do not run the full suite unless the plan says to.
+
+## Output
+
+Write the fix report to:
+
+```
+/Users/ldangelo/.foreman/worktrees/foreman/foreman-i3qol/run-d70bafc603ebda52f09c128e358f5b43/workspace/docs/reports/foreman-beads:foreman:foreman-i3qol/FIX_REPORT.md
+```
+
+Cover the following sections:
+
+1. **Root cause** — what was wrong and where (file and function), as established by the plan.
+2. **Change** — paths changed and one-sentence rationale for each.
+3. **Deviations from the plan** — each edit you could not apply as written and what you did instead, or `None`.
+4. **Tests** — the failing-before / passing-after check and any tests added or updated.
+5. **Local verification** — commands run and their results.
+6. **Follow-ups** — anything intentionally left undone.
+
+If a section has no data, write `Unknown` and explain why.
+
+## Inputs
+
+- Task: `beads:foreman:foreman-i3qol`
+- Project: `foreman`
+- Workflow: `fix` (``)
+
+
+## Task Prompt
+
+Record base commit SHA on RunBaseBranchRecorded
+
+Extend packages/foreman_server/lib/foreman_server/events/run_base_branch_recorded.ex (currently enforces only [:run_id, :base_branch]) to carry the resolved base commit SHA, update the Run aggregate's apply/record path in lib/foreman_server/aggregates/run.ex:412 and :777-:791, and the projection in lib/foreman_server/projection_store.ex:2828. Surface the SHA on the run view.
+
+Dimension: correctness
+Severity: major
+
+Found by automated review of run run-8dec153539dbd49ac86c0a25c6bbc698, which was working on bead foreman-ch78x.
+Session archive: /Users/ldangelo/Development/Fortium/foreman/.foreman/sessions/run/run-8dec153539dbd49ac86c0a25c6bbc698
+Full analysis: /Users/ldangelo/Development/Fortium/foreman/.foreman/sessions/run/run-8dec153539dbd49ac86c0a25c6bbc698/analysis.md
+
+
+
+[assistant]
+I'll start by reading the plan.
+
+
+
+[assistant • bash]
+{"command":"ls -la \"docs/reports/foreman-beads:foreman:foreman-i3qol/\" 2>&1 | head -30; echo \"---\"; git log --oneline -3; echo \"---\"; git status --short | head -20"}
+
+[tool • bash]
+total 4
+drwxr-xr-x  3 ldangelo staff   96 Nov 23 05:17 .
+drwxr-xr-x 14 ldangelo staff  448 Nov 23 05:16 ..
+-rw-r--r--  1 ldangelo staff 1869 Nov 23 05:19 PLAN.md
+---
+a09b884e [pi] Plan written. No code touched.
+f0f3b083 feat(phase): repo-rules-review (#935)
+cd428af3 feat(phase): repo-rules-review (#934)
+---
+M docs/reports/foreman-beads:foreman:foreman-i3qol/PLAN.md
+
+
+[assistant • read]
+{"path":"docs/reports/foreman-beads:foreman:foreman-i3qol/PLAN.md"}
+
+[tool • read]
+Plan written. No code touched.
+
+**Artifact:** `docs/reports/foreman-beads:foreman:foreman-i3qol/PLAN.md` (217 lines, untracked — only new path in tree).
+
+**Verdict:** real gap. `base_sha` is undeclared on `Events.RunBaseBranchRecorded` (`run_base_branch_recorded.ex:23`), and `EventCodec.build_struct/3` (`event_codec.ex:161-168`) raises on undeclared keys — so the field must be declared before any producer can send it. The SHA already exists at provisioning time (`repo_base/1` returns `{:ok, branch, sha}`, `run_executor.ex:4256-4270`) and is discarded by all three dispatch sites.
+
+**Plan shape:**
+- 8 numbered edits: event struct (+`base_sha`, `@enforce_keys` unchanged for replay), `Run.handle_command` `run.record_base_branch` gains `require_optional_binary(payload, :base_sha)`, 3 dispatch sites (`run_executor.ex:1584`, `:4274`, `repo_attach.ex:70`), projection (`projection_store.ex:2828` → `run.base_sha` + `run.repo_base_shas`), run view (`build_run_repositories` + `@type run_repository`).
+- Explicit non-edit: `Aggregates.Run.State` gets NO `:base_sha` — nothing reads it (only `pr_watch.ex:537` reads `State.base_branch` as `recorded_base`); adding it is dead state per AGENTS.md 5.4b.
+- Failing-check-first: one new aggregate test file + 2 extensions of existing tests, w/ the exact failing command.
+- Doc gate pre-computed: `architecture-and-events.md:222`, `CLAUDE.md:538`, `user-guide.md:1361-1364` need edits; `README.md`/`cli-reference.md` do not (no CLI/route/config change).
+
+**Tests:** not run — plan phase changed zero code. Implementer's commands are in §5.
+
+**kata:** issue `aqkq` created + comment w/ the three gotchas. Left open (impl pending).
+
+**Advisor:** not consulted — `ask_advisor` is unusable in these phases (Anthropic oauth `invalid_grant`, recorded in memory); `contact_supervisor` refuses outside subagent context.
+
+[assistant]
+PLAN.md contains only a plan *summary* note, not the 217-line plan it references. Checking git refs.
+
+
+
+[assistant • bash]
+{"command":"cd /Users/ldangelo/.foreman/worktrees/foreman/foreman-i3qol/run-d70bafc603ebda52f09c128e358f5b43/workspace; echo \"=== git show HEAD:PLAN path ===\"; git show HEAD:\"docs/reports/foreman-beads:foreman:foreman-i3qol/PLAN.md\" 2>&1 | head -50; echo \"=== all refs with this path ===\"; git log --all --oneline -- \"docs/reports/foreman-beads:foreman:foreman-i3qol/PLAN.md\" | head; echo \"=== unstaged diff size ===\"; git diff --stat"}
+
+[tool • bash]
+=== git show HEAD:PLAN path ===
+# PLAN — foreman-i3qol: record base commit SHA on `RunBaseBranchRecorded`
+
+## 1. Verdict
+
+**Real gap, not a crash.** `packages/foreman_server/lib/foreman_server/events/run_base_branch_recorded.ex:23`
+declares `defstruct [:run_id, :base_branch, :repo_id, :sequence]` — no SHA field. Because
+`ForemanServer.EventCodec.build_struct/3` (`lib/foreman_server/event_codec.ex:161-168`) *raises* on
+an undeclared key, a `base_sha` cannot simply be smuggled through the existing pass-through payload:
+the field must be declared and the producers must be changed.
+
+Today the only durable record of what the run was cut from is a *branch name*
+(`ProjectionStore.run(run_id).base_branch`). The resolved commit exists at provisioning time —
+`repo_base/1` (`lib/foreman_server/workflow/run_executor.ex:4256-4270`) already returns
+`{:ok, branch, sha}` and throws the sha away for the recording path — but it is never persisted on
+the run, so a resumed executor / operator cannot tell which commit the base branch pointed at.
+
+## 2. Root cause
+
+Three places drop the SHA that is already in hand:
+
+- `RunExecutor.dispatch_run_base_branch/2` (`lib/foreman_server/workflow/run_executor.ex:1584-1591`)
+  sends `%{run_id:, base_branch:}` only.
+- `RunExecutor.dispatch_repo_base_branch/3` (`run_executor.ex:4274-4281`) sends branch only, although
+  its caller at `run_executor.ex:4216` holds `base_ref` (the SHA).
+- `RepoAttach.create/6` (`lib/foreman_server/workflow/repo_attach.ex:70-76`) same, with `base_ref`
+  in scope at `repo_attach.ex:45`.
+
+`Run.handle_command/2` for `"run.record_base_branch"` (`lib/foreman_server/aggregates/run.ex:782-798`)
+validates only `run_id` + `base_branch`; `ProjectionStore` `"RunBaseBranchRecorded"`
+(`lib/foreman_server/projection_store.ex:2828-2843`) projects only the branch.
+
+## 3. Failing check first
+
+Add ONE new test file and extend TWO existing ones. All three fail before the edits.
+
+**(a) New:** `packages/foreman_server/test/foreman_server/aggregates/run_base_branch_test.exs`
+
+```elixir
+defmodule ForemanServer.Aggregates.RunBaseBranchTest do
+  use ExUnit.Case, async: true
+
+  alias ForemanServer.Aggregates.Run
+
+  # Seed exactly as test/foreman_server/aggregates/run_flag_stuck_test.exs:6-24
+  # does (`run.start` -> `apply_event`), then:
+  defp record(payload),
+    do: Run.handle_command(started(), %{type: "run.record_base_branch", payload: payload})
+
+  test "the resolved base commit rides along with the branch" do
+    assert {:ok, event} = record(%{run_id: "run-1", base_branch: "dev", base_sha: "abc123"})
+=== all refs with this path ===
+a09b884e [pi] Plan written. No code touched.
+=== unstaged diff size ===
+ .../foreman-beads:foreman:foreman-i3qol/PLAN.md    | 222 +--------------------
+ 1 file changed, 11 insertions(+), 211 deletions(-)
+
+
+[assistant]
+
+Plan is committed at HEAD (217 lines); the working-tree copy got clobbered by the phase-1 summary note. Restoring it:
+
+[assistant • bash]
+{"command":"cd /Users/ldangelo/.foreman/worktrees/foreman/foreman-i3qol/run-d70bafc603ebda52f09c128e358f5b43/workspace; git restore --source=HEAD -- \"docs/reports/foreman-beads:foreman:foreman-i3qol/PLAN.md\"; wc -l \"docs/reports/foreman-beads:foreman:foreman-i3qol/PLAN.md\"; git status --short"}
+
+[tool • bash]
+217 docs/reports/foreman-beads:foreman:foreman-i3qol/PLAN.md
+
+
+
+[assistant • read]
+{"path":"docs/reports/foreman-beads:foreman:foreman-i3qol/PLAN.md"}
+
+[tool • read]
+# PLAN — foreman-i3qol: record base commit SHA on `RunBaseBranchRecorded`
+
+## 1. Verdict
+
+**Real gap, not a crash.** `packages/foreman_server/lib/foreman_server/events/run_base_branch_recorded.ex:23`
+declares `defstruct [:run_id, :base_branch, :repo_id, :sequence]` — no SHA field. Because
+`ForemanServer.EventCodec.build_struct/3` (`lib/foreman_server/event_codec.ex:161-168`) *raises* on
+an undeclared key, a `base_sha` cannot simply be smuggled through the existing pass-through payload:
+the field must be declared and the producers must be changed.
+
+Today the only durable record of what the run was cut from is a *branch name*
+(`ProjectionStore.run(run_id).base_branch`). The resolved commit exists at provisioning time —
+`repo_base/1` (`lib/foreman_server/workflow/run_executor.ex:4256-4270`) already returns
+`{:ok, branch, sha}` and throws the sha away for the recording path — but it is never persisted on
+the run, so a resumed executor / operator cannot tell which commit the base branch pointed at.
+
+## 2. Root cause
+
+Three places drop the SHA that is already in hand:
+
+- `RunExecutor.dispatch_run_base_branch/2` (`lib/foreman_server/workflow/run_executor.ex:1584-1591`)
+  sends `%{run_id:, base_branch:}` only.
+- `RunExecutor.dispatch_repo_base_branch/3` (`run_executor.ex:4274-4281`) sends branch only, although
+  its caller at `run_executor.ex:4216` holds `base_ref` (the SHA).
+- `RepoAttach.create/6` (`lib/foreman_server/workflow/repo_attach.ex:70-76`) same, with `base_ref`
+  in scope at `repo_attach.ex:45`.
+
+`Run.handle_command/2` for `"run.record_base_branch"` (`lib/foreman_server/aggregates/run.ex:782-798`)
+validates only `run_id` + `base_branch`; `ProjectionStore` `"RunBaseBranchRecorded"`
+(`lib/foreman_server/projection_store.ex:2828-2843`) projects only the branch.
+
+## 3. Failing check first
+
+Add ONE new test file and extend TWO existing ones. All three fail before the edits.
+
+**(a) New:** `packages/foreman_server/test/foreman_server/aggregates/run_base_branch_test.exs`
+
+```elixir
+defmodule ForemanServer.Aggregates.RunBaseBranchTest do
+  use ExUnit.Case, async: true
+
+  alias ForemanServer.Aggregates.Run
+
+  # Seed exactly as test/foreman_server/aggregates/run_flag_stuck_test.exs:6-24
+  # does (`run.start` -> `apply_event`), then:
+  defp record(payload),
+    do: Run.handle_command(started(), %{type: "run.record_base_branch", payload: payload})
+
+  test "the resolved base commit rides along with the branch" do
+    assert {:ok, event} = record(%{run_id: "run-1", base_branch: "dev", base_sha: "abc123"})
+    assert event.event_type == "RunBaseBranchRecorded"
+
+    assert %ForemanServer.Events.RunBaseBranchRecorded{base_sha: "abc123"} =
+             ForemanServer.EventCodec.decode!("RunBaseBranchRecorded", event.payload)
+  end
+
+  # AGENTS.md 5.3: absent is not malformed. Historical events carry no SHA and
+  # must still record and decode.
+  test "an absent base commit is still a valid recording" do
+    assert {:ok, event} = record(%{run_id: "run-1", base_branch: "dev"})
+
+    assert %ForemanServer.Events.RunBaseBranchRecorded{base_sha: nil} =
+             ForemanServer.EventCodec.decode!("RunBaseBranchRecorded", event.payload)
+  end
+
+  test "a non-binary base commit is refused, never coerced" do
+    assert {:error, {:missing_or_invalid, :base_sha, 7}} =
+             record(%{run_id: "run-1", base_branch: "dev", base_sha: 7})
+  end
+end
+```
+
+**(b) Extend** `packages/foreman_server/test/foreman_server/projection_store_run_repositories_test.exs`:
+in the test `"single-repo run: one primary entry ..."` (line 38) add `base_sha: "deadbeef"` to the
+`RunBaseBranchRecorded` payload (line 46-47) and `base_sha: "deadbeef"` to the asserted primary map
+(after `base_branch: "dev"`, line 61). In `"multi-repo run: ..."` add `base_sha: "cafe01"` to the
+`repo_id: "api"` payload and assert the `"api"` entry carries `base_sha: "cafe01"`.
+
+**(c) Extend** `packages/foreman_server/test/foreman_server/workflow/run_executor_pr_base_branch_test.exs`,
+inside the resume test (line 59-104), right after the existing
+`assert %{base_branch: "feat/original-work"} = ForemanServer.ProjectionStore.run(run_id)`:
+
+```elixir
+      head = String.trim(git!(repo, ["rev-parse", "HEAD"]))
+      assert %{base_sha: ^head} = ForemanServer.ProjectionStore.run(run_id)
+```
+
+Run (fails):
+
+```bash
+devbox run -- bash -c 'cd packages/foreman_server && MIX_ENV=test mix test \
+  test/foreman_server/aggregates/run_base_branch_test.exs \
+  test/foreman_server/projection_store_run_repositories_test.exs \
+  test/foreman_server/workflow/run_executor_pr_base_branch_test.exs'
+```
+
+## 4. Edits
+
+1. **`packages/foreman_server/lib/foreman_server/events/run_base_branch_recorded.ex`** — declare the
+   field. Keep `@enforce_keys [:run_id, :base_branch]` unchanged (events already on disk have no
+   SHA; enforcing it would break replay). Add to `@type t` after `base_branch:`:
+   `base_sha: String.t() | nil,` and change line 23 to
+   `defstruct [:run_id, :base_branch, :base_sha, :repo_id, :sequence]`. Add to the moduledoc:
+   "`base_sha` is the commit the base branch pointed at when the run was cut; absent on events
+   recorded before it was captured and when the revision could not be resolved."
+
+2. **`packages/foreman_server/lib/foreman_server/aggregates/run.ex:782-798`** — validate it.
+   Insert as a new `with` clause after the `base_branch` clause (line 785):
+
+   ```elixir
+         :ok <- require_optional_binary(payload, :base_sha),
+   ```
+
+   `require_optional_binary/2` already exists at `run.ex:1568-1574` and returns
+   `{:error, {:missing_or_invalid, key, value}}`. The payload pass-through at `run.ex:793-795`
+   needs no change: a declared field now flows through.
+
+3. **`packages/foreman_server/lib/foreman_server/aggregates/run.ex:410-422`** — leave
+   `apply_event/2` unchanged. `State` latches `base_branch` because `pr_watch.ex:537` reads it as
+   `recorded_base`; nothing reads a base SHA from aggregate state, and adding an unread `State`
+   field is dead state (AGENTS.md 5.4b). The SHA is a read-model fact only. **Do not add
+   `:base_sha` to `State`.**
+
+4. **`packages/foreman_server/lib/foreman_server/workflow/run_executor.ex:1542` and `:1584-1593`** —
+   resolve and send the primary's SHA. Change the call site at line 1542 from
+   `dispatch_run_base_branch(state.run_id, resolved)` to
+   `dispatch_run_base_branch(state, resolved)` and replace the two clauses:
+
+   ```elixir
+   # (keep the existing comment; append: the base commit is recorded alongside
+   # when the revision reads, and an unresolvable revision records the branch
+   # alone — AGENTS.md 5.3, absent is not malformed.)
+   defp dispatch_run_base_branch(state, {:ok, branch}) do
+     payload = %{run_id: state.run_id, base_branch: branch}
+
+     payload =
+       case resolve_revision(vcs_working_directory(state), branch) do
+         {:ok, sha} -> Map.put(payload, :base_sha, sha)
+         {:error, _reason} -> payload
+       end
+
+     CommandGateway.dispatch_system(%{
+       type: "run.record_base_branch",
+       command_id: "run_executor:base-branch:" <> state.run_id,
+       aggregate_id: "run:#{state.run_id}",
+       payload: payload
+     })
+   end
+
+   defp dispatch_run_base_branch(_state, {:error, _reason}), do: :ok
+   ```
+
+   (`resolve_revision/2` is private in the same module at `run_executor.ex:4643`;
+   `vcs_working_directory/1` at `run_executor.ex:3766`.)
+
+5. **`packages/foreman_server/lib/foreman_server/workflow/run_executor.ex:4230` and `:4274-4281`** —
+   the secondary's SHA is already resolved as `base_ref` (`run_executor.ex:4216`). Change line 4230
+   to `dispatch_repo_base_branch(state.run_id, repo.id, base_branch, base_ref)` and the function to
+   `defp dispatch_repo_base_branch(run_id, repo_id, branch, base_sha) do`, with payload
+   `%{run_id: run_id, base_branch: branch, base_sha: base_sha, repo_id: repo_id}`.
+
+6. **`packages/foreman_server/lib/foreman_server/workflow/repo_attach.ex:70-76`** — add
+   `base_sha: base_ref` to the dispatched payload (`base_ref` is `create/6`'s own parameter,
+   `repo_attach.ex:45`).
+
+7. **`packages/foreman_server/lib/foreman_server/projection_store.ex:2828-2843`** — project it.
+   In the `repo_id when is_binary(repo_id)` branch, pipe the existing `Map.update(...)` result into
+   a second `Map.update` over `:repo_base_shas` keyed the same way, but only when
+   `get(payload, :base_sha)` is a binary (never insert `nil`, AGENTS.md 5.4b). In the `_ ->` branch
+   change `maybe_put(run, :base_branch, get(payload, :base_branch))` to
+   `run |> maybe_put(:base_branch, get(payload, :base_branch)) |> maybe_put(:base_sha, get(payload, :base_sha))`
+   (`maybe_put/3` at `projection_store.ex:5920` already drops `nil`).
+
+8. **`packages/foreman_server/lib/foreman_server/projection_store.ex:4539`, `:4553-4562`,
+   `:4592-4604`, `:1191-1200`** — surface it on the run view.
+   - After line 4539 add `base_shas = (run && get(run, :repo_base_shas)) || %{}`.
+   - In `primary_entry` (after `base_branch:`, line 4557) add `base_sha: run && get(run, :base_sha),`.
+   - Pass `base_shas` into `secondary_run_repository/6` (becomes `/7`, both the call at
+     `projection_store.ex:4596-4601`-area and the definition at `:4592`) and add
+     `base_sha: Map.get(base_shas, repo_id),` after its `base_branch:` line.
+   - Add `base_sha: String.t() | nil,` to the `@type run_repository` map at `:1195`.
+
+## 5. Verification
+
+```bash
+devbox run -- bash -c 'cd packages/foreman_server && MIX_ENV=test mix test \
+  test/foreman_server/aggregates/run_base_branch_test.exs \
+  test/foreman_server/projection_store_run_repositories_test.exs \
+  test/foreman_server/workflow/run_executor_pr_base_branch_test.exs \
+  test/foreman_server/workflow/run_executor_multi_repo_test.exs \
+  test/foreman_server/event_codec_test.exs --warnings-as-errors'
+devbox run -- bash -c 'cd packages/foreman_server && mix format --check-formatted'
+devbox run -- bash -c 'cd packages/foreman_server && MIX_ENV=test mix test --warnings-as-errors'
+```
+
+Success = all green, zero warnings. `run_executor_multi_repo_test.exs:246` (`repo_base_branches`)
+must still pass unchanged.
+
+**Documentation gate.** Added identifiers: event field `base_sha` on `RunBaseBranchRecorded`; run
+projection keys `base_sha` and `repo_base_shas`; `run_repositories/1` entry key `base_sha`. Required
+edits:
+- `docs/lessons/architecture-and-events.md:222` — extend the `RunBaseBranchRecorded` row to
+  "…and the commit it pointed at".
+- `CLAUDE.md:538` — the sentence listing `repo_base_branches` also names `repo_base_shas`.
+- `docs/user-guide.md:1361-1364` — one sentence on the `GET /api/runs/{id}` bullet: the projected
+  run also carries `base_sha`, the commit the base branch pointed at, or `null`.
+- `README.md`, `docs/cli-reference.md`: no edit — no CLI verb, flag, route or config key changes
+  (`docs/cli-reference.md:753` is about `auto_pr_base_branch_unresolved`, untouched).
+
+## 6. Out of scope
+
+- The other gaps in the source review (`base_ref_policy` project setting, `git fetch origin <base>`
+  before worktree creation, `ProjectRecommendations` "behind origin"). Different beads.
+- `State.base_sha` on the Run aggregate (edit 3) and any change to `apply_event/2`.
+- `FOREMAN_REPOS` / `repo_entries/2` (`run_executor.ex:5664-5690`): it already exports `base_ref`.
+- `PrRisk` / `PrWatch` rubric inputs, merge gate, AutoPR base resolution.
+- Reformatting or restructuring adjacent code in the touched functions.
+
+
+[assistant]
+
+Plan restored (217 lines, committed at HEAD). Verifying quoted code before edits.
+
+[assistant • bash]
+{"command":"cd /Users/ldangelo/.foreman/worktrees/foreman/foreman-i3qol/run-d70bafc603ebda52f09c128e358f5b43/workspace/packages/foreman_server; echo \"=== event struct ===\"; cat lib/foreman_server/events/run_base_branch_recorded.ex; echo \"=== aggregate 770-800 ===\"; sed -n '770,800p' lib/foreman_server/aggregates/run.ex; echo \"=== require_optional_binary ===\"; sed -n '1560,1580p' lib/foreman_server/aggregates/run.ex"}
+
+[tool • bash]
+=== event struct ===
+defmodule ForemanServer.Events.RunBaseBranchRecorded do
+  @moduledoc """
+  Typed event emitted when the run's PR base branch is durably recorded.
+
+  `RunExecutor.remember_run_base_branch/1` resolves the base branch once
+  (the checkout's branch at the moment the first phase starts) and holds
+  it in memory. Persisting it here means a resumed executor reads the
+  ORIGINAL base branch back from the projection instead of re-deriving
+  it from whatever branch the registered checkout happens to be on at
+  resume time — the failure mode this event exists to close.
+
+  `repo_id` (E12) is ABSENT for the run's primary repository and present for a
+  secondary repository's base branch.
+  """
+  @enforce_keys [:run_id, :base_branch]
+  @type t :: %__MODULE__{
+          run_id: String.t(),
+          base_branch: String.t(),
+          repo_id: String.t() | nil,
+          sequence: non_neg_integer() | nil
+        }
+  @derive Jason.Encoder
+  defstruct [:run_id, :base_branch, :repo_id, :sequence]
+end
+=== aggregate 770-800 ===
+         stream_id: "run:#{run_id}",
+         event_type: "RunRecoveryAttempted",
+         payload: recovery_attempt_payload(payload, run_id, outcome, elapsed)
+       }}
+    end
+  end
+
+  # run.record_base_branch — emits `RunBaseBranchRecorded`, persisting
+  # the run's PR base branch so a resumed executor reads it back instead
+  # of re-deriving it from whatever branch the checkout is on at resume
+  # time. Dispatched via `CommandGateway.dispatch_system/2` by
+  # `RunExecutor.remember_run_base_branch/1`.
+  def handle_command(state, %{type: "run.record_base_branch", payload: payload}) do
+    with {:ok, run_id} <- Aggregate.required_binary(Aggregate.get(payload, :run_id), :run_id),
+         {:ok, base_branch} <-
+           Aggregate.required_binary(Aggregate.get(payload, :base_branch), :base_branch),
+         :ok <- require_exists(state, run_id),
+         :ok <- reject_terminal_mutation(state) do
+      {:ok,
+       %{
+         stream_id: "run:#{run_id}",
+         event_type: "RunBaseBranchRecorded",
+         payload:
+           payload
+           |> Map.put(:run_id, run_id)
+           |> Map.put(:base_branch, base_branch)
+       }}
+    end
+  end
+
+  # run.fail / run.block — no sequence guard
+=== require_optional_binary ===
+    do: {:error, {:missing_or_invalid, :workflow_snapshot}}
+
+  @recovery_outcomes ["resumed", "effect_retried", "effect_blocked"]
+  @effect_recovery_fields [:effect_class, :effect_key, :effect_verdict]
+
+  defp require_recovery_outcome(outcome) when outcome in @recovery_outcomes, do: {:ok, outcome}
+  defp require_recovery_outcome(outcome), do: {:error, {:invalid_recovery_outcome, outcome}}
+
+  defp require_optional_binary(payload, key) do
+    case Aggregate.get(payload, key) do
+      nil -> :ok
+      value when is_binary(value) -> :ok
+      value -> {:error, {:missing_or_invalid, key, value}}
+    end
+  end
+
+  # Only the declared `RunRecoveryAttempted` fields reach the stream (AGENTS.md
+  # 5.4b): an undeclared key would make `EventCodec.decode!` raise on replay.
+  # An absent optional field stays absent.
+  defp recovery_attempt_payload(payload, run_id, outcome, elapsed) do
+    optional =
+
+
+[assistant • bash]
+{"command":"cd /Users/ldangelo/.foreman/worktrees/foreman/foreman-i3qol/run-d70bafc603ebda52f09c128e358f5b43/workspace/packages/foreman_server; echo \"=== 1530-1600 run_executor ===\"; sed -n '1530,1600p' lib/foreman_server/workflow/run_executor.ex; echo \"=== 4200-4290 ===\"; sed -n '4200,4290p' lib/foreman_server/workflow/run_executor.ex"}
+
+[tool • bash]
+=== 1530-1600 run_executor ===
+  # (`apply_source_branch/4`), so that branch is its base: the name comes from the
+  # task, not from whichever branch the checkout is on.
+  defp remember_run_base_branch(state) do
+    if Map.has_key?(state, :run_base_branch) do
+      state
+    else
+      case persisted_run_base_branch(state.run_id) do
+        {:ok, branch} ->
+          Map.put(state, :run_base_branch, {:ok, branch})
+
+        :error ->
+          resolved = resolve_run_base_branch(state)
+          dispatch_run_base_branch(state.run_id, resolved)
+          Map.put(state, :run_base_branch, resolved)
+      end
+    end
+  end
+
+  defp resolve_run_base_branch(state) do
+    case source_branch(state) do
+      nil -> checkout_branch(vcs_working_directory(state))
+      branch -> {:ok, branch}
+    end
+  end
+
+  # The branch the run is to be cut from, when its task names one. `state` may carry no task (the
+  # base-branch tests build a bare state), which is the same as a task that names none.
+  defp source_branch(state) do
+    case Map.get(state, :task) do
+      %{source_branch: branch} when is_binary(branch) -> branch
+      _no_source_branch -> nil
+    end
+  end
+
+  # Read-through cache: a resumed executor must see the SAME base branch a
+  # prior attempt resolved, not whatever branch the registered checkout
+  # happens to be on now (`checkout_branch/1` answers "what branch is HEAD
+  # on right now", which is wrong once an operator has switched branches
+  # between the pause and the resume). `CommandRouter.dispatch/2` applies
+  # committed events to `ProjectionStore` synchronously as part of the same
+  # call (`apply_projection_events/2`), so there is no async catch-up gap
+  # here to account for: by the time `dispatch_run_base_branch/2` returns,
+  # this read already sees the value it just wrote.
+  defp persisted_run_base_branch(run_id) do
+    case ProjectionStore.run(run_id) do
+      %{base_branch: branch} when is_binary(branch) and branch != "" -> {:ok, branch}
+      _ -> :error
+    end
+  end
+
+  # Best-effort: persisting the base branch is what makes it resume-safe,
+  # but a dispatch failure here must not fail the run — the caller already
+  # stores the resolved value for THIS attempt regardless of whether the
+  # dispatch below lands.
+  defp dispatch_run_base_branch(run_id, {:ok, branch}) do
+    CommandGateway.dispatch_system(%{
+      type: "run.record_base_branch",
+      command_id: "run_executor:base-branch:" <> run_id,
+      aggregate_id: "run:#{run_id}",
+      payload: %{run_id: run_id, base_branch: branch}
+    })
+  end
+
+  defp dispatch_run_base_branch(_run_id, {:error, _reason}), do: :ok
+
+  # `Exec.Git.current_branch/1` is `git symbolic-ref --quiet --short HEAD`,
+  # which names the checked-out branch and exits non-zero on a detached HEAD.
+  # `rev-parse --abbrev-ref HEAD` would instead print the literal `HEAD`
+  # there, which `gh pr create --base` accepts as a ref name — a wrong PR
+  # target that reads as a resolved answer.
+  defp checkout_branch(repo_path) do
+=== 4200-4290 ===
+    |> case do
+      {:ok, _created} -> {:ok, primary_record}
+      {:error, _} = error -> error
+    end
+  end
+
+  defp create_repo_worktree(state, phase_index, primary_record, repo) do
+    task_id = worktree_task_id(state)
+    project_id = primary_record.project_id
+    operation_id = RunWorktreeLayout.operation_id(state.run_id, repo.id)
+
+    worktree_path =
+      RunWorktreeLayout.path(project_id, task_id, state.run_id, {:secondary, repo.id})
+
+    with :ok <- assert_worktree_path_contained(project_id, state, worktree_path),
+         :ok <- assert_git_repo(repo.path),
+         {:ok, base_branch, base_ref} <- repo_base(repo),
+         :ok <- ensure_worktree_parent_dir(worktree_path),
+         {:ok, ^worktree_path} <-
+           Worktree.create(%{
+             operation_id: operation_id,
+             project_id: project_id,
+             run_id: state.run_id,
+             phase_id: Identity.phase_id(state.run_id, phase_index),
+             repo_path: repo.path,
+             worktree_path: worktree_path,
+             base_ref: base_ref,
+             branch: primary_record.branch,
+             repo_id: repo.id
+           }) do
+      dispatch_repo_base_branch(state.run_id, repo.id, base_branch)
+
+      {:ok,
+       %{
+         operation_id: operation_id,
+         worktree_path: worktree_path,
+         branch: primary_record.branch,
+         base_ref: base_ref,
+         base_branch: base_branch,
+         project_root: repo.path,
+         project_id: project_id,
+         implementation_key: nil,
+         trd_scope: nil,
+         cleanup: primary_record.cleanup,
+         repo_id: repo.id
+       }}
+    else
+      {:ok, other_path} -> {:error, {:worktree_path_drift, worktree_path, other_path}}
+      {:error, _} = error -> error
+    end
+  end
+
+  # A secondary repository's base: its registered `default_branch` when set
+  # (base_ref = that branch's tip), else the branch checked out right now with
+  # base_ref = HEAD - exactly the primary's rule. Plan-context `source_revision`
+  # pinning stays primary-only.
+  defp repo_base(%{path: path, default_branch: default_branch}) do
+    case default_branch do
+      branch when is_binary(branch) and branch != "" ->
+        case resolve_revision(path, branch) do
+          {:ok, sha} -> {:ok, branch, sha}
+          {:error, reason} -> {:error, {:worktree_base_unresolvable, branch, reason}}
+        end
+
+      _ ->
+        with {:ok, branch} <- checkout_branch(path),
+             {:ok, sha} <- resolve_revision(path, "HEAD") do
+          {:ok, branch, sha}
+        end
+    end
+  end
+
+  # Best-effort, like the primary's: persisting the base is what makes it
+  # resume-safe, but a dispatch failure must not fail the run.
+  defp dispatch_repo_base_branch(run_id, repo_id, branch) do
+    CommandGateway.dispatch_system(%{
+      type: "run.record_base_branch",
+      command_id: "run_executor:base-branch:" <> run_id <> ":" <> repo_id,
+      aggregate_id: "run:#{run_id}",
+      payload: %{run_id: run_id, base_branch: branch, repo_id: repo_id}
+    })
+  end
+
+  # Removes the given run worktrees and their branches, continuing past a
+  # failure. Returns the `{repo_id, reason}` pairs that could not be removed.
+  defp compensate_run_worktrees(state, phase_index, records) do
+    Enum.flat_map(records, fn record ->
+      repo_id = Map.get(record, :repo_id)
+
+      case remove_run_worktree_and_branch(state, phase_index, record) do
+        :ok ->
