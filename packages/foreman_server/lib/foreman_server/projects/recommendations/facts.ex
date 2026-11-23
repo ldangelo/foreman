@@ -21,6 +21,7 @@ defmodule ForemanServer.Projects.Recommendations.Facts do
   alias ForemanServer.ProjectEnvironment
   alias ForemanServer.ProjectionStore
   alias ForemanServer.ProjectSettings
+  alias ForemanServer.Projects.SourceBranch
   alias ForemanServer.Workflow.Catalog
 
   defmodule Probe do
@@ -32,6 +33,13 @@ defmodule ForemanServer.Projects.Recommendations.Facts do
     @callback find_executable(name :: String.t()) :: String.t() | nil
     @callback cmd(executable :: String.t(), args :: [String.t()], timeout_ms :: pos_integer()) ::
                 {:ok, exit_status :: non_neg_integer()} | {:error, :timeout | :failed}
+    @callback cmd_out(
+                executable :: String.t(),
+                args :: [String.t()],
+                timeout_ms :: pos_integer()
+              ) ::
+                {:ok, {output :: binary(), exit_status :: non_neg_integer()}}
+                | {:error, :timeout | :failed}
     @callback call(fun :: (-> term()), timeout_ms :: pos_integer()) ::
                 {:ok, term()} | {:error, :timeout | :failed}
   end
@@ -69,12 +77,17 @@ defmodule ForemanServer.Projects.Recommendations.Facts do
 
     @impl true
     def cmd(executable, args, timeout_ms) do
+      case cmd_out(executable, args, timeout_ms) do
+        {:ok, {_out, status}} -> {:ok, status}
+        {:error, reason} -> {:error, reason}
+      end
+    end
+
+    @impl true
+    def cmd_out(executable, args, timeout_ms) do
       call(
         fn ->
-          {_out, status} =
-            System.cmd(executable, args, cd: System.tmp_dir!(), stderr_to_stdout: true)
-
-          status
+          System.cmd(executable, args, cd: System.tmp_dir!(), stderr_to_stdout: true)
         end,
         timeout_ms
       )
@@ -131,6 +144,7 @@ defmodule ForemanServer.Projects.Recommendations.Facts do
     br_binary: false,
     files: %{agents_md: false, claude_md: false, ci: [], manifests: []},
     checked_out_branch: :unavailable,
+    commits_behind_origin: :unavailable,
     gh: :unavailable,
     git_remote: :unavailable,
     workflows_installed: :unavailable,
@@ -158,6 +172,7 @@ defmodule ForemanServer.Projects.Recommendations.Facts do
             manifests: [String.t()]
           },
           checked_out_branch: String.t() | :detached | :unavailable,
+          commits_behind_origin: non_neg_integer() | :unavailable,
           gh: :authenticated | :unauthenticated | :missing | :timeout | :unavailable,
           git_remote: tri(),
           workflows_installed: tri(),
@@ -216,6 +231,7 @@ defmodule ForemanServer.Projects.Recommendations.Facts do
     provider = task_provider_name(project[:task_provider])
     beads_db = repo && first_db(ctx.probe, Path.join([repo, ".beads", "*.db"]))
     vars = ProjectEnvironment.environment(project_id, project: project)["vars"]
+    branch = checked_out_branch(ctx.probe, repo)
 
     %__MODULE__{
       project_id: project_id,
@@ -226,7 +242,8 @@ defmodule ForemanServer.Projects.Recommendations.Facts do
       has_beads_dir: is_binary(repo) and ctx.probe.exists?(Path.join(repo, ".beads")),
       br_binary: ctx.probe.find_executable("br") != nil,
       files: files(ctx.probe, repo),
-      checked_out_branch: checked_out_branch(ctx.probe, repo),
+      checked_out_branch: branch,
+      commits_behind_origin: commits_behind_origin(ctx, repo, branch),
       gh: gh_status(ctx),
       git_remote: git_remote(ctx.probe, repo),
       workflows_installed: workflows_installed(ctx),
@@ -305,6 +322,45 @@ defmodule ForemanServer.Projects.Recommendations.Facts do
       {:ok, body} -> if Regex.match?(@git_head_sha, body), do: :detached, else: :unavailable
       :error -> :unavailable
     end
+  end
+
+  # Counts commits the local branch lacks from its own remote-tracking ref. No fetch
+  # happens: the answer is about the checkout as it stands. `git` comes from the server's
+  # own PATH and runs from a neutral working directory; `core.fsmonitor` is cleared and the
+  # pager disabled so a hostile repository config cannot make git run a program.
+  # `extensions.partialclone=` is cleared as well: a non-empty value is what makes git lazily
+  # fetch a commit missing from the range, so clearing it keeps the read offline. A partial
+  # clone in that state fails the command and falls through to `:unavailable`, which is the
+  # honest answer, not a false count. A branch name git would reject, an unmeasurable
+  # ref (no `origin/<branch>` yet), a missing branch or repo, a timeout, a non-zero exit or
+  # unparsable output are all `:unavailable`, never `0`.
+  defp commits_behind_origin(ctx, repo, branch) when is_binary(repo) and is_binary(branch) do
+    with :ok <- SourceBranch.validate(branch),
+         exe when is_binary(exe) <- ctx.probe.find_executable("git"),
+         :ok <- within_deadline(ctx),
+         {:ok, {out, 0}} <- ctx.probe.cmd_out(exe, behind_argv(repo, branch), ctx.timeout),
+         {count, ""} <- Integer.parse(String.trim(out)) do
+      count
+    else
+      _ -> :unavailable
+    end
+  end
+
+  defp commits_behind_origin(_ctx, _repo, _branch), do: :unavailable
+
+  defp behind_argv(repo, branch) do
+    [
+      "--no-pager",
+      "-c",
+      "core.fsmonitor=",
+      "-C",
+      repo,
+      "-c",
+      "extensions.partialclone=",
+      "rev-list",
+      "--count",
+      "refs/heads/#{branch}..refs/remotes/origin/#{branch}"
+    ]
   end
 
   defp workflows_installed(ctx) do

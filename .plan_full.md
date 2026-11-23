@@ -90,7 +90,11 @@ devbox run -- bash -c 'cd packages/foreman_server && MIX_ENV=test mix test test/
   # How far `origin/<branch>` is ahead of the checked-out `<branch>`, read from the
   # remote-tracking ref already in the repository: no network, no fetch. `git` comes from
   # the server's own PATH; `core.fsmonitor` is cleared and the pager disabled so a hostile
-  # repository config cannot make git run a program. Anything unreadable (not a git
+  # repository config cannot make git run a program. `extensions.partialclone=` is cleared
+  # as well: a non-empty value is what makes git lazily fetch a commit missing from the
+  # range, so clearing it keeps the read offline. A partial clone in that state fails the
+  # command and falls through to `:unavailable`, which is the honest answer, not a false
+  # count. Anything unreadable (not a git
   # repository, no `refs/remotes/origin/<branch>`, unsafe branch name, timeout) is
   # `:unavailable`, and no detector reports on it.
   defp commits_behind_origin(ctx, repo, branch) when is_binary(repo) and is_binary(branch) do
@@ -114,6 +118,8 @@ devbox run -- bash -c 'cd packages/foreman_server && MIX_ENV=test mix test test/
       "core.fsmonitor=",
       "-C",
       repo,
+      "-c",
+      "extensions.partialclone=",
       "rev-list",
       "--count",
       "refs/heads/#{branch}..refs/remotes/origin/#{branch}"
@@ -152,12 +158,24 @@ devbox run -- bash -c 'cd packages/foreman_server && MIX_ENV=test mix test test/
           "`origin/#{branch}`. Runs cut from it start from stale code and their pull " <>
           "requests target an out-of-date base.",
         %{repo_path: repo, branch: branch, commits_behind: behind},
-        manual("Update the checkout: `git -C #{repo} pull --ff-only`.")
+        manual(
+          "Update the checkout: `git -C " <> sh_quote(repo) <>
+            " pull --ff-only origin/#{branch}`. If the branches have diverged, reconcile " <>
+            "them by hand instead: `--ff-only` never discards local commits."
+        )
       )
     ]
   end
 
   defp base_behind_origin(_), do: []
+
+  # POSIX single-quote wrapping. `repo` is an operator-supplied path shown inside a
+  # command string the operator will paste into a shell, so it must not be able to break
+  # out of its own word: wrap in single quotes and escape any embedded quote as '\\''.
+  # The recommendation stays `manual`, so Foreman never runs the rendered command itself.
+  defp sh_quote(path) when is_binary(path) do
+    "'" <> String.replace(path, "'", "'\\''") <> "'"
+  end
 ```
 
 ### Edit 3 — the other `Facts.Probe` implementations (one line each)

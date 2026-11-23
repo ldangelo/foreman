@@ -24,6 +24,7 @@ defmodule ForemanServer.Projects.RecommendationsTest do
           manifests: ["mix.exs"]
         },
         checked_out_branch: "main",
+        commits_behind_origin: 0,
         gh: :authenticated,
         git_remote: true,
         workflows_installed: true,
@@ -75,6 +76,7 @@ defmodule ForemanServer.Projects.RecommendationsTest do
        )},
       {"settings.env_plain_secrets", healthy(env_secret_keys: ["API_TOKEN"])},
       {"branch.default_unresolved", healthy(checked_out_branch: :detached)},
+      {"branch.behind_origin", healthy(commits_behind_origin: 3)},
       {"settings.env_empty", healthy(env_names: [])},
       {"memory.empty", healthy(memory_count: 0)},
       {"project.paused", healthy(project_status: "paused")},
@@ -178,6 +180,23 @@ defmodule ForemanServer.Projects.RecommendationsTest do
     assert rec.detail =~ "detached HEAD"
     assert rec.evidence == %{repo_path: "/r"}
     assert rec.fix.kind == :manual
+  end
+
+  test "a branch behind its origin is named with the count, and only when it is behind" do
+    [rec] = Recommendations.evaluate(healthy(commits_behind_origin: 4))
+    assert rec.id == "branch.behind_origin"
+    assert rec.severity == :warn
+    assert rec.detail =~ "4 commit(s) behind `origin/main`"
+    assert rec.evidence == %{repo_path: "/r", branch: "main", commits_behind: 4}
+    assert rec.fix.kind == :manual
+    assert rec.fix.text =~ "git -C '/r' pull --ff-only origin/main"
+
+    refute "branch.behind_origin" in ids(healthy(commits_behind_origin: 0))
+    refute "branch.behind_origin" in ids(healthy(commits_behind_origin: :unavailable))
+
+    refute "branch.behind_origin" in ids(
+             healthy(commits_behind_origin: 2, checked_out_branch: :detached)
+           )
   end
 
   test "an empty environment is reported only when no variable and no secret exists" do

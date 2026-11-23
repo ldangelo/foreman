@@ -22,6 +22,7 @@ defmodule ForemanServer.TestSupport.RecommendationsProbe do
 
   def find_executable(_name), do: nil
   def cmd(_executable, _args, _timeout_ms), do: {:error, :failed}
+  def cmd_out(_executable, _args, _timeout_ms), do: {:error, :failed}
   def call(_fun, _timeout_ms), do: {:error, :failed}
 
   @doc "Use this probe for the rest of the current test."

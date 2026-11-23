@@ -16,6 +16,7 @@ defmodule ForemanServer.Projects.RecommendationsFactsTest do
     def find_executable("gh"), do: "/bin/sleep"
     def find_executable(_), do: nil
     def cmd(exe, _args, timeout), do: Probe.System.cmd(exe, ["30"], timeout)
+    def cmd_out(_executable, _args, _timeout_ms), do: {:error, :failed}
     def call(_fun, _timeout), do: {:error, :failed}
   end
 
@@ -132,6 +133,64 @@ defmodule ForemanServer.Projects.RecommendationsFactsTest do
       bare_id = "facts-#{System.unique_integer([:positive])}"
       register!(bare_id, Path.join(repo, "does-not-exist"))
       assert branch(bare_id) == :unavailable
+    end
+  end
+
+  describe "commits_behind_origin" do
+    defp git!(args, cwd) do
+      {out, status} = System.cmd("git", args, cd: cwd, stderr_to_stdout: true)
+      assert status == 0, "git #{Enum.join(args, " ")} failed: #{out}"
+      out
+    end
+
+    # A clone of a bare origin with three commits on `main`; the working copy
+    # is then rewound two commits, so it is two commits behind `origin/main`.
+    defp behind_origin_repo!(tmp) do
+      origin = Path.join(tmp, "origin.git")
+      work = Path.join(tmp, "work")
+      File.mkdir_p!(origin)
+      git!(["init", "--quiet", "--bare", origin], tmp)
+      git!(["init", "--quiet", "-b", "main", work], tmp)
+      git!(["config", "user.email", "probe@example.test"], work)
+      git!(["config", "user.name", "probe"], work)
+      git!(["config", "commit.gpgsign", "false"], work)
+
+      for n <- 1..3 do
+        File.write!(Path.join(work, "file#{n}.txt"), "v#{n}\n")
+        git!(["add", "file#{n}.txt"], work)
+        git!(["commit", "--quiet", "-m", "c#{n}"], work)
+      end
+
+      git!(["remote", "add", "origin", origin], work)
+      git!(["push", "--quiet", "-u", "origin", "main"], work)
+      git!(["reset", "--quiet", "--hard", "HEAD~2"], work)
+      work
+    end
+
+    test "counts the commits the checkout lacks from its own remote", %{tmp_dir: tmp} do
+      work = behind_origin_repo!(tmp)
+      id = fresh_id()
+      register!(id, work)
+
+      assert {:ok, facts} = Facts.collect(id)
+      assert facts.checked_out_branch == "main"
+      assert facts.commits_behind_origin == 2
+    end
+
+    test "a checkout with no remote is unavailable, never zero", %{tmp_dir: tmp} do
+      work = Path.join(tmp, "solo")
+      git!(["init", "--quiet", "-b", "main", work], tmp)
+      git!(["config", "user.email", "probe@example.test"], work)
+      git!(["config", "user.name", "probe"], work)
+      File.write!(Path.join(work, "a.txt"), "a\n")
+      git!(["add", "a.txt"], work)
+      git!(["commit", "--quiet", "-m", "c1"], work)
+
+      id = fresh_id()
+      register!(id, work)
+
+      assert {:ok, facts} = Facts.collect(id)
+      assert facts.commits_behind_origin == :unavailable
     end
   end
 

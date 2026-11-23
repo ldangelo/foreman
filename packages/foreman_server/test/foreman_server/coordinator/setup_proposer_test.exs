@@ -25,6 +25,7 @@ defmodule ForemanServer.Coordinator.SetupProposerTest do
     defdelegate read_head(path, max_bytes), to: Probe.System
     def find_executable(_name), do: raise("probe exploded")
     def cmd(_executable, _args, _timeout_ms), do: {:error, :failed}
+    def cmd_out(_executable, _args, _timeout_ms), do: {:error, :failed}
     def call(_fun, _timeout_ms), do: {:error, :failed}
   end
 

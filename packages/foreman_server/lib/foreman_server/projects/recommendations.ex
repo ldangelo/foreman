@@ -18,7 +18,7 @@ defmodule ForemanServer.Projects.Recommendations do
   ## Detector ids
 
   `task_provider.wire_beads`, `task_provider.br_missing`,
-  `repo.agents_md_missing`, `branch.default_unresolved`, `ci.none_detected`,
+  `repo.agents_md_missing`, `branch.default_unresolved`, `branch.behind_origin`, `ci.none_detected`,
   `gh.unauthenticated`, `gh.check_timeout`, `git.no_remote`,
   `workflows.not_installed`, `workflows.unmapped_types`,
   `provider.coordinator_unavailable`, `provider.none_installed`,
@@ -105,6 +105,7 @@ defmodule ForemanServer.Projects.Recommendations do
       br_missing(facts),
       agents_md_missing(facts),
       branch_unresolved(facts),
+      base_behind_origin(facts),
       ci_none(facts),
       gh(facts),
       no_remote(facts),
@@ -209,6 +210,45 @@ defmodule ForemanServer.Projects.Recommendations do
   end
 
   defp branch_unresolved(_), do: []
+
+  # The checkout is behind its own remote-tracking ref: runs cut from it start
+  # from stale code and their pull requests target an out-of-date base. The
+  # count comes from a bounded local probe; no fetch happens, so it describes
+  # the checkout as it stands, not the remote.
+  defp base_behind_origin(%Facts{
+         commits_behind_origin: behind,
+         checked_out_branch: branch,
+         repo_path: repo
+       })
+       when is_integer(behind) and behind > 0 and is_binary(branch) and is_binary(repo) do
+    [
+      rec(
+        "branch.behind_origin",
+        :warn,
+        "Base branch is behind origin",
+        "#{repo} is on `#{branch}`, which is #{behind} commit(s) behind " <>
+          "`origin/#{branch}`. Runs cut from it start from stale code and their pull " <>
+          "requests target an out-of-date base.",
+        %{repo_path: repo, branch: branch, commits_behind: behind},
+        manual(
+          "Update the checkout: `git -C " <>
+            sh_quote(repo) <>
+            " pull --ff-only origin/#{branch}`. If the branches have diverged, reconcile " <>
+            "them by hand instead: `--ff-only` never discards local commits."
+        )
+      )
+    ]
+  end
+
+  defp base_behind_origin(_), do: []
+
+  # POSIX single-quote wrapping. `repo` is an operator-supplied path shown inside a
+  # command string the operator will paste into a shell, so it must not be able to break
+  # out of its own word: wrap in single quotes and escape any embedded quote as '\''.
+  # The recommendation stays `manual`, so Foreman never runs the rendered command itself.
+  defp sh_quote(path) when is_binary(path) do
+    "'" <> String.replace(path, "'", "'\\''") <> "'"
+  end
 
   defp ci_none(%Facts{repo_path: repo, files: %{ci: []}}) when is_binary(repo) do
     [

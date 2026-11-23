@@ -681,8 +681,10 @@ read-only and bounded (5 s per external command); a check that cannot run
 produces no recommendation rather than a false alarm. `foreman doctor` reports
 server, provider and workflow readiness (`--project` adds this summary).
 
-Two further checks: `branch.default_unresolved` (the project's repository is on a
-detached HEAD, so Foreman cannot resolve the branch its pull requests target) and
+Three further checks: `branch.default_unresolved` (the project's repository is on a
+detached HEAD, so Foreman cannot resolve the branch its pull requests target),
+`branch.behind_origin` (the project's branch is behind its own
+`origin/<branch>`, so runs cut from it start from stale code) and
 `settings.env_empty` (no plain variable and no stored secret name; names only,
 never values). `settings.env_plain_secrets` points at
 `foreman project secret set --from-env VAR <id> NAME`.

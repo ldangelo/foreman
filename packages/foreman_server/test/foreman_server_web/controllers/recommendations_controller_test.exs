@@ -19,6 +19,7 @@ defmodule ForemanServerWeb.RecommendationsControllerTest do
     defdelegate read_head(p, n), to: Probe.System
     def find_executable(_), do: nil
     def cmd(_e, _a, _t), do: {:error, :failed}
+    def cmd_out(_e, _a, _t), do: {:error, :failed}
     def call(fun, t) when is_function(fun), do: Probe.System.call(fun, t)
   end
 
@@ -37,6 +38,7 @@ defmodule ForemanServerWeb.RecommendationsControllerTest do
         )
 
     def cmd(_e, _a, _t), do: {:error, :failed}
+    def cmd_out(_e, _a, _t), do: {:error, :failed}
     def call(fun, t), do: Probe.System.call(fun, t)
   end
 
