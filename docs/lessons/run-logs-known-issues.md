@@ -405,6 +405,9 @@ lines together). A burst of 240 lines over three pages checks that heartbeats ar
 and exactly-once hold across pages. `jido_harness_worker_log_capture_test.exs` pins the event-to-entry mapping, the
 `sequence` tag and the refusal of an event without one. To re-check the evidence on a dev machine, read a run's journal
 (`<run>/*.jsonl`, the segments in order: one JSON event per line with its `sequence`) and compare it with the worker stream.
+A call to the harness run is the tail's only by its sender: `Jido.Harness.Retention` calls `Run.info/1` on every run
+once a minute (the first sweep 60 s after boot), and a sweep inside the idle-tail test read as an early poll (hosted CI,
+2026-11-06 and 2026-11-23).
 
 ## Secrets split across output chunks are stored in clear (2026-11-03, foreman-l30ao.5)
 

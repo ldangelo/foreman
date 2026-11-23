@@ -30,6 +30,18 @@
   stops at once. No terminal event is written, so the run still reads non-terminal in the
   projection; why its aggregate was missing is not addressed here (foreman-j9sf8).
 
+- **The idle-tail poll test no longer fails at random.** `jido_harness_worker_live_output_test.exs`
+  ("an idle tail asks the run one cheap question per poll period") counted every `Run.info/1`
+  the traced harness run received, but `Jido.Harness.Retention` calls `Run.info/1` on every run
+  once a minute (its first sweep is 60 s after boot: the hosted-CI failures fell at +60 s and
+  +120 s into a run), so a sweep inside the test's second read as an early poll (`idle_2 - idle_1`
+  of 33 ms against 200 ms). The trace was also switched on while the tail's first round could be
+  under way, so its `info` was sometimes missed and the expected call list was one call short.
+  The test now counts only the tail's own calls (by sender) and measures the poll period from
+  the tail's `replay` of the output; it makes one foreign `Run.info/1` on purpose, so the filter
+  is exercised on every run. The tail itself waits the full 250 ms poll period after every
+  round: there is no production change.
+
 ### Added
 
 - **Kata task provider.** `ForemanServer.TaskProviders.KataAdapter` implements the

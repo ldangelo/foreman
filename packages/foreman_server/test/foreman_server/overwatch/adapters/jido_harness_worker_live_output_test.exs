@@ -276,24 +276,27 @@ defmodule ForemanServer.Overwatch.Adapters.JidoHarnessWorkerLiveOutputTest do
     end
   end
 
-  # What the traced harness run is asked, oldest first, until its latest `Run.replay/2` has been
-  # followed by `idle` calls of `Run.info/1`: `{:info, at}` and `{:replay, cursor, at}`, `at` being
-  # when the run received the call, in native time units.
-  defp harness_calls(run, idle, calls \\ []) do
+  # What the log tail asks the traced harness run, oldest first, until its latest `Run.replay/2`
+  # has been followed by `idle` calls of `Run.info/1`: `{:info, at}` and `{:replay, cursor, at}`,
+  # `at` being when the run received the call, in native time units. A call counts only when the
+  # tail (`tail`, its pid) made it: others ask the run too (`Jido.Harness.Retention` calls
+  # `Run.info/1` on every run once a minute), and their calls fall between the tail's own at
+  # moments that have nothing to do with its poll period.
+  defp harness_calls(run, tail, idle, calls \\ []) do
     {infos, rest} = Enum.split_while(calls, &match?({:info, _}, &1))
 
     if length(infos) >= idle and match?([{:replay, _, _} | _], rest) do
       Enum.reverse(calls)
     else
       receive do
-        {:trace_ts, ^run, :receive, {:"$gen_call", _from, :info}, at} ->
-          harness_calls(run, idle, [{:info, at} | calls])
+        {:trace_ts, ^run, :receive, {:"$gen_call", {^tail, _tag}, :info}, at} ->
+          harness_calls(run, tail, idle, [{:info, at} | calls])
 
-        {:trace_ts, ^run, :receive, {:"$gen_call", _from, {:replay, cursor, _limit}}, at} ->
-          harness_calls(run, idle, [{:replay, cursor, at} | calls])
+        {:trace_ts, ^run, :receive, {:"$gen_call", {^tail, _tag}, {:replay, cursor, _limit}}, at} ->
+          harness_calls(run, tail, idle, [{:replay, cursor, at} | calls])
 
         {:trace_ts, ^run, :receive, _other, _at} ->
-          harness_calls(run, idle, calls)
+          harness_calls(run, tail, idle, calls)
       after
         @await_ms ->
           flunk("the harness run was not asked often enough: #{inspect(Enum.reverse(calls))}")
@@ -558,23 +561,25 @@ defmodule ForemanServer.Overwatch.Adapters.JidoHarnessWorkerLiveOutputTest do
       worker_id: worker_id,
       run_id: run_id
     } do
-      {_worker, agent} = start_agent(worker_id, run_id)
+      {worker, agent} = start_agent(worker_id, run_id)
 
       # What the harness run is asked, and when. The tail's rounds are its `Run.info/1` calls, and
-      # its `Run.replay/2` calls when `info` says there is more to read.
+      # its `Run.replay/2` calls when `info` says there is more to read. Traced from here on: the
+      # tail's first round may already be under way, so what is measured below starts at its
+      # `replay` of the output, never at the `info` before it.
       :erlang.trace(agent.run, true, [:receive, :monotonic_timestamp])
       send(agent.adapter, {:emit, [stdout("one")]})
       assert [{"WorkerStdout", "one"}] = await_log_lines(1)
 
+      # The tail is not the only one who asks the run. Ask it once from here, between the tail's
+      # rounds: the calls measured below are the tail's by their sender, whoever else asks.
+      tail = tail_of(worker)
+      assert {:ok, _info} = Jido.Harness.Run.info(agent.harness_run_id)
+
       # The round that read the output, then three rounds that found nothing new: no replay among
       # them.
-      assert [
-               {:info, read_at},
-               {:replay, _cursor, _at},
-               {:info, idle_1},
-               {:info, idle_2},
-               {:info, idle_3}
-             ] = Enum.take(harness_calls(agent.run, 3), -5)
+      assert [{:replay, _cursor, read_at}, {:info, idle_1}, {:info, idle_2}, {:info, idle_3}] =
+               Enum.take(harness_calls(agent.run, tail, 3), -4)
 
       # A page that was not full, and a round that found nothing, are each followed by a poll
       # period before the next call, never by the next call at once.
