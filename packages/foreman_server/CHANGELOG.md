@@ -63,6 +63,10 @@
   the run's own commits (`base_ref..HEAD`, newest first); no sha is sent when the run
   made no commit.
 - `foreman doctor task_provider` resolves its Kata runner at call time, like the adapter.
+- A phase PR is titled with the run's task title when it has one, then the first
+  conventional-commit subject among the run's commits (`fix:`, `feat:`, …), then the legacy
+  `feat(phase): <phase>`; `Workflow.PhasePR.Request` gains an optional `task_title`, and a
+  `git log` that fails only costs the subject fallback (warned, the PR still opens).
 
 ### Fixed
 

@@ -2963,6 +2963,13 @@ continues. Push/create failures and closed matching PRs fail the responsible
 phase with typed details. A created or reused phase PR record suppresses the
 final AutoPR; no-op records do not.
 
+**A phase PR's title is the run's task title.** A task-backed run's phase PR
+is titled with the task's title; a run without one falls back to the first
+conventional-commit subject among the run's own commits (`fix(...)`,
+`feat(...)`, and so on); a run with neither keeps the legacy `feat(phase):
+<phase>` title. A task title that is present but unusable (blank) is a typed
+error, and the phase PR is not opened.
+
 **PR bodies carry the review agent's report only when Foreman generates the body.**
 Phase PRs, and final AutoPRs for ad-hoc no-task runs, append a `## Review findings
 (the review agent's report)` section to the generated body, read from the

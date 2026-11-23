@@ -1,1465 +1,0 @@
-Info: Running script "bash" on /Users/ldangelo/.foreman/worktrees/foreman/foreman-gocpd/run-bf31fff2bba135166d4e4cc111d51be8/workspace
-devbox shell  ::  foreman.jido-migration  ::  Erlang/OTP 28 [erts-16.4.0.5] [source] [64-bit] [smp:18:18] [ds:18:18:10] [async-threads:1] [jit]
-
-Mix 1.20.4 (compiled with Erlang/OTP 28)
-* Getting jido (https://github.com/Sunstone-Partners/jido.git - accea666713bda68e3d6802024584bfbd95aea2b)
-remote: Enumerating objects: 7849, done.        
-remote: Counting objects:   0% (1/229)        remote: Counting objects:   1% (3/229)        remote: Counting objects:   2% (5/229)        remote: Counting objects:   3% (7/229)        remote: Counting objects:   4% (10/229)        remote: Counting objects:   5% (12/229)        remote: Counting objects:   6% (14/229)        remote: Counting objects:   7% (17/229)        remote: Counting objects:   8% (19/229)        remote: Counting objects:   9% (21/229)        remote: Counting objects:  10% (23/229)        remote: Counting objects:  11% (26/229)        remote: Counting objects:  12% (28/229)        remote: Counting objects:  13% (30/229)        remote: Counting objects:  14% (33/229)        remote: Counting objects:  15% (35/229)        remote: Counting objects:  16% (37/229)        remote: Counting objects:  17% (39/229)        remote: Counting objects:  18% (42/229)        remote: Counting objects:  19% (44/229)        remote: Counting objects:  20% (46/229)        remote: Counting objects:  21% (49/229)        remote: Counting objects:  22% (51/229)        remote: Counting objects:  23% (53/229)        remote: Counting objects:  24% (55/229)        remote: Counting objects:  25% (58/229)        remote: Counting objects:  26% (60/229)        remote: Counting objects:  27% (62/229)        remote: Counting objects:  28% (65/229)        remote: Counting objects:  29% (67/229)        remote: Counting objects:  30% (69/229)        remote: Counting objects:  31% (71/229)        remote: Counting objects:  32% (74/229)        remote: Counting objects:  33% (76/229)        remote: Counting objects:  34% (78/229)        remote: Counting objects:  35% (81/229)        remote: Counting objects:  36% (83/229)        remote: Counting objects:  37% (85/229)        remote: Counting objects:  38% (88/229)        remote: Counting objects:  39% (90/229)        remote: Counting objects:  40% (92/229)        remote: Counting objects:  41% (94/229)        remote: Counting objects:  42% (97/229)        remote: Counting objects:  43% (99/229)        remote: Counting objects:  44% (101/229)        remote: Counting objects:  45% (104/229)        remote: Counting objects:  46% (106/229)        remote: Counting objects:  47% (108/229)        remote: Counting objects:  48% (110/229)        remote: Counting objects:  49% (113/229)        remote: Counting objects:  50% (115/229)        remote: Counting objects:  51% (117/229)        remote: Counting objects:  52% (120/229)        remote: Counting objects:  53% (122/229)        remote: Counting objects:  54% (124/229)        remote: Counting objects:  55% (126/229)        remote: Counting objects:  56% (129/229)        remote: Counting objects:  57% (131/229)        remote: Counting objects:  58% (133/229)        remote: Counting objects:  59% (136/229)        remote: Counting objects:  60% (138/229)        remote: Counting objects:  61% (140/229)        remote: Counting objects:  62% (142/229)        remote: Counting objects:  63% (145/229)        remote: Counting objects:  64% (147/229)        remote: Counting objects:  65% (149/229)        remote: Counting objects:  66% (152/229)        remote: Counting objects:  67% (154/229)        remote: Counting objects:  68% (156/229)        remote: Counting objects:  69% (159/229)        remote: Counting objects:  70% (161/229)        remote: Counting objects:  71% (163/229)        remote: Counting objects:  72% (165/229)        remote: Counting objects:  73% (168/229)        remote: Counting objects:  74% (170/229)        remote: Counting objects:  75% (172/229)        remote: Counting objects:  76% (175/229)        remote: Counting objects:  77% (177/229)        remote: Counting objects:  78% (179/229)        remote: Counting objects:  79% (181/229)        remote: Counting objects:  80% (184/229)        remote: Counting objects:  81% (186/229)        remote: Counting objects:  82% (188/229)        remote: Counting objects:  83% (191/229)        remote: Counting objects:  84% (193/229)        remote: Counting objects:  85% (195/229)        remote: Counting objects:  86% (197/229)        remote: Counting objects:  87% (200/229)        remote: Counting objects:  88% (202/229)        remote: Counting objects:  89% (204/229)        remote: Counting objects:  90% (207/229)        remote: Counting objects:  91% (209/229)        remote: Counting objects:  92% (211/229)        remote: Counting objects:  93% (213/229)        remote: Counting objects:  94% (216/229)        remote: Counting objects:  95% (218/229)        remote: Counting objects:  96% (220/229)        remote: Counting objects:  97% (223/229)        remote: Counting objects:  98% (225/229)        remote: Counting objects:  99% (227/229)        remote: Counting objects: 100% (229/229)        remote: Counting objects: 100% (229/229), done.        
-remote: Compressing objects:   2% (1/41)        remote: Compressing objects:   4% (2/41)        remote: Compressing objects:   7% (3/41)        remote: Compressing objects:   9% (4/41)        remote: Compressing objects:  12% (5/41)        remote: Compressing objects:  14% (6/41)        remote: Compressing objects:  17% (7/41)        remote: Compressing objects:  19% (8/41)        remote: Compressing objects:  21% (9/41)        remote: Compressing objects:  24% (10/41)        remote: Compressing objects:  26% (11/41)        remote: Compressing objects:  29% (12/41)        remote: Compressing objects:  31% (13/41)        remote: Compressing objects:  34% (14/41)        remote: Compressing objects:  36% (15/41)        remote: Compressing objects:  39% (16/41)        remote: Compressing objects:  41% (17/41)        remote: Compressing objects:  43% (18/41)        remote: Compressing objects:  46% (19/41)        remote: Compressing objects:  48% (20/41)        remote: Compressing objects:  51% (21/41)        remote: Compressing objects:  53% (22/41)        remote: Compressing objects:  56% (23/41)        remote: Compressing objects:  58% (24/41)        remote: Compressing objects:  60% (25/41)        remote: Compressing objects:  63% (26/41)        remote: Compressing objects:  65% (27/41)        remote: Compressing objects:  68% (28/41)        remote: Compressing objects:  70% (29/41)        remote: Compressing objects:  73% (30/41)        remote: Compressing objects:  75% (31/41)        remote: Compressing objects:  78% (32/41)        remote: Compressing objects:  80% (33/41)        remote: Compressing objects:  82% (34/41)        remote: Compressing objects:  85% (35/41)        remote: Compressing objects:  87% (36/41)        remote: Compressing objects:  90% (37/41)        remote: Compressing objects:  92% (38/41)        remote: Compressing objects:  95% (39/41)        remote: Compressing objects:  97% (40/41)        remote: Compressing objects: 100% (41/41)        remote: Compressing objects: 100% (41/41), done.        
-remote: Total 7849 (delta 191), reused 199 (delta 188), pack-reused 7620 (from 1)        
-* Getting jido_action (https://github.com/Sunstone-Partners/jido_action.git - 2b6dfb57441454d290cfc3552767fb177ea14a2d)
-remote: Enumerating objects: 3728, done.        
-remote: Counting objects:   0% (1/1412)        remote: Counting objects:   1% (15/1412)        remote: Counting objects:   2% (29/1412)        remote: Counting objects:   3% (43/1412)        remote: Counting objects:   4% (57/1412)        remote: Counting objects:   5% (71/1412)        remote: Counting objects:   6% (85/1412)        remote: Counting objects:   7% (99/1412)        remote: Counting objects:   8% (113/1412)        remote: Counting objects:   9% (128/1412)        remote: Counting objects:  10% (142/1412)        remote: Counting objects:  11% (156/1412)        remote: Counting objects:  12% (170/1412)        remote: Counting objects:  13% (184/1412)        remote: Counting objects:  14% (198/1412)        remote: Counting objects:  15% (212/1412)        remote: Counting objects:  16% (226/1412)        remote: Counting objects:  17% (241/1412)        remote: Counting objects:  18% (255/1412)        remote: Counting objects:  19% (269/1412)        remote: Counting objects:  20% (283/1412)        remote: Counting objects:  21% (297/1412)        remote: Counting objects:  22% (311/1412)        remote: Counting objects:  23% (325/1412)        remote: Counting objects:  24% (339/1412)        remote: Counting objects:  25% (353/1412)        remote: Counting objects:  26% (368/1412)        remote: Counting objects:  27% (382/1412)        remote: Counting objects:  28% (396/1412)        remote: Counting objects:  29% (410/1412)        remote: Counting objects:  30% (424/1412)        remote: Counting objects:  31% (438/1412)        remote: Counting objects:  32% (452/1412)        remote: Counting objects:  33% (466/1412)        remote: Counting objects:  34% (481/1412)        remote: Counting objects:  35% (495/1412)        remote: Counting objects:  36% (509/1412)        remote: Counting objects:  37% (523/1412)        remote: Counting objects:  38% (537/1412)        remote: Counting objects:  39% (551/1412)        remote: Counting objects:  40% (565/1412)        remote: Counting objects:  41% (579/1412)        remote: Counting objects:  42% (594/1412)        remote: Counting objects:  43% (608/1412)        remote: Counting objects:  44% (622/1412)        remote: Counting objects:  45% (636/1412)        remote: Counting objects:  46% (650/1412)        remote: Counting objects:  47% (664/1412)        remote: Counting objects:  48% (678/1412)        remote: Counting objects:  49% (692/1412)        remote: Counting objects:  50% (706/1412)        remote: Counting objects:  51% (721/1412)        remote: Counting objects:  52% (735/1412)        remote: Counting objects:  53% (749/1412)        remote: Counting objects:  54% (763/1412)        remote: Counting objects:  55% (777/1412)        remote: Counting objects:  56% (791/1412)        remote: Counting objects:  57% (805/1412)        remote: Counting objects:  58% (819/1412)        remote: Counting objects:  59% (834/1412)        remote: Counting objects:  60% (848/1412)        remote: Counting objects:  61% (862/1412)        remote: Counting objects:  62% (876/1412)        remote: Counting objects:  63% (890/1412)        remote: Counting objects:  64% (904/1412)        remote: Counting objects:  65% (918/1412)        remote: Counting objects:  66% (932/1412)        remote: Counting objects:  67% (947/1412)        remote: Counting objects:  68% (961/1412)        remote: Counting objects:  69% (975/1412)        remote: Counting objects:  70% (989/1412)        remote: Counting objects:  71% (1003/1412)        remote: Counting objects:  72% (1017/1412)        remote: Counting objects:  73% (1031/1412)        remote: Counting objects:  74% (1045/1412)        remote: Counting objects:  75% (1059/1412)        remote: Counting objects:  76% (1074/1412)        remote: Counting objects:  77% (1088/1412)        remote: Counting objects:  78% (1102/1412)        remote: Counting objects:  79% (1116/1412)        remote: Counting objects:  80% (1130/1412)        remote: Counting objects:  81% (1144/1412)        remote: Counting objects:  82% (1158/1412)        remote: Counting objects:  83% (1172/1412)        remote: Counting objects:  84% (1187/1412)        remote: Counting objects:  85% (1201/1412)        remote: Counting objects:  86% (1215/1412)        remote: Counting objects:  87% (1229/1412)        remote: Counting objects:  88% (1243/1412)        remote: Counting objects:  89% (1257/1412)        remote: Counting objects:  90% (1271/1412)        remote: Counting objects:  91% (1285/1412)        remote: Counting objects:  92% (1300/1412)        remote: Counting objects:  93% (1314/1412)        remote: Counting objects:  94% (1328/1412)        remote: Counting objects:  95% (1342/1412)        remote: Counting objects:  96% (1356/1412)        remote: Counting objects:  97% (1370/1412)        remote: Counting objects:  98% (1384/1412)        remote: Counting objects:  99% (1398/1412)        remote: Counting objects: 100% (1412/1412)        remote: Counting objects: 100% (1412/1412), done.        
-remote: Compressing objects:   0% (1/435)        remote: Compressing objects:   1% (5/435)        remote: Compressing objects:   2% (9/435)        remote: Compressing objects:   3% (14/435)        remote: Compressing objects:   4% (18/435)        remote: Compressing objects:   5% (22/435)        remote: Compressing objects:   6% (27/435)        remote: Compressing objects:   7% (31/435)        remote: Compressing objects:   8% (35/435)        remote: Compressing objects:   9% (40/435)        remote: Compressing objects:  10% (44/435)        remote: Compressing objects:  11% (48/435)        remote: Compressing objects:  12% (53/435)        remote: Compressing objects:  13% (57/435)        remote: Compressing objects:  14% (61/435)        remote: Compressing objects:  15% (66/435)        remote: Compressing objects:  16% (70/435)        remote: Compressing objects:  17% (74/435)        remote: Compressing objects:  18% (79/435)        remote: Compressing objects:  19% (83/435)        remote: Compressing objects:  20% (87/435)        remote: Compressing objects:  21% (92/435)        remote: Compressing objects:  22% (96/435)        remote: Compressing objects:  23% (101/435)        remote: Compressing objects:  24% (105/435)        remote: Compressing objects:  25% (109/435)        remote: Compressing objects:  26% (114/435)        remote: Compressing objects:  27% (118/435)        remote: Compressing objects:  28% (122/435)        remote: Compressing objects:  29% (127/435)        remote: Compressing objects:  30% (131/435)        remote: Compressing objects:  31% (135/435)        remote: Compressing objects:  32% (140/435)        remote: Compressing objects:  33% (144/435)        remote: Compressing objects:  34% (148/435)        remote: Compressing objects:  35% (153/435)        remote: Compressing objects:  36% (157/435)        remote: Compressing objects:  37% (161/435)        remote: Compressing objects:  38% (166/435)        remote: Compressing objects:  39% (170/435)        remote: Compressing objects:  40% (174/435)        remote: Compressing objects:  41% (179/435)        remote: Compressing objects:  42% (183/435)        remote: Compressing objects:  43% (188/435)        remote: Compressing objects:  44% (192/435)        remote: Compressing objects:  45% (196/435)        remote: Compressing objects:  46% (201/435)        remote: Compressing objects:  47% (205/435)        remote: Compressing objects:  48% (209/435)        remote: Compressing objects:  49% (214/435)        remote: Compressing objects:  50% (218/435)        remote: Compressing objects:  51% (222/435)        remote: Compressing objects:  52% (227/435)        remote: Compressing objects:  53% (231/435)        remote: Compressing objects:  54% (235/435)        remote: Compressing objects:  55% (240/435)        remote: Compressing objects:  56% (244/435)        remote: Compressing objects:  57% (248/435)        remote: Compressing objects:  58% (253/435)        remote: Compressing objects:  59% (257/435)        remote: Compressing objects:  60% (261/435)        remote: Compressing objects:  61% (266/435)        remote: Compressing objects:  62% (270/435)        remote: Compressing objects:  63% (275/435)        remote: Compressing objects:  64% (279/435)        remote: Compressing objects:  65% (283/435)        remote: Compressing objects:  66% (288/435)        remote: Compressing objects:  67% (292/435)        remote: Compressing objects:  68% (296/435)        remote: Compressing objects:  69% (301/435)        remote: Compressing objects:  70% (305/435)        remote: Compressing objects:  71% (309/435)        remote: Compressing objects:  72% (314/435)        remote: Compressing objects:  73% (318/435)        remote: Compressing objects:  74% (322/435)        remote: Compressing objects:  75% (327/435)        remote: Compressing objects:  76% (331/435)        remote: Compressing objects:  77% (335/435)        remote: Compressing objects:  78% (340/435)        remote: Compressing objects:  79% (344/435)        remote: Compressing objects:  80% (348/435)        remote: Compressing objects:  81% (353/435)        remote: Compressing objects:  82% (357/435)        remote: Compressing objects:  83% (362/435)        remote: Compressing objects:  84% (366/435)        remote: Compressing objects:  85% (370/435)        remote: Compressing objects:  86% (375/435)        remote: Compressing objects:  87% (379/435)        remote: Compressing objects:  88% (383/435)        remote: Compressing objects:  89% (388/435)        remote: Compressing objects:  90% (392/435)        remote: Compressing objects:  91% (396/435)        remote: Compressing objects:  92% (401/435)        remote: Compressing objects:  93% (405/435)        remote: Compressing objects:  94% (409/435)        remote: Compressing objects:  95% (414/435)        remote: Compressing objects:  96% (418/435)        remote: Compressing objects:  97% (422/435)        remote: Compressing objects:  98% (427/435)        remote: Compressing objects:  99% (431/435)        remote: Compressing objects: 100% (435/435)        remote: Compressing objects: 100% (435/435), done.        
-remote: Total 3728 (delta 1189), reused 987 (delta 977), pack-reused 2316 (from 2)        
-* Getting jido_signal (https://github.com/Sunstone-Partners/jido_signal.git - e3f8a34184dfee60f765695d9ca65ac56426ef8a)
-remote: Enumerating objects: 2342, done.        
-remote: Counting objects:   0% (1/957)        remote: Counting objects:   1% (10/957)        remote: Counting objects:   2% (20/957)        remote: Counting objects:   3% (29/957)        remote: Counting objects:   4% (39/957)        remote: Counting objects:   5% (48/957)        remote: Counting objects:   6% (58/957)        remote: Counting objects:   7% (67/957)        remote: Counting objects:   8% (77/957)        remote: Counting objects:   9% (87/957)        remote: Counting objects:  10% (96/957)        remote: Counting objects:  11% (106/957)        remote: Counting objects:  12% (115/957)        remote: Counting objects:  13% (125/957)        remote: Counting objects:  14% (134/957)        remote: Counting objects:  15% (144/957)        remote: Counting objects:  16% (154/957)        remote: Counting objects:  17% (163/957)        remote: Counting objects:  18% (173/957)        remote: Counting objects:  19% (182/957)        remote: Counting objects:  20% (192/957)        remote: Counting objects:  21% (201/957)        remote: Counting objects:  22% (211/957)        remote: Counting objects:  23% (221/957)        remote: Counting objects:  24% (230/957)        remote: Counting objects:  25% (240/957)        remote: Counting objects:  26% (249/957)        remote: Counting objects:  27% (259/957)        remote: Counting objects:  28% (268/957)        remote: Counting objects:  29% (278/957)        remote: Counting objects:  30% (288/957)        remote: Counting objects:  31% (297/957)        remote: Counting objects:  32% (307/957)        remote: Counting objects:  33% (316/957)        remote: Counting objects:  34% (326/957)        remote: Counting objects:  35% (335/957)        remote: Counting objects:  36% (345/957)        remote: Counting objects:  37% (355/957)        remote: Counting objects:  38% (364/957)        remote: Counting objects:  39% (374/957)        remote: Counting objects:  40% (383/957)        remote: Counting objects:  41% (393/957)        remote: Counting objects:  42% (402/957)        remote: Counting objects:  43% (412/957)        remote: Counting objects:  44% (422/957)        remote: Counting objects:  45% (431/957)        remote: Counting objects:  46% (441/957)        remote: Counting objects:  47% (450/957)        remote: Counting objects:  48% (460/957)        remote: Counting objects:  49% (469/957)        remote: Counting objects:  50% (479/957)        remote: Counting objects:  51% (489/957)        remote: Counting objects:  52% (498/957)        remote: Counting objects:  53% (508/957)        remote: Counting objects:  54% (517/957)        remote: Counting objects:  55% (527/957)        remote: Counting objects:  56% (536/957)        remote: Counting objects:  57% (546/957)        remote: Counting objects:  58% (556/957)        remote: Counting objects:  59% (565/957)        remote: Counting objects:  60% (575/957)        remote: Counting objects:  61% (584/957)        remote: Counting objects:  62% (594/957)        remote: Counting objects:  63% (603/957)        remote: Counting objects:  64% (613/957)        remote: Counting objects:  65% (623/957)        remote: Counting objects:  66% (632/957)        remote: Counting objects:  67% (642/957)        remote: Counting objects:  68% (651/957)        remote: Counting objects:  69% (661/957)        remote: Counting objects:  70% (670/957)        remote: Counting objects:  71% (680/957)        remote: Counting objects:  72% (690/957)        remote: Counting objects:  73% (699/957)        remote: Counting objects:  74% (709/957)        remote: Counting objects:  75% (718/957)        remote: Counting objects:  76% (728/957)        remote: Counting objects:  77% (737/957)        remote: Counting objects:  78% (747/957)        remote: Counting objects:  79% (757/957)        remote: Counting objects:  80% (766/957)        remote: Counting objects:  81% (776/957)        remote: Counting objects:  82% (785/957)        remote: Counting objects:  83% (795/957)        remote: Counting objects:  84% (804/957)        remote: Counting objects:  85% (814/957)        remote: Counting objects:  86% (824/957)        remote: Counting objects:  87% (833/957)        remote: Counting objects:  88% (843/957)        remote: Counting objects:  89% (852/957)        remote: Counting objects:  90% (862/957)        remote: Counting objects:  91% (871/957)        remote: Counting objects:  92% (881/957)        remote: Counting objects:  93% (891/957)        remote: Counting objects:  94% (900/957)        remote: Counting objects:  95% (910/957)        remote: Counting objects:  96% (919/957)        remote: Counting objects:  97% (929/957)        remote: Counting objects:  98% (938/957)        remote: Counting objects:  99% (948/957)        remote: Counting objects: 100% (957/957)        remote: Counting objects: 100% (957/957), done.        
-remote: Compressing objects:   0% (1/353)        remote: Compressing objects:   1% (4/353)        remote: Compressing objects:   2% (8/353)        remote: Compressing objects:   3% (11/353)        remote: Compressing objects:   4% (15/353)        remote: Compressing objects:   5% (18/353)        remote: Compressing objects:   6% (22/353)        remote: Compressing objects:   7% (25/353)        remote: Compressing objects:   8% (29/353)        remote: Compressing objects:   9% (32/353)        remote: Compressing objects:  10% (36/353)        remote: Compressing objects:  11% (39/353)        remote: Compressing objects:  12% (43/353)        remote: Compressing objects:  13% (46/353)        remote: Compressing objects:  14% (50/353)        remote: Compressing objects:  15% (53/353)        remote: Compressing objects:  16% (57/353)        remote: Compressing objects:  17% (61/353)        remote: Compressing objects:  18% (64/353)        remote: Compressing objects:  19% (68/353)        remote: Compressing objects:  20% (71/353)        remote: Compressing objects:  21% (75/353)        remote: Compressing objects:  22% (78/353)        remote: Compressing objects:  23% (82/353)        remote: Compressing objects:  24% (85/353)        remote: Compressing objects:  25% (89/353)        remote: Compressing objects:  26% (92/353)        remote: Compressing objects:  27% (96/353)        remote: Compressing objects:  28% (99/353)        remote: Compressing objects:  29% (103/353)        remote: Compressing objects:  30% (106/353)        remote: Compressing objects:  31% (110/353)        remote: Compressing objects:  32% (113/353)        remote: Compressing objects:  33% (117/353)        remote: Compressing objects:  34% (121/353)        remote: Compressing objects:  35% (124/353)        remote: Compressing objects:  36% (128/353)        remote: Compressing objects:  37% (131/353)        remote: Compressing objects:  38% (135/353)        remote: Compressing objects:  39% (138/353)        remote: Compressing objects:  40% (142/353)        remote: Compressing objects:  41% (145/353)        remote: Compressing objects:  42% (149/353)        remote: Compressing objects:  43% (152/353)        remote: Compressing objects:  44% (156/353)        remote: Compressing objects:  45% (159/353)        remote: Compressing objects:  46% (163/353)        remote: Compressing objects:  47% (166/353)        remote: Compressing objects:  48% (170/353)        remote: Compressing objects:  49% (173/353)        remote: Compressing objects:  50% (177/353)        remote: Compressing objects:  51% (181/353)        remote: Compressing objects:  52% (184/353)        remote: Compressing objects:  53% (188/353)        remote: Compressing objects:  54% (191/353)        remote: Compressing objects:  55% (195/353)        remote: Compressing objects:  56% (198/353)        remote: Compressing objects:  57% (202/353)        remote: Compressing objects:  58% (205/353)        remote: Compressing objects:  59% (209/353)        remote: Compressing objects:  60% (212/353)        remote: Compressing objects:  61% (216/353)        remote: Compressing objects:  62% (219/353)        remote: Compressing objects:  63% (223/353)        remote: Compressing objects:  64% (226/353)        remote: Compressing objects:  65% (230/353)        remote: Compressing objects:  66% (233/353)        remote: Compressing objects:  67% (237/353)        remote: Compressing objects:  68% (241/353)        remote: Compressing objects:  69% (244/353)        remote: Compressing objects:  70% (248/353)        remote: Compressing objects:  71% (251/353)        remote: Compressing objects:  72% (255/353)        remote: Compressing objects:  73% (258/353)        remote: Compressing objects:  74% (262/353)        remote: Compressing objects:  75% (265/353)        remote: Compressing objects:  76% (269/353)        remote: Compressing objects:  77% (272/353)        remote: Compressing objects:  78% (276/353)        remote: Compressing objects:  79% (279/353)        remote: Compressing objects:  80% (283/353)        remote: Compressing objects:  81% (286/353)        remote: Compressing objects:  82% (290/353)        remote: Compressing objects:  83% (293/353)        remote: Compressing objects:  84% (297/353)        remote: Compressing objects:  85% (301/353)        remote: Compressing objects:  86% (304/353)        remote: Compressing objects:  87% (308/353)        remote: Compressing objects:  88% (311/353)        remote: Compressing objects:  89% (315/353)        remote: Compressing objects:  90% (318/353)        remote: Compressing objects:  91% (322/353)        remote: Compressing objects:  92% (325/353)        remote: Compressing objects:  93% (329/353)        remote: Compressing objects:  94% (332/353)        remote: Compressing objects:  95% (336/353)        remote: Compressing objects:  96% (339/353)        remote: Compressing objects:  97% (343/353)        remote: Compressing objects:  98% (346/353)        remote: Compressing objects:  99% (350/353)        remote: Compressing objects: 100% (353/353)        remote: Compressing objects: 100% (353/353), done.        
-remote: Total 2342 (delta 799), reused 615 (delta 604), pack-reused 1385 (from 1)        
-* Getting jido_shell (https://github.com/Sunstone-Partners/jido_shell.git - a180289345e3f2c5b659ed0ea2c4f20fabeeef2f)
-remote: Enumerating objects: 1066, done.        
-remote: Counting objects:   0% (1/211)        remote: Counting objects:   1% (3/211)        remote: Counting objects:   2% (5/211)        remote: Counting objects:   3% (7/211)        remote: Counting objects:   4% (9/211)        remote: Counting objects:   5% (11/211)        remote: Counting objects:   6% (13/211)        remote: Counting objects:   7% (15/211)        remote: Counting objects:   8% (17/211)        remote: Counting objects:   9% (19/211)        remote: Counting objects:  10% (22/211)        remote: Counting objects:  11% (24/211)        remote: Counting objects:  12% (26/211)        remote: Counting objects:  13% (28/211)        remote: Counting objects:  14% (30/211)        remote: Counting objects:  15% (32/211)        remote: Counting objects:  16% (34/211)        remote: Counting objects:  17% (36/211)        remote: Counting objects:  18% (38/211)        remote: Counting objects:  19% (41/211)        remote: Counting objects:  20% (43/211)        remote: Counting objects:  21% (45/211)        remote: Counting objects:  22% (47/211)        remote: Counting objects:  23% (49/211)        remote: Counting objects:  24% (51/211)        remote: Counting objects:  25% (53/211)        remote: Counting objects:  26% (55/211)        remote: Counting objects:  27% (57/211)        remote: Counting objects:  28% (60/211)        remote: Counting objects:  29% (62/211)        remote: Counting objects:  30% (64/211)        remote: Counting objects:  31% (66/211)        remote: Counting objects:  32% (68/211)        remote: Counting objects:  33% (70/211)        remote: Counting objects:  34% (72/211)        remote: Counting objects:  35% (74/211)        remote: Counting objects:  36% (76/211)        remote: Counting objects:  37% (79/211)        remote: Counting objects:  38% (81/211)        remote: Counting objects:  39% (83/211)        remote: Counting objects:  40% (85/211)        remote: Counting objects:  41% (87/211)        remote: Counting objects:  42% (89/211)        remote: Counting objects:  43% (91/211)        remote: Counting objects:  44% (93/211)        remote: Counting objects:  45% (95/211)        remote: Counting objects:  46% (98/211)        remote: Counting objects:  47% (100/211)        remote: Counting objects:  48% (102/211)        remote: Counting objects:  49% (104/211)        remote: Counting objects:  50% (106/211)        remote: Counting objects:  51% (108/211)        remote: Counting objects:  52% (110/211)        remote: Counting objects:  53% (112/211)        remote: Counting objects:  54% (114/211)        remote: Counting objects:  55% (117/211)        remote: Counting objects:  56% (119/211)        remote: Counting objects:  57% (121/211)        remote: Counting objects:  58% (123/211)        remote: Counting objects:  59% (125/211)        remote: Counting objects:  60% (127/211)        remote: Counting objects:  61% (129/211)        remote: Counting objects:  62% (131/211)        remote: Counting objects:  63% (133/211)        remote: Counting objects:  64% (136/211)        remote: Counting objects:  65% (138/211)        remote: Counting objects:  66% (140/211)        remote: Counting objects:  67% (142/211)        remote: Counting objects:  68% (144/211)        remote: Counting objects:  69% (146/211)        remote: Counting objects:  70% (148/211)        remote: Counting objects:  71% (150/211)        remote: Counting objects:  72% (152/211)        remote: Counting objects:  73% (155/211)        remote: Counting objects:  74% (157/211)        remote: Counting objects:  75% (159/211)        remote: Counting objects:  76% (161/211)        remote: Counting objects:  77% (163/211)        remote: Counting objects:  78% (165/211)        remote: Counting objects:  79% (167/211)        remote: Counting objects:  80% (169/211)        remote: Counting objects:  81% (171/211)        remote: Counting objects:  82% (174/211)        remote: Counting objects:  83% (176/211)        remote: Counting objects:  84% (178/211)        remote: Counting objects:  85% (180/211)        remote: Counting objects:  86% (182/211)        remote: Counting objects:  87% (184/211)        remote: Counting objects:  88% (186/211)        remote: Counting objects:  89% (188/211)        remote: Counting objects:  90% (190/211)        remote: Counting objects:  91% (193/211)        remote: Counting objects:  92% (195/211)        remote: Counting objects:  93% (197/211)        remote: Counting objects:  94% (199/211)        remote: Counting objects:  95% (201/211)        remote: Counting objects:  96% (203/211)        remote: Counting objects:  97% (205/211)        remote: Counting objects:  98% (207/211)        remote: Counting objects:  99% (209/211)        remote: Counting objects: 100% (211/211)        remote: Counting objects: 100% (211/211), done.        
-remote: Compressing objects:   1% (1/80)        remote: Compressing objects:   2% (2/80)        remote: Compressing objects:   3% (3/80)        remote: Compressing objects:   5% (4/80)        remote: Compressing objects:   6% (5/80)        remote: Compressing objects:   7% (6/80)        remote: Compressing objects:   8% (7/80)        remote: Compressing objects:  10% (8/80)        remote: Compressing objects:  11% (9/80)        remote: Compressing objects:  12% (10/80)        remote: Compressing objects:  13% (11/80)        remote: Compressing objects:  15% (12/80)        remote: Compressing objects:  16% (13/80)        remote: Compressing objects:  17% (14/80)        remote: Compressing objects:  18% (15/80)        remote: Compressing objects:  20% (16/80)        remote: Compressing objects:  21% (17/80)        remote: Compressing objects:  22% (18/80)        remote: Compressing objects:  23% (19/80)        remote: Compressing objects:  25% (20/80)        remote: Compressing objects:  26% (21/80)        remote: Compressing objects:  27% (22/80)        remote: Compressing objects:  28% (23/80)        remote: Compressing objects:  30% (24/80)        remote: Compressing objects:  31% (25/80)        remote: Compressing objects:  32% (26/80)        remote: Compressing objects:  33% (27/80)        remote: Compressing objects:  35% (28/80)        remote: Compressing objects:  36% (29/80)        remote: Compressing objects:  37% (30/80)        remote: Compressing objects:  38% (31/80)        remote: Compressing objects:  40% (32/80)        remote: Compressing objects:  41% (33/80)        remote: Compressing objects:  42% (34/80)        remote: Compressing objects:  43% (35/80)        remote: Compressing objects:  45% (36/80)        remote: Compressing objects:  46% (37/80)        remote: Compressing objects:  47% (38/80)        remote: Compressing objects:  48% (39/80)        remote: Compressing objects:  50% (40/80)        remote: Compressing objects:  51% (41/80)        remote: Compressing objects:  52% (42/80)        remote: Compressing objects:  53% (43/80)        remote: Compressing objects:  55% (44/80)        remote: Compressing objects:  56% (45/80)        remote: Compressing objects:  57% (46/80)        remote: Compressing objects:  58% (47/80)        remote: Compressing objects:  60% (48/80)        remote: Compressing objects:  61% (49/80)        remote: Compressing objects:  62% (50/80)        remote: Compressing objects:  63% (51/80)        remote: Compressing objects:  65% (52/80)        remote: Compressing objects:  66% (53/80)        remote: Compressing objects:  67% (54/80)        remote: Compressing objects:  68% (55/80)        remote: Compressing objects:  70% (56/80)        remote: Compressing objects:  71% (57/80)        remote: Compressing objects:  72% (58/80)        remote: Compressing objects:  73% (59/80)        remote: Compressing objects:  75% (60/80)        remote: Compressing objects:  76% (61/80)        remote: Compressing objects:  77% (62/80)        remote: Compressing objects:  78% (63/80)        remote: Compressing objects:  80% (64/80)        remote: Compressing objects:  81% (65/80)        remote: Compressing objects:  82% (66/80)        remote: Compressing objects:  83% (67/80)        remote: Compressing objects:  85% (68/80)        remote: Compressing objects:  86% (69/80)        remote: Compressing objects:  87% (70/80)        remote: Compressing objects:  88% (71/80)        remote: Compressing objects:  90% (72/80)        remote: Compressing objects:  91% (73/80)        remote: Compressing objects:  92% (74/80)        remote: Compressing objects:  93% (75/80)        remote: Compressing objects:  95% (76/80)        remote: Compressing objects:  96% (77/80)        remote: Compressing objects:  97% (78/80)        remote: Compressing objects:  98% (79/80)        remote: Compressing objects: 100% (80/80)        remote: Compressing objects: 100% (80/80), done.        
-remote: Total 1066 (delta 175), reused 131 (delta 131), pack-reused 855 (from 2)        
-* Getting jido_vfs (https://github.com/Sunstone-Partners/jido_vfs.git - ca34ffb5a303313cf9b878fecb78e6d8bf7d7538)
-remote: Enumerating objects: 660, done.        
-remote: Counting objects:   1% (1/98)        remote: Counting objects:   2% (2/98)        remote: Counting objects:   3% (3/98)        remote: Counting objects:   4% (4/98)        remote: Counting objects:   5% (5/98)        remote: Counting objects:   6% (6/98)        remote: Counting objects:   7% (7/98)        remote: Counting objects:   8% (8/98)        remote: Counting objects:   9% (9/98)        remote: Counting objects:  10% (10/98)        remote: Counting objects:  11% (11/98)        remote: Counting objects:  12% (12/98)        remote: Counting objects:  13% (13/98)        remote: Counting objects:  14% (14/98)        remote: Counting objects:  15% (15/98)        remote: Counting objects:  16% (16/98)        remote: Counting objects:  17% (17/98)        remote: Counting objects:  18% (18/98)        remote: Counting objects:  19% (19/98)        remote: Counting objects:  20% (20/98)        remote: Counting objects:  21% (21/98)        remote: Counting objects:  22% (22/98)        remote: Counting objects:  23% (23/98)        remote: Counting objects:  24% (24/98)        remote: Counting objects:  25% (25/98)        remote: Counting objects:  26% (26/98)        remote: Counting objects:  27% (27/98)        remote: Counting objects:  28% (28/98)        remote: Counting objects:  29% (29/98)        remote: Counting objects:  30% (30/98)        remote: Counting objects:  31% (31/98)        remote: Counting objects:  32% (32/98)        remote: Counting objects:  33% (33/98)        remote: Counting objects:  34% (34/98)        remote: Counting objects:  35% (35/98)        remote: Counting objects:  36% (36/98)        remote: Counting objects:  37% (37/98)        remote: Counting objects:  38% (38/98)        remote: Counting objects:  39% (39/98)        remote: Counting objects:  40% (40/98)        remote: Counting objects:  41% (41/98)        remote: Counting objects:  42% (42/98)        remote: Counting objects:  43% (43/98)        remote: Counting objects:  44% (44/98)        remote: Counting objects:  45% (45/98)        remote: Counting objects:  46% (46/98)        remote: Counting objects:  47% (47/98)        remote: Counting objects:  48% (48/98)        remote: Counting objects:  50% (49/98)        remote: Counting objects:  51% (50/98)        remote: Counting objects:  52% (51/98)        remote: Counting objects:  53% (52/98)        remote: Counting objects:  54% (53/98)        remote: Counting objects:  55% (54/98)        remote: Counting objects:  56% (55/98)        remote: Counting objects:  57% (56/98)        remote: Counting objects:  58% (57/98)        remote: Counting objects:  59% (58/98)        remote: Counting objects:  60% (59/98)        remote: Counting objects:  61% (60/98)        remote: Counting objects:  62% (61/98)        remote: Counting objects:  63% (62/98)        remote: Counting objects:  64% (63/98)        remote: Counting objects:  65% (64/98)        remote: Counting objects:  66% (65/98)        remote: Counting objects:  67% (66/98)        remote: Counting objects:  68% (67/98)        remote: Counting objects:  69% (68/98)        remote: Counting objects:  70% (69/98)        remote: Counting objects:  71% (70/98)        remote: Counting objects:  72% (71/98)        remote: Counting objects:  73% (72/98)        remote: Counting objects:  74% (73/98)        remote: Counting objects:  75% (74/98)        remote: Counting objects:  76% (75/98)        remote: Counting objects:  77% (76/98)        remote: Counting objects:  78% (77/98)        remote: Counting objects:  79% (78/98)        remote: Counting objects:  80% (79/98)        remote: Counting objects:  81% (80/98)        remote: Counting objects:  82% (81/98)        remote: Counting objects:  83% (82/98)        remote: Counting objects:  84% (83/98)        remote: Counting objects:  85% (84/98)        remote: Counting objects:  86% (85/98)        remote: Counting objects:  87% (86/98)        remote: Counting objects:  88% (87/98)        remote: Counting objects:  89% (88/98)        remote: Counting objects:  90% (89/98)        remote: Counting objects:  91% (90/98)        remote: Counting objects:  92% (91/98)        remote: Counting objects:  93% (92/98)        remote: Counting objects:  94% (93/98)        remote: Counting objects:  95% (94/98)        remote: Counting objects:  96% (95/98)        remote: Counting objects:  97% (96/98)        remote: Counting objects:  98% (97/98)        remote: Counting objects: 100% (98/98)        remote: Counting objects: 100% (98/98), done.        
-remote: Compressing objects:   2% (1/36)        remote: Compressing objects:   5% (2/36)        remote: Compressing objects:   8% (3/36)        remote: Compressing objects:  11% (4/36)        remote: Compressing objects:  13% (5/36)        remote: Compressing objects:  16% (6/36)        remote: Compressing objects:  19% (7/36)        remote: Compressing objects:  22% (8/36)        remote: Compressing objects:  25% (9/36)        remote: Compressing objects:  27% (10/36)        remote: Compressing objects:  30% (11/36)        remote: Compressing objects:  33% (12/36)        remote: Compressing objects:  36% (13/36)        remote: Compressing objects:  38% (14/36)        remote: Compressing objects:  41% (15/36)        remote: Compressing objects:  44% (16/36)        remote: Compressing objects:  47% (17/36)        remote: Compressing objects:  50% (18/36)        remote: Compressing objects:  52% (19/36)        remote: Compressing objects:  55% (20/36)        remote: Compressing objects:  58% (21/36)        remote: Compressing objects:  61% (22/36)        remote: Compressing objects:  63% (23/36)        remote: Compressing objects:  66% (24/36)        remote: Compressing objects:  69% (25/36)        remote: Compressing objects:  72% (26/36)        remote: Compressing objects:  75% (27/36)        remote: Compressing objects:  77% (28/36)        remote: Compressing objects:  80% (29/36)        remote: Compressing objects:  83% (30/36)        remote: Compressing objects:  86% (31/36)        remote: Compressing objects:  88% (32/36)        remote: Compressing objects:  91% (33/36)        remote: Compressing objects:  94% (34/36)        remote: Compressing objects:  97% (35/36)        remote: Compressing objects: 100% (36/36)        remote: Compressing objects: 100% (36/36), done.        
-remote: Total 660 (delta 78), reused 64 (delta 62), pack-reused 562 (from 3)        
-* Getting jido_ai (https://github.com/Sunstone-Partners/jido_ai.git - 7da2579d32e5ad8e946c06890ac50a793867b0f7)
-remote: Enumerating objects: 17606, done.        
-remote: Counting objects:   0% (1/2464)        remote: Counting objects:   1% (25/2464)        remote: Counting objects:   2% (50/2464)        remote: Counting objects:   3% (74/2464)        remote: Counting objects:   4% (99/2464)        remote: Counting objects:   5% (124/2464)        remote: Counting objects:   6% (148/2464)        remote: Counting objects:   7% (173/2464)        remote: Counting objects:   8% (198/2464)        remote: Counting objects:   9% (222/2464)        remote: Counting objects:  10% (247/2464)        remote: Counting objects:  11% (272/2464)        remote: Counting objects:  12% (296/2464)        remote: Counting objects:  13% (321/2464)        remote: Counting objects:  14% (345/2464)        remote: Counting objects:  15% (370/2464)        remote: Counting objects:  16% (395/2464)        remote: Counting objects:  17% (419/2464)        remote: Counting objects:  18% (444/2464)        remote: Counting objects:  19% (469/2464)        remote: Counting objects:  20% (493/2464)        remote: Counting objects:  21% (518/2464)        remote: Counting objects:  22% (543/2464)        remote: Counting objects:  23% (567/2464)        remote: Counting objects:  24% (592/2464)        remote: Counting objects:  25% (616/2464)        remote: Counting objects:  26% (641/2464)        remote: Counting objects:  27% (666/2464)        remote: Counting objects:  28% (690/2464)        remote: Counting objects:  29% (715/2464)        remote: Counting objects:  30% (740/2464)        remote: Counting objects:  31% (764/2464)        remote: Counting objects:  32% (789/2464)        remote: Counting objects:  33% (814/2464)        remote: Counting objects:  34% (838/2464)        remote: Counting objects:  35% (863/2464)        remote: Counting objects:  36% (888/2464)        remote: Counting objects:  37% (912/2464)        remote: Counting objects:  38% (937/2464)        remote: Counting objects:  39% (961/2464)        remote: Counting objects:  40% (986/2464)        remote: Counting objects:  41% (1011/2464)        remote: Counting objects:  42% (1035/2464)        remote: Counting objects:  43% (1060/2464)        remote: Counting objects:  44% (1085/2464)        remote: Counting objects:  45% (1109/2464)        remote: Counting objects:  46% (1134/2464)        remote: Counting objects:  47% (1159/2464)        remote: Counting objects:  48% (1183/2464)        remote: Counting objects:  49% (1208/2464)        remote: Counting objects:  50% (1232/2464)        remote: Counting objects:  51% (1257/2464)        remote: Counting objects:  52% (1282/2464)        remote: Counting objects:  53% (1306/2464)        remote: Counting objects:  54% (1331/2464)        remote: Counting objects:  55% (1356/2464)        remote: Counting objects:  56% (1380/2464)        remote: Counting objects:  57% (1405/2464)        remote: Counting objects:  58% (1430/2464)        remote: Counting objects:  59% (1454/2464)        remote: Counting objects:  60% (1479/2464)        remote: Counting objects:  61% (1504/2464)        remote: Counting objects:  62% (1528/2464)        remote: Counting objects:  63% (1553/2464)        remote: Counting objects:  64% (1577/2464)        remote: Counting objects:  65% (1602/2464)        remote: Counting objects:  66% (1627/2464)        remote: Counting objects:  67% (1651/2464)        remote: Counting objects:  68% (1676/2464)        remote: Counting objects:  69% (1701/2464)        remote: Counting objects:  70% (1725/2464)        remote: Counting objects:  71% (1750/2464)        remote: Counting objects:  72% (1775/2464)        remote: Counting objects:  73% (1799/2464)        remote: Counting objects:  74% (1824/2464)        remote: Counting objects:  75% (1848/2464)        remote: Counting objects:  76% (1873/2464)        remote: Counting objects:  77% (1898/2464)        remote: Counting objects:  78% (1922/2464)        remote: Counting objects:  79% (1947/2464)        remote: Counting objects:  80% (1972/2464)        remote: Counting objects:  81% (1996/2464)        remote: Counting objects:  82% (2021/2464)        remote: Counting objects:  83% (2046/2464)        remote: Counting objects:  84% (2070/2464)        remote: Counting objects:  85% (2095/2464)        remote: Counting objects:  86% (2120/2464)        remote: Counting objects:  87% (2144/2464)        remote: Counting objects:  88% (2169/2464)        remote: Counting objects:  89% (2193/2464)        remote: Counting objects:  90% (2218/2464)        remote: Counting objects:  91% (2243/2464)        remote: Counting objects:  92% (2267/2464)        remote: Counting objects:  93% (2292/2464)        remote: Counting objects:  94% (2317/2464)        remote: Counting objects:  95% (2341/2464)        remote: Counting objects:  96% (2366/2464)        remote: Counting objects:  97% (2391/2464)        remote: Counting objects:  98% (2415/2464)        remote: Counting objects:  99% (2440/2464)        remote: Counting objects: 100% (2464/2464)        remote: Counting objects: 100% (2464/2464), done.        
-remote: Compressing objects:   0% (1/991)        remote: Compressing objects:   1% (10/991)        remote: Compressing objects:   2% (20/991)        remote: Compressing objects:   3% (30/991)        remote: Compressing objects:   4% (40/991)        remote: Compressing objects:   5% (50/991)        remote: Compressing objects:   6% (60/991)        remote: Compressing objects:   7% (70/991)        remote: Compressing objects:   8% (80/991)        remote: Compressing objects:   9% (90/991)        remote: Compressing objects:  10% (100/991)        remote: Compressing objects:  11% (110/991)        remote: Compressing objects:  12% (119/991)        remote: Compressing objects:  13% (129/991)        remote: Compressing objects:  14% (139/991)        remote: Compressing objects:  15% (149/991)        remote: Compressing objects:  16% (159/991)        remote: Compressing objects:  17% (169/991)        remote: Compressing objects:  18% (179/991)        remote: Compressing objects:  19% (189/991)        remote: Compressing objects:  20% (199/991)        remote: Compressing objects:  21% (209/991)        remote: Compressing objects:  22% (219/991)        remote: Compressing objects:  23% (228/991)        remote: Compressing objects:  24% (238/991)        remote: Compressing objects:  25% (248/991)        remote: Compressing objects:  26% (258/991)        remote: Compressing objects:  27% (268/991)        remote: Compressing objects:  28% (278/991)        remote: Compressing objects:  29% (288/991)        remote: Compressing objects:  30% (298/991)        remote: Compressing objects:  31% (308/991)        remote: Compressing objects:  32% (318/991)        remote: Compressing objects:  33% (328/991)        remote: Compressing objects:  34% (337/991)        remote: Compressing objects:  35% (347/991)        remote: Compressing objects:  36% (357/991)        remote: Compressing objects:  37% (367/991)        remote: Compressing objects:  38% (377/991)        remote: Compressing objects:  39% (387/991)        remote: Compressing objects:  40% (397/991)        remote: Compressing objects:  41% (407/991)        remote: Compressing objects:  42% (417/991)        remote: Compressing objects:  43% (427/991)        remote: Compressing objects:  44% (437/991)        remote: Compressing objects:  45% (446/991)        remote: Compressing objects:  46% (456/991)        remote: Compressing objects:  47% (466/991)        remote: Compressing objects:  48% (476/991)        remote: Compressing objects:  49% (486/991)        remote: Compressing objects:  50% (496/991)        remote: Compressing objects:  51% (506/991)        remote: Compressing objects:  52% (516/991)        remote: Compressing objects:  53% (526/991)        remote: Compressing objects:  54% (536/991)        remote: Compressing objects:  55% (546/991)        remote: Compressing objects:  56% (555/991)        remote: Compressing objects:  57% (565/991)        remote: Compressing objects:  58% (575/991)        remote: Compressing objects:  59% (585/991)        remote: Compressing objects:  60% (595/991)        remote: Compressing objects:  61% (605/991)        remote: Compressing objects:  62% (615/991)        remote: Compressing objects:  63% (625/991)        remote: Compressing objects:  64% (635/991)        remote: Compressing objects:  65% (645/991)        remote: Compressing objects:  66% (655/991)        remote: Compressing objects:  67% (664/991)        remote: Compressing objects:  68% (674/991)        remote: Compressing objects:  69% (684/991)        remote: Compressing objects:  70% (694/991)        remote: Compressing objects:  71% (704/991)        remote: Compressing objects:  72% (714/991)        remote: Compressing objects:  73% (724/991)        remote: Compressing objects:  74% (734/991)        remote: Compressing objects:  75% (744/991)        remote: Compressing objects:  76% (754/991)        remote: Compressing objects:  77% (764/991)        remote: Compressing objects:  78% (773/991)        remote: Compressing objects:  79% (783/991)        remote: Compressing objects:  80% (793/991)        remote: Compressing objects:  81% (803/991)        remote: Compressing objects:  82% (813/991)        remote: Compressing objects:  83% (823/991)        remote: Compressing objects:  84% (833/991)        remote: Compressing objects:  85% (843/991)        remote: Compressing objects:  86% (853/991)        remote: Compressing objects:  87% (863/991)        remote: Compressing objects:  88% (873/991)        remote: Compressing objects:  89% (882/991)        remote: Compressing objects:  90% (892/991)        remote: Compressing objects:  91% (902/991)        remote: Compressing objects:  92% (912/991)        remote: Compressing objects:  93% (922/991)        remote: Compressing objects:  94% (932/991)        remote: Compressing objects:  95% (942/991)        remote: Compressing objects:  96% (952/991)        remote: Compressing objects:  97% (962/991)        remote: Compressing objects:  98% (972/991)        remote: Compressing objects:  99% (982/991)        remote: Compressing objects: 100% (991/991)        remote: Compressing objects: 100% (991/991), done.        
-remote: Total 17606 (delta 1677), reused 1478 (delta 1473), pack-reused 15142 (from 2)        
-* Getting jido_ecto (https://github.com/Sunstone-Partners/jido_ecto.git - d5993d93be7885f62336251b4b7eb95aa88eef52)
-remote: Enumerating objects: 173, done.        
-remote: Counting objects:   3% (1/30)        remote: Counting objects:   6% (2/30)        remote: Counting objects:  10% (3/30)        remote: Counting objects:  13% (4/30)        remote: Counting objects:  16% (5/30)        remote: Counting objects:  20% (6/30)        remote: Counting objects:  23% (7/30)        remote: Counting objects:  26% (8/30)        remote: Counting objects:  30% (9/30)        remote: Counting objects:  33% (10/30)        remote: Counting objects:  36% (11/30)        remote: Counting objects:  40% (12/30)        remote: Counting objects:  43% (13/30)        remote: Counting objects:  46% (14/30)        remote: Counting objects:  50% (15/30)        remote: Counting objects:  53% (16/30)        remote: Counting objects:  56% (17/30)        remote: Counting objects:  60% (18/30)        remote: Counting objects:  63% (19/30)        remote: Counting objects:  66% (20/30)        remote: Counting objects:  70% (21/30)        remote: Counting objects:  73% (22/30)        remote: Counting objects:  76% (23/30)        remote: Counting objects:  80% (24/30)        remote: Counting objects:  83% (25/30)        remote: Counting objects:  86% (26/30)        remote: Counting objects:  90% (27/30)        remote: Counting objects:  93% (28/30)        remote: Counting objects:  96% (29/30)        remote: Counting objects: 100% (30/30)        remote: Counting objects: 100% (30/30), done.        
-remote: Compressing objects:  25% (1/4)        remote: Compressing objects:  50% (2/4)        remote: Compressing objects:  75% (3/4)        remote: Compressing objects: 100% (4/4)        remote: Compressing objects: 100% (4/4), done.        
-remote: Total 173 (delta 27), reused 26 (delta 26), pack-reused 143 (from 1)        
-* Getting req_llm (https://github.com/Sunstone-Partners/req_llm.git - e8d51edd24cf7bc08c3785f25f6bff95846f23e0)
-remote: Enumerating objects: 21759, done.        
-remote: Counting objects:   0% (1/5823)        remote: Counting objects:   1% (59/5823)        remote: Counting objects:   2% (117/5823)        remote: Counting objects:   3% (175/5823)        remote: Counting objects:   4% (233/5823)        remote: Counting objects:   5% (292/5823)        remote: Counting objects:   6% (350/5823)        remote: Counting objects:   7% (408/5823)        remote: Counting objects:   8% (466/5823)        remote: Counting objects:   9% (525/5823)        remote: Counting objects:  10% (583/5823)        remote: Counting objects:  11% (641/5823)        remote: Counting objects:  12% (699/5823)        remote: Counting objects:  13% (757/5823)        remote: Counting objects:  14% (816/5823)        remote: Counting objects:  15% (874/5823)        remote: Counting objects:  16% (932/5823)        remote: Counting objects:  17% (990/5823)        remote: Counting objects:  18% (1049/5823)        remote: Counting objects:  19% (1107/5823)        remote: Counting objects:  20% (1165/5823)        remote: Counting objects:  21% (1223/5823)        remote: Counting objects:  22% (1282/5823)        remote: Counting objects:  23% (1340/5823)        remote: Counting objects:  24% (1398/5823)        remote: Counting objects:  25% (1456/5823)        remote: Counting objects:  26% (1514/5823)        remote: Counting objects:  27% (1573/5823)        remote: Counting objects:  28% (1631/5823)        remote: Counting objects:  29% (1689/5823)        remote: Counting objects:  30% (1747/5823)        remote: Counting objects:  31% (1806/5823)        remote: Counting objects:  32% (1864/5823)        remote: Counting objects:  33% (1922/5823)        remote: Counting objects:  34% (1980/5823)        remote: Counting objects:  35% (2039/5823)        remote: Counting objects:  36% (2097/5823)        remote: Counting objects:  37% (2155/5823)        remote: Counting objects:  38% (2213/5823)        remote: Counting objects:  39% (2271/5823)        remote: Counting objects:  40% (2330/5823)        remote: Counting objects:  41% (2388/5823)        remote: Counting objects:  42% (2446/5823)        remote: Counting objects:  43% (2504/5823)        remote: Counting objects:  44% (2563/5823)        remote: Counting objects:  45% (2621/5823)        remote: Counting objects:  46% (2679/5823)        remote: Counting objects:  47% (2737/5823)        remote: Counting objects:  48% (2796/5823)        remote: Counting objects:  49% (2854/5823)        remote: Counting objects:  50% (2912/5823)        remote: Counting objects:  51% (2970/5823)        remote: Counting objects:  52% (3028/5823)        remote: Counting objects:  53% (3087/5823)        remote: Counting objects:  54% (3145/5823)        remote: Counting objects:  55% (3203/5823)        remote: Counting objects:  56% (3261/5823)        remote: Counting objects:  57% (3320/5823)        remote: Counting objects:  58% (3378/5823)        remote: Counting objects:  59% (3436/5823)        remote: Counting objects:  60% (3494/5823)        remote: Counting objects:  61% (3553/5823)        remote: Counting objects:  62% (3611/5823)        remote: Counting objects:  63% (3669/5823)        remote: Counting objects:  64% (3727/5823)        remote: Counting objects:  65% (3785/5823)        remote: Counting objects:  66% (3844/5823)        remote: Counting objects:  67% (3902/5823)        remote: Counting objects:  68% (3960/5823)        remote: Counting objects:  69% (4018/5823)        remote: Counting objects:  70% (4077/5823)        remote: Counting objects:  71% (4135/5823)        remote: Counting objects:  72% (4193/5823)        remote: Counting objects:  73% (4251/5823)        remote: Counting objects:  74% (4310/5823)        remote: Counting objects:  75% (4368/5823)        remote: Counting objects:  76% (4426/5823)        remote: Counting objects:  77% (4484/5823)        remote: Counting objects:  78% (4542/5823)        remote: Counting objects:  79% (4601/5823)        remote: Counting objects:  80% (4659/5823)        remote: Counting objects:  81% (4717/5823)        remote: Counting objects:  82% (4775/5823)        remote: Counting objects:  83% (4834/5823)        remote: Counting objects:  84% (4892/5823)        remote: Counting objects:  85% (4950/5823)        remote: Counting objects:  86% (5008/5823)        remote: Counting objects:  87% (5067/5823)        remote: Counting objects:  88% (5125/5823)        remote: Counting objects:  89% (5183/5823)        remote: Counting objects:  90% (5241/5823)        remote: Counting objects:  91% (5299/5823)        remote: Counting objects:  92% (5358/5823)        remote: Counting objects:  93% (5416/5823)        remote: Counting objects:  94% (5474/5823)        remote: Counting objects:  95% (5532/5823)        remote: Counting objects:  96% (5591/5823)        remote: Counting objects:  97% (5649/5823)        remote: Counting objects:  98% (5707/5823)        remote: Counting objects:  99% (5765/5823)        remote: Counting objects: 100% (5823/5823)        remote: Counting objects: 100% (5823/5823), done.        
-remote: Compressing objects:   0% (1/661)        remote: Compressing objects:   1% (7/661)        remote: Compressing objects:   2% (14/661)        remote: Compressing objects:   3% (20/661)        remote: Compressing objects:   4% (27/661)        remote: Compressing objects:   5% (34/661)        remote: Compressing objects:   6% (40/661)        remote: Compressing objects:   7% (47/661)        remote: Compressing objects:   8% (53/661)        remote: Compressing objects:   9% (60/661)        remote: Compressing objects:  10% (67/661)        remote: Compressing objects:  11% (73/661)        remote: Compressing objects:  12% (80/661)        remote: Compressing objects:  13% (86/661)        remote: Compressing objects:  14% (93/661)        remote: Compressing objects:  15% (100/661)        remote: Compressing objects:  16% (106/661)        remote: Compressing objects:  17% (113/661)        remote: Compressing objects:  18% (119/661)        remote: Compressing objects:  19% (126/661)        remote: Compressing objects:  20% (133/661)        remote: Compressing objects:  21% (139/661)        remote: Compressing objects:  22% (146/661)        remote: Compressing objects:  23% (153/661)        remote: Compressing objects:  24% (159/661)        remote: Compressing objects:  25% (166/661)        remote: Compressing objects:  26% (172/661)        remote: Compressing objects:  27% (179/661)        remote: Compressing objects:  28% (186/661)        remote: Compressing objects:  29% (192/661)        remote: Compressing objects:  30% (199/661)        remote: Compressing objects:  31% (205/661)        remote: Compressing objects:  32% (212/661)        remote: Compressing objects:  33% (219/661)        remote: Compressing objects:  34% (225/661)        remote: Compressing objects:  35% (232/661)        remote: Compressing objects:  36% (238/661)        remote: Compressing objects:  37% (245/661)        remote: Compressing objects:  38% (252/661)        remote: Compressing objects:  39% (258/661)        remote: Compressing objects:  40% (265/661)        remote: Compressing objects:  41% (272/661)        remote: Compressing objects:  42% (278/661)        remote: Compressing objects:  43% (285/661)        remote: Compressing objects:  44% (291/661)        remote: Compressing objects:  45% (298/661)        remote: Compressing objects:  46% (305/661)        remote: Compressing objects:  47% (311/661)        remote: Compressing objects:  48% (318/661)        remote: Compressing objects:  49% (324/661)        remote: Compressing objects:  50% (331/661)        remote: Compressing objects:  51% (338/661)        remote: Compressing objects:  52% (344/661)        remote: Compressing objects:  53% (351/661)        remote: Compressing objects:  54% (357/661)        remote: Compressing objects:  55% (364/661)        remote: Compressing objects:  56% (371/661)        remote: Compressing objects:  57% (377/661)        remote: Compressing objects:  58% (384/661)        remote: Compressing objects:  59% (390/661)        remote: Compressing objects:  60% (397/661)        remote: Compressing objects:  61% (404/661)        remote: Compressing objects:  62% (410/661)        remote: Compressing objects:  63% (417/661)        remote: Compressing objects:  64% (424/661)        remote: Compressing objects:  65% (430/661)        remote: Compressing objects:  66% (437/661)        remote: Compressing objects:  67% (443/661)        remote: Compressing objects:  68% (450/661)        remote: Compressing objects:  69% (457/661)        remote: Compressing objects:  70% (463/661)        remote: Compressing objects:  71% (470/661)        remote: Compressing objects:  72% (476/661)        remote: Compressing objects:  73% (483/661)        remote: Compressing objects:  74% (490/661)        remote: Compressing objects:  75% (496/661)        remote: Compressing objects:  76% (503/661)        remote: Compressing objects:  77% (509/661)        remote: Compressing objects:  78% (516/661)        remote: Compressing objects:  79% (523/661)        remote: Compressing objects:  80% (529/661)        remote: Compressing objects:  81% (536/661)        remote: Compressing objects:  82% (543/661)        remote: Compressing objects:  83% (549/661)        remote: Compressing objects:  84% (556/661)        remote: Compressing objects:  85% (562/661)        remote: Compressing objects:  86% (569/661)        remote: Compressing objects:  87% (576/661)        remote: Compressing objects:  88% (582/661)        remote: Compressing objects:  89% (589/661)        remote: Compressing objects:  90% (595/661)        remote: Compressing objects:  91% (602/661)        remote: Compressing objects:  92% (609/661)        remote: Compressing objects:  93% (615/661)        remote: Compressing objects:  94% (622/661)        remote: Compressing objects:  95% (628/661)        remote: Compressing objects:  96% (635/661)        remote: Compressing objects:  97% (642/661)        remote: Compressing objects:  98% (648/661)        remote: Compressing objects:  99% (655/661)        remote: Compressing objects: 100% (661/661)        remote: Compressing objects: 100% (661/661), done.        
-remote: Total 21759 (delta 5232), reused 5189 (delta 5162), pack-reused 15936 (from 1)        
-* Getting jido_otel (https://github.com/Sunstone-Partners/jido_otel.git - e7b1c67ed841da642c38efdb62e884ff9a6c7588)
-remote: Enumerating objects: 243, done.        
-remote: Counting objects:   3% (1/30)        remote: Counting objects:   6% (2/30)        remote: Counting objects:  10% (3/30)        remote: Counting objects:  13% (4/30)        remote: Counting objects:  16% (5/30)        remote: Counting objects:  20% (6/30)        remote: Counting objects:  23% (7/30)        remote: Counting objects:  26% (8/30)        remote: Counting objects:  30% (9/30)        remote: Counting objects:  33% (10/30)        remote: Counting objects:  36% (11/30)        remote: Counting objects:  40% (12/30)        remote: Counting objects:  43% (13/30)        remote: Counting objects:  46% (14/30)        remote: Counting objects:  50% (15/30)        remote: Counting objects:  53% (16/30)        remote: Counting objects:  56% (17/30)        remote: Counting objects:  60% (18/30)        remote: Counting objects:  63% (19/30)        remote: Counting objects:  66% (20/30)        remote: Counting objects:  70% (21/30)        remote: Counting objects:  73% (22/30)        remote: Counting objects:  76% (23/30)        remote: Counting objects:  80% (24/30)        remote: Counting objects:  83% (25/30)        remote: Counting objects:  86% (26/30)        remote: Counting objects:  90% (27/30)        remote: Counting objects:  93% (28/30)        remote: Counting objects:  96% (29/30)        remote: Counting objects: 100% (30/30)        remote: Counting objects: 100% (30/30), done.        
-remote: Compressing objects:   5% (1/19)        remote: Compressing objects:  10% (2/19)        remote: Compressing objects:  15% (3/19)        remote: Compressing objects:  21% (4/19)        remote: Compressing objects:  26% (5/19)        remote: Compressing objects:  31% (6/19)        remote: Compressing objects:  36% (7/19)        remote: Compressing objects:  42% (8/19)        remote: Compressing objects:  47% (9/19)        remote: Compressing objects:  52% (10/19)        remote: Compressing objects:  57% (11/19)        remote: Compressing objects:  63% (12/19)        remote: Compressing objects:  68% (13/19)        remote: Compressing objects:  73% (14/19)        remote: Compressing objects:  78% (15/19)        remote: Compressing objects:  84% (16/19)        remote: Compressing objects:  89% (17/19)        remote: Compressing objects:  94% (18/19)        remote: Compressing objects: 100% (19/19)        remote: Compressing objects: 100% (19/19), done.        
-remote: Total 243 (delta 27), reused 11 (delta 11), pack-reused 213 (from 2)        
-* Getting jido_mcp (https://github.com/Sunstone-Partners/jido_mcp.git - 8986c4cbf4f5e89d9f9a7a4c096d45e45a514863)
-remote: Enumerating objects: 566, done.        
-remote: Counting objects:   0% (1/224)        remote: Counting objects:   1% (3/224)        remote: Counting objects:   2% (5/224)        remote: Counting objects:   3% (7/224)        remote: Counting objects:   4% (9/224)        remote: Counting objects:   5% (12/224)        remote: Counting objects:   6% (14/224)        remote: Counting objects:   7% (16/224)        remote: Counting objects:   8% (18/224)        remote: Counting objects:   9% (21/224)        remote: Counting objects:  10% (23/224)        remote: Counting objects:  11% (25/224)        remote: Counting objects:  12% (27/224)        remote: Counting objects:  13% (30/224)        remote: Counting objects:  14% (32/224)        remote: Counting objects:  15% (34/224)        remote: Counting objects:  16% (36/224)        remote: Counting objects:  17% (39/224)        remote: Counting objects:  18% (41/224)        remote: Counting objects:  19% (43/224)        remote: Counting objects:  20% (45/224)        remote: Counting objects:  21% (48/224)        remote: Counting objects:  22% (50/224)        remote: Counting objects:  23% (52/224)        remote: Counting objects:  24% (54/224)        remote: Counting objects:  25% (56/224)        remote: Counting objects:  26% (59/224)        remote: Counting objects:  27% (61/224)        remote: Counting objects:  28% (63/224)        remote: Counting objects:  29% (65/224)        remote: Counting objects:  30% (68/224)        remote: Counting objects:  31% (70/224)        remote: Counting objects:  32% (72/224)        remote: Counting objects:  33% (74/224)        remote: Counting objects:  34% (77/224)        remote: Counting objects:  35% (79/224)        remote: Counting objects:  36% (81/224)        remote: Counting objects:  37% (83/224)        remote: Counting objects:  38% (86/224)        remote: Counting objects:  39% (88/224)        remote: Counting objects:  40% (90/224)        remote: Counting objects:  41% (92/224)        remote: Counting objects:  42% (95/224)        remote: Counting objects:  43% (97/224)        remote: Counting objects:  44% (99/224)        remote: Counting objects:  45% (101/224)        remote: Counting objects:  46% (104/224)        remote: Counting objects:  47% (106/224)        remote: Counting objects:  48% (108/224)        remote: Counting objects:  49% (110/224)        remote: Counting objects:  50% (112/224)        remote: Counting objects:  51% (115/224)        remote: Counting objects:  52% (117/224)        remote: Counting objects:  53% (119/224)        remote: Counting objects:  54% (121/224)        remote: Counting objects:  55% (124/224)        remote: Counting objects:  56% (126/224)        remote: Counting objects:  57% (128/224)        remote: Counting objects:  58% (130/224)        remote: Counting objects:  59% (133/224)        remote: Counting objects:  60% (135/224)        remote: Counting objects:  61% (137/224)        remote: Counting objects:  62% (139/224)        remote: Counting objects:  63% (142/224)        remote: Counting objects:  64% (144/224)        remote: Counting objects:  65% (146/224)        remote: Counting objects:  66% (148/224)        remote: Counting objects:  67% (151/224)        remote: Counting objects:  68% (153/224)        remote: Counting objects:  69% (155/224)        remote: Counting objects:  70% (157/224)        remote: Counting objects:  71% (160/224)        remote: Counting objects:  72% (162/224)        remote: Counting objects:  73% (164/224)        remote: Counting objects:  74% (166/224)        remote: Counting objects:  75% (168/224)        remote: Counting objects:  76% (171/224)        remote: Counting objects:  77% (173/224)        remote: Counting objects:  78% (175/224)        remote: Counting objects:  79% (177/224)        remote: Counting objects:  80% (180/224)        remote: Counting objects:  81% (182/224)        remote: Counting objects:  82% (184/224)        remote: Counting objects:  83% (186/224)        remote: Counting objects:  84% (189/224)        remote: Counting objects:  85% (191/224)        remote: Counting objects:  86% (193/224)        remote: Counting objects:  87% (195/224)        remote: Counting objects:  88% (198/224)        remote: Counting objects:  89% (200/224)        remote: Counting objects:  90% (202/224)        remote: Counting objects:  91% (204/224)        remote: Counting objects:  92% (207/224)        remote: Counting objects:  93% (209/224)        remote: Counting objects:  94% (211/224)        remote: Counting objects:  95% (213/224)        remote: Counting objects:  96% (216/224)        remote: Counting objects:  97% (218/224)        remote: Counting objects:  98% (220/224)        remote: Counting objects:  99% (222/224)        remote: Counting objects: 100% (224/224)        remote: Counting objects: 100% (224/224), done.        
-remote: Compressing objects:   1% (1/88)        remote: Compressing objects:   2% (2/88)        remote: Compressing objects:   3% (3/88)        remote: Compressing objects:   4% (4/88)        remote: Compressing objects:   5% (5/88)        remote: Compressing objects:   6% (6/88)        remote: Compressing objects:   7% (7/88)        remote: Compressing objects:   9% (8/88)        remote: Compressing objects:  10% (9/88)        remote: Compressing objects:  11% (10/88)        remote: Compressing objects:  12% (11/88)        remote: Compressing objects:  13% (12/88)        remote: Compressing objects:  14% (13/88)        remote: Compressing objects:  15% (14/88)        remote: Compressing objects:  17% (15/88)        remote: Compressing objects:  18% (16/88)        remote: Compressing objects:  19% (17/88)        remote: Compressing objects:  20% (18/88)        remote: Compressing objects:  21% (19/88)        remote: Compressing objects:  22% (20/88)        remote: Compressing objects:  23% (21/88)        remote: Compressing objects:  25% (22/88)        remote: Compressing objects:  26% (23/88)        remote: Compressing objects:  27% (24/88)        remote: Compressing objects:  28% (25/88)        remote: Compressing objects:  29% (26/88)        remote: Compressing objects:  30% (27/88)        remote: Compressing objects:  31% (28/88)        remote: Compressing objects:  32% (29/88)        remote: Compressing objects:  34% (30/88)        remote: Compressing objects:  35% (31/88)        remote: Compressing objects:  36% (32/88)        remote: Compressing objects:  37% (33/88)        remote: Compressing objects:  38% (34/88)        remote: Compressing objects:  39% (35/88)        remote: Compressing objects:  40% (36/88)        remote: Compressing objects:  42% (37/88)        remote: Compressing objects:  43% (38/88)        remote: Compressing objects:  44% (39/88)        remote: Compressing objects:  45% (40/88)        remote: Compressing objects:  46% (41/88)        remote: Compressing objects:  47% (42/88)        remote: Compressing objects:  48% (43/88)        remote: Compressing objects:  50% (44/88)        remote: Compressing objects:  51% (45/88)        remote: Compressing objects:  52% (46/88)        remote: Compressing objects:  53% (47/88)        remote: Compressing objects:  54% (48/88)        remote: Compressing objects:  55% (49/88)        remote: Compressing objects:  56% (50/88)        remote: Compressing objects:  57% (51/88)        remote: Compressing objects:  59% (52/88)        remote: Compressing objects:  60% (53/88)        remote: Compressing objects:  61% (54/88)        remote: Compressing objects:  62% (55/88)        remote: Compressing objects:  63% (56/88)        remote: Compressing objects:  64% (57/88)        remote: Compressing objects:  65% (58/88)        remote: Compressing objects:  67% (59/88)        remote: Compressing objects:  68% (60/88)        remote: Compressing objects:  69% (61/88)        remote: Compressing objects:  70% (62/88)        remote: Compressing objects:  71% (63/88)        remote: Compressing objects:  72% (64/88)        remote: Compressing objects:  73% (65/88)        remote: Compressing objects:  75% (66/88)        remote: Compressing objects:  76% (67/88)        remote: Compressing objects:  77% (68/88)        remote: Compressing objects:  78% (69/88)        remote: Compressing objects:  79% (70/88)        remote: Compressing objects:  80% (71/88)        remote: Compressing objects:  81% (72/88)        remote: Compressing objects:  82% (73/88)        remote: Compressing objects:  84% (74/88)        remote: Compressing objects:  85% (75/88)        remote: Compressing objects:  86% (76/88)        remote: Compressing objects:  87% (77/88)        remote: Compressing objects:  88% (78/88)        remote: Compressing objects:  89% (79/88)        remote: Compressing objects:  90% (80/88)        remote: Compressing objects:  92% (81/88)        remote: Compressing objects:  93% (82/88)        remote: Compressing objects:  94% (83/88)        remote: Compressing objects:  95% (84/88)        remote: Compressing objects:  96% (85/88)        remote: Compressing objects:  97% (86/88)        remote: Compressing objects:  98% (87/88)        remote: Compressing objects: 100% (88/88)        remote: Compressing objects: 100% (88/88), done.        
-remote: Total 566 (delta 172), reused 138 (delta 136), pack-reused 342 (from 1)        
-Resolving Hex dependencies...
-Resolution completed in 0.23s
-Unchanged:
-  cowboy 2.17.0 VULNERABLE!
-    EEF-CVE-2026-65624 (MEDIUM)
-    aka: CVE-2026-65624
-    Cowboy HTTP/1.1 max_headers Bypass via Duplicate Header Names Enables Memory Exhaustion
-    https://osv.dev/vulnerability/EEF-CVE-2026-65624
-  cowlib 2.18.0 VULNERABLE!
-    EEF-CVE-2026-43969 (LOW)
-    aka: CVE-2026-43969, GHSA-g2wm-735q-3f56
-    Cookie Request Header Injection via Unvalidated Encoder in cow_cookie:cookie/1
-    https://osv.dev/vulnerability/EEF-CVE-2026-43969
-
-    EEF-CVE-2026-113431 (HIGH)
-    aka: CVE-2026-113431
-    Unbounded decoded HTTP/2 header-list size in cowlib cow_http2_machine enables HPACK amplification memory exhaustion
-    https://osv.dev/vulnerability/EEF-CVE-2026-113431
-
-    EEF-CVE-2026-43966 (MEDIUM)
-    aka: CVE-2026-43966, GHSA-w4f7-4cxr-rv3c
-    HTTP Response Splitting via Non-VCHAR Bytes in cow_http_struct_hd:escape_string/2
-    https://osv.dev/vulnerability/EEF-CVE-2026-43966
-
-    EEF-CVE-2026-43971 (MEDIUM)
-    aka: CVE-2026-43971
-    Link Header Directive Smuggling via Unescaped target/rel/Attribute Keys in cow_link:link/1
-    https://osv.dev/vulnerability/EEF-CVE-2026-43971
-
-    EEF-CVE-2026-59248 (HIGH)
-    aka: CVE-2026-59248
-    Unbounded HPACK/QPACK prefixed-integer decoding in Cowlib causes memory-exhaustion DoS
-    https://osv.dev/vulnerability/EEF-CVE-2026-59248
-  decimal 3.1.1 VULNERABLE!
-    EEF-CVE-2026-97853 (MEDIUM)
-    aka: CVE-2026-97853, GHSA-6c27-994x-c52f
-    Unbounded allocation in decimal Decimal.round/3 driven by the places argument enables DoS
-    https://osv.dev/vulnerability/EEF-CVE-2026-97853
-  ecto 3.14.2 VULNERABLE!
-    EEF-CVE-2026-118391 (HIGH)
-    aka: CVE-2026-118391, GHSA-cxjx-vmm2-qr8r
-    Unbounded query cache growth from interpolated JSON paths and splice lists in Ecto
-    https://osv.dev/vulnerability/EEF-CVE-2026-118391
-  erlexec 2.3.4 RETIRED!
-    (deprecated) Deprecated
-  ex_mcp 1.0.0-rc.8 RETIRED!
-    (security) Request cancellation not session-scoped (GHSA-22m7-hr37-pxg3). Upgrade to ex_mcp 1.6.2.
-  idna 7.1.0 VULNERABLE!
-    EEF-CVE-2026-117678 (MEDIUM)
-    aka: CVE-2026-117678
-    idna: punycode labels are decoded before the 63-octet length check, so a long xn-- label causes super-linear CPU use
-    https://osv.dev/vulnerability/EEF-CVE-2026-117678
-  jose 1.11.12 VULNERABLE!
-    EEF-CVE-2026-65626 (MEDIUM)
-    aka: CVE-2026-65626, GHSA-vwvr-f994-6j9j
-    Bleichenbacher padding oracle in RSAES-PKCS1-v1_5 decryption in jose
-    https://osv.dev/vulnerability/EEF-CVE-2026-65626
-
-    EEF-CVE-2026-65625 (MEDIUM)
-    aka: CVE-2026-65625, GHSA-6gxw-6f7r-cjr6
-    Attacker-controlled AES-GCM authentication tag length allows tag forgery in jose
-    https://osv.dev/vulnerability/EEF-CVE-2026-65625
-
-    EEF-CVE-2026-65628 (MEDIUM)
-    aka: CVE-2026-65628, GHSA-fpj2-9h59-32pp
-    Infinite recursion (CPU denial-of-service) in JOSE.JWK.shared_secret/2 on mismatched key types
-    https://osv.dev/vulnerability/EEF-CVE-2026-65628
-
-    EEF-CVE-2026-65630 (MEDIUM)
-    aka: CVE-2026-65630, GHSA-xvr2-gggj-h2pp
-    Timing side-channel in pure-Erlang X25519 scalar multiplication leaks the private key in jose
-    https://osv.dev/vulnerability/EEF-CVE-2026-65630
-
-    EEF-CVE-2026-65631 (MEDIUM)
-    aka: CVE-2026-65631, GHSA-3m45-vrpj-xmrq
-    erlang-jose RSA JWK parsing attempts to factor an attacker-controlled modulus, enabling CPU-exhaustion denial of service
-    https://osv.dev/vulnerability/EEF-CVE-2026-65631
-
-    EEF-CVE-2026-65632 (MEDIUM)
-    aka: CVE-2026-65632, GHSA-44hw-rpw9-mwg4
-    ECDSA signature length is not validated in jose, allowing signature malleability
-    https://osv.dev/vulnerability/EEF-CVE-2026-65632
-
-    EEF-CVE-2026-65627 (MEDIUM)
-    aka: CVE-2026-65627, GHSA-wfpv-qxp8-x5gm
-    Decompression bomb via unbounded zlib:inflate in jose_jwe_zip:uncompress/2
-    https://osv.dev/vulnerability/EEF-CVE-2026-65627
-
-    EEF-CVE-2026-65629 (HIGH)
-    aka: CVE-2026-65629, GHSA-h4gx-8jq2-mfhc
-    Weak PBKDF2 parameters for password-encrypted private-key export in jose
-    https://osv.dev/vulnerability/EEF-CVE-2026-65629
-  jsv 0.22.0 VULNERABLE!
-    EEF-CVE-2026-117680 (LOW)
-    aka: CVE-2026-117680, GHSA-cvmg-hgv6-jqcp
-    jsv treats regex match budget exhaustion as a non-match, bypassing patternProperties and not
-    https://osv.dev/vulnerability/EEF-CVE-2026-117680
-  lazy_html 0.1.12 VULNERABLE!
-    EEF-CVE-2026-92106 (LOW)
-    aka: CVE-2026-92106, GHSA-8rqp-v692-v82q
-    lazy_html serializes SVG and MathML style and script text unescaped, allowing mutation XSS
-    https://osv.dev/vulnerability/EEF-CVE-2026-92106
-  mint 1.9.3 VULNERABLE!
-    EEF-CVE-2026-94194 (MEDIUM)
-    aka: CVE-2026-94194, GHSA-gvrc-75rc-7gj9
-    Mint HTTP/1 client applies chunked framing when chunked is not the final transfer coding, enabling response smuggling through intermediaries
-    https://osv.dev/vulnerability/EEF-CVE-2026-94194
-
-    EEF-CVE-2026-82672 (MEDIUM)
-    aka: CVE-2026-82672, GHSA-rj5m-69wp-cxq9
-    Unvalidated chunk-size line tail in Mint HTTP/1 client enables response smuggling against strict intermediaries on pooled connections
-    https://osv.dev/vulnerability/EEF-CVE-2026-82672
-
-    EEF-CVE-2026-82729 (MEDIUM)
-    aka: CVE-2026-82729, GHSA-7p8w-j234-7qc8
-    Quadratic chunk-size parsing in Mint.HTTP1.Parse allows CPU-exhaustion DoS
-    https://osv.dev/vulnerability/EEF-CVE-2026-82729
-
-    EEF-CVE-2026-92103 (MEDIUM)
-    aka: CVE-2026-92103, GHSA-q95c-ccq6-j5j6
-    Mint HTTP/2 client buffers oversized frames up to 16 MiB before enforcing max_frame_size
-    https://osv.dev/vulnerability/EEF-CVE-2026-92103
-
-    EEF-CVE-2026-82728 (HIGH)
-    aka: CVE-2026-82728, GHSA-g83f-2j6r-q6m4
-    Unbounded HTTP/1 status-line and chunk-extension buffering in Mint causes memory-exhaustion DoS
-    https://osv.dev/vulnerability/EEF-CVE-2026-82728
-
-    EEF-CVE-2026-91043 (HIGH)
-    aka: CVE-2026-91043, GHSA-9x8p-qrf4-jq7g
-    HPACK-indexed cookie fields in Mint HTTP/2 responses bypass max_header_list_size and exhaust client memory
-    https://osv.dev/vulnerability/EEF-CVE-2026-91043
-  phoenix 1.8.9 VULNERABLE!
-    EEF-CVE-2026-129344 (HIGH)
-    aka: CVE-2026-129344, GHSA-5vmc-qgf8-rw36
-    Client-selected V1 serializer crashes shared broadcast dispatch on binary payloads
-    https://osv.dev/vulnerability/EEF-CVE-2026-129344
-
-    EEF-CVE-2026-128361 (HIGH)
-    aka: CVE-2026-128361, GHSA-pvfx-rx4x-phrr
-    Unsanitized presence key crashes Presence tracker
-    https://osv.dev/vulnerability/EEF-CVE-2026-128361
-  phoenix_html 4.3.0 VULNERABLE!
-    EEF-CVE-2026-117645 (MEDIUM)
-    aka: CVE-2026-117645
-    Phoenix.HTML vulnerable to attribute injection via unvalidated attribute names in attributes_escape/1
-    https://osv.dev/vulnerability/EEF-CVE-2026-117645
-  phoenix_live_view 1.2.8 VULNERABLE!
-    EEF-CVE-2026-126334 (MEDIUM)
-    aka: CVE-2026-126334, GHSA-v4p7-3pm2-wq6c
-    Joining a LiveView without `"url"` skips its `live_session` `on_mount` hooks
-    https://osv.dev/vulnerability/EEF-CVE-2026-126334
-
-    EEF-CVE-2026-64941 (LOW)
-    aka: CVE-2026-64941, GHSA-36m4-rm57-3prf
-    Open redirect in Phoenix.LiveView.validate_local_url!/2 via ASCII tab, LF and CR
-    https://osv.dev/vulnerability/EEF-CVE-2026-64941
-  plug 1.20.3 VULNERABLE!
-    EEF-CVE-2026-120287 (MEDIUM)
-    aka: CVE-2026-120287, GHSA-qj4r-jh2r-rw3f
-    Multipart `:length` limit not charged for part and header framing in Plug.Parsers.MULTIPART
-    https://osv.dev/vulnerability/EEF-CVE-2026-120287
-  plug_crypto 2.2.0 VULNERABLE!
-    EEF-CVE-2026-105963 (MEDIUM)
-    aka: CVE-2026-105963, GHSA-ffw9-w85g-f2vh
-    Secret key base exposed in stack trace arguments on wrong-typed Plug.Crypto arguments
-    https://osv.dev/vulnerability/EEF-CVE-2026-105963
-  postgrex 0.22.3 VULNERABLE!
-    EEF-CVE-2026-66838 (MEDIUM)
-    aka: CVE-2026-66838, GHSA-3gww-3f36-2388
-    SQL injection via the :comment option in Postgrex.stream/4
-    https://osv.dev/vulnerability/EEF-CVE-2026-66838
-  ssl_verify_fun 1.1.7 VULNERABLE!
-    EEF-CVE-2026-117666 (CRITICAL)
-    aka: CVE-2026-117666, GHSA-7gw2-hphm-c5px
-    ssl_verify_fun: partial-label wildcard certificate matches hostnames across a label boundary
-    https://osv.dev/vulnerability/EEF-CVE-2026-117666
-* Getting ecto (Hex package)
-* Getting ecto_sql (Hex package)
-* Getting postgrex (Hex package)
-* Getting eventstore (Hex package)
-* Getting phoenix (Hex package)
-* Getting phoenix_html (Hex package)
-* Getting phoenix_live_view (Hex package)
-* Getting plug_cowboy (Hex package)
-* Getting lazy_html (Hex package)
-* Getting mox (Hex package)
-* Getting meck (Hex package)
-* Getting stream_data (Hex package)
-* Getting jason (Hex package)
-* Getting file_system (Hex package)
-* Getting opentelemetry_exporter (Hex package)
-* Getting anubis_mcp (Hex package)
-* Getting credo (Hex package)
-* Getting dialyxir (Hex package)
-* Getting doctor (Hex package)
-* Getting excoveralls (Hex package)
-* Getting sobelow (Hex package)
-* Getting decimal (Hex package)
-* Getting erlex (Hex package)
-* Getting bunt (Hex package)
-* Getting ex_mcp (Hex package)
-* Getting zoi (Hex package)
-* Getting jsv (Hex package)
-* Getting abnf_parsec (Hex package)
-* Getting idna (Hex package)
-* Getting texture (Hex package)
-* Getting nimble_parsec (Hex package)
-* Getting castore (Hex package)
-* Getting ex_json_schema (Hex package)
-* Getting jose (Hex package)
-* Getting mint (Hex package)
-* Getting mint_web_socket (Hex package)
-* Getting plug (Hex package)
-* Getting telemetry (Hex package)
-* Getting mime (Hex package)
-* Getting plug_crypto (Hex package)
-* Getting hpax (Hex package)
-* Getting opentelemetry (Hex package)
-* Getting opentelemetry_api (Hex package)
-* Getting dotenvy (Hex package)
-* Getting nimble_options (Hex package)
-* Getting req (Hex package)
-* Getting server_sent_events (Hex package)
-* Getting splode (Hex package)
-* Getting websockex (Hex package)
-* Getting llm_db (Hex package)
-* Getting toml (Hex package)
-* Getting finch (Hex package)
-* Getting nimble_pool (Hex package)
-* Getting erlexec (Hex package)
-* Getting fsmx (Hex package)
-* Getting yaml_elixir (Hex package)
-* Getting yamerl (Hex package)
-* Getting ex_aws (Hex package)
-* Getting ex_aws_s3 (Hex package)
-* Getting sweet_xml (Hex package)
-* Getting eternal (Hex package)
-* Getting git_cli (Hex package)
-* Getting uniq (Hex package)
-* Getting lua (Hex package)
-* Getting fuse (Hex package)
-* Getting multigraph (Hex package)
-* Getting poolboy (Hex package)
-* Getting telemetry_metrics (Hex package)
-* Getting crontab (Hex package)
-* Getting time_zone_info (Hex package)
-* Getting peri (Hex package)
-* Getting grpcbox (Hex package)
-* Getting tls_certificate_check (Hex package)
-* Getting ssl_verify_fun (Hex package)
-* Getting acceptor_pool (Hex package)
-* Getting chatterbox (Hex package)
-* Getting ctx (Hex package)
-* Getting gproc (Hex package)
-* Getting hpack (Hex package)
-* Getting nimble_ownership (Hex package)
-* Getting cc_precompiler (Hex package)
-* Getting elixir_make (Hex package)
-* Getting fine (Hex package)
-* Getting cowboy (Hex package)
-* Getting cowboy_telemetry (Hex package)
-* Getting cowlib (Hex package)
-* Getting ranch (Hex package)
-* Getting phoenix_template (Hex package)
-* Getting phoenix_pubsub (Hex package)
-* Getting websock_adapter (Hex package)
-* Getting websock (Hex package)
-* Getting fsm (Hex package)
-* Getting gen_stage (Hex package)
-* Getting db_connection (Hex package)
-Found retired packages, see above for details
-Found packages with security advisories, see above for details
-You have added/upgraded packages you could sponsor, run `mix hex.sponsor` to learn more
-* patched erlexec (process-group startup): /Users/ldangelo/.foreman/worktrees/foreman/foreman-gocpd/run-bf31fff2bba135166d4e4cc111d51be8/workspace/packages/foreman_server/deps/erlexec
-
-09:34:49.012 [info] Compiling file system watcher for Mac...
-
-09:34:51.428 [info] Done.
-==> file_system
-Compiling 7 files (.ex)
-Generated file_system app
-==> stream_data
-Compiling 3 files (.ex)
-Generated stream_data app
-==> gen_stage
-Compiling 10 files (.ex)
-     warning: unused require Logger
-     │
- 103 │   require Logger
-     │   ~
-     │
-     └─ lib/gen_stage/dispatchers/partition_dispatcher.ex:103:3
-
-Generated gen_stage app
-==> eternal
-Compiling 5 files (.ex)
-Generated eternal app
-==> mime
-Compiling 1 file (.ex)
-Generated mime app
-==> toml
-Compiling 10 files (.ex)
-     warning: using single-quoted strings to represent charlists is deprecated.
-     Use ~c"" if you indeed want a charlist or use "" instead.
-     You may run "mix format --migrate" to change all single-quoted
-     strings to use the ~c sigil and fix this warning.
-     │
- 264 │   defp handle_token(lexer, original, doc, type, skip, _data, lines) when type in '-_' do
-     │                                                                                  ~
-     │
-     └─ lib/decoder.ex:264:82
-
-     warning: using single-quoted strings to represent charlists is deprecated.
-     Use ~c"" if you indeed want a charlist or use "" instead.
-     You may run "mix format --migrate" to change all single-quoted
-     strings to use the ~c sigil and fix this warning.
-     │
- 371 │       {:ok, {type, _skip, _data, _lines}} when type in '-+' ->
-     │                                                        ~
-     │
-     └─ lib/decoder.ex:371:56
-
-     warning: using single-quoted strings to represent charlists is deprecated.
-     Use ~c"" if you indeed want a charlist or use "" instead.
-     You may run "mix format --migrate" to change all single-quoted
-     strings to use the ~c sigil and fix this warning.
-     │
- 419 │           {:ok, {:alpha, _, <<c::utf8>>, _}} when c in 'eE' ->
-     │                                                        ~
-     │
-     └─ lib/decoder.ex:419:56
-
-     warning: using single-quoted strings to represent charlists is deprecated.
-     Use ~c"" if you indeed want a charlist or use "" instead.
-     You may run "mix format --migrate" to change all single-quoted
-     strings to use the ~c sigil and fix this warning.
-     │
- 474 │       {:ok, {:alpha, _, <<c::utf8>>, _}} when c in 'eE' ->
-     │                                                    ~
-     │
-     └─ lib/decoder.ex:474:52
-
-     warning: using single-quoted strings to represent charlists is deprecated.
-     Use ~c"" if you indeed want a charlist or use "" instead.
-     You may run "mix format --migrate" to change all single-quoted
-     strings to use the ~c sigil and fix this warning.
-     │
- 514 │       {:ok, {sign, _, _, _}} when sign in '-+' and last == ?e ->
-     │                                           ~
-     │
-     └─ lib/decoder.ex:514:43
-
-     warning: using single-quoted strings to represent charlists is deprecated.
-     Use ~c"" if you indeed want a charlist or use "" instead.
-     You may run "mix format --migrate" to change all single-quoted
-     strings to use the ~c sigil and fix this warning.
-     │
- 518 │       {:ok, {:alpha, _, <<c::utf8>>, _}} when c in 'eE' and signal == ?. ->
-     │                                                    ~
-     │
-     └─ lib/decoder.ex:518:52
-
-     warning: using single-quoted strings to represent charlists is deprecated.
-     Use ~c"" if you indeed want a charlist or use "" instead.
-     You may run "mix format --migrate" to change all single-quoted
-     strings to use the ~c sigil and fix this warning.
-     │
- 522 │       {:ok, {?_, skip, _, lines}} when last not in '_e.' ->
-     │                                                    ~
-     │
-     └─ lib/decoder.ex:522:52
-
-     warning: using single-quoted strings to represent charlists is deprecated.
-     Use ~c"" if you indeed want a charlist or use "" instead.
-     You may run "mix format --migrate" to change all single-quoted
-     strings to use the ~c sigil and fix this warning.
-     │
- 538 │       {:ok, {type, skip, data, lines}} when last in 'e.' ->
-     │                                                     ~
-     │
-     └─ lib/decoder.ex:538:53
-
-     warning: using single-quoted strings to represent charlists is deprecated.
-     Use ~c"" if you indeed want a charlist or use "" instead.
-     You may run "mix format --migrate" to change all single-quoted
-     strings to use the ~c sigil and fix this warning.
-     │
- 542 │       {:ok, {_type, skip, _data, lines} = token} when last not in '_e.' ->
-     │                                                                   ~
-     │
-     └─ lib/decoder.ex:542:67
-
-     warning: using single-quoted strings to represent charlists is deprecated.
-     Use ~c"" if you indeed want a charlist or use "" instead.
-     You may run "mix format --migrate" to change all single-quoted
-     strings to use the ~c sigil and fix this warning.
-     │
- 682 │         {:ok, {sign, _, _, _}} when sign in '-+' ->
-     │                                             ~
-     │
-     └─ lib/decoder.ex:682:45
-
-     warning: using single-quoted strings to represent charlists is deprecated.
-     Use ~c"" if you indeed want a charlist or use "" instead.
-     You may run "mix format --migrate" to change all single-quoted
-     strings to use the ~c sigil and fix this warning.
-     │
- 796 │       {:ok, {sign, _, _, _}} when sign in '-+' ->
-     │                                           ~
-     │
-     └─ lib/decoder.ex:796:43
-
-     warning: using single-quoted strings to represent charlists is deprecated.
-     Use ~c"" if you indeed want a charlist or use "" instead.
-     You may run "mix format --migrate" to change all single-quoted
-     strings to use the ~c sigil and fix this warning.
-     │
- 916 │         {:ok, {type, skip, _, lines}} when type in '-_' ->
-     │                                                    ~
-     │
-     └─ lib/decoder.ex:916:52
-
-     warning: using single-quoted strings to represent charlists is deprecated.
-     Use ~c"" if you indeed want a charlist or use "" instead.
-     You may run "mix format --migrate" to change all single-quoted
-     strings to use the ~c sigil and fix this warning.
-     │
- 954 │               {:ok, {type, _, _, _}} when type in '-_' ->
-     │                                                   ~
-     │
-     └─ lib/decoder.ex:954:51
-
-     warning: using single-quoted strings to represent charlists is deprecated.
-     Use ~c"" if you indeed want a charlist or use "" instead.
-     You may run "mix format --migrate" to change all single-quoted
-     strings to use the ~c sigil and fix this warning.
-     │
- 969 │       {:ok, {type, _, _, _}} when type in '-_' ->
-     │                                           ~
-     │
-     └─ lib/decoder.ex:969:43
-
-     warning: using single-quoted strings to represent charlists is deprecated.
-     Use ~c"" if you indeed want a charlist or use "" instead.
-     You may run "mix format --migrate" to change all single-quoted
-     strings to use the ~c sigil and fix this warning.
-     │
- 983 │           {:ok, {type, _, _, _}} when type in '-_' ->
-     │                                               ~
-     │
-     └─ lib/decoder.ex:983:47
-
-     warning: the following clause will never match:
-
-         {:datetime, {:error, :invalid_date}} ->
-
-     it is expected to match on type:
-
-         dynamic(
-           {:date,
-            ({:error, :invalid_date} and not {:ok, {integer(), integer(), integer()}}) or
-              {:error, :incompatible_calendars or :invalid_format} or {:ok, %Date{}}} and
-             not {:date, {:ok, %Date{}}}
-         )
-
-     type warning found at:
-     │
- 722 │       {:datetime, {:error, :invalid_date}} ->
-     │       ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-     │
-     └─ lib/decoder.ex:722: Toml.Decoder.datetime/3
-
-     warning: the following clause will never match:
-
-         {:datetime, {:error, reason}} ->
-
-     it is expected to match on type:
-
-         dynamic(
-           {:date,
-            ({:error, :invalid_date} and not {:ok, {integer(), integer(), integer()}}) or
-              {:error, :incompatible_calendars or :invalid_format} or {:ok, %Date{}}} and
-             not {:date, {:ok, %Date{}}}
-         )
-
-     type warning found at:
-     │
- 725 │       {:datetime, {:error, reason}} ->
-     │       ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-     │
-     └─ lib/decoder.ex:725: Toml.Decoder.datetime/3
-
-     warning: the following clause will never match:
-
-         {:error, _, _, _} = err ->
-
-     it is expected to match on type:
-
-         dynamic(
-           {:date,
-            ({:error, :invalid_date} and not {:ok, {integer(), integer(), integer()}}) or
-              {:error, :incompatible_calendars or :invalid_format} or {:ok, %Date{}}} and
-             not {:date, {:ok, %Date{}}}
-         )
-
-     type warning found at:
-     │
- 728 │       {:error, _, _, _} = err ->
-     │                         ~
-     │
-     └─ lib/decoder.ex:728:25: Toml.Decoder.datetime/3
-
-     warning: the following clause will never match:
-
-         {:ok, {type, skip, data, lines}} ->
-
-     it is expected to match on type:
-
-         dynamic(
-           {:date,
-            ({:error, :invalid_date} and not {:ok, {integer(), integer(), integer()}}) or
-              {:error, :incompatible_calendars or :invalid_format} or {:ok, %Date{}}} and
-             not {:date, {:ok, %Date{}}}
-         )
-
-     type warning found at:
-     │
- 731 │       {:ok, {type, skip, data, lines}} ->
-     │       ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-     │
-     └─ lib/decoder.ex:731: Toml.Decoder.datetime/3
-
-Generated toml app
-==> nimble_options
-Compiling 3 files (.ex)
-Generated nimble_options app
-==> fine
-Compiling 1 file (.ex)
-Generated fine app
-==> git_cli
-Compiling 3 files (.ex)
-Generated git_cli app
-==> bunt
-Compiling 2 files (.ex)
-Generated bunt app
-==> multigraph
-Compiling 16 files (.ex)
-      warning: the following clause is redundant:
-
-          defp include_edge_for_filtered_partitions?(edge, _edge_partition, _partitions, where_fun)
-               when is_function(where_fun)
-
-      it has type:
-
-          dynamic(), dynamic(), dynamic(), dynamic(fun())
-
-      previous clauses have already matched on the following types:
-
-          term(), term(), term(), nil
-          term(), term(), term(), fun()
-
-      │
- 2935 │   defp include_edge_for_filtered_partitions?(edge, _edge_partition, _partitions, where_fun)
-      │        ~
-      │
-      └─ lib/multigraph.ex:2935:8: Multigraph.include_edge_for_filtered_partitions?/4
-
-Generated multigraph app
-==> plug_crypto
-Compiling 5 files (.ex)
-Generated plug_crypto app
-==> hpax
-Compiling 4 files (.ex)
-Generated hpax app
-==> foreman_server
-===> Analyzing applications...
-===> Compiling yamerl
-==> jose
-Compiling 113 files (.erl)
-Compiling 8 files (.ex)
-Generated jose app
-==> foreman_server
-===> Analyzing applications...
-===> Compiling fuse
-===> Analyzing applications...
-===> Compiling ranch
-==> ssl_verify_fun
-Compiling 7 files (.erl)
-Generated ssl_verify_fun app
-==> foreman_server
-===> Analyzing applications...
-===> Compiling ctx
-==> erlex
-Compiling 1 file (.xrl)
-Compiling 1 file (.yrl)
-Compiling 2 files (.erl)
-Compiling 2 files (.ex)
-Generated erlex app
-==> server_sent_events
-Compiling 2 files (.ex)
-Generated server_sent_events app
-==> foreman_server
-===> Fetching rebar3_hex v7.2.0
-===> Fetching hex_core v0.18.0
-===> Fetching verl v1.1.1
-===> Analyzing applications...
-===> Compiling verl
-===> Compiling hex_core
-===> Compiling rebar3_hex
-===> Fetching rebar3_ex_doc v0.2.31
-===> Analyzing applications...
-===> Compiling rebar3_ex_doc
-make: Entering directory '/Users/ldangelo/.foreman/worktrees/foreman/foreman-gocpd/run-bf31fff2bba135166d4e4cc111d51be8/workspace/packages/foreman_server/deps/erlexec/c_src'
-clang++ -std=c++17 -finline-functions -Wall -DHAVE_PTRACE -MMD -DUSE_POLL=1 -O3 -DNDEBUG -DHAVE_SETREUID  -I/nix/store/jqc5i31qvkl45xf0xn4mhzmbdvkjy5p4-erlang-28.5.0.5/lib/erlang/erts-16.4.0.5/include -I/nix/store/jqc5i31qvkl45xf0xn4mhzmbdvkjy5p4-erlang-28.5.0.5/lib/erlang/lib/erl_interface-5.7.0.1/include  -c -o ei++.o ei++.cpp
-clang++ -std=c++17 -finline-functions -Wall -DHAVE_PTRACE -MMD -DUSE_POLL=1 -O3 -DNDEBUG -DHAVE_SETREUID  -I/nix/store/jqc5i31qvkl45xf0xn4mhzmbdvkjy5p4-erlang-28.5.0.5/lib/erlang/erts-16.4.0.5/include -I/nix/store/jqc5i31qvkl45xf0xn4mhzmbdvkjy5p4-erlang-28.5.0.5/lib/erlang/lib/erl_interface-5.7.0.1/include  -c -o exec.o exec.cpp
-clang++ -std=c++17 -finline-functions -Wall -DHAVE_PTRACE -MMD -DUSE_POLL=1 -O3 -DNDEBUG -DHAVE_SETREUID  -I/nix/store/jqc5i31qvkl45xf0xn4mhzmbdvkjy5p4-erlang-28.5.0.5/lib/erlang/erts-16.4.0.5/include -I/nix/store/jqc5i31qvkl45xf0xn4mhzmbdvkjy5p4-erlang-28.5.0.5/lib/erlang/lib/erl_interface-5.7.0.1/include  -c -o exec_impl.o exec_impl.cpp
-mkdir -p /Users/ldangelo/.foreman/worktrees/foreman/foreman-gocpd/run-bf31fff2bba135166d4e4cc111d51be8/workspace/packages/foreman_server/deps/erlexec/priv/aarch64-apple-darwin25.6.0/
-mkdir -p "/Users/ldangelo/.foreman/worktrees/foreman/foreman-gocpd/run-bf31fff2bba135166d4e4cc111d51be8/workspace/packages/foreman_server/deps/erlexec/priv/aarch64-apple-darwin25.6.0/"
-clang++ ei++.o exec.o exec_impl.o -flat_namespace -undefined suppress  -L/nix/store/jqc5i31qvkl45xf0xn4mhzmbdvkjy5p4-erlang-28.5.0.5/lib/erlang/lib/erl_interface-5.7.0.1/lib -lei -o /Users/ldangelo/.foreman/worktrees/foreman/foreman-gocpd/run-bf31fff2bba135166d4e4cc111d51be8/workspace/packages/foreman_server/deps/erlexec/priv/aarch64-apple-darwin25.6.0/exec-port
-make: Leaving directory '/Users/ldangelo/.foreman/worktrees/foreman/foreman-gocpd/run-bf31fff2bba135166d4e4cc111d51be8/workspace/packages/foreman_server/deps/erlexec/c_src'
-===> Analyzing applications...
-===> Compiling erlexec
-==> castore
-Compiling 1 file (.ex)
-Generated castore app
-==> mint
-Compiling 1 file (.erl)
-Compiling 19 files (.ex)
-Generated mint app
-==> mint_web_socket
-Compiling 7 files (.ex)
-Generated mint_web_socket app
-==> elixir_make
-Compiling 8 files (.ex)
-Generated elixir_make app
-==> foreman_server
-===> Analyzing applications...
-===> Compiling cowlib
-===> Analyzing applications...
-===> Compiling poolboy
-==> decimal
-Compiling 4 files (.ex)
-Generated decimal app
-==> jason
-Compiling 10 files (.ex)
-Generated jason app
-==> sobelow
-Compiling 51 files (.ex)
-Generated sobelow app
-==> yaml_elixir
-Compiling 6 files (.ex)
-Generated yaml_elixir app
-==> ex_json_schema
-Compiling 40 files (.ex)
-Generated ex_json_schema app
-==> foreman_server
-===> Analyzing applications...
-===> Compiling idna
-==> excoveralls
-Compiling 29 files (.ex)
-    warning: unused require EEx
-    │
-  5 │   require EEx
-    │   ~
-    │
-    └─ lib/excoveralls/html/view.ex:5:3
-
-    warning: unused require ExCoveralls.Html.Safe
-    │
-  6 │   require ExCoveralls.Html.Safe
-    │   ~
-    │
-    └─ lib/excoveralls/html/view.ex:6:3
-
-    warning: the following clause cannot match because the previous clauses already matched all possible values:
-
-        _ ->
-
-    it attempts to match on the result of:
-
-        System.cmd("git", ["log", "-1", "--format=%an"])
-
-    which has the already matched type:
-
-        dynamic({term(), term()})
-
-    type warning found at:
-    │
- 56 │       _ -> "[no committer name]"
-    │         ~
-    │
-    └─ lib/excoveralls/gitlab.ex:56:9: ExCoveralls.Gitlab.get_committer/0
-
-    warning: the following clause cannot match because the previous clauses already matched all possible values:
-
-        _ ->
-
-    it attempts to match on the result of:
-
-        System.cmd("git", ["log", "-1", "--pretty=format:%s"])
-
-    which has the already matched type:
-
-        dynamic({term(), term()})
-
-    type warning found at:
-    │
- 51 │       _ -> "[no commit message]"
-    │         ~
-    │
-    └─ lib/excoveralls/circle.ex:51:9: ExCoveralls.Circle.get_message!/0
-
-    warning: the following clause cannot match because the previous clauses already matched all possible values:
-
-        _ ->
-
-    it attempts to match on the result of:
-
-        System.cmd("git", ["log", "-1", "--pretty=format:%s"])
-
-    which has the already matched type:
-
-        dynamic({term(), term()})
-
-    type warning found at:
-    │
- 50 │       _ -> "[no commit message]"
-    │         ~
-    │
-    └─ lib/excoveralls/semaphore.ex:50:9: ExCoveralls.Semaphore.get_message!/0
-
-Generated excoveralls app
-==> nimble_parsec
-Compiling 4 files (.ex)
-Generated nimble_parsec app
-==> time_zone_info
-Compiling 31 files (.ex)
-Generated time_zone_info app
-==> foreman_server
-===> Analyzing applications...
-===> Compiling gproc
-===> Analyzing applications...
-===> Compiling telemetry
-==> ecto
-Compiling 56 files (.ex)
-Generated ecto app
-==> uniq
-Compiling 5 files (.ex)
-     warning: the variable "clock_hi_size" is accessed inside size(...) of a bitstring but it was defined outside of the match. You must precede it with the pin operator
-     │
- 547 │            <<clock_hi::bits(clock_hi_size), clock_lo::bits(8), node::bits(48)>> <-
-     │                             ~
-     │
-     └─ lib/uuid.ex:547:29: Uniq.UUID.parse_raw/5
-
-     warning: the variable "clock_size" is accessed inside size(...) of a bitstring but it was defined outside of the match. You must precede it with the pin operator
-     │
- 549 │            <<clock::uint(clock_size)>> <-
-     │                          ~
-     │
-     └─ lib/uuid.ex:549:26: Uniq.UUID.parse_raw/5
-
-     warning: the variable "clock_hi_size" is accessed inside size(...) of a bitstring but it was defined outside of the match. You must precede it with the pin operator
-     │
- 547 │            <<clock_hi::bits(clock_hi_size), clock_lo::bits(8), node::bits(48)>> <-
-     │                             ~
-     │
-     └─ lib/uuid.ex:547:29: Uniq.UUID.parse_raw/5
-
-     warning: the variable "clock_size" is accessed inside size(...) of a bitstring but it was defined outside of the match. You must precede it with the pin operator
-     │
- 549 │            <<clock::uint(clock_size)>> <-
-     │                          ~
-     │
-     └─ lib/uuid.ex:549:26: Uniq.UUID.parse_raw/5
-
-     warning: the variable "clock_hi_size" is accessed inside size(...) of a bitstring but it was defined outside of the match. You must precede it with the pin operator
-     │
- 547 │            <<clock_hi::bits(clock_hi_size), clock_lo::bits(8), node::bits(48)>> <-
-     │                             ~
-     │
-     └─ lib/uuid.ex:547:29: Uniq.UUID.parse_raw/5
-
-     warning: the variable "clock_size" is accessed inside size(...) of a bitstring but it was defined outside of the match. You must precede it with the pin operator
-     │
- 549 │            <<clock::uint(clock_size)>> <-
-     │                          ~
-     │
-     └─ lib/uuid.ex:549:26: Uniq.UUID.parse_raw/5
-
-     warning: the variable "clock_hi_size" is accessed inside size(...) of a bitstring but it was defined outside of the match. You must precede it with the pin operator
-     │
- 547 │            <<clock_hi::bits(clock_hi_size), clock_lo::bits(8), node::bits(48)>> <-
-     │                             ~
-     │
-     └─ lib/uuid.ex:547:29: Uniq.UUID.parse_raw/5
-
-     warning: the variable "clock_size" is accessed inside size(...) of a bitstring but it was defined outside of the match. You must precede it with the pin operator
-     │
- 549 │            <<clock::uint(clock_size)>> <-
-     │                          ~
-     │
-     └─ lib/uuid.ex:549:26: Uniq.UUID.parse_raw/5
-
-Generated uniq app
-==> crontab
-Compiling 7 files (.ex)
-     warning: this clause of defp get_interval_value/2 is never used (or it will always fail/warn when invoked)
-     │
- 255 │   defp get_interval_value(:ambiguity_opts, %{ambiguity_opts: ambiguity_opts}), do: ambiguity_opts
-     │        ~
-     │
-     └─ lib/crontab/date_checker.ex:255:8: Crontab.DateChecker.get_interval_value/2
-
-Generated crontab app
-==> peri
-Compiling 10 files (.ex)
-Generated peri app
-==> websockex
-Compiling 6 files (.ex)
-     warning: the variable "size" is accessed inside size(...) of a bitstring but it was defined outside of the match. You must precede it with the pin operator
-     │
- 109 │     <<payload::bytes-size(size), rest::bitstring>> = remaining
-     │                           ~
-     │
-     └─ lib/websockex/frame.ex:109:27: WebSockex.Frame.parse_frame/1
-
-     warning: the variable "len" is accessed inside size(...) of a bitstring but it was defined outside of the match. You must precede it with the pin operator
-     │
- 125 │       <<payload::bytes-size(len), rest::bitstring>> = remaining
-     │                             ~
-     │
-     └─ lib/websockex/frame.ex:125:29: WebSockex.Frame.parse_frame/1
-
-     warning: the variable "len" is accessed inside size(...) of a bitstring but it was defined outside of the match. You must precede it with the pin operator
-     │
- 125 │       <<payload::bytes-size(len), rest::bitstring>> = remaining
-     │                             ~
-     │
-     └─ lib/websockex/frame.ex:125:29: WebSockex.Frame.parse_frame/1
-
-     warning: the variable "len" is accessed inside size(...) of a bitstring but it was defined outside of the match. You must precede it with the pin operator
-     │
- 145 │     <<payload::bytes-size(len), rest::bitstring>> = remaining
-     │                           ~
-     │
-     └─ lib/websockex/frame.ex:145:27: WebSockex.Frame.parse_frame/1
-
-     warning: the variable "len" is accessed inside size(...) of a bitstring but it was defined outside of the match. You must precede it with the pin operator
-     │
- 150 │     <<payload::bytes-size(len), rest::bitstring>> = remaining
-     │                           ~
-     │
-     └─ lib/websockex/frame.ex:150:27: WebSockex.Frame.parse_frame/1
-
-     warning: the variable "len" is accessed inside size(...) of a bitstring but it was defined outside of the match. You must precede it with the pin operator
-     │
- 155 │     <<payload::bytes-size(len), rest::bitstring>> = remaining
-     │                           ~
-     │
-     └─ lib/websockex/frame.ex:155:27: WebSockex.Frame.parse_frame/1
-
-     warning: the variable "len" is accessed inside size(...) of a bitstring but it was defined outside of the match. You must precede it with the pin operator
-     │
- 164 │       <<payload::bytes-size(len), rest::bitstring>> = remaining
-     │                             ~
-     │
-     └─ lib/websockex/frame.ex:164:29: WebSockex.Frame.parse_frame/1
-
-     warning: the variable "len" is accessed inside size(...) of a bitstring but it was defined outside of the match. You must precede it with the pin operator
-     │
- 171 │       <<payload::bytes-size(len), rest::bitstring>> = remaining
-     │                             ~
-     │
-     └─ lib/websockex/frame.ex:171:29: WebSockex.Frame.parse_frame/1
-
-     warning: the variable "len" is accessed inside size(...) of a bitstring but it was defined outside of the match. You must precede it with the pin operator
-     │
- 176 │       <<payload::bytes-size(len), rest::bitstring>> = remaining
-     │                             ~
-     │
-     └─ lib/websockex/frame.ex:176:29: WebSockex.Frame.parse_frame/1
-
-     warning: the variable "len" is accessed inside size(...) of a bitstring but it was defined outside of the match. You must precede it with the pin operator
-     │
- 164 │       <<payload::bytes-size(len), rest::bitstring>> = remaining
-     │                             ~
-     │
-     └─ lib/websockex/frame.ex:164:29: WebSockex.Frame.parse_frame/1
-
-     warning: the variable "len" is accessed inside size(...) of a bitstring but it was defined outside of the match. You must precede it with the pin operator
-     │
- 171 │       <<payload::bytes-size(len), rest::bitstring>> = remaining
-     │                             ~
-     │
-     └─ lib/websockex/frame.ex:171:29: WebSockex.Frame.parse_frame/1
-
-     warning: the variable "len" is accessed inside size(...) of a bitstring but it was defined outside of the match. You must precede it with the pin operator
-     │
- 176 │       <<payload::bytes-size(len), rest::bitstring>> = remaining
-     │                             ~
-     │
-     └─ lib/websockex/frame.ex:176:29: WebSockex.Frame.parse_frame/1
-
-     warning: the variable "len" is accessed inside size(...) of a bitstring but it was defined outside of the match. You must precede it with the pin operator
-     │
- 183 │     <<payload::bytes-size(len), rest::bitstring>> = remaining
-     │                           ~
-     │
-     └─ lib/websockex/frame.ex:183:27: WebSockex.Frame.parse_frame/1
-
-     warning: the variable "len" is accessed inside size(...) of a bitstring but it was defined outside of the match. You must precede it with the pin operator
-     │
- 188 │     <<payload::bytes-size(len), rest::bitstring>> = remaining
-     │                           ~
-     │
-     └─ lib/websockex/frame.ex:188:27: WebSockex.Frame.parse_frame/1
-
-     warning: the variable "len" is accessed inside size(...) of a bitstring but it was defined outside of the match. You must precede it with the pin operator
-     │
- 193 │     <<payload::bytes-size(len), rest::bitstring>> = remaining
-     │                           ~
-     │
-     └─ lib/websockex/frame.ex:193:27: WebSockex.Frame.parse_frame/1
-
-     warning: the variable "len" is accessed inside size(...) of a bitstring but it was defined outside of the match. You must precede it with the pin operator
-     │
- 199 │     <<payload::bytes-size(len), rest::bitstring>> = remaining
-     │                           ~
-     │
-     └─ lib/websockex/frame.ex:199:27: WebSockex.Frame.parse_frame/1
-
-     warning: the variable "len" is accessed inside size(...) of a bitstring but it was defined outside of the match. You must precede it with the pin operator
-     │
- 204 │     <<payload::bytes-size(len), rest::bitstring>> = remaining
-     │                           ~
-     │
-     └─ lib/websockex/frame.ex:204:27: WebSockex.Frame.parse_frame/1
-
-     warning: the variable "len" is accessed inside size(...) of a bitstring but it was defined outside of the match. You must precede it with the pin operator
-     │
- 209 │     <<payload::bytes-size(len), rest::bitstring>> = remaining
-     │                           ~
-     │
-     └─ lib/websockex/frame.ex:209:27: WebSockex.Frame.parse_frame/1
-
-     warning: the variable "len" is accessed inside size(...) of a bitstring but it was defined outside of the match. You must precede it with the pin operator
-     │
- 358 │     <<payload::bytes-size(len), rest::bitstring>> = remaining
-     │                           ~
-     │
-     └─ lib/websockex/frame.ex:358:27: WebSockex.Frame.parse_text_payload/3
-
-Generated websockex app
-==> telemetry_metrics
-Compiling 7 files (.ex)
-     warning: unused require Logger
-     │
- 392 │   require Logger
-     │   ~
-     │
-     └─ lib/telemetry_metrics.ex:392:3
-
-Generated telemetry_metrics app
-==> db_connection
-Compiling 18 files (.ex)
-Generated db_connection app
-==> doctor
-Compiling 17 files (.ex)
-    warning: this clause of defp valid_moduledoc?/2 is never used (or it will always fail/warn when invoked)
-    │
- 96 │   defp valid_moduledoc?(%ModuleReport{is_protocol_implementation: true}, _config), do: true
-    │        ~
-    │
-    └─ lib/reporters/module_explain.ex:96:8: Doctor.Reporters.ModuleExplain.valid_moduledoc?/2
-
-     warning: this clause of defp valid_doc_coverage?/2 is never used (or it will always fail/warn when invoked)
-     │
- 103 │   defp valid_doc_coverage?(%ModuleReport{is_protocol_implementation: true}, _config), do: true
-     │        ~
-     │
-     └─ lib/reporters/module_explain.ex:103:8: Doctor.Reporters.ModuleExplain.valid_doc_coverage?/2
-
-Generated doctor app
-==> foreman_server
-===> Analyzing applications...
-===> Compiling cowboy
-==> phoenix_html
-Compiling 6 files (.ex)
-Generated phoenix_html app
-==> zoi
-Compiling 85 files (.ex)
-Generated zoi app
-==> phoenix_template
-Compiling 4 files (.ex)
-     warning: the variable "prefix_size" is accessed inside size(...) of a bitstring but it was defined outside of the match. You must precede it with the pin operator
-     │
- 505 │       <<prefix::binary-size(prefix_size), ^suffix::binary>> -> prefix
-     │                             ~
-     │
-     └─ lib/phoenix/template.ex:505:29: Phoenix.Template.unsuffix/2
-
-Generated phoenix_template app
-==> abnf_parsec
-Compiling 4 files (.ex)
-Generated abnf_parsec app
-==> texture
-Compiling 7 files (.ex)
-Generated texture app
-==> phoenix_pubsub
-Compiling 12 files (.ex)
-Generated phoenix_pubsub app
-==> foreman_server
-===> Analyzing applications...
-===> Compiling acceptor_pool
-===> Analyzing applications...
-===> Compiling meck
-===> Analyzing applications...
-===> Compiling hpack
-==> fsm
-Compiling 1 file (.ex)
-Generated fsm app
-==> dialyxir
-Compiling 67 files (.ex)
-Generated dialyxir app
-==> splode
-Compiling 5 files (.ex)
-Generated splode app
-==> jido_signal
-Compiling 67 files (.ex)
-
-09:38:49.430 [debug] Extension registry unavailable queued module=Jido.Signal.Ext.Trace
-
-09:38:49.433 [debug] Extension registry unavailable queued module=Jido.Signal.Ext.Dispatch
-Generated jido_signal app
-==> jsv
-Compiling 74 files (.ex)
-Generated jsv app
-==> foreman_server
-===> Analyzing applications...
-===> Compiling tls_certificate_check
-==> credo
-Compiling 257 files (.ex)
-Generated credo app
-==> lua
-Compiling 63 files (.ex)
-Generated lua app
-==> plug
-Compiling 1 file (.erl)
-Compiling 42 files (.ex)
-Generated plug app
-warning: "xref: [exclude: ...]" in your mix.exs file is deprecated, instead use: "elixirc_options: [no_warn_undefined: ...]"
-  (mix 1.20.4) lib/mix/tasks/compile.elixir.ex:243: Mix.Tasks.Compile.Elixir.xref_exclude_opts/2
-  (mix 1.20.4) lib/mix/tasks/compile.elixir.ex:142: Mix.Tasks.Compile.Elixir.run/1
-  (mix 1.20.4) lib/mix/task.ex:502: anonymous fn/3 in Mix.Task.run_task/5
-  (mix 1.20.4) lib/mix/task.compiler.ex:299: Mix.Task.Compiler.run_compiler/2
-  (mix 1.20.4) lib/mix/task.compiler.ex:287: Mix.Task.Compiler.run/4
-  (mix 1.20.4) lib/mix/tasks/compile.all.ex:75: Mix.Tasks.Compile.All.do_run/2
-
-==> postgrex
-Compiling 70 files (.ex)
-Generated postgrex app
-==> ecto_sql
-Compiling 25 files (.ex)
-Generated ecto_sql app
-==> fsmx
-Compiling 3 files (.ex)
-Generated fsmx app
-==> eventstore
-Compiling 60 files (.ex)
-    warning: unused require Logger
-    │
-  4 │   require Logger
-    │   ~
-    │
-    └─ lib/event_store/storage/lock.ex:4:3
-
-    warning: <%# is deprecated, use <%!-- or add a space between <% and # instead
-    │
-  1 │ <%#
-    │ ~
-    │
-    └─ lib/event_store/sql/statements/insert_events.sql.eex:1: (file)
-
-    warning: <%# is deprecated, use <%!-- or add a space between <% and # instead
-    │
- 24 │   <%#
-    │   ~
-    │
-    └─ lib/event_store/sql/statements/insert_events.sql.eex:24: (file)
-
-    warning: unused require Logger
-    │
-  4 │   require Logger
-    │   ~
-    │
-    └─ lib/event_store/storage/database.ex:4:3
-
-     warning: a struct for EventStore.RecordedEvent is expected on struct update:
-
-         %EventStore.RecordedEvent{
-           recorded_event
-           | stream_uuid: stream_uuid,
-             stream_version: stream_version + index
-         }
-
-     but got type:
-
-         dynamic()
-
-     where "recorded_event" was given the type:
-
-         # type: dynamic()
-         # from: lib/event_store/streams/stream.ex
-         {recorded_event, index}
-
-     when defining the variable "recorded_event", you must also pattern match on "%EventStore.RecordedEvent{}"
-
-     type warning found at:
-     │
- 160 │       %RecordedEvent{
-     │       ~
-     │
-     └─ lib/event_store/streams/stream.ex:160:7: EventStore.Streams.Stream.prepare_events/4
-
-    warning: a struct for EventStore.Subscriptions.SubscriptionFsm is expected on struct update:
-
-        %EventStore.Subscriptions.SubscriptionFsm{fsm | data: new_data}
-
-    but got type:
-
-        dynamic()
-
-    where "fsm" (context Fsm) was given the type:
-
-        # type: dynamic()
-        # from: lib/event_store/subscriptions/subscription_fsm.ex:8
-        fsm
-
-    when defining the variable "fsm", you must also pattern match on "%EventStore.Subscriptions.SubscriptionFsm{}"
-
-    type warning found at:
-    │
-  8 │   use Fsm, initial_state: :initial, initial_data: %SubscriptionState{}
-    │   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    │
-    └─ lib/event_store/subscriptions/subscription_fsm.ex:8: EventStore.Subscriptions.SubscriptionFsm.handle_action_response/2
-
-    warning: a struct for EventStore.Subscriptions.SubscriptionFsm is expected on struct update:
-
-        %EventStore.Subscriptions.SubscriptionFsm{fsm | state: next_state}
-
-    but got type:
-
-        dynamic()
-
-    where "fsm" (context Fsm) was given the type:
-
-        # type: dynamic()
-        # from: lib/event_store/subscriptions/subscription_fsm.ex:8
-        fsm
-
-    when defining the variable "fsm", you must also pattern match on "%EventStore.Subscriptions.SubscriptionFsm{}"
-
-    type warning found at:
-    │
-  8 │   use Fsm, initial_state: :initial, initial_data: %SubscriptionState{}
-    │   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    │
-    └─ lib/event_store/subscriptions/subscription_fsm.ex:8: EventStore.Subscriptions.SubscriptionFsm.handle_action_response/2
-
-    warning: this clause of defp change_state/2 is never used (or it will always fail/warn when invoked)
-    │
-  8 │   use Fsm, initial_state: :initial, initial_data: %SubscriptionState{}
-    │   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    │
-    └─ lib/event_store/subscriptions/subscription_fsm.ex:8: EventStore.Subscriptions.SubscriptionFsm.change_state/2
-
-Generated eventstore app
-==> dotenvy
-Compiling 3 files (.ex)
-    warning: unused require Logger
-    │
- 20 │   require Logger
-    │   ~
-    │
-    └─ lib/dotenvy.ex:20:3
-
-Generated dotenvy app
-==> nimble_pool
-Compiling 2 files (.ex)
-Generated nimble_pool app
-==> finch
-Compiling 23 files (.ex)
-Generated finch app
-==> anubis_mcp
-Compiling 84 files (.ex)
-Generated anubis_mcp app
-==> req
-Compiling 24 files (.ex)
-Generated req app
-==> jido_action
-Compiling 40 files (.ex)
-Generated jido_action app
-==> jido
-Compiling 126 files (.ex)
-Generated jido app
-==> jido_ecto
-Compiling 6 files (.ex)
-Generated jido_ecto app
-==> llm_db
-Compiling 61 files (.ex)
-Generated llm_db app
-==> req_llm
-Compiling 203 files (.ex)
-Generated req_llm app
-==> jido_ai
-Compiling 170 files (.ex)
-Generated jido_ai app
-==> cc_precompiler
-Compiling 3 files (.ex)
-Generated cc_precompiler app
-==> lazy_html
-Compiling 3 files (.ex)
-Generated lazy_html app
-==> foreman_server
-===> Analyzing applications...
-===> Compiling chatterbox
-===> Analyzing applications...
-===> Compiling grpcbox
-===> Analyzing applications...
-===> Compiling cowboy_telemetry
-==> plug_cowboy
-Compiling 5 files (.ex)
-Generated plug_cowboy app
-==> ex_mcp
-Compiling 279 files (.ex)
-Verifying ExMCP.Authorization.FullOAuthFlow (it's taking more than 10s)
-Generated ex_mcp app
-==> jido_mcp
-Compiling 34 files (.ex)
-Generated jido_mcp app
-==> websock
-Compiling 1 file (.ex)
-Generated websock app
-==> websock_adapter
-Compiling 4 files (.ex)
-Generated websock_adapter app
-==> phoenix
-Compiling 74 files (.ex)
-Generated phoenix app
-==> phoenix_live_view
-Compiling 55 files (.ex)
-Generated phoenix_live_view app
-==> sweet_xml
-Compiling 2 files (.ex)
-     warning: the variable "size" is accessed inside size(...) of a bitstring but it was defined outside of the match. You must precede it with the pin operator
-     │
- 838 │       <<_::binary - size(size), h>> <> tail when h == ?\s or h == ?\n or h == ?\r or h == ?\t ->
-     │                          ~
-     │
-     └─ lib/sweet_xml.ex:838:26: SweetXml.split_last_whitespace/2
-
-     warning: a struct for SweetXpath is expected on struct update:
-
-         %SweetXpath{xpath | namespaces: [{to_charlist(prefix), to_charlist(uri)} | xpath.namespaces]}
-
-     but got type:
-
-         dynamic()
-
-     where "xpath" was given the type:
-
-         # type: dynamic()
-         # from: lib/sweet_xml.ex:245:21
-         xpath
-
-     when defining the variable "xpath", you must also pattern match on "%SweetXpath{}"
-
-     type warning found at:
-     │
- 246 │     %SweetXpath{xpath | namespaces: [{to_charlist(prefix), to_charlist(uri)}
-     │     ~
-     │
-     └─ lib/sweet_xml.ex:246:5: SweetXml.add_namespace/3
-
-Generated sweet_xml app
-warning: "xref: [exclude: ...]" in your mix.exs file is deprecated, instead use: "elixirc_options: [no_warn_undefined: ...]"
-  (mix 1.20.4) lib/mix/tasks/compile.elixir.ex:243: Mix.Tasks.Compile.Elixir.xref_exclude_opts/2
-  (mix 1.20.4) lib/mix/tasks/compile.elixir.ex:142: Mix.Tasks.Compile.Elixir.run/1
-  (mix 1.20.4) lib/mix/task.ex:502: anonymous fn/3 in Mix.Task.run_task/5
-  (mix 1.20.4) lib/mix/task.compiler.ex:299: Mix.Task.Compiler.run_compiler/2
-  (mix 1.20.4) lib/mix/task.compiler.ex:287: Mix.Task.Compiler.run/4
-  (mix 1.20.4) lib/mix/tasks/compile.all.ex:75: Mix.Tasks.Compile.All.do_run/2
-
-==> ex_aws
-Compiling 29 files (.ex)
-Generated ex_aws app
-==> ex_aws_s3
-Compiling 7 files (.ex)
-Generated ex_aws_s3 app
-==> jido_vfs
-Compiling 27 files (.ex)
-Generated jido_vfs app
-==> jido_shell
-Compiling 54 files (.ex)
-     warning: Bash.Session.chdir/2 is undefined (module Bash.Session is not available or is yet to be defined)
-     │
- 171 │     _ = safe_call(state.bash_session, fn pid -> Bash.Session.chdir(pid, path) end)
-     │                                                              ~
-     │
-     └─ lib/jido_shell/backend/bash.ex:171:62: Jido.Shell.Backend.Bash.cd/2
-
-     warning: Bash.Session.new/1 is undefined (module Bash.Session is not available or is yet to be defined)
-     │
- 221 │     case Bash.Session.new(opts) do
-     │                       ~
-     │
-     └─ lib/jido_shell/backend/bash.ex:221:23: Jido.Shell.Backend.Bash.start_bash_session/2
-
-     warning: Bash.Session.execute/3 is undefined (module Bash.Session is not available or is yet to be defined)
-     │
- 235 │         case Bash.Session.execute(bash_session, ast, []) do
-     │                           ~
-     │
-     └─ lib/jido_shell/backend/bash.ex:235:27: Jido.Shell.Backend.Bash.install_prelude/1
-     └─ lib/jido_shell/backend/bash.ex:272:22: Jido.Shell.Backend.Bash.execute_bash/7
-
-     warning: Bash.parse/1 is undefined (module Bash is not available or is yet to be defined). Make sure the module name is correct and has been specified in full (or that an alias has been defined)
-     │
- 263 │     case Bash.parse(line) do
-     │               ~
-     │
-     └─ lib/jido_shell/backend/bash.ex:263:15: Jido.Shell.Backend.Bash.safe_parse/1
-
-     warning: Bash.ExecutionResult.exit_code/1 is undefined (module Bash.ExecutionResult is not available or is yet to be defined)
-     │
- 404 │       Bash.ExecutionResult.exit_code(execution)
-     │                            ~
-     │
-     └─ lib/jido_shell/backend/bash.ex:404:28: Jido.Shell.Backend.Bash.exit_code/1
-
-     warning: Bash.Session.signal/3 is undefined (module Bash.Session is not available or is yet to be defined)
-     │
- 442 │     if Process.alive?(pid), do: Bash.Session.signal(pid, :sigint, grace: @cancel_grace_ms)
-     │                                              ~
-     │
-     └─ lib/jido_shell/backend/bash.ex:442:46: Jido.Shell.Backend.Bash.safe_signal_execution/1
-
-     warning: Bash.Session.stop/1 is undefined (module Bash.Session is not available or is yet to be defined)
-     │
- 453 │     Bash.Session.stop(pid)
-     │                  ~
-     │
-     └─ lib/jido_shell/backend/bash.ex:453:18: Jido.Shell.Backend.Bash.safe_stop/1
-
-     warning: Bash.Session.get_cwd/1 is undefined (module Bash.Session is not available or is yet to be defined)
-     │
- 163 │     case safe_call(state.bash_session, &Bash.Session.get_cwd/1) do
-     │                                                      ~
-     │
-     └─ lib/jido_shell/backend/bash.ex:163:54: Jido.Shell.Backend.Bash.cwd/1
-     └─ lib/jido_shell/backend/bash.ex:423:48: Jido.Shell.Backend.Bash.current_cwd/1
-
-Generated jido_shell app
-==> nimble_ownership
-Compiling 2 files (.ex)
-Generated nimble_ownership app
-==> mox
-Compiling 2 files (.ex)
-Generated mox app
-==> jido_harness
-Compiling 82 files (.ex)
-Generated jido_harness app
-==> opentelemetry_api
-Compiling 19 files (.erl)
-Compiling 5 files (.ex)
-Generated opentelemetry_api app
-==> foreman_server
-===> Analyzing applications...
-===> Compiling opentelemetry
-===> Analyzing applications...
-===> Compiling opentelemetry_exporter
-==> jido_otel
-Compiling 3 files (.ex)
-Generated jido_otel app
-
-09:42:31.692 [error] Postgrex.Protocol (#PID<0.21885.0> ("db_conn_1")) failed to connect: ** (Postgrex.Error) FATAL 28P01 (invalid_password) password authentication failed for user "postgres"
-
-09:42:33.572 [error] Postgrex.Protocol (#PID<0.21885.0> ("db_conn_1")) failed to connect: ** (Postgrex.Error) FATAL 28P01 (invalid_password) password authentication failed for user "postgres"
-
-09:42:36.275 [error] Postgrex.Protocol (#PID<0.21885.0> ("db_conn_1")) failed to connect: ** (Postgrex.Error) FATAL 28P01 (invalid_password) password authentication failed for user "postgres"
-** (DBConnection.ConnectionError) [] connection not available and request was dropped from queue after 5993ms. This means requests are coming in and your connection pool cannot serve them fast enough. You can address this by:
-
-  1. Ensuring your database is available and that you can connect to it
-  2. Tracking down slow queries and making sure they are running fast enough
-  3. Increasing the pool_size (although this increases resource consumption)
-  4. Allowing requests to wait longer by increasing :queue_target and :queue_interval
-
-See DBConnection.start_link/2 for more information
-
-    (postgrex 0.22.3) lib/postgrex.ex:381: Postgrex.query!/4
-    mix.exs:203: ForemanServer.MixProject.claim_database!/2
-    mix.exs:188: ForemanServer.MixProject.reset_event_store/1
-    mix.exs:156: ForemanServer.MixProject.run_tests/1
-    (mix 1.20.4) lib/mix/task.ex:589: Mix.Task.run_alias/6
-    (mix 1.20.4) lib/mix/cli.ex:129: Mix.CLI.run_task/2
-    /Users/ldangelo/.foreman/worktrees/foreman/foreman-gocpd/run-bf31fff2bba135166d4e4cc111d51be8/workspace/.devbox/nix/profile/default/bin/mix:7: (file)
-Error: error running script "bash" in Devbox: exit status 1
-

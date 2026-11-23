@@ -44,9 +44,10 @@ defmodule ForemanServer.Workflow.PhasePR do
 
   The PR title is the run's task title (`task_title`, passed by `RunExecutor` through the same
   task plumbing the final `AutoPR` uses); without one, the first conventional-commit subject
-  among the run's commits, and without that, `feat(phase): <phase_name>`. A `task_title` that is
-  present but blank or not a binary is `%Error{reason: :task_title_invalid}` before anything is
-  pushed.
+  among the run's commits, and without that, `feat(phase): <phase_name>`. A commit history that
+  cannot be read (`git log` exits non-zero) is warned about and takes the same legacy title; it is
+  not reported as "no conventional subject". A `task_title` that is present but blank or not a
+  binary is `%Error{reason: :task_title_invalid}` before anything is pushed.
   """
 
   alias ForemanServer.GitHub.PrLookup
@@ -361,8 +362,8 @@ defmodule ForemanServer.Workflow.PhasePR do
 
   # Title an operator recognises: the run's task title, else the first conventional-commit
   # subject among the run's own commits (Foreman's phase commits, "Foreman run <id> phase <n>",
-  # are not conventional and never match), else the phase-named legacy form. `git log` can only
-  # read, so it costs the subject fallback: the PR still opens with the legacy title.
+  # are not conventional and never match), else the phase-named legacy form. A failed `git log`
+  # costs only the subject fallback (the PR still opens) and is warned, not taken for silence.
   defp pr_title(%Request{task_title: title}) when is_binary(title), do: title
 
   defp pr_title(request),
@@ -381,7 +382,19 @@ defmodule ForemanServer.Workflow.PhasePR do
         |> Enum.map(&String.trim/1)
         |> Enum.find(&conventional_subject?/1)
 
-      {_output, _exit_code} ->
+      {output, exit_code} ->
+        # An unreadable history is not "no conventional subject": say so, then take the legacy
+        # title, which is the one consequence a failed read is allowed to have.
+        Logger.warning(
+          "PhasePR.run_id=#{request.run_id} could not read commit subjects for #{request.head_branch} into #{request.base_branch} (git log exited #{exit_code}: #{String.slice(output, 0, 200)}); using the phase title",
+          run_id: request.run_id,
+          base_branch: request.base_branch,
+          head_branch: request.head_branch,
+          operation: "phase_pr.title",
+          outcome: "history_unreadable",
+          exit_code: exit_code
+        )
+
         nil
     end
   end

@@ -513,6 +513,10 @@ defmodule ForemanServer.Workflow.PhasePRTest do
   defp runner("gh", ["pr", "create" | _], _opts),
     do: {"https://github.com/acme/repo/pull/42\n", 0}
 
+  # The title fallback reads the run's own subjects with `git log`. No subject here, so
+  # every test of this runner keeps the legacy `feat(phase): <phase>` title.
+  defp runner("git", ["log" | _], _opts), do: {"", 0}
+
   # A `gh pr list` item as `PrLookup` asks for it: this repository's open PR for the tip.
   defp pr_item(attrs \\ %{}) do
     Map.merge(
@@ -545,6 +549,107 @@ defmodule ForemanServer.Workflow.PhasePRTest do
 
       executable, args, opts ->
         runner(executable, args, opts)
+    end
+  end
+
+  # `runner/3` with the run's `git log` subjects scripted, and every `gh pr create` told
+  # to the test so it can read the `--title` the PR was opened with.
+  defp title_runner(subjects) do
+    test = self()
+
+    fn
+      "gh", ["pr", "create" | _] = args, opts ->
+        send(test, {:gh_pr_create, args})
+        runner("gh", args, opts)
+
+      "git", ["log" | _], _opts ->
+        {Enum.map_join(subjects, "\n", &(&1 <> "\n")), 0}
+
+      executable, args, opts ->
+        runner(executable, args, opts)
+    end
+  end
+
+  defp title_arg(args) do
+    Enum.at(args, Enum.find_index(args, &(&1 == "--title")) + 1)
+  end
+
+  describe "the title of the opened PR" do
+    test "the run's task title, not the phase name" do
+      runner = title_runner(["fix(login): expire idle sessions"])
+
+      assert {:ok, %{status: "created"}} =
+               PhasePR.maybe_create(
+                 request(%{task_title: "Fix login timeout", command_runner: runner})
+               )
+
+      assert_received {:gh_pr_create, args}
+      assert title_arg(args) == "Fix login timeout"
+    end
+
+    test "no task title: the first conventional subject among the run's commits" do
+      runner = title_runner(["Foreman run run-1 phase 1", "fix(login): expire idle sessions"])
+
+      assert {:ok, %{status: "created"}} =
+               PhasePR.maybe_create(request(%{command_runner: runner}))
+
+      assert_received {:gh_pr_create, args}
+      assert title_arg(args) == "fix(login): expire idle sessions"
+    end
+
+    test "no task title and no conventional subject: the legacy phase title" do
+      runner = title_runner(["Foreman run run-1 phase 1", "work in progress"])
+
+      assert {:ok, %{status: "created"}} =
+               PhasePR.maybe_create(request(%{command_runner: runner}))
+
+      assert_received {:gh_pr_create, args}
+      assert title_arg(args) == "feat(phase): implement"
+    end
+
+    test "a `git log` that fails does not lose the PR: the legacy title, warned" do
+      import ExUnit.CaptureLog
+
+      test = self()
+
+      runner = fn
+        "git", ["log" | _], _opts ->
+          {"fatal: not a git repository", 128}
+
+        "gh", ["pr", "create" | _] = args, opts ->
+          send(test, {:gh_pr_create, args})
+          runner("gh", args, opts)
+
+        executable, args, opts ->
+          runner(executable, args, opts)
+      end
+
+      log =
+        capture_log(fn ->
+          assert {:ok, %{status: "created"}} =
+                   PhasePR.maybe_create(request(%{command_runner: runner}))
+        end)
+
+      assert_received {:gh_pr_create, args}
+      assert title_arg(args) == "feat(phase): implement"
+      # The fallback must not look like "no conventional subject" on this branch.
+      assert log =~ "could not read commit subjects"
+      assert log =~ "git log exited 128"
+    end
+
+    test "a task title that is neither absent nor usable is the typed error, before any push" do
+      test = self()
+
+      runner = fn executable, args, opts ->
+        send(test, {:cmd, executable, args})
+        runner(executable, args, opts)
+      end
+
+      assert {:error, %PhasePR.Error{reason: :task_title_invalid}} =
+               PhasePR.maybe_create(request(%{task_title: "   ", command_runner: runner}))
+
+      refute_received {:cmd, "git", ["push" | _]}
+      refute_received {:gh_pr_create, _args}
     end
   end
 end
