@@ -154,6 +154,43 @@ defmodule ForemanServer.Approvals.SweeperTest do
     assert events(ToolCall.stream_id(run_id, "r")) == ["ToolCallRequested", "ToolCallExpired"]
   end
 
+  describe "on_timeout validation at init" do
+    setup do
+      previous = Application.get_env(:foreman_server, :approvals, [])
+      on_exit(fn -> Application.put_env(:foreman_server, :approvals, previous) end)
+      %{previous: previous}
+    end
+
+    defp put(previous, key, value),
+      do: Application.put_env(:foreman_server, :approvals, Keyword.put(previous, key, value))
+
+    test "an invalid :on_timeout option is rejected at init, not mid-sweep" do
+      assert_raise ArgumentError, ~r/on_timeout/, fn ->
+        Sweeper.init(interval_ms: :manual, on_timeout: :dney)
+      end
+    end
+
+    test "an invalid configured on_timeout is rejected at init", %{previous: previous} do
+      put(previous, :on_timeout, "deny")
+
+      assert_raise ArgumentError, ~r/on_timeout/, fn ->
+        Sweeper.init(interval_ms: :manual)
+      end
+    end
+
+    test "a valid policy is resolved once into policy_opts", %{previous: previous} do
+      put(previous, :on_timeout, :deny)
+
+      assert {:ok, state, {:continue, :recover}} = Sweeper.init(interval_ms: :manual)
+      assert Keyword.fetch!(state.policy_opts, :on_timeout) == :deny
+
+      assert {:ok, explicit, {:continue, :recover}} =
+               Sweeper.init(interval_ms: :manual, on_timeout: :surface)
+
+      assert Keyword.fetch!(explicit.policy_opts, :on_timeout) == :surface
+    end
+  end
+
   test "an open question past its own timeout expires; the answer afterwards is rejected" do
     run_id = "global"
     qid = "q-sw-#{System.unique_integer([:positive])}"
