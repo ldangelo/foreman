@@ -1,5 +1,5 @@
 name: fix
-description: Fix an issue with a Foreman-native prompt, then review it.
+description: Plan a fix with a strong model, implement the plan with a fast model, then review it.
 task_types: [bug]
 # Operator timeout in ms (TRD-027). Default when absent: 300000 (5 min) —
 # `Agents.OperatorQuestionDispatcher.@operator_timeout_ms_default`.
@@ -25,15 +25,44 @@ worktree:
 # where reclaiming the checkout would destroy the work outright. AutoPR would
 # propose nothing either way, since it gates on commits.
 phases:
-  - name: fix
-    command: "/ensemble:fix-issue --foreman {{input.prompt}}"
-    artifact: "{task.projectReportsDir}/FIX_REPORT.md"
+  # Plan first, on a strong model, so the fix phase starts from an exact plan
+  # instead of spending its own context exploring the repository. `plan` writes
+  # PLAN.md next to the fix report with `commit: false`, so the plan phase makes
+  # no commit of its own; the file stays in the run's worktree for the fix phase
+  # to read. The fix phase's commit may still pick it up as an untracked file.
+  #
+  # Both model pins are the qualified `<pi-provider>/<model-id>` form served by
+  # a LiteLLM proxy through the pi harness, and both are OPERATOR-SPECIFIC: a
+  # host whose pi catalog lacks either model fails the pre-phase-1 preflight
+  # with `model_not_found`. Change or drop the `models:` blocks (the phase then
+  # uses the project's `thread_model`) before installing on such a host.
+  - name: plan
+    prompt: fix-plan.md
     provider: pi
+    models:
+      default: litellm-stack/anthropic/claude-opus-5
+    artifact: "{task.projectReportsDir}/PLAN.md"
+    commit: false
+  - name: fix
+    prompt: fix.md
+    provider: pi
+    models:
+      default: litellm-stack/qwen-flash-next
+    artifact: "{task.projectReportsDir}/FIX_REPORT.md"
     commit: true
-    stack_pr: true
-  - name: pr-review
-    command: "/enseble:merge-pr --foreman"
+  - name: coderabbit-review
+    prompt: review-coderabbit.md
     provider: pi
     artifact: "{task.projectReportsDir}/REVIEW_CODERABBIT_REPORT.md"
+    commit: true
+  # `stack_pr: true` is what makes PR creation an explicit workflow step:
+  # `RunExecutor.maybe_record_phase_pr/5` fires `PhasePR.maybe_create/1` after
+  # this phase's commit, so the PR opens AFTER both reviews, from the run branch
+  # against the recorded run base. A created or reused phase PR record then
+  # suppresses the final AutoPR, so exactly one PR is opened per run.
+  - name: repo-rules-review
+    prompt: review-repo-rules.md
+    provider: pi
+    artifact: "{task.projectReportsDir}/REVIEW_REPORT.md"
     commit: true
     stack_pr: true

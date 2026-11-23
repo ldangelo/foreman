@@ -1980,14 +1980,21 @@ model preflight with `:model_not_found` (§7.2). The provider key is pi-side
 configuration — it is NOT a Foreman `provider:` value; Foreman still runs the
 `:pi` provider. See the pi coding agent docs for the full models.json schema.
 
-The bundled `assess`, `fix`, `prd` and `review` workflows run their pi review
-phases with `provider: pi` and **no `models:` pin**, so the model is the
-project's `thread_model` setting, else pi's own default. A bundled workflow must
-not pin an operator-specific model such as `litellm-stack/smart_router`: a host
-whose pi catalog lacks it fails the pre-phase-1 preflight with `model_not_found`
-(or `400 Invalid model name` at the proxy). To use a proxy router model, set the
-project's `thread_model` (e.g. `litellm-stack/smart_router`, with that provider
-in `models.json` as above) or pin `models.default` in your own installed copy.
+The bundled `assess`, `prd` and `review` workflows run their pi review phases
+with `provider: pi` and **no `models:` pin**, so the model is the project's
+`thread_model` setting, else pi's own default. The bundled `fix` workflow is the
+one exception: its `plan` phase pins `litellm-stack/anthropic/claude-opus-5` (a
+strong model that writes `PLAN.md` and changes no code) and its `fix` phase pins
+`litellm-stack/qwen-flash-next` (a fast model that implements the plan), both
+through `provider: pi`. Those pins are specific to a host whose pi catalog has
+the `litellm-stack` provider: on any other host the run fails the pre-phase-1
+preflight with `model_not_found` (or `400 Invalid model name` at the proxy), so
+edit or remove the two `models:` blocks in the installed `fix.yaml` there. A
+bundled workflow should not pin any other operator-specific model; the allowed
+pins are an explicit list in `bundled_workflow_models_test.exs`, so adding one
+is a deliberate change. To use a proxy router model elsewhere, set the project's
+`thread_model` (e.g. `litellm-stack/smart_router`, with that provider in
+`models.json` as above) or pin `models.default` in your own installed copy.
 After editing bundled workflows run `foreman init --force` to refresh the
 installed copies.
 

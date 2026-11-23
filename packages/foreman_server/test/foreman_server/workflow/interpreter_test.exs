@@ -26,12 +26,14 @@ defmodule ForemanServer.Workflow.InterpreterTest do
     end)
   end
 
-  test "load!/1: the 7 bundled pi review/assess phases declare provider: pi and pin no model" do
+  test "load!/1: the 9 bundled pi phases declare provider: pi and pin no model except fix's plan and fix" do
     # The provider is stated explicitly so it is never inferred from a model
-    # string, and no model is pinned (foreman-pv11k): the project's
-    # `thread_model` or pi's own default applies. 7 is the exact count
-    # (assess: 1, fix: 2, prd: 2, review: 2); the count guards against a
-    # vacuous pass if every pi phase were dropped.
+    # string. No pi phase pins a model (foreman-pv11k: the project's
+    # `thread_model` or pi's own default applies) except the `plan` and `fix`
+    # phases of fix.yaml, whose pins are the explicit allowlist in
+    # BundledWorkflowModelsTest. 9 is the exact count (assess: 1, fix: 4,
+    # prd: 2, review: 2); the count guards against a vacuous pass if every pi
+    # phase were dropped.
     pi_phases =
       Enum.flat_map(@template_names, fn template_name ->
         path =
@@ -44,11 +46,13 @@ defmodule ForemanServer.Workflow.InterpreterTest do
         |> Enum.map(&{template_name, &1})
       end)
 
-    assert length(pi_phases) == 7
+    assert length(pi_phases) == 9
 
     Enum.each(pi_phases, fn {template_name, phase} ->
-      refute Map.has_key?(phase, "models"),
-             "#{template_name}.yaml phase #{inspect(phase["name"])} pins a model"
+      unless template_name == "fix" and phase["name"] in ["plan", "fix"] do
+        refute Map.has_key?(phase, "models"),
+               "#{template_name}.yaml phase #{inspect(phase["name"])} pins a model"
+      end
     end)
   end
 
