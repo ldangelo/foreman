@@ -60,6 +60,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   alias ForemanServer.Workflow.CommitDeferral
   alias ForemanServer.Workflow.AttachBranch
   alias ForemanServer.Workflow.AutoPR
+  alias ForemanServer.Workflow.PrBodyContext
   alias ForemanServer.Workflow.PhasePR
   alias ForemanServer.Workflow.PhaseSpec
   alias ForemanServer.Workflow.PlanContext
@@ -3141,26 +3142,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
       cwd: vcs_working_directory(state)
     }
     |> maybe_put_auto_pr_task_metadata(state)
-    |> maybe_put_pr_body_headings(state)
-  end
-
-  # A project that requires headings in its pull-request bodies gets them. An
-  # unset or empty setting is omitted, so the body keeps the task's own text (the
-  # key's presence is what selects the templated body). Anything else — a value
-  # that is not a list — is forwarded unchanged: AutoPR refuses it rather than
-  # opening an untemplated PR (AGENTS.md §5.2).
-  defp maybe_put_pr_body_headings(context, state) do
-    case Map.get(state, :project_settings) do
-      %ForemanServer.ProjectSettings{} = settings ->
-        case ForemanServer.ProjectSettings.pr_body_headings(settings) do
-          {:headings, headings} -> Map.put(context, :pr_body_headings, headings)
-          {:malformed, value} -> Map.put(context, :pr_body_headings, value)
-          :unset -> context
-        end
-
-      _unset ->
-        context
-    end
+    |> PrBodyContext.put_headings(Map.get(state, :project_settings))
   end
 
   defp maybe_put_auto_pr_task_metadata(context, state) do

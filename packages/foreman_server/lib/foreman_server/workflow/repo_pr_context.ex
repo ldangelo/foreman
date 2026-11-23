@@ -13,6 +13,7 @@ defmodule ForemanServer.Workflow.RepoPrContext do
   """
 
   alias ForemanServer.ProjectionStore
+  alias ForemanServer.Workflow.PrBodyContext
 
   @enforce_keys [:run_id, :repo_id, :primary?, :project_id, :task_id, :auto_pr]
   defstruct [:run_id, :repo_id, :primary?, :project_id, :task_id, :auto_pr]
@@ -50,7 +51,7 @@ defmodule ForemanServer.Workflow.RepoPrContext do
           cwd: worktree.repo_path
         }
         |> put_task_metadata(run_id, Map.get(run, :task_id))
-        |> put_pr_body_headings(Map.get(run, :project_id))
+        |> PrBodyContext.put_project_headings(Map.get(run, :project_id))
 
       {:ok,
        %__MODULE__{
@@ -86,26 +87,6 @@ defmodule ForemanServer.Workflow.RepoPrContext do
   # The task's title/description, only when the run's task is projected with
   # both a title and a description. A nil field is omitted rather than stored
   # as nil (AutoPR distinguishes absent from malformed; AGENTS.md 5.3).
-  # A project that requires headings in its pull-request bodies gets them. An
-  # unset or empty setting is omitted, so the body keeps the task's own text (the
-  # key's presence is what selects the templated body). Anything else — a value
-  # that is not a list — is forwarded unchanged: AutoPR refuses it rather than
-  # opening an untemplated PR (AGENTS.md §5.2).
-  defp put_pr_body_headings(context, project_id) when is_binary(project_id) do
-    case ProjectionStore.project_settings(project_id) do
-      %ForemanServer.ProjectSettings{} = settings ->
-        case ForemanServer.ProjectSettings.pr_body_headings(settings) do
-          {:headings, headings} -> Map.put(context, :pr_body_headings, headings)
-          {:malformed, value} -> Map.put(context, :pr_body_headings, value)
-          :unset -> context
-        end
-
-      _unset ->
-        context
-    end
-  end
-
-  defp put_pr_body_headings(context, _project_id), do: context
 
   defp put_task_metadata(context, run_id, task_id) do
     task =

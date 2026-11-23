@@ -38,6 +38,7 @@ defmodule ForemanServer.PrCreate do
 
   alias ForemanServer.{EventStore, PrAssociate, PrReadySignal, ProjectionStore}
   alias ForemanServer.Workflow.AutoPR
+  alias ForemanServer.Workflow.PrBodyContext
 
   @runner_key {__MODULE__, :command_runner}
 
@@ -186,7 +187,7 @@ defmodule ForemanServer.PrCreate do
     context =
       %{run_id: run.run_id, base_branch: base, head_branch: head, cwd: repo_path}
       |> put_task_fields(run.task_id)
-      |> put_pr_body_headings(run.project_id)
+      |> PrBodyContext.put_project_headings(run.project_id)
       |> put_runner()
 
     case AutoPR.maybe_create_pr(context) do
@@ -207,27 +208,6 @@ defmodule ForemanServer.PrCreate do
         context
     end
   end
-
-  # A project that requires headings in its pull-request bodies gets them. An
-  # unset or empty setting is omitted, so the body keeps the task's own text (the
-  # key's presence is what selects the templated body). Anything else — a value
-  # that is not a list — is forwarded unchanged: AutoPR refuses it rather than
-  # opening an untemplated PR (AGENTS.md §5.2).
-  defp put_pr_body_headings(context, project_id) when is_binary(project_id) do
-    case ProjectionStore.project_settings(project_id) do
-      %ForemanServer.ProjectSettings{} = settings ->
-        case ForemanServer.ProjectSettings.pr_body_headings(settings) do
-          {:headings, headings} -> Map.put(context, :pr_body_headings, headings)
-          {:malformed, value} -> Map.put(context, :pr_body_headings, value)
-          :unset -> context
-        end
-
-      _unset ->
-        context
-    end
-  end
-
-  defp put_pr_body_headings(context, _project_id), do: context
 
   defp put_runner(context) do
     case :persistent_term.get(@runner_key, :unset) do

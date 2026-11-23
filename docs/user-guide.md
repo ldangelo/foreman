@@ -733,7 +733,6 @@ foreman project settings project-123
 | `repo_allowlist` | `--repo-allowlist <abs-path-prefix>` (repeatable) | Operator-only: absolute path prefixes under which a thread may attach repositories to its run (off while empty; `--clear repo_allowlist` turns it off; see [Repositories](#repositories)). Not settable over MCP |
 | `max_repos_per_run` | 1..1000 (`--max-repos-per-run`, default 4) | Operator-only: most repositories one run may hold, primary included. Not settable over MCP |
 | `required_checks` | `--required-checks <json>` (a JSON array of at most 20 entries `{"name", "kind": "check_run"\|"status_context", "workflow"?, "allow_skipped"?}`; `[]` = gate on with no checks; unset or `--clear required_checks` = off) | Operator-only: the checks a PR must show before the merge gate accepts it (see [PR watching and auto-fix](#pr-watching-and-auto-fix)). Not settable over MCP or by the coordinator. Setting it needs a durable idempotency store while `:require_durable_store_for_gating` is on. Since Phase 1 PR 8 a project with it set has `approve-merge` refused unless the PR's evidence for the approved head is eligible or waived (unset: no evidence refusal) |
-
 | `pr_body_headings` | `--pr-body-heading <heading>` (repeatable; at most 10 headings, each 1..200 characters and starting with one to six `#` characters; `--clear pr_body_headings` turns it off) | The markdown headings a pull request Foreman opens must carry, in order. When set, the pull-request body is built from these headings and what the run knows; when unset, the body is the one the task or workflow produced (see **Pull-request body template** below) |
 
 Text values are trimmed and `CRLF` is normalised to `LF`; a blank value clears the
@@ -755,13 +754,13 @@ pull-request body that always carries those headings, in the order given:
 - `abc1234` feat: the change
 ```
 
-Foreman fills the headings from what the run knows: the task under the first
-heading, the run's commits (`git log` between the run's base branch and its own
-branch) under the next, and the phase artifact — with the review findings
-block — under the last. A heading Foreman has nothing for reads
+Foreman fills the headings from what the run knows, in the order given: the task
+under the first heading, the run's commits (`git log` between the run's base
+branch and its own branch) under the next, and the phase artifact — with the
+review findings block — under the next. Any content beyond the last heading goes
+under that last heading. A heading Foreman has nothing for reads
 `_Not recorded by Foreman._`: it never leaves a heading empty and never invents
-content. With more headings than Foreman has content for, the extra headings
-share the last block. A heading list the server refuses is reported with the
+content. A heading list the server refuses is reported with the
 reason (`{:pr_body_headings_entry_invalid, heading}`,
 `{:pr_body_headings_too_many, count, limit}`,
 `{:pr_body_headings_invalid, value}`).
