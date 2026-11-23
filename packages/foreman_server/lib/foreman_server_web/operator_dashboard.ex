@@ -7,6 +7,7 @@ defmodule ForemanServerWeb.OperatorDashboard do
   through `CommandGateway.dispatch_operator/1`.
   """
 
+  alias ForemanServer.CommandTimeout
   alias ForemanServer.ProjectionStore
   alias ForemanServerWeb.OperatorDashboard.ChangeEvidence
 
@@ -216,14 +217,17 @@ defmodule ForemanServerWeb.OperatorDashboard do
   def dispatch_action(_type, _run_id, _reason, _idempotency_key), do: {:error, :run_not_found}
 
   # `CommandGateway.dispatch_operator/2`'s default is a 5s `GenServer.call`.
-  # A timeout raises an `:exit` in the CALLER (this LiveView-backing
-  # process) rather than returning an error tuple -- catch it so the result
-  # is an explicit, uncertain-but-handleable outcome. The append may have
-  # already committed on the other side; the caller must treat this as
+  # A timeout comes back as `{:error, %CommandTimeout{}}` from `CommandRouter`
+  # (an injected gateway that still exits is caught as well); either way the
+  # result is an explicit, uncertain-but-handleable outcome. The append may
+  # have already committed on the other side; the caller must treat this as
   # "unknown", not "failed", and must NOT rotate any retry/idempotency key
   # tied to this dispatch.
   defp safe_dispatch(envelope) do
-    command_gateway().dispatch_operator(envelope)
+    case command_gateway().dispatch_operator(envelope) do
+      {:error, %CommandTimeout{}} -> {:error, :dispatch_timeout}
+      result -> result
+    end
   catch
     :exit, {:timeout, {GenServer, :call, _}} -> {:error, :dispatch_timeout}
   end

@@ -19,6 +19,9 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
   alias ForemanServer.TaskProviders.{BeadsAdapter, BrRunnerMock, JsonSchemaCache, SystemBrRunner}
   alias ForemanServer.Exec.Runners.Overwatch, as: OverwatchRunner
   alias ForemanServer.Workflow.RunExecutor
+  alias ForemanServer.Aggregate.Actor
+  alias ForemanServer.Aggregates.BeadsDbLease
+  alias ForemanServer.CommandTimeout
   alias ForemanServer.Workflow.{AssetCatalog, Catalog}
 
   @cache_name :foreman_server_json_schema_cache
@@ -1363,6 +1366,162 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
              RunExecutor.complete(project_id, task_id, run_id, artifact_path)
 
     assert_receive {:runner_cmd, :complete, {:close, %{id: ^task_id}}, _, _}, 1_000
+  end
+
+  # A lease actor that does not answer. `BeadsAdapter` takes `BeadsDbLease` around every `br`
+  # write and the lease's commands go through the command router, so an actor that answered late
+  # used to kill the process that called the provider: here the `RunExecutor` at run completion,
+  # with its run `in_progress` for a boot replay to call the same lease again. The failure is now
+  # returned to the run, which fails loudly (see `RunExecutorTaskEffectsTest`).
+  describe "a lease actor that does not answer" do
+    test "complete/5 is a typed failure when the acquire is not answered, and no hold is left" do
+      start_schema_cache!()
+
+      project_id = unique_id("project")
+      task_id = unique_id("task")
+      run_id = unique_id("run")
+      database_path = unique_database_path(unique_id("lease-acquire-timeout"))
+      stream = BeadsDbLease.stream_id(database_path)
+
+      seed_project!(project_id, project_task_provider(database_path))
+      register_project!(project_id, database_path)
+
+      actor = lease_actor!(database_path)
+      :ok = :sys.suspend(actor)
+
+      # The acquire has timed out once the removal of the call's queue entry waits behind it.
+      # From there the actor answers, so the cleanup lands and the test does not wait out three
+      # timeouts.
+      resumer =
+        Task.async(fn ->
+          await_queued(actor, 2)
+          :sys.resume(actor)
+        end)
+
+      # `br close` is never called (no expectation is set for it): the call has no lease.
+      assert {:error,
+              %CommandTimeout{
+                aggregate_id: ^stream,
+                command_type: "lease.acquire",
+                timeout_ms: 5_000
+              }} =
+               RunExecutor.complete(project_id, task_id, run_id, "/artifacts/#{run_id}.md")
+
+      Task.await(resumer)
+
+      # The acquire that timed out was applied when the actor came back, and the release queued
+      # behind it gave the hold back.
+      assert %BeadsDbLease.State{holder: nil} = Actor.get_state(actor)
+    end
+
+    test "complete/5 is a typed failure when the release is not answered, not a dead caller" do
+      start_schema_cache!()
+
+      project_id = unique_id("project")
+      task_id = unique_id("task")
+      run_id = unique_id("run")
+      database_path = unique_database_path(unique_id("lease-release-timeout"))
+      stream = BeadsDbLease.stream_id(database_path)
+
+      seed_project!(project_id, project_task_provider(database_path))
+      register_project!(project_id, database_path)
+      actor = lease_actor!(database_path)
+
+      expect(BrRunnerMock, :cmd, 1, fn request, _runner_project_config, _opts ->
+        assert request == {:close, %{id: task_id}}
+        # `br close` has the lease and succeeds. From here the actor answers nothing, so the
+        # release that follows is the command that times out.
+        :ok = :sys.suspend(actor)
+
+        {:ok,
+         %{
+           stdout: Jason.encode!(issue_payload(task_id, "closed", %{})),
+           stderr: "",
+           exit_code: 0
+         }}
+      end)
+
+      assert {:error,
+              %BeadsDbLease.ReleaseError{
+                stream_id: ^stream,
+                run_id: ^run_id,
+                reason: %CommandTimeout{command_type: "lease.release", timeout_ms: 5_000}
+              }} = RunExecutor.complete(project_id, task_id, run_id, "/artifacts/#{run_id}.md")
+
+      # The release is still in the actor's mailbox: it gives the lease back when it answers.
+      :ok = :sys.resume(actor)
+      assert %BeadsDbLease.State{holder: nil} = Actor.get_state(actor)
+    end
+
+    test "claim/4 is a typed failure when the release is not answered, not a dead caller" do
+      start_schema_cache!()
+
+      project_id = unique_id("project")
+      task_id = unique_id("task")
+      run_id = unique_id("run")
+      database_path = unique_database_path(unique_id("lease-claim-timeout"))
+
+      seed_project!(project_id, project_task_provider(database_path))
+      register_project!(project_id, database_path)
+      actor = lease_actor!(database_path)
+
+      expect(BrRunnerMock, :cmd, 1, fn request, _runner_project_config, _opts ->
+        assert request == {:update, %{flags: ["--claim", task_id]}}
+        :ok = :sys.suspend(actor)
+
+        {:ok,
+         %{
+           stdout:
+             Jason.encode!(issue_payload(task_id, "in_progress", %{"assignee" => "runner"})),
+           stderr: "",
+           exit_code: 0
+         }}
+      end)
+
+      assert {:error,
+              %BeadsDbLease.ReleaseError{
+                run_id: ^run_id,
+                reason: %CommandTimeout{command_type: "lease.release"}
+              }} = RunExecutor.claim(project_id, task_id, "runner", run_id)
+
+      :ok = :sys.resume(actor)
+      assert %BeadsDbLease.State{holder: nil} = Actor.get_state(actor)
+    end
+  end
+
+  # The `BeadsDbLease` actor of `database_path`'s stream, started and answering.
+  defp lease_actor!(database_path) do
+    {:ok, actor} =
+      ForemanServer.Aggregator.start_aggregate(
+        ForemanServer.Aggregates.BeadsDbLease,
+        BeadsDbLease.stream_id(database_path)
+      )
+
+    on_exit(fn ->
+      try do
+        :sys.resume(actor)
+      catch
+        :exit, _ -> :ok
+      end
+    end)
+
+    actor
+  end
+
+  defp await_queued(actor, count, attempts \\ 1_000) do
+    {:message_queue_len, queued} = Process.info(actor, :message_queue_len)
+
+    cond do
+      queued >= count ->
+        :ok
+
+      attempts == 0 ->
+        flunk("the actor never had #{count} commands waiting (#{queued})")
+
+      true ->
+        Process.sleep(10)
+        await_queued(actor, count, attempts - 1)
+    end
   end
 
   test "second finalize after ALREADY_CLOSED does not emit a duplicate TaskExecutionCompleted event" do

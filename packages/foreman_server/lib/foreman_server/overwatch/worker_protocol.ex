@@ -25,6 +25,16 @@ defmodule ForemanServer.Overwatch.WorkerProtocol do
   and advances only on success. Two consecutive `emit/2` calls always
   yield distinct sequences or one is rejected.
 
+  ## A Tracker that does not answer
+
+  An event the Tracker does not confirm within five seconds comes back as
+  `{:error, %ForemanServer.CommandTimeout{}}`; it is never an exit of the calling worker (a
+  worker that died on a slow Tracker took its agent and its phase with it, and the run failed
+  `:worker_died_no_result`). The Tracker still holds the request and records it when it catches
+  up, so the caller must not send it again. Lines of output and heartbeats are dropped with a
+  warning; every other event carries state and is logged as an error. See
+  `Tracker.heartbeat/3` and `Tracker.dispatch_lifecycle/3`.
+
   ## Launcher
 
   `start_worker/3` spawns the actual worker runtime via an adapter

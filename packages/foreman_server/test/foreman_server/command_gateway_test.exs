@@ -2099,6 +2099,57 @@ defmodule ForemanServer.CommandGatewayTest do
         :telemetry.detach(handler_id)
       end
     end
+
+    test "dispatch_operator reports a project.archive its actor does not answer as a typed, retryable error" do
+      project_id = unique_id("project")
+      aggregate_id = "project:#{project_id}"
+
+      assert {:ok, _} =
+               ProjectStore.save(%{
+                 project_id: project_id,
+                 path: "/tmp/#{project_id}",
+                 task_provider: %{provider: :beads}
+               })
+
+      [{actor, _}] = Registry.lookup(ForemanServer.AggregateRegistry, aggregate_id)
+      :ok = :sys.suspend(actor)
+      handler_id = attach_telemetry(self(), [[:foreman_server, :project, :archive]])
+
+      try do
+        # Not an exit of the caller (the HTTP request, here the test), and not the generic
+        # `unknown_error`: the command may still land, and sending it again is safe.
+        assert {:error,
+                %ForemanServer.CommandTimeout{
+                  aggregate_id: ^aggregate_id,
+                  command_type: "project.archive",
+                  timeout_ms: 50
+                }} =
+                 CommandGateway.dispatch_operator(
+                   %{
+                     command_id: unique_id("command"),
+                     aggregate_id: aggregate_id,
+                     type: "project.archive",
+                     payload: %{project_id: project_id}
+                   },
+                   50
+                 )
+
+        assert_receive {
+          :telemetry_event,
+          [:foreman_server, :project, :archive],
+          %{duration_ms: _},
+          %{
+            project_id: ^project_id,
+            outcome: :error,
+            code: "command_timeout",
+            retryable: true
+          }
+        }
+      after
+        :telemetry.detach(handler_id)
+        :sys.resume(actor)
+      end
+    end
   end
 
   describe "external_id boundary invariant (AC-020-7)" do

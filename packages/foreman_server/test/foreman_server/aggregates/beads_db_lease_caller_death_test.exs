@@ -661,6 +661,9 @@ defmodule ForemanServer.Aggregates.BeadsDbLeaseCallerDeathTest do
         assert log =~ "could not give back"
         assert log =~ "run_id=run-stuck"
         assert log =~ "2 attempts"
+        # What the cleanup failed with is a command timeout, said as such: the keeper names the
+        # command and how long it waited, not the aggregate (which carries the database path).
+        assert log =~ ~s|({"lease.remove_waiter", "timed out after 30ms"})|
       after
         _ = :sys.resume(actor)
       end

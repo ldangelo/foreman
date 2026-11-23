@@ -273,6 +273,33 @@ defmodule ForemanServerWeb.OperatorDashboardTest do
     assert_receive {:dashboard_command, ^envelope}
   end
 
+  defmodule TimeoutGateway do
+    def dispatch_operator(envelope) do
+      send(
+        Application.fetch_env!(:foreman_server, :operator_dashboard_test_pid),
+        {:dashboard_command, envelope}
+      )
+
+      {:error,
+       %ForemanServer.CommandTimeout{
+         aggregate_id: envelope.aggregate_id,
+         command_type: envelope.type,
+         timeout_ms: 5_000
+       }}
+    end
+  end
+
+  # The outcome of a command that timed out is unknown, not failed: the dashboard keeps the
+  # intent key (`{:error, :dispatch_timeout, _}`) so the operator's retry is deduplicated
+  # instead of minted as a second command.
+  test "a command that timed out is :dispatch_timeout with its envelope, not a rejection" do
+    Application.put_env(:foreman_server, :command_gateway_module, TimeoutGateway)
+
+    assert {:error, :dispatch_timeout, envelope} = OperatorDashboard.reset_run("run-slow")
+    assert envelope.type == "run.reset"
+    assert_receive {:dashboard_command, ^envelope}
+  end
+
   test "change evidence uses retained worktree and rejects missing worktree as typed unavailable" do
     tmp = Path.join(System.tmp_dir!(), "operator-dashboard-#{System.unique_integer([:positive])}")
 

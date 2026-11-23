@@ -26,6 +26,7 @@ defmodule ForemanServer.Overwatch.TrackerTest do
   alias ForemanServer.EventStore, as: Store
   alias ForemanServer.Overwatch.Tracker
   alias ForemanServer.CommandRouter
+  alias ForemanServer.CommandTimeout
   alias ForemanServer.ProjectionStore
 
   defp uuid, do: Elixir.EventStore.UUID.uuid4()
@@ -406,6 +407,115 @@ defmodule ForemanServer.Overwatch.TrackerTest do
       end
 
       assert Tracker.terminal?(worker_id, run_id) == {:ok, true}
+    end
+  end
+
+  # `Tracker.stream_id/2`'s Worker actor, held so that it answers nothing.
+  defp stall_worker_actor(worker_id, run_id) do
+    [{actor, _}] =
+      Registry.lookup(ForemanServer.AggregateRegistry, Tracker.stream_id(worker_id, run_id))
+
+    :ok = :sys.suspend(actor)
+    on_exit(fn -> resume_quietly(actor) end)
+    actor
+  end
+
+  # `:sys.resume/1` on a process the test already resumed or that is gone is not a failure.
+  defp resume_quietly(pid) do
+    :sys.resume(pid)
+  catch
+    :exit, _ -> :ok
+  end
+
+  # Runs `fun` in a process of its own that stays alive after it, so that a caller killed by the
+  # call is told apart from one that was returned an error.
+  defp call_in_own_process(fun) do
+    parent = self()
+
+    {pid, monitor} =
+      spawn_monitor(fn ->
+        send(parent, {:returned, self(), fun.()})
+
+        receive do
+          :stop -> :ok
+        end
+      end)
+
+    on_exit(fn -> Process.exit(pid, :kill) end)
+    {pid, monitor}
+  end
+
+  # The Tracker is one process that every worker's events go through, so a command that is not
+  # answered must cost its caller that one event, never a process: a Tracker that died took every
+  # live worker with it (all their runs failed `:worker_died_no_result`), and a worker that died
+  # on a Tracker that was merely slow took its agent and its phase.
+  describe "a command that is not answered in time" do
+    test "an aggregate that does not answer is a failed heartbeat, not a dead Tracker" do
+      tracker = start_tracker()
+      worker_id = uuid()
+      run_id = uuid()
+      stream = Tracker.stream_id(worker_id, run_id)
+      :ok = Tracker.register(tracker, worker_id, run_id, spawn_worker())
+      assert {:ok, 0} = Tracker.heartbeat(tracker, worker_id, run_id)
+
+      actor = stall_worker_actor(worker_id, run_id)
+
+      # `Tracker.heartbeat/3` gives up after the same five seconds the Tracker's own dispatch
+      # waits, so the Tracker's answer is asked for with more time.
+      assert {:error,
+              %CommandTimeout{
+                aggregate_id: ^stream,
+                command_type: "worker.record",
+                timeout_ms: 5_000
+              }} = GenServer.call(tracker, {:heartbeat, worker_id, run_id}, 15_000)
+
+      assert Process.alive?(tracker)
+
+      # The actor applies the heartbeat that timed out as soon as it is back. The Tracker did not
+      # move its mirror, so its next heartbeat is the same command, and the actor answers it with
+      # the event it already wrote: two heartbeats in all, not three.
+      :ok = :sys.resume(actor)
+      assert {:ok, 1} = Tracker.heartbeat(tracker, worker_id, run_id)
+      assert count(read_worker_events(worker_id, run_id), "WorkerHeartbeat") == 2
+    end
+
+    test "a Tracker that does not answer is a typed error for its callers, not an exit" do
+      tracker = start_tracker()
+      worker_id = uuid()
+      run_id = uuid()
+      stream = Tracker.stream_id(worker_id, run_id)
+      :ok = Tracker.register(tracker, worker_id, run_id, spawn_worker())
+
+      # Held until the test ends, when the supervisor stops it.
+      :ok = :sys.suspend(tracker)
+
+      line = %{
+        worker_id: worker_id,
+        run_id: run_id,
+        line: "hello",
+        timestamp: "2026-11-23T01:50:12.747264Z"
+      }
+
+      callers =
+        for call <- [
+              fn -> Tracker.heartbeat(tracker, worker_id, run_id) end,
+              fn -> Tracker.dispatch_lifecycle(tracker, "WorkerStdout", line) end
+            ],
+            do: call_in_own_process(call)
+
+      # Both wait out the default call timeout together.
+      for {caller, monitor} <- callers do
+        assert_receive {:returned, ^caller, result}, 10_000
+
+        assert {:error,
+                %CommandTimeout{
+                  aggregate_id: ^stream,
+                  command_type: "worker.record",
+                  timeout_ms: 5_000
+                }} = result
+
+        refute_received {:DOWN, ^monitor, :process, ^caller, _}
+      end
     end
   end
 end

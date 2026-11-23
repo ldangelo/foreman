@@ -147,6 +147,23 @@ defmodule ForemanServer.Idempotency.EffectTest do
       assert reason =~ "rejected"
     end
 
+    test "a command timeout is a failure: the key is settled failed, the typed error is returned, nothing raises" do
+      key = push_key()
+
+      timeout = %ForemanServer.CommandTimeout{
+        aggregate_id: "beads_db_lease:/db",
+        command_type: "lease.acquire",
+        timeout_ms: 5_000
+      }
+
+      assert {:error, ^timeout} =
+               Effect.run(:branch_push, key, fn -> {:error, timeout} end, push_meta())
+
+      assert {:ok, %{status: :failed, metadata: %{"reason" => reason}}} = KeyStore.get(key)
+      assert reason =~ "CommandTimeout"
+      assert reason =~ "lease.acquire"
+    end
+
     test "a raising effect marks the key failed and the exception propagates" do
       key = push_key()
 

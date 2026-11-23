@@ -819,6 +819,39 @@ defmodule ForemanServer.Overwatch.Adapters.JidoHarnessWorkerLiveOutputTest do
     end
   end
 
+  # Every line of output is a call through the Tracker, and the Tracker is one process for every
+  # worker: a slow `worker.record` (a lease or a run actor that answered late) left that call
+  # without an answer for five seconds, and the exit of the timeout took the worker down with it.
+  # Its agent was stopped and the phase failed `:worker_died_no_result`.
+  describe "when the Tracker does not answer" do
+    test "a line it does not confirm is dropped, and the worker lives to hand the agent's result on",
+         %{worker_id: worker_id, run_id: run_id} do
+      {worker, agent} = start_agent(worker_id, run_id)
+      worker_down = Process.monitor(worker)
+
+      log =
+        capture_log([level: :warning, format: "$level $message\n"], fn ->
+          :ok = :sys.suspend(Tracker)
+
+          try do
+            send(agent.adapter, {:emit, [stdout("a line the Tracker never answers")]})
+
+            # The worker waits for the Tracker for five seconds, then goes on without it.
+            refute_receive {:DOWN, ^worker_down, :process, ^worker, _reason}, 6_500
+          after
+            :ok = :sys.resume(Tracker)
+          end
+        end)
+
+      assert log =~ "warning Overwatch.Tracker: WorkerStdout dropped"
+      assert Process.alive?(worker)
+
+      # The agent finishes and its result is not lost with the line.
+      send(agent.adapter, :finish)
+      assert_receive {:worker_result, {:ok, _text}}, @await_ms
+    end
+  end
+
   describe "run_logs, the read model behind foreman_run_get_logs" do
     setup %{run_id: run_id} do
       ProjectionStoreReset.reset!()

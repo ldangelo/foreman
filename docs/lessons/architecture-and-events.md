@@ -665,3 +665,40 @@ in 5s and a kill costs more than one restart (see `projection_store_restart_test
 
 ---
 
+### A slow aggregate actor must not kill the process that sent it a command
+
+`CommandRouter.dispatch/2` is a `GenServer.call` to the aggregate's actor (5 s by default), and a
+call that times out *exits the caller*. The callers are long-lived processes, so one stalled
+actor took them down: the Overwatch `Tracker` (`worker.record`; every live worker with it), the
+`BeadsWatcher` (`lease.acquire` through `BeadsDbLease.hold_lease/6`), a `RunExecutor` that had
+finished its last phase (`maybe_complete_task` -> `Idempotency.Effect.execute/2` -> the lease,
+which re-raises the exit: no `run.complete`, the aggregate stayed `in_progress`, and the boot
+replay went straight to `finalize_run/1` and crashed the same way), and every worker that
+called `Tracker.dispatch_lifecycle/3` directly (all live runs failed `:worker_died_no_result`).
+
+- `dispatch/2` catches **only** `{:timeout, {GenServer, :call, _}}` and returns
+  `{:error, %ForemanServer.CommandTimeout{aggregate_id, command_type, timeout_ms}}`, with a
+  warning in the log and the existing `[:foreman, :command, :dispatch]` telemetry (`status:
+  "error"`). `:noproc`, `:killed` and a nested actor-side timeout still propagate: a catch-all
+  would turn real crashes into errors.
+- The outcome is **unknown**: the request stays in the actor's mailbox and may still be applied.
+  Re-sending a command with the same `command_id` is safe (`replayed: true` when it landed). The
+  HTTP ingress answers `504 {"code": "command_timeout", "retryable": true}`.
+- A caller must treat the error as a failure. A narrow `{:ok, _} = dispatch(...)` turns it into
+  a `MatchError`, the same crash in another shape; the typed error is never `{:ok, _}`.
+- `Tracker.heartbeat/3` and `dispatch_lifecycle/3` return the same error when the Tracker does
+  not answer in 5 s, and do not retry: the first request is still queued, and a second one gets
+  a new sequence (a retried `UsageRecorded` would be counted twice). Only the log level depends
+  on the event: heartbeat and output are dropped with a warning, anything that carries state
+  (`WorkerStarted`, `SessionBound`, `UsageRecorded`, `WorkerExited`, tool calls, assistant
+  messages) is an error.
+- Run completion: a lease acquire timeout is `{:error, %CommandTimeout{}}` from `with_lease/4`
+  (its cleanup queues behind the late acquire in the actor's mailbox, so nothing stays held); a
+  release timeout raises `BeadsDbLease.ReleaseError`, which `RunExecutor.claim/4` and
+  `complete/5` return as `{:error, error}`. `finalize_run/1` fails the run loudly
+  (`{:finalize_run_failed, reason}`, retryable with `task.retry`) and the executor stops
+  normally: no dead executor, no false `run.complete`. The executor does not retry: the outcome
+  is unknown and retrying into a stalled actor adds load.
+- Not fixed here: **why** the lease actor is slow (foreman-7m100). `BeadsDbLease.poll_until_holder`
+  and `log_lease_timeout` (`Actor.get_state/1`) and `LaunchWorker`'s `Tracker.register/1`,
+  `terminal?/1` and `unregister/1` are calls of the same shape and can still exit.

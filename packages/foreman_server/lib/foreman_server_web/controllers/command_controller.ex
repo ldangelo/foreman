@@ -19,6 +19,7 @@ defmodule ForemanServerWeb.CommandController do
 
   alias ForemanServer.Aggregate.Actor
   alias ForemanServer.CommandGateway
+  alias ForemanServer.CommandTimeout
 
   @default_command_gateway_module CommandGateway
   # The allowlist lives in `CommandGateway` (one list, no copies here).
@@ -61,6 +62,19 @@ defmodule ForemanServerWeb.CommandController do
             conn
             |> put_status(:conflict)
             |> json(%{code: "project_has_active_runs", run_ids: run_ids})
+
+          # The aggregate did not answer in time. The command may still be applied; sending it
+          # again with the same `command_id` is safe.
+          {:error, %CommandTimeout{} = timeout} ->
+            conn
+            |> put_status(:gateway_timeout)
+            |> json(%{
+              code: "command_timeout",
+              aggregate_id: timeout.aggregate_id,
+              command_type: timeout.command_type,
+              timeout_ms: timeout.timeout_ms,
+              retryable: true
+            })
 
           {:error, :gate_off_not_acknowledged = reason} ->
             conn

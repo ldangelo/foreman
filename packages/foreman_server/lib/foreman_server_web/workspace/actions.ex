@@ -672,8 +672,13 @@ defmodule ForemanServerWeb.Workspace.Actions do
     {:error, "#{label} failed: #{describe(reason)}"}
   end
 
+  # `CommandRouter` answers a timeout with `{:error, %CommandTimeout{}}` (an injected gateway
+  # that still exits is caught too): the outcome is unknown, not failed.
   defp safe_dispatch(envelope) do
-    CommandGateway.dispatch_operator(envelope)
+    case CommandGateway.dispatch_operator(envelope) do
+      {:error, %ForemanServer.CommandTimeout{}} -> {:error, :dispatch_timeout}
+      result -> result
+    end
   catch
     :exit, {:timeout, {GenServer, :call, _}} -> {:error, :dispatch_timeout}
   end

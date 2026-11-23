@@ -64,7 +64,7 @@ defmodule ForemanServer.Aggregates.BeadsDbLease.Keeper do
 
   alias ForemanServer.Aggregates.BeadsDbLease
   alias ForemanServer.Aggregates.BeadsDbLease.{KeeperRegistry, KeeperSupervisor}
-  alias ForemanServer.{CommandGateway, CommandRouter, Incarnation}
+  alias ForemanServer.{CommandGateway, CommandRouter, CommandTimeout, Incarnation}
 
   @defaults [call_timeout_ms: 5_000, retry_interval_ms: 1_000, max_attempts: 10]
 
@@ -393,6 +393,10 @@ defmodule ForemanServer.Aggregates.BeadsDbLease.Keeper do
   defp brief(reason)
        when is_tuple(reason) and tuple_size(reason) > 0 and is_atom(elem(reason, 0)),
        do: inspect(elem(reason, 0))
+
+  # A timed-out command is what a cleanup against a slow lease actor usually fails with. It names
+  # the database path (the aggregate id), so only how long it waited is logged.
+  defp brief(%CommandTimeout{timeout_ms: timeout_ms}), do: "timed out after #{timeout_ms}ms"
 
   defp brief(_reason), do: "a reason that is not logged"
 

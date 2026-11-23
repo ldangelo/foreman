@@ -40,8 +40,17 @@ defmodule ForemanServer.Overwatch.Tracker do
   alias ForemanServer.Aggregate.Actor
   alias ForemanServer.Aggregator
   alias ForemanServer.CommandGateway
+  alias ForemanServer.CommandTimeout
 
   @default_heartbeat_timeout_ms 60_000
+
+  # How long a caller waits for the Tracker to answer: `GenServer.call/2`'s own default, spelled
+  # out because the typed timeout error reports it.
+  @call_timeout_ms 5_000
+
+  # The events a worker can lose without losing work: a line of its output and a liveness ping
+  # (see `unconfirmed/3`).
+  @droppable_events ["WorkerHeartbeat", "WorkerStdout", "WorkerStderr"]
 
   # ------------------------------------------------------------------
   # Public API
@@ -69,11 +78,18 @@ defmodule ForemanServer.Overwatch.Tracker do
   Emit a heartbeat. Atomically allocates the next sequence, dispatches
   `WorkerHeartbeat` via `CommandRouter`, and advances the mirror on
   success. Resets the liveness timer on success.
+
+  A Tracker (or a Worker aggregate behind it) that does not answer within five seconds is
+  `{:error, %ForemanServer.CommandTimeout{}}`, never an exit of the caller. The heartbeat may
+  still be recorded when the Tracker catches up; the next one supersedes it either way.
   """
   @spec heartbeat(GenServer.server(), String.t(), String.t()) ::
-          {:ok, non_neg_integer()} | {:error, atom() | tuple()}
+          {:ok, non_neg_integer()} | {:error, atom() | tuple() | CommandTimeout.t()}
   def heartbeat(server \\ __MODULE__, worker_id, run_id) do
-    GenServer.call(server, {:heartbeat, worker_id, run_id})
+    GenServer.call(server, {:heartbeat, worker_id, run_id}, @call_timeout_ms)
+  catch
+    :exit, {:timeout, {GenServer, :call, _call}} ->
+      unconfirmed("WorkerHeartbeat", worker_id, run_id)
   end
 
   @doc """
@@ -83,12 +99,20 @@ defmodule ForemanServer.Overwatch.Tracker do
   `{:error, reason}` on failure. On failure, the sequence mirror is
   NOT advanced — the next `dispatch_lifecycle/3` retries with the
   same sequence (deterministic `command_id` dedupes at CommandRouter).
+
+  A Tracker (or a Worker aggregate behind it) that does not answer within five seconds is
+  `{:error, %ForemanServer.CommandTimeout{}}`, never an exit of the caller. The event may still
+  be recorded when the Tracker catches up: do not send it again, a second request allocates a
+  second sequence and records it twice.
   """
   @spec dispatch_lifecycle(GenServer.server(), String.t(), map()) ::
-          :ok | {:error, atom() | tuple()}
+          :ok | {:error, atom() | tuple() | CommandTimeout.t()}
   def dispatch_lifecycle(server \\ __MODULE__, event_type, payload)
       when is_binary(event_type) and is_map(payload) do
-    GenServer.call(server, {:dispatch_lifecycle, event_type, payload})
+    GenServer.call(server, {:dispatch_lifecycle, event_type, payload}, @call_timeout_ms)
+  catch
+    :exit, {:timeout, {GenServer, :call, _call}} ->
+      unconfirmed(event_type, Map.get(payload, :worker_id), Map.get(payload, :run_id))
   end
 
   @doc """
@@ -138,6 +162,40 @@ defmodule ForemanServer.Overwatch.Tracker do
 
   @doc "Worker aggregate stream id. Matches `CommandRouter.aggregate_module_for/1`."
   def stream_id(worker_id, run_id), do: "worker:#{run_id}:#{worker_id}"
+
+  # The Tracker is one process that every worker's events queue behind (a single slow
+  # `worker.record` holds all of them), so a caller's `GenServer.call` can run out of time while
+  # the Tracker is alive. That exit used to escape and kill the caller: a worker that only wanted
+  # to record a line of its agent's output died, with its agent and its phase. ONLY the call
+  # timeout is caught (AGENTS.md 5.2), by the two calls that workers make on their hot path. The
+  # request stays in the Tracker's mailbox and is recorded when it catches up, so the outcome is
+  # unknown (see `CommandTimeout`), not "not recorded".
+  #
+  # What is lost if it never is differs by event: a line of output or a heartbeat is dropped with
+  # a warning (the next one supersedes it); every other event carries state a reader needs (a
+  # session id, token usage, a terminal fact), so it is an error in the log, and the typed error
+  # goes back to the caller either way, which decides (`LaunchWorker` fails the launch).
+  defp unconfirmed(event_type, worker_id, run_id) do
+    timed_out = %CommandTimeout{
+      aggregate_id: stream_id(worker_id, run_id),
+      command_type: "worker.record",
+      timeout_ms: @call_timeout_ms
+    }
+
+    metadata = [run_id: run_id, worker_id: worker_id, operation: "tracker.call"]
+
+    if event_type in @droppable_events do
+      Logger.warning("Overwatch.Tracker: #{event_type} dropped, #{timed_out}", metadata)
+    else
+      Logger.error(
+        "Overwatch.Tracker: #{event_type} NOT confirmed, #{timed_out}; it carries state, so " <>
+          "it is missing from the worker stream unless the Tracker catches up",
+        metadata
+      )
+    end
+
+    {:error, timed_out}
+  end
 
   # ------------------------------------------------------------------
   # GenServer
