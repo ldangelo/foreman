@@ -3,10 +3,11 @@
 // click a project, status or queue header to collapse it.
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, ScrollHandle } from "gpui-base";
-import { theme, checking, run, focused, nextCommand, notify, keys, layout, shared, setShared, exec, window } from "herdr";
-import { info, isActive, ago, clock, foreman, api, beadId, workflowName, prUrl, openUrlArgv, isClearable, hideCleared, countCleared, clearRuns, pruneCleared, parseCleared } from "./common.js";
+import { theme, checking, run, focused, nextCommand, notify, keys, layout, shared, setShared, exec, window, openOverlay } from "herdr";
+import { info, isActive, ago, clock, foreman, api, beadId, workflowName, prUrl, openUrlArgv, isClearable, hideCleared, countCleared, clearRuns, pruneCleared, parseCleared, isResettable, resetPrompt } from "./common.js";
 
 const POLL_MS = 10000;
+const RESET_CONFIRM_MS = 60000; // a confirmation answered later than this is ignored: the reset it was for is long forgotten
 const LIMIT = 40;
 const PROJECT_RETRY_MS = 60000;
 const QUEUE_EVERY_MS = 30000; // the queue changes slowly and its lookups are heavier than the run list
@@ -57,6 +58,7 @@ const HINTS = [
   ["copy-pr", "copy PR"],
   ["clear-run", "clear"],
   ["clear-all", "clear all"],
+  ["reset-run", "reset"],
   ["restore-cleared", "restore"],
   ["toggle-failed", "failed only"],
   ["refresh", "reload"],
@@ -88,6 +90,8 @@ export default class ForemanRuns extends View {
     // Runs cleared from the panel (run id -> the status it had when cleared): view state only, kept across restarts.
     try { this.cleared = parseCleared(localStorage.getItem("cleared")); } catch { this.cleared = {}; }
     this.allRuns = []; // the listing as the server gave it, cleared runs included (this.runs is it without them)
+    this.pendingReset = null; // {run_id, at}: the run Herdr's confirm dialog is asking about
+    this.resetBusy = false;
     this.error = null;
     this.loaded = false;
     this.busy = false;
@@ -121,6 +125,8 @@ export default class ForemanRuns extends View {
           else if (command === "clear-run") this.clearSelected(cx);
           else if (command === "clear-all") this.clearAll(cx);
           else if (command === "restore-cleared") this.restoreCleared(cx);
+          else if (command === "reset-run") this.askResetSelected();
+          else if (command === "reset-confirmed") this.confirmReset(cx);
           else if (command === "copy-pr") this.copyPrUrl(cx);
           else if (command === "toggle-sidebar") this.toggleSidebar();
           // A bare "focus" is the app's own message (e.g. a popup closed over this copy): keep
@@ -289,6 +295,41 @@ export default class ForemanRuns extends View {
     this.runs = hideCleared(this.allRuns, this.cleared);
     notify({ title: "Foreman", body: `Restored ${n} cleared run${n === 1 ? "" : "s"}.`, level: "success", timeout: 2000 });
     cx.notify();
+  }
+
+  // Resetting changes the server (`foreman run reset`), so it asks first: Herdr's own confirm dialog (Enter confirms,
+  // Esc cancels). Confirming sends "foreman-runs.reset-confirmed" back to this panel, which resets the run asked about.
+  askReset(r) {
+    if (!isResettable(r)) return notify({ title: "Foreman", body: `Only a failed run can be reset here; ${workflowName(r)} ${r.task_id ?? r.run_id} is ${r.status}.`, level: "info" });
+    this.pendingReset = { run_id: r.run_id, at: Date.now() };
+    const { title, detail } = resetPrompt(r);
+    openOverlay({ mod: "confirm", kind: "dialog", modal: true, width: 460, height: 230, props: { title, detail, command: { name: "foreman-runs.reset-confirmed", args: {} } } });
+  }
+
+  askResetSelected() {
+    const r = this.runs.find((x) => x.run_id === this.cursor);
+    if (!r) return notify({ title: "Foreman", body: "Select a run first (focus the panel, then ↑/↓).", level: "info" });
+    this.askReset(r);
+  }
+
+  async confirmReset(cx) {
+    const p = this.pendingReset;
+    this.pendingReset = null;
+    if (!p || Date.now() - p.at > RESET_CONFIRM_MS) return notify({ title: "Foreman", body: "No reset is waiting for a confirmation.", level: "info" });
+    const r = this.allRuns.find((x) => x.run_id === p.run_id);
+    if (!r || !isResettable(r)) return notify({ title: "Foreman", body: `${p.run_id} is no longer a failed run: nothing was reset.`, level: "info" });
+    if (this.resetBusy) return;
+    this.resetBusy = true;
+    const label = `${workflowName(r)} ${r.task_id ?? r.run_id}`;
+    try {
+      await foreman(["run", "reset", "--id", p.run_id]);
+      notify({ title: "Foreman", body: `Reset ${label}: removed from the run list; the work was not restarted.`, level: "success", timeout: 5000 });
+    } catch (e) {
+      notify({ title: "Foreman", body: `Could not reset ${label}: ${String(e?.message ?? e).split("\n")[0]}`, level: "error" });
+    } finally {
+      this.resetBusy = false;
+    }
+    this.refresh(cx, true);
   }
 
   toggle(id, cx) {
@@ -587,6 +628,9 @@ export default class ForemanRuns extends View {
     // A small button that clears runs. The click is stopped here so it does not also open (or fold) what it sits in.
     const clearButton = (id, label, runs) => div().id(id).px(4).rounded(3).text_size(11).text_color(t.dim).cursor_pointer().hover((s) => s.bg(t.hover))
       .on_click((_e, cx) => { cx.stop_propagation(); this.clear(runs, cx); }).child(label);
+    // The reset button of a failed row: asks first (see askReset), and its click is stopped like the clear button's.
+    const resetButton = (r) => div().id(`reset-${r.run_id}`).px(4).rounded(3).text_size(10.5).text_color(t.dim).cursor_pointer().hover((s) => s.bg(t.hover))
+      .on_click((_e, cx) => { cx.stop_propagation(); this.askReset(r); }).child("reset");
 
     // Under the list: clear what is shown (failed, stuck, cancelled) and bring back what was cleared.
     const clearable = this.shownRuns().filter(isClearable);
@@ -605,6 +649,7 @@ export default class ForemanRuns extends View {
         .child(h_flex().gap(8).items_center()
           .child(div().flex_1().truncate().text_size(12.5).text_color(t.foreground).child(workflowName(r)))
           .child(div().text_size(11).text_color(t.dim).child(ago(r.last_event_at_ms)))
+          .when(isResettable(r), (el) => el.child(resetButton(r)))
           .when(isClearable(r), (el) => el.child(clearButton(`clear-${r.run_id}`, "✕", [r]))))
         .child(idLine(r, r.run_id, r.task_id ?? r.run_id, ""));
     };

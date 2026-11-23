@@ -4,7 +4,7 @@
 import { test, expect, mock } from "bun:test";
 
 mock.module("herdr", () => ({ exec: async () => ({ code: 0, stdout: "", stderr: "" }), home: () => "/h", window: () => ({ platform: "macos" }) }));
-const { beadId, clearRuns, countCleared, hideCleared, isClearable, parseCleared, pruneCleared } = await import("../common.js");
+const { beadId, clearRuns, countCleared, hideCleared, isClearable, isResettable, parseCleared, pruneCleared, resetPrompt } = await import("../common.js");
 
 test("beadId takes the bead id off a beads task id", () => {
   expect(beadId({ task_id: "beads:foreman:foreman-jzycy" })).toBe("foreman-jzycy");
@@ -72,4 +72,23 @@ test("pruneCleared drops runs that are no longer listed, and drops nothing for a
 test("parseCleared keeps only a JSON object's string entries and shrugs off anything else", () => {
   expect(parseCleared('{"a":"failed","b":3,"c":null}')).toEqual({ a: "failed" });
   for (const bad of [null, undefined, "", "not json", "[]", '["a"]', "3", "null"]) expect(parseCleared(bad)).toEqual({});
+});
+
+test("only a failed run is offered a reset", () => {
+  expect(isResettable({ status: "failed" })).toBe(true);
+  for (const status of ["stuck", "blocked", "paused", "cancelled", "completed", "in_progress", undefined]) expect(isResettable({ status })).toBe(false);
+  expect(isResettable(null)).toBe(false);
+});
+
+test("the reset confirmation names the run and says what a reset does not do", () => {
+  const { title, detail } = resetPrompt({ run_id: "run-abc", workflow_name: "fix", task_id: "beads:foreman:foreman-jzycy", status: "failed" });
+  expect(title).toBe("Reset this run?");
+  expect(detail).toContain("fix foreman-jzycy (run-abc)");
+  expect(detail).toContain("does not restart the work");
+  expect(detail).toContain("event history stays");
+});
+
+test("the reset confirmation falls back to the task id for a run that is not a bead, and to the workflow snapshot's name", () => {
+  const { detail } = resetPrompt({ run_id: "run-x", workflow_snapshot: { workflow_name: "plan" }, task_id: "adhoc-1c2d3e", status: "failed" });
+  expect(detail).toContain("plan adhoc-1c2d3e (run-x)");
 });
