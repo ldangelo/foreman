@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### Fixed
+
+- **A slow aggregate actor no longer kills the process that sent it a command.**
+  `CommandRouter.dispatch/2` let the `GenServer.call` timeout exit escape, so the Overwatch
+  `Tracker` (and every live worker with it), the `BeadsWatcher` and a `RunExecutor` that had
+  finished its last phase died with `{:timeout, {GenServer, :call, ...}}`. It now returns
+  `{:error, %ForemanServer.CommandTimeout{aggregate_id, command_type, timeout_ms}}` (only that
+  exit is caught; the command's outcome is unknown, sending it again with the same
+  `command_id` is safe) and logs a warning. `Tracker.heartbeat/3` and
+  `Tracker.dispatch_lifecycle/3` return the same error when the Tracker does not answer in five
+  seconds, so a worker no longer dies on a slow Tracker (`:worker_died_no_result`): output and
+  heartbeats are dropped with a warning, every other worker event is logged as an error.
+  `RunExecutor.claim/4` and `complete/5` return `BeadsDbLease.ReleaseError` (a lease that could
+  not be released) as `{:error, error}`, so a lease timeout at run completion fails the run
+  loudly (`{:finalize_run_failed, ...}`) instead of killing the executor with the run
+  `in_progress`. The slowness of the lease actor itself is not addressed here.
+
 ### Added
 
 - **Kata task provider.** `ForemanServer.TaskProviders.KataAdapter` implements the

@@ -178,6 +178,36 @@ defmodule ForemanServerWeb.CommandControllerTest do
              json_response(conn, 409)
   end
 
+  defmodule CommandTimeoutGateway do
+    def dispatch_operator(_command) do
+      {:error,
+       %ForemanServer.CommandTimeout{
+         aggregate_id: "project:proj-slow",
+         command_type: "project.update",
+         timeout_ms: 5_000
+       }}
+    end
+  end
+
+  test "POST /api/commands returns 504 command_timeout when the aggregate does not answer in time" do
+    Application.put_env(:foreman_server, :command_gateway_module, CommandTimeoutGateway)
+
+    conn =
+      build_conn()
+      |> post("/api/commands", %{
+        type: "project.update",
+        payload: %{project_id: "proj-slow", path: "/srv/proj-slow"}
+      })
+
+    assert %{
+             "code" => "command_timeout",
+             "aggregate_id" => "project:proj-slow",
+             "command_type" => "project.update",
+             "timeout_ms" => 5_000,
+             "retryable" => true
+           } = json_response(conn, 504)
+  end
+
   test "POST /api/commands returns 409 project_has_active_runs when project.archive is rejected by active runs" do
     project_id = unique_id("proj")
     run_id = unique_id("run")

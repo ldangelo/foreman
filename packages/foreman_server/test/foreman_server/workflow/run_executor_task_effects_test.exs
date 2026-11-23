@@ -25,6 +25,7 @@ defmodule ForemanServer.Workflow.RunExecutorTaskEffectsTest do
   alias ForemanServer.TelemetryTest.Handler
   alias ForemanServer.TestSupport.{FakeTaskProvider, KeyStoreReset, TestApplication}
   alias ForemanServer.Workflow.{BootReconciliation, RunExecutor}
+  alias ForemanServer.CommandTimeout
 
   @terminal_event [:foreman_server, :workflow, :boot_reconciliation, :effect_on_terminal_run]
   @cache_name :foreman_server_json_schema_cache
@@ -395,6 +396,48 @@ defmodule ForemanServer.Workflow.RunExecutorTaskEffectsTest do
       assert failure_reason(run_id) =~ key
       assert log =~ "effect_undecided"
       assert log =~ key
+    end
+  end
+
+  # A lease actor that does not answer reaches the provider call as a typed error (see
+  # `RunExecutorTest`), and this is what the run does with it. It used to be an exit that killed
+  # the executor after its last phase: no `run.complete`, the aggregate `in_progress`, and a boot
+  # replay that went straight into the same call again.
+  describe "a complete the lease did not answer fails the finalize" do
+    test "the run fails naming the timeout, the executor stops, and the run does not complete over it" do
+      %{db: db, task_id: task_id, run_id: run_id} = w = full_world("complete-timeout")
+      FakeTaskProvider.put_issue(db, task_id, "open")
+
+      timeout = %CommandTimeout{
+        aggregate_id: "beads_db_lease:#{db}",
+        command_type: "lease.acquire",
+        timeout_ms: 5_000
+      }
+
+      FakeTaskProvider.script(db, :complete, [{:error, timeout}])
+
+      log =
+        capture_log([level: :error], fn ->
+          start_executor!(w)
+          await_status(run_id, "failed")
+
+          await(fn ->
+            if RunExecutor.pid_for(run_id) == nil, do: {:ok, :stopped}, else: :waiting
+          end)
+        end)
+
+      # The provider was asked once and the task is still in progress: nothing completed it,
+      # and the run did not complete over it.
+      assert FakeTaskProvider.calls(db) == [{:claim, task_id}, {:complete, task_id}]
+      assert FakeTaskProvider.status(db, task_id) == "in_progress"
+      refute Enum.any?(events(run_id), &match?({"RunCompleted", _}, &1))
+
+      # The key says the call failed, so it may be made again; the reason says what timed out.
+      assert {:ok, :failed} = KeyStore.status(TaskProviderEffect.key(run_id, :complete, task_id))
+      assert failure_reason(run_id) =~ "finalize_run_failed"
+      assert failure_reason(run_id) =~ "CommandTimeout"
+      assert failure_reason(run_id) =~ "lease.acquire"
+      assert log =~ "finalize_run failed"
     end
   end
 

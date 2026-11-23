@@ -29,6 +29,7 @@ defmodule ForemanServer.CommandRouter do
 
   alias EventStore.{EventData, RecordedEvent}
   alias ForemanServer.{Aggregate, EventStore, Aggregate.Actor, Identity, Telemetry}
+  alias ForemanServer.CommandTimeout
   use GenServer
   require Logger
 
@@ -58,6 +59,12 @@ defmodule ForemanServer.CommandRouter do
 
   Determines the aggregate module from the aggregate_id prefix, starts the aggregate
   actor, and returns the command result.
+
+  An actor that does not answer within `timeout` (ms) is a failed command, not a dead caller:
+  the result is `{:error, %ForemanServer.CommandTimeout{}}`. The command may still be applied
+  once the actor catches up (see `ForemanServer.CommandTimeout`); sending it again with the same
+  `command_id` is safe. Every other exit of the call (the actor died or is not registered)
+  still propagates.
   """
   @spec dispatch(command :: map(), timeout :: integer()) ::
           {:ok, event_spec :: map() | nil}
@@ -273,9 +280,29 @@ defmodule ForemanServer.CommandRouter do
     result =
       aggregate_id
       |> Actor.via()
-      |> GenServer.call({:command, command}, timeout)
+      |> call_actor(command, timeout)
 
     finalize_dispatch(result, aggregate_id, started_at_ms)
+  end
+
+  # An actor that does not answer inside `timeout` is a failed command, not a dead caller: the
+  # `GenServer.call` exit used to escape and kill whichever process issued the command (the
+  # Overwatch Tracker and every worker with it, the BeadsWatcher, a RunExecutor that had finished
+  # its last phase). ONLY that exit is caught: the actor dying, or not being registered, still
+  # exits (AGENTS.md 5.2). The command is still in the actor's mailbox, so its outcome is unknown
+  # (see `CommandTimeout`); the warning and the `error` dispatch telemetry are how it is seen.
+  defp call_actor(via, %{aggregate_id: aggregate_id} = command, timeout) do
+    GenServer.call(via, {:command, command}, timeout)
+  catch
+    :exit, {:timeout, {GenServer, :call, _call}} ->
+      timed_out = %CommandTimeout{
+        aggregate_id: aggregate_id,
+        command_type: Map.get(command, :type),
+        timeout_ms: timeout
+      }
+
+      Logger.warning("CommandRouter: #{timed_out}; the actor may still apply it")
+      {:error, timed_out}
   end
 
   defp release_reason(reason) when is_atom(reason), do: Atom.to_string(reason)

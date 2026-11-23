@@ -24,6 +24,7 @@ defmodule ForemanServer.Overwatch.WorkerProtocolTest do
   alias ForemanServer.EventStore, as: Store
   alias ForemanServer.Overwatch.Tracker
   alias ForemanServer.Overwatch.WorkerProtocol
+  alias ForemanServer.CommandTimeout
 
   defp uuid, do: Elixir.EventStore.UUID.uuid4()
 
@@ -276,6 +277,69 @@ defmodule ForemanServer.Overwatch.WorkerProtocolTest do
       assert count(events, "WorkerStderr") == 1
       [event] = events
       assert event.data["line"] == "boom"
+    end
+  end
+
+  # {emit type, the event it appends, how the log reports one the Tracker did not confirm}:
+  # output and heartbeats are dropped (a warning); every other event carries state (an error).
+  @stalled_events [
+    {:heartbeat, "WorkerHeartbeat", "warning", "dropped"},
+    {:worker_stdout, "WorkerStdout", "warning", "dropped"},
+    {:worker_stderr, "WorkerStderr", "warning", "dropped"},
+    {:worker_session_bound, "WorkerSessionBound", "error", "NOT confirmed"},
+    {:usage_recorded, "UsageRecorded", "error", "NOT confirmed"},
+    {:worker_exited, "WorkerExited", "error", "NOT confirmed"},
+    {:tool_call_finished, "ToolCallFinished", "error", "NOT confirmed"},
+    {:assistant_message, "AssistantMessage", "error", "NOT confirmed"}
+  ]
+
+  # A worker that emits through a Tracker that does not answer must come out alive: the exit of
+  # that call used to take the worker, its agent and its phase down with it.
+  describe "a Tracker that does not answer" do
+    test "every event comes back as a typed error and is logged, and no caller dies of it" do
+      tracker = start_tracker()
+      worker_id = uuid()
+      run_id = uuid()
+      stream = Tracker.stream_id(worker_id, run_id)
+      :ok = Tracker.register(tracker, worker_id, run_id, spawn_worker())
+
+      # Held until the test ends, when the supervisor stops it.
+      :ok = :sys.suspend(tracker)
+
+      payload = %{worker_id: worker_id, run_id: run_id, provider: "claude", line: "x"}
+      parent = self()
+
+      log =
+        ExUnit.CaptureLog.capture_log([format: "$level $message\n"], fn ->
+          # Each emit in a process of its own that has to outlive it; all wait out the same five
+          # seconds together.
+          callers =
+            for {type, _event, _level, _verdict} <- @stalled_events do
+              spawn_monitor(fn ->
+                send(parent, {:emitted, type, WorkerProtocol.emit(type, payload)})
+              end)
+            end
+
+          for {type, _event, _level, _verdict} <- @stalled_events do
+            assert_receive {:emitted, ^type,
+                            {:error,
+                             %CommandTimeout{
+                               aggregate_id: ^stream,
+                               command_type: "worker.record",
+                               timeout_ms: 5_000
+                             }}},
+                           10_000
+          end
+
+          # Not one of them died of it: every caller ended by returning.
+          for {pid, monitor} <- callers do
+            assert_receive {:DOWN, ^monitor, :process, ^pid, :normal}, 1_000
+          end
+        end)
+
+      for {_type, event, level, verdict} <- @stalled_events do
+        assert log =~ "#{level} Overwatch.Tracker: #{event} #{verdict}"
+      end
     end
   end
 end

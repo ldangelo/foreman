@@ -1341,6 +1341,7 @@ Response shapes:
 - Malformed envelope: `400` with `{"error": "invalid_envelope", "reason": "..."}`.
 - Optimistic-concurrency conflict: `409` with `{"code": "version_conflict", "current_version": N}`.
 - Project archive blocked by active runs: `409` with `{"code": "project_has_active_runs", "run_ids": [...]}`.
+- Aggregate did not answer in time: `504` with `{"code": "command_timeout", "aggregate_id": "...", "command_type": "...", "timeout_ms": N, "retryable": true}`. The command may still be applied; re-send it with the same `command_id` (an applied command comes back with `replayed: true`).
 - Domain rejection: `422` with `{"error": "...", "detail": ...}` or `{"error": "..."}`.
 
 Other ingress paths are separate:

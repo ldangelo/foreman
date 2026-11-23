@@ -84,6 +84,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   alias ForemanServer.Idempotency.Reconcilers.TaskProvider, as: TaskProviderEffect
   alias ForemanServer.TaskProvider.Registry, as: TaskProviderRegistry
   alias ForemanServer.Aggregate.Actor
+  alias ForemanServer.Aggregates.BeadsDbLease
   alias ForemanServer.Incarnation
   alias ForemanServer.PrRisk
   alias ForemanServer.TaskProvider.StorageBinding
@@ -141,6 +142,11 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
   end
 
+  # `BeadsDbLease.with_lease/4` raises `ReleaseError` when its actor does not answer the release of
+  # a call that was made: it does not report a call that may still hold the lease as a success.
+  # The provider contract of `claim/4` and `complete/5` is a result tuple, so that is returned to
+  # the run as the failure it is. The raise used to kill the executor instead, leaving its run
+  # `in_progress` for a boot replay to call the same lease again.
   @spec claim(String.t(), String.t(), String.t() | nil, String.t()) ::
           {:ok, term()} | {:error, term()}
   def claim(project_id, task_id, actor, run_id)
@@ -158,6 +164,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
            ) do
       maybe_retry_lost_claim(result, provider_module, project_config, task_id, actor)
     end
+  rescue
+    error in BeadsDbLease.ReleaseError -> {:error, error}
   end
 
   def claim(_project_id, _task_id, _actor, _run_id), do: {:error, :invalid_claim}
@@ -183,6 +191,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
         )
       end)
     end
+  rescue
+    error in BeadsDbLease.ReleaseError -> {:error, error}
   end
 
   def complete(_project_id, _task_id, _run_id, _artifact_path, _commit_sha),

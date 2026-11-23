@@ -53,6 +53,7 @@ defmodule ForemanServer.CommandGateway do
   """
 
   alias ForemanServer.{Aggregate, CommandRouter, PrEvidence, PrGate, ProjectionStore, Telemetry}
+  alias ForemanServer.CommandTimeout
   alias ForemanServer.Aggregates.RunSlots
   alias ForemanServer.Projects.RepoValidation
   alias ForemanServer.TaskProvider.Registry
@@ -2017,6 +2018,11 @@ defmodule ForemanServer.CommandGateway do
 
   defp project_error_metadata(:project_archived),
     do: %{code: "project_archived", retryable: false}
+
+  # The actor did not answer in time: the outcome is unknown, and repeating the command (same
+  # `command_id`) is safe, so a caller may retry it.
+  defp project_error_metadata(%CommandTimeout{}),
+    do: %{code: "command_timeout", retryable: true}
 
   defp project_error_metadata({code, _detail}) when is_atom(code) do
     %{code: Atom.to_string(code), retryable: false}
