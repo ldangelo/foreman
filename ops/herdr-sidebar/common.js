@@ -148,8 +148,10 @@ export const resetPrompt = (r) => {
 
 // Approving is the one action here that starts work: `task.approve` moves an open task to ready and a run is dispatched
 // for it. `foreman task approve` was removed (TRD-018), so the panel sends the command itself, with the body that verb
-// sent: task_id and approved_by. The server mints the command id and rejects an approval_id, approved_at, run_id or
-// workflow_snapshot from a client.
+// sent: task_id and approved_by. No command_id: the command controller mints a unique one per request
+// (`default_command_id`, command_controller.ex), and the gateway makes it the approval_id and so the run_id. A fixed id
+// would turn a later re-approval of the same task into an idempotent retry of the first and dispatch nothing. The
+// gateway rejects an approval_id, approved_at, run_id or workflow_snapshot from a client.
 export const isApprovable = (e) => e?.kind === "open" && e.stale !== true && typeof e.task_id === "string" && e.task_id !== "";
 export const approveBody = (taskId) => ({ type: "task.approve", payload: { task_id: taskId, approved_by: "herdr-sidebar" } });
 // The confirmation's wording for a queue entry that is awaiting approval.
