@@ -354,6 +354,75 @@ defmodule ForemanServer.Agents.OperatorQuestionDispatcherTest do
     end
   end
 
+  test "a failed question.open is retried by the next delivery of the same signal", %{
+    question_id: question_id,
+    agent_id: agent_id
+  } do
+    meck_passthrough(ForemanServer.Approvals.Dispatch)
+    on_exit(fn -> :meck.unload(ForemanServer.Approvals.Dispatch) end)
+
+    meck_expect(
+      ForemanServer.Approvals.Dispatch,
+      :system,
+      fn _command -> {:error, :gateway_down} end
+    )
+
+    log =
+      capture_log(fn ->
+        assert {:ok, :started, _item} =
+                 OperatorQuestionDispatcher.dispatch(
+                   question_signal(question_id, agent_id, "may I continue?")
+                 )
+      end)
+
+    assert log =~ "question.open for #{question_id} failed"
+    assert {:error, :stream_not_found} = question_events("global", question_id)
+
+    # The dedupe entry hides the question forever unless a `:deduped` ingest retries the open.
+    meck_expect(ForemanServer.Approvals.Dispatch, :system, fn command ->
+      :meck.passthrough([command])
+    end)
+
+    assert {:ok, :deduped, _item} =
+             OperatorQuestionDispatcher.dispatch(
+               question_signal(question_id, agent_id, "may I continue?")
+             )
+
+    assert [%{event_type: "QuestionOpened", data: data}] = question_events("global", question_id)
+
+    assert atomized(data) =~ question_id
+    assert %{status: "open"} = Eventually.await(fn -> ProjectionStore.question("global", question_id) end)
+  end
+
+  test "the operator timeout is armed once, by the ingest that started the item", %{
+    question_id: question_id,
+    agent_id: agent_id
+  } do
+    meck_passthrough(ForemanServer.Agents.OperatorTimeout)
+    on_exit(fn -> :meck.unload(ForemanServer.Agents.OperatorTimeout) end)
+
+    test_pid = self()
+
+    meck_expect(ForemanServer.Agents.OperatorTimeout, :schedule, fn id, agent, timeout_ms ->
+      send(test_pid, {:scheduled, id, agent, timeout_ms})
+      :ok
+    end)
+
+    assert {:ok, :started, _item} =
+             OperatorQuestionDispatcher.dispatch(
+               question_signal(question_id, agent_id, "may I continue?")
+             )
+
+    assert_receive {:scheduled, ^question_id, ^agent_id, 300_000}, 1_000
+
+    assert {:ok, :deduped, _item} =
+             OperatorQuestionDispatcher.dispatch(
+               question_signal(question_id, agent_id, "may I continue?")
+             )
+
+    refute_receive {:scheduled, ^question_id, ^agent_id, _}, 200
+  end
+
   defp question_signal(question_id, agent_id, text) do
     Jido.Signal.new!(%{
       id: "evt-" <> question_id,

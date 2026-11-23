@@ -9,8 +9,9 @@ defmodule ForemanServer.Agents.OperatorQuestionDispatcher do
     2. Calls `ForemanServer.Inbox.SharedInbox.ingest/2` with
        `OperatorQuestionSource` as the source module and the
        signal's `data` map as the payload.
-    3. On `:started`, resolves the per-workflow operator timeout from
-       the workflow manifest (TRD-027) and schedules it via
+    3. On `:started` and on `:deduped`, resolves the per-workflow operator
+       timeout from the workflow manifest (TRD-027) and records the question
+       (`question.open`, idempotent); on `:started` only, also arms
        `OperatorTimeout.schedule/3`.
     4. Returns the standard `SharedInbox.ingest/2` result.
 
@@ -50,7 +51,8 @@ defmodule ForemanServer.Agents.OperatorQuestionDispatcher do
   Dispatch a single `com.foreman.operator.*` CloudEvent to the
   Foreman inbox pipeline via `SharedInbox.ingest/2`.
 
-  On `:started`, schedules an operator timeout (JSI-T009).
+  On `:started` and `:deduped`, records the question; on `:started`
+  only, schedules an operator timeout (JSI-T009).
 
   Returns the standard `SharedInbox.ingest/2` result.
   """
@@ -81,7 +83,7 @@ defmodule ForemanServer.Agents.OperatorQuestionDispatcher do
 
   defp ingest(data) do
     case SharedInbox.ingest(OperatorQuestionSource, data) do
-      {:ok, :started, _item} = result ->
+      {:ok, outcome, _item} = result when outcome in [:started, :deduped] ->
         question_id =
           data |> Map.get("question_id") |> non_empty() ||
             data |> Map.get(:question_id) |> non_empty()
@@ -93,7 +95,12 @@ defmodule ForemanServer.Agents.OperatorQuestionDispatcher do
         if question_id && agent_id do
           timeout_ms = resolve_operator_timeout(agent_id)
           record_question(data, question_id, agent_id, timeout_ms)
-          _ = OperatorTimeout.schedule(question_id, agent_id, timeout_ms)
+
+          # The timer is armed once, by the ingest that started the item; a deduped
+          # delivery must not stack a second one.
+          if outcome == :started do
+            _ = OperatorTimeout.schedule(question_id, agent_id, timeout_ms)
+          end
         end
 
         result
@@ -107,7 +114,10 @@ defmodule ForemanServer.Agents.OperatorQuestionDispatcher do
   # visible as pending in the API and Overview and can be answered. The run is
   # the asking task's run (`"global"` when the question belongs to no run).
   # Idempotent on the question id, so a re-ingested signal opens it once. A
-  # failure is logged, never raised: the inbox item already exists.
+  # failure is logged, never raised: the inbox item already exists. It is also
+  # called for a `:deduped` ingest, so a `question.open` that failed is retried
+  # by the next delivery of the same signal — otherwise the dedupe entry would
+  # hide the question forever.
   #
   # The question is the agent's own words and may quote a secret. The aggregate is pure and
   # redacts by name pattern only, so the project's secret VALUES are redacted here, before the
