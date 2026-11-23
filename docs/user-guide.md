@@ -734,11 +734,53 @@ foreman project settings project-123
 | `max_repos_per_run` | 1..1000 (`--max-repos-per-run`, default 4) | Operator-only: most repositories one run may hold, primary included. Not settable over MCP |
 | `required_checks` | `--required-checks <json>` (a JSON array of at most 20 entries `{"name", "kind": "check_run"\|"status_context", "workflow"?, "allow_skipped"?}`; `[]` = gate on with no checks; unset or `--clear required_checks` = off) | Operator-only: the checks a PR must show before the merge gate accepts it (see [PR watching and auto-fix](#pr-watching-and-auto-fix)). Not settable over MCP or by the coordinator. Setting it needs a durable idempotency store while `:require_durable_store_for_gating` is on. Since Phase 1 PR 8 a project with it set has `approve-merge` refused unless the PR's evidence for the approved head is eligible or waived (unset: no evidence refusal) |
 
+| `pr_body_headings` | `--pr-body-heading <heading>` (repeatable; at most 10 headings, each 1..200 characters and starting with one to six `#` characters; `--clear pr_body_headings` turns it off) | The markdown headings a pull request Foreman opens must carry, in order. When set, the pull-request body is built from these headings and what the run knows; when unset, the body is the one the task or workflow produced (see **Pull-request body template** below) |
+
 Text values are trimmed and `CRLF` is normalised to `LF`; a blank value clears the
 setting. Validation is done once, by the server, and its error is shown verbatim
 (for example `{:instructions_too_long, 16001, 16000}`). `status` is not settable
 through `project update`: use `pause` / `resume` / `reactivate`. Unknown config keys
 are rejected (`{:unknown_setting, key}`).
+
+**Pull-request body template.** A project that sets `pr_body_headings` gets a
+pull-request body that always carries those headings, in the order given:
+
+```markdown
+## Summary
+
+<the task title and description>
+
+## Testing
+
+- `abc1234` feat: the change
+```
+
+Foreman fills the headings from what the run knows: the task under the first
+heading, the run's commits (`git log` between the run's base branch and its own
+branch) under the next, and the phase artifact — with the review findings
+block — under the last. A heading Foreman has nothing for reads
+`_Not recorded by Foreman._`: it never leaves a heading empty and never invents
+content. With more headings than Foreman has content for, the extra headings
+share the last block. A heading list the server refuses is reported with the
+reason (`{:pr_body_headings_entry_invalid, heading}`,
+`{:pr_body_headings_too_many, count, limit}`,
+`{:pr_body_headings_invalid, value}`).
+
+The template applies to the pull request Foreman opens for the run. A phase
+pull request — one a workflow phase opens for its own work — keeps that
+phase's own body, which is the phase report rather than the run's task,
+commits and artifact.
+
+Set it from the CLI, one flag per heading:
+
+```bash
+foreman project update <id> \
+  --pr-body-heading '## Summary' \
+  --pr-body-heading '## Testing' \
+  --pr-body-heading '## Risk' \
+  --pr-body-heading '## How to revert' \
+  --pr-body-heading '## Directed by'
+```
 
 **Model and effort precedence.** An explicit phase `models.default` wins over the project's `thread_model` /
 `thread_effort`, which win over the provider default. The project value is read
@@ -2944,10 +2986,12 @@ accepted and ignored.
 By default one run yields at most one final PR. `auto_pr/1` is called from
 `finalize_run/1`, after every phase has completed, and opens from the run's
 single branch — `foreman/<task-id>/<run-id>` unless the workflow's `worktree.branch` says
-otherwise. For task-backed runs, when both the task title and task description
-are set, the final PR title is exactly the task title and the final PR body is
-exactly the task description; if either is present but blank or malformed,
-AutoPR returns a typed metadata error before publishing the branch. A task field
+otherwise. For task-backed runs whose project sets no `pr_body_headings`, when
+both the task title and task description are set, the final PR title is exactly
+the task title and the final PR body is exactly the task description; if either
+is present but blank or malformed, AutoPR returns a typed metadata error before
+publishing the branch. A project that sets `pr_body_headings` gets the templated
+body instead (see **Pull-request body template**). A task field
 that was never set (for example, a title-only task) does not fail: AutoPR falls
 back to the generated title/body. Ad-hoc no-task runs keep the legacy generated
 run/artifact title and body either way.
@@ -3001,7 +3045,11 @@ is always something to open: the report is a link when it resolves to a reposito
 path, and otherwise its file name only (`…/REPORT.md`), never an absolute host path. The
 old bullet format is
 now malformed, not parsed. Task-backed final AutoPR bodies are exact task
-descriptions and do not append artifact or review-finding sections. The PR body is
+descriptions and do not append artifact or review-finding sections when the
+project sets no `pr_body_headings`; a project that sets `pr_body_headings` gets
+the templated body instead, which carries the task title and description, the
+run's commits and the phase artifact's `AutoPR` review-findings section under the
+required headings (see **Pull-request body template**). The PR body is
 the agent's own report, written for a human to read, and refuses nothing. The
 findings RECORD the server writes from the same artifact does matter: for a
 project with `required_checks` set, an absent, legacy-format, other-head or

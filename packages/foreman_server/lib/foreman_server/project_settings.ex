@@ -24,7 +24,8 @@ defmodule ForemanServer.ProjectSettings do
           max_repos_per_run: pos_integer() | nil,
           library_collect_produced: boolean() | nil,
           notification_preference: String.t() | nil,
-          required_checks: [map()] | nil
+          required_checks: [map()] | nil,
+          pr_body_headings: [String.t()] | nil
         }
 
   defstruct @keys
@@ -32,6 +33,25 @@ defmodule ForemanServer.ProjectSettings do
   @doc "Setting keys (the whitelist table in `Aggregates.Project.Settings`)."
   @spec keys() :: [atom()]
   def keys, do: @keys
+
+  @doc """
+  The pull-request body headings a project requires.
+
+  `:unset` when the project sets none — the body keeps the task's own text.
+  `{:headings, headings}` when the project sets a list of headings.
+  `{:malformed, value}` when the projected value is not a list: the value is
+  reported, never dropped, so the pull-request body builder refuses it instead
+  of opening an untemplated PR (AGENTS.md §5.2).
+  """
+  @spec pr_body_headings(t()) :: :unset | {:headings, [String.t()]} | {:malformed, term()}
+  def pr_body_headings(%__MODULE__{pr_body_headings: nil}), do: :unset
+
+  def pr_body_headings(%__MODULE__{pr_body_headings: []}), do: :unset
+
+  def pr_body_headings(%__MODULE__{pr_body_headings: headings}) when is_list(headings),
+    do: {:headings, headings}
+
+  def pr_body_headings(%__MODULE__{pr_body_headings: other}), do: {:malformed, other}
 
   @doc """
   Builds the struct from a projected config map.

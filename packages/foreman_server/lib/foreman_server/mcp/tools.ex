@@ -571,6 +571,12 @@ defmodule ForemanServer.MCP.Tools do
           type: "string",
           description: "Notifications for this project: every_turn, blocked_only (default) or off"
         },
+        pr_body_headings: %{
+          type: "array",
+          items: %{type: "string"},
+          description:
+            "Required pull-request body headings, in order, each beginning with one to six # characters (for example [\"## Summary\", \"## Testing\"]); empty keeps the body the task or workflow produced"
+        },
         clear: %{
           type: "array",
           items: %{type: "string"},
@@ -2499,11 +2505,14 @@ defmodule ForemanServer.MCP.Tools do
     end
   end
 
-  @settings_update_keys ~w(goal instructions thread_model thread_effort coordinator_provider
-                           coordinator_model coordinator_effort max_concurrent_runs
-                           daily_thread_cap pr_auto_fix coordinator_propose_before_start
-                           coordinator_max_active_threads coordinator_reuse_threads
-                           library_collect_produced notification_preference)a
+  # The settings the tool may change are exactly the schema's own properties,
+  # minus the envelope keys the tool handles itself. Deriving them keeps the
+  # two in step: a setting added to the schema is settable without editing
+  # this list, and one removed from the schema cannot still be set.
+  @settings_update_keys @schema_foreman_project_settings_update.inputSchema.properties
+                        |> Map.keys()
+                        |> Enum.reject(&(&1 in [:project_id, :clear, :idempotency_key]))
+                        |> Enum.sort()
 
   # The command id is content-derived (tool + canonical args + caller key), so a
   # retry of the same update collapses into one command while two different

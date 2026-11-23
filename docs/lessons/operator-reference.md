@@ -52,7 +52,9 @@ Open `http://127.0.0.1:4766/dashboard/runs` with the configured browser bearer t
 `--max-concurrent-runs` and `--daily-thread-cap`; `--repo-allowlist <abs-path-prefix>`
 (repeatable, replaces the list; `--clear repo_allowlist` turns it off) and
 `--max-repos-per-run <n>` (1..1000, default 4) are operator-only containment settings
-(not settable over MCP); `--clear <setting>` removes one.
+(not settable over MCP); `--pr-body-heading <heading>` (repeatable, replaces the
+list; `--clear pr_body_headings` turns it off) fixes the headings a pull request
+Foreman opens must carry; `--clear <setting>` removes one.
 `project pause|resume|reactivate <id>` change lifecycle (`status` is not settable via
 update); a paused project refuses task.create, run reservation, jobsite start and
 BeadsWatcher imports with `{:project_paused, id}` while in-flight work continues.

@@ -37,7 +37,7 @@ defmodule ForemanServer.Aggregates.Project.Settings do
   @max_required_checks 20
   @max_pr_body_headings 10
   @max_check_text_chars 200
-  @pr_body_heading_regex ~r/\A#{1,6} \S/
+  @pr_body_heading_regex ~r/\A[#]{1,6} \S/
   @required_check_kinds ~w(check_run status_context)
   @required_check_entry_keys ~w(name kind workflow allow_skipped)
   # What `Jido.Harness.RunRequest` accepts for `reasoning_effort`; a wider value
@@ -113,7 +113,7 @@ defmodule ForemanServer.Aggregates.Project.Settings do
           | {:required_checks_conflicting_entry, String.t(), String.t(), String.t() | nil}
           | {:pr_body_headings_invalid, term()}
           | {:pr_body_headings_too_many, non_neg_integer(), pos_integer()}
-          | {:pr_body_heading_invalid, term()}
+          | {:pr_body_headings_entry_invalid, term()}
           | {:unknown_setting, String.t()}
 
   @doc "Default `max_repos_per_run` when the project does not set one."
@@ -135,6 +135,24 @@ defmodule ForemanServer.Aggregates.Project.Settings do
   @doc "Values accepted for the `notification_preference` setting."
   @spec notification_preferences() :: [String.t()]
   def notification_preferences, do: @notification_preferences
+
+  @doc """
+  Validates a list of PR body headings.
+
+  This is the single boundary for the `pr_body_headings` value shape: the
+  setting write path and the PR body builder both go through it, so a heading
+  that would be rejected on write is never accepted at build time.
+  """
+  @spec validate_pr_body_headings(term()) :: {:ok, [String.t()]} | {:error, error()}
+  def validate_pr_body_headings(headings) when is_list(headings) do
+    if length(headings) > @max_pr_body_headings do
+      {:error, {:pr_body_headings_too_many, length(headings), @max_pr_body_headings}}
+    else
+      pr_body_heading_entries(headings)
+    end
+  end
+
+  def validate_pr_body_headings(other), do: {:error, {:pr_body_headings_invalid, other}}
 
   @doc "Setting keys, in declaration order."
   @spec keys() :: [key()]
@@ -366,11 +384,7 @@ defmodule ForemanServer.Aggregates.Project.Settings do
   defp validate(:pr_body_headings, nil), do: {:ok, nil}
 
   defp validate(:pr_body_headings, headings) when is_list(headings) do
-    if length(headings) > @max_pr_body_headings do
-      {:error, {:pr_body_headings_too_many, length(headings), @max_pr_body_headings}}
-    else
-      pr_body_heading_entries(headings)
-    end
+    validate_pr_body_headings(headings)
   end
 
   defp validate(:pr_body_headings, other), do: {:error, {:pr_body_headings_invalid, other}}
@@ -395,15 +409,24 @@ defmodule ForemanServer.Aggregates.Project.Settings do
     trimmed = String.trim(heading)
 
     cond do
-      not String.valid?(trimmed) -> {:error, {:pr_body_heading_invalid, heading}}
-      String.length(trimmed) > @max_check_text_chars -> {:error, {:pr_body_heading_invalid, heading}}
-      String.match?(trimmed, ~r/[[:cntrl:]]/u) -> {:error, {:pr_body_heading_invalid, heading}}
-      !String.match?(trimmed, @pr_body_heading_regex) -> {:error, {:pr_body_heading_invalid, heading}}
-      true -> {:ok, trimmed}
+      not String.valid?(trimmed) ->
+        {:error, {:pr_body_headings_entry_invalid, heading}}
+
+      String.length(trimmed) > @max_check_text_chars ->
+        {:error, {:pr_body_headings_entry_invalid, heading}}
+
+      String.match?(trimmed, ~r/[[:cntrl:]]/u) ->
+        {:error, {:pr_body_headings_entry_invalid, heading}}
+
+      !String.match?(trimmed, @pr_body_heading_regex) ->
+        {:error, {:pr_body_headings_entry_invalid, heading}}
+
+      true ->
+        {:ok, trimmed}
     end
   end
 
-  defp pr_body_heading(heading), do: {:error, {:pr_body_heading_invalid, heading}}
+  defp pr_body_heading(heading), do: {:error, {:pr_body_headings_entry_invalid, heading}}
 
   defp boolean(nil, _name), do: {:ok, nil}
   defp boolean(value, _name) when is_boolean(value), do: {:ok, value}
