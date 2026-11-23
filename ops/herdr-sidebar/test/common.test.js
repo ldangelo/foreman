@@ -15,6 +15,11 @@ test("beadId keeps a dotted child bead whole", () => {
   expect(beadId({ task_id: "beads:foreman:foreman-vbfmo.1" })).toBe("foreman-vbfmo.1");
 });
 
+test("beadId is everything after the second colon, and the run's project is not a gate", () => {
+  expect(beadId({ task_id: "beads:foreman:foreman-x:y" })).toBe("foreman-x:y");
+  expect(beadId({ task_id: "beads:ensemble:br-bhj9", project_id: "some-other-project" })).toBe("br-bhj9");
+});
+
 test("beadId is null for anything that is not a bead", () => {
   for (const task_id of ["coord-63933494f1a", "adhoc-1c2d3e", "post-merge-smoke-1557", "beads:foreman:", "beads::foreman-x", "kata:foreman:foreman-x", "", null, undefined, 42]) {
     expect(beadId({ task_id })).toBeNull();
