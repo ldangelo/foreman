@@ -13,7 +13,7 @@ This branch is `foreman/foreman-okend/run-f5db91eef82cb0962b4337d08547a6d8`, HEA
 | --- | --- | --- | --- |
 | `base_ref_policy` setting | No — `grep -rn base_ref_policy .` returns 0 hits | branch `foreman/foreman-zv8bi/run-59f7dec0c17ee9867d8c48735ac5416d`, commit `c489c0f3` (PR #943, open) | **Yes** — `docs/user-guide.md:736`, `docs/cli-reference.md`, `CLAUDE.md:1240` |
 | base SHA on `RunBaseBranchRecorded` | No — `events/run_base_branch_recorded.ex:23` is `defstruct [:run_id, :base_branch, :repo_id, :sequence]` | branch `foreman/foreman-i3qol/run-d70bafc603ebda52f09c128e358f5b43` (PR #945, open); its struct is `[:run_id, :base_branch, :base_sha, :repo_id, :sequence]` | **Yes** — `docs/user-guide.md:1366` on that branch |
-| `branch.behind_origin` recommendation | No — `projects/recommendations.ex` has 19 `rec(` ids, none of them `branch.behind_origin` | branch `foreman/foreman-qdt14/run-0c30344c74abc80ba7c2b40090d98819`, commit `295155d0` (**no PR open**) | **Yes** — that commit rewrites `docs/user-guide.md:684` "Two further checks" → "Three further checks" |
+| `branch.behind_origin` recommendation | No — `projects/recommendations.ex` has 19 `rec(` ids, none of them `branch.behind_origin` | branch `foreman/foreman-qdt14/run-0c30344c74abc80ba7c2b40090d98819`, commit `295155d0` (PR #946, open) | **Yes** — that commit rewrites `docs/user-guide.md:684` "Two further checks" → "Three further checks" |
 | fetch-before-run (`git fetch origin <base>` at run start) | No | **nowhere** — `git log --all -S"sync_remote" -- .../workflow/run_executor.ex` is empty | n/a |
 
 Evidence that nothing merged: `git merge-base --is-ancestor c489c0f3 HEAD` → false,
@@ -96,14 +96,14 @@ git merge-base --is-ancestor 887b82a7 origin/dev && echo yes || echo no
 `docs/cli-reference.md`, or any file under `packages/`.
 
 Write `FIX_REPORT.md` in this same directory stating the verdict and the three
-reasons in §2, naming PR #943, PR #945 and local branch
-`foreman/foreman-qdt14/run-0c30344c74abc80ba7c2b40090d98819`, then stop.
+reasons in §2, naming PR #943, PR #945 and PR #946 (branch
+`foreman/foreman-qdt14/run-0c30344c74abc80ba7c2b40090d98819`), then stop.
 
 The one thing an operator should act on, recorded here because this bead cannot
-do it: **`foreman-qdt14`'s commit `295155d0` has no open PR.** It is the only one
-of the three whose work (both the `branch.behind_origin` recommendation and its
-user-guide text) exists solely as a local branch, so it is the only one at risk
-of being lost. The other two are PR #943 and PR #945.
+do it: **none.** All three subjects are already carried by open pull requests —
+`base_ref_policy` by PR #943, `base_sha` by PR #945 and `branch.behind_origin`
+by PR #946 (`foreman/foreman-qdt14/run-0c30344c74abc80ba7c2b40090d98819`) —
+so no work is orphaned and none of it is at risk of being lost.
 
 If the operator decides this bead should instead document the features *after*
 those PRs merge, the work is still not this bead's: re-run it on a branch cut
