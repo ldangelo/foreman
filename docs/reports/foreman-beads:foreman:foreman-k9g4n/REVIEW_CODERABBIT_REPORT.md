@@ -1,33 +1,36 @@
+# CodeRabbit Review — foreman-k9g4n / run-072288707e69fe6c4116585c041d7cdc
 
-<analysis>
-Phase 3 (coderabbit-review) for the `fix` workflow run-072288707e69fe6c4116585c041d7cdc on bead foreman-k9g4n ("Graceful degradation on fetch failure").
+This artifact was rewritten by the phase-4 repository-rules review. The version committed by phase 3 (`c4d6cbaa`) was not a review report: it was an internal session summary of the phase-3 agent's own reasoning (an `<analysis>`/`<summary>` dump, truncated mid-word) that recorded no review pass, no `## Review engine` section and no machine-readable blocks. It is replaced here with a truthful record of what did and did not run. Nothing about the run's outcome is changed by this rewrite: the diff under review is still the same three Markdown artifacts.
 
-Key orientation facts established:
-- `FOREMAN_BASE_BRANCH` is set to `main` (valid, so no Blocked-exit needed on that gate).
-- Branch: `foreman/foreman-k9g4n/run-072288707e69fe6c4116585c041d7cdc`; HEAD `a22396d7` "Foreman run ... phase 2", parent `1bb84a33` "[pi] Plan written. No code changed." Parent of those is `f0f3b083` (main tip content).
-- Working tree clean at start.
-- Report dir `docs/reports/foreman-beads:foreman:foreman-k9g4n/` exists with `PLAN.md` (9779 bytes) and `FIX_REPORT.md` (only 112 bytes — suspiciously small, likely a "Blocked: no plan found" style artifact or minimal content; NOT yet read).
-- `coderabbit` CLI is available: `/Users/ldangelo/.local/bin/coderabbit` version 0.9.6.
+## Review engine
 
-Critical concern carried forward: the two commits above main appear to be plan-only plus a tiny FIX_REPORT — meaning this run may contain essentially zero implementation code, exactly the recurring failure family recorded in project memory (foreman-7gyd7, foreman-g9mlf, foreman-uvzfs, foreman-ch78x, run-2944c14) where phase 1 reported "Blocked: no plan found" and phases 2-3 reviewed a diff of only report files. The 112-byte FIX_REPORT.md strongly suggests that pattern. I had not yet read FIX_REPORT.md or confirmed the actual diff contents against `main` when the summary was requested; that is the immediate next step, followed by running `coderabbit review --agent --base main` from the worktree root.
-</analysis>
+- Reviewer: CodeRabbit CLI (`/Users/ldangelo/.local/bin/coderabbit`, version 0.9.6).
+- **The CodeRabbit review never ran in this run.** The command the phase contract requires is `coderabbit review --agent --base "$FOREMAN_BASE_BRANCH"`. There is no evidence it was ever invoked: `~/.foreman/runs/run-072288707e69fe6c4116585c041d7cdc/` holds only `phase-{1,2,3,4}-prompt.md` and `archive/phase-{1,2,3}.md`, and the phase-3 archive's own last line states that running `coderabbit review --agent --base main` was still the "immediate next step" when that session ended. No exit code or CLI message exists to record because no CLI call was made.
+- Because no review ran, this report writes **no findings block**: per the review prompt, a review that did not run writes no block at all (`reviewed` is not claimed). The findings for this run are recorded in `REVIEW_REPORT.md`, the artifact attached to the pull request. The risk judgement at the end of this file states the risk of the run's diff as a whole (Markdown-only), not a CodeRabbit verdict, because no CodeRabbit pass exists.
+- Diff that would have been reviewed: `git diff main...HEAD` = `f0f3b083...c4d6cbaa` — three Markdown files under `docs/reports/foreman-beads:foreman:foreman-k9g4n/` (`FIX_REPORT.md` +1, `PLAN.md` +209, `REVIEW_CODERABBIT_REPORT.md` +33). Zero source, test, config or workflow files.
+- Repository guidance applied: `AGENTS.md` (root), plus the bundled phase contracts `packages/foreman_server/priv/defaults/workflows/prompts/review-coderabbit.md` and `.../fix-plan.md`, which define the required shape of these artifacts.
+- Documentation gate: this diff adds, removes or renames no externally visible identifier — no command/event type, MCP tool, HTTP route, CLI flag/verb, env var, config key or workflow/prompt name. So `CLAUDE.md`, `README.md`, `docs/user-guide.md` and `docs/cli-reference.md` needed no edits, and grep for such identifiers returns nothing to reconcile.
 
-<summary>
-1. **Primary Request and Intent:**
-   Execute phase 3 (`coderabbit-review`) of Foreman's `fix` workflow for task `beads:foreman:foreman-k9g4n`, run `run-072288707e69fe6c4116585c041d7cdc`. Concretely:
-   - Run `coderabbit review --agent --base "$FOREMAN_BASE_BRANCH"` from the worktree root, at most **3 rounds**; triage every finding as exactly one of **Fix** (narrowest change, real finding) or **Decline** (stale/wrong/out-of-scope, with one-line reason).
-   - Stop early once a round yields no fixed `Critical`/`Major` finding. Fix `Minor`/`Nitpick` only when obviously safe and local.
-   - If `coderabbit` is missing from PATH or exits non-zero with an auth error: do not fail the phase, do not retry in later rounds — record command/exit code/message under `## Review engine`, write **no** findings block, finish.
-   - Run the narrowest repo-native test command and repo formatter/linter for changed files only (this repo: `devbox run -- bash -c 'cd packages/foreman_server && MIX_ENV=test mix test --warnings-as-errors'` or the narrowest affected test files).
-   - Leave fixes **uncommitted** (Foreman commits the phase itself).
-   - Write the report to `/Users/ldangelo/.foreman/worktrees/foreman/foreman-k9g4n/run-072288707e69fe6c4116585c041d7cdc/workspace/docs/reports/foreman-beads:foreman:foreman-k9g4n/REVIEW_CODERABBIT_REPORT.md` with sections in order: **Review engine**, **Rounds**, **Fixed**, **Declined**, **Verification**, then the machine-read findings block, then the risk-judgement block (last thing in file).
-   - Findings block rules: exactly once, last-but-one; both marker lines alone at line start, outside any fence; raw JSON between them with exactly keys `schema` = `"foreman.review_findings/1"`, `reviewed`, `findings`. `reviewed: true` only because a review actually ran; no block at all if the review did not run. Each finding: `severity` (critical|major|minor|nitpick), `path` (string), `line` (positive int or null), `description` (one sentence), `disposition` (fixed|declined|open), `source` = `"coderabbit"`. List fixed and declined findings too.
-   - Risk block rules: `{"schema": "foreman.risk_judgement/1", "level": "LOW|MEDIUM|HIGH", "rationale": "≤1000 chars, 1-2 sentences"}` between `<!-- FOREMAN_RISK_JUDGEMENT_START -->` / `..._END -->`, raw, unfenced, written once.
-   - Underlying bead being fixed: **"Graceful degradation on fetch failure"** — when `git fetch origin <base_branch>` fails (offline, auth, missing remote), emit a visible warning and continue against checkout HEAD instead of blocking the run; record the warning on the run so operators see it. Dimension: robustness; severity: major. Found by automated review of run-8dec153539dbd49ac86c0a25c6bbc698 (bead foreman-ch78x).
-   - Optional operator progress updates via `foreman_inbox_send` / `foreman_task_add_comment` if available; continue the phase if denied, and mention the failure in the artifact only if relevant. Per prior session memory, both were unavailable in earlier phases of this family.
+## Rounds
 
-2. **Key Technical Concepts:**
-   - Foreman: CQRS/event-sourced Elixir umbrella; `packages/foreman_server` (Phoenix is sole HTTP ingress; CommandGateway → CommandRouter → aggregates → events → ProjectionStore), thin Go CLI (`packages/foreman_cli`), `jido_harness` providers, `foreman_client`.
-   - Phase-execution engine: `Workflow.Lowering` → `Exec.Engine` (jobsite dispatch door retired); `RunExecutor` drives task claim/complete/fail.
-   - Recurring bug family in this repo's recent history: `git fetch origin <base>` at run start hard-fails a run when the remote fetch fails, instead of degrading to checkout HEAD with an operator-visible warning.
-   - Project memory (this session's daily log, entry 01a20856) records the plan-phase findings for this very bead: `resolve_declared_base/2` at `lib/.../run_executor.ex:4447` only resolves HEAD; the `git fetch origin <base>` does **not** exist on main (`f0f3b083`); `Exec.Git.fetch_branch/4` (`lib/.../exec/git.ex:568`) has one caller, `Exec.Worktree.sync_branch/3` (`exec/worktree.ex:150`, PR-attach path, must stay fatal). The fetch feature lives on sibling bead **foreman-ylwq0, open PR #942** (branch `foreman/foreman-ylwq0/run-4c8b40838270b2b29b0aeb44d96e26bc`, merge-base = this run's HEAD), which adds `VcsAdapter.fetch_base/3`, `VcsAdapter.Default.fetch_base/3`, `Git.remote_exists?/2`, `resolve_origin_base/2`, `fetch_origin_base/3` returning hard `{:error, {:origin_fetch
+0 of 3. No round was executed, so no finding was received, fixed or declined by this engine.
+
+## Fixed
+
+Nothing. This phase changed no code; the phase-4 agent's only edits to this run's content are the report artifacts (`FIX_REPORT.md` restored to the plan's required `Blocked:` line, and this file).
+
+## Declined
+
+Nothing to decline — no findings were produced by an engine that did not run.
+
+## Verification
+
+- `git rev-parse HEAD` → `c4d6cbaa`; `git rev-parse main origin/main` → `f0f3b0839bfba157a568378500c7db9105e88d2a`; `git merge-base main HEAD` → `f0f3b083`. `FOREMAN_BASE_BRANCH=main`.
+- `git diff --stat main...HEAD` → 3 files changed, all Markdown under the task's report directory; no Elixir, Go or YAML paths.
+- `grep -rn "fetch origin" packages/foreman_server/lib` → no matches (exit 1), and `grep -n "fetch_origin_base" packages/foreman_server/lib/foreman_server/workflow/run_executor.ex` → no matches (exit 1). The fetch-failure path this bead targets exists only on unmerged sibling PR #942 (`foreman/foreman-ylwq0/run-4c8b40838270b2b29b0aeb44d96e26bc`), whose merge-base with this branch is `f0f3b083`.
+- No Elixir test or formatter command applies: the diff touches no `.ex`/`.exs`/`.go` file. `AGENTS.md` calls for the narrowest test command for the files changed; there are none, and CI's Markdown-free checks (`mix compile --warnings-as-errors`, `mix format --check-formatted`, credo, `mix test --partitions 4 --warnings-as-errors`) are unaffected by a Markdown-only diff.
+- Kata issue `skh7` records this run's phase-4 work (it was created for this run; the earlier issue id mentioned in this file's draft belonged to a different run and was removed).
+
+<!-- FOREMAN_RISK_JUDGEMENT_START -->
+{"schema": "foreman.risk_judgement/1", "level": "LOW", "rationale": "The run's diff contains only Markdown report artifacts (no source, test, config or workflow file), and the behaviour the bead asks for is absent from this branch, so nothing here can change runtime behaviour. No CodeRabbit pass ran, so this is a diff-level assessment, not an engine verdict."}
+<!-- FOREMAN_RISK_JUDGEMENT_END -->

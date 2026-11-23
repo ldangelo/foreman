@@ -1,1 +1,1 @@
-Confirmed: fetch code exists only on the unmerged sibling branch. Step-0 gate fires. Writing the Blocked report.
+Blocked: depends on PR #942 (foreman-ylwq0), which adds fetch_origin_base/3; no code change here.
