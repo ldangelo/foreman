@@ -1,0 +1,1 @@
+Now I have the full picture. Fixing: (1) add `git log` clauses to the 3 test runners so the suite is green, (2) add title-precedence tests, (3) distinguish failed history read from absent subject. Starting with `phase_pr.ex`.

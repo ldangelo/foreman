@@ -41,6 +41,13 @@ defmodule ForemanServer.Workflow.PhasePR do
   `reason` in `details`): only the answer "no PR" lets creation go ahead. A `gh pr create`
   that fails is followed by one more open-PR lookup, as in `AutoPR` (it too reads a lagging head
   again, three tries): the PR with the tip is adopted.
+
+  The PR title is the run's task title (`task_title`, passed by `RunExecutor` through the same
+  task plumbing the final `AutoPR` uses); without one, the first conventional-commit subject
+  among the run's commits, and without that, `feat(phase): <phase_name>`. A commit history that
+  cannot be read (`git log` exits non-zero) is warned about and takes the same legacy title; it is
+  not reported as "no conventional subject". A `task_title` that is present but blank or not a
+  binary is `%Error{reason: :task_title_invalid}` before anything is pushed.
   """
 
   alias ForemanServer.GitHub.PrLookup
@@ -70,6 +77,7 @@ defmodule ForemanServer.Workflow.PhasePR do
       :head_branch,
       :cwd,
       :artifact_path,
+      :task_title,
       :now,
       :command_runner,
       existing_records: [],
@@ -167,10 +175,21 @@ defmodule ForemanServer.Workflow.PhasePR do
       blank?(request.cwd) ->
         typed_error(request, :phase_pr_worktree_unresolved, request)
 
+      invalid_task_title?(request) ->
+        typed_error(request, :task_title_invalid, %{task_title: request.task_title})
+
       true ->
         :ok
     end
   end
+
+  # `nil` means "this run has no task title" (the executor omits an unset field); anything
+  # else that is not a non-blank binary is a producer bug, typed here before a branch is
+  # published silently mis-titled (AGENTS.md §5.3).
+  defp invalid_task_title?(%Request{task_title: nil}), do: false
+
+  defp invalid_task_title?(%Request{task_title: title}),
+    do: not is_binary(title) or String.trim(title) == ""
 
   defp existing_record(%Request{} = request) do
     request.existing_records
@@ -341,8 +360,51 @@ defmodule ForemanServer.Workflow.PhasePR do
     |> effect_result(request, :pr_create)
   end
 
+  # Title an operator recognises: the run's task title, else the first conventional-commit
+  # subject among the run's own commits (Foreman's phase commits, "Foreman run <id> phase <n>",
+  # are not conventional and never match), else the phase-named legacy form. A failed `git log`
+  # costs only the subject fallback (the PR still opens) and is warned, not taken for silence.
+  defp pr_title(%Request{task_title: title}) when is_binary(title), do: title
+
+  defp pr_title(request),
+    do: first_conventional_subject(request) || "feat(phase): #{request.phase_name}"
+
+  defp first_conventional_subject(request) do
+    case run(request, "git", [
+           "log",
+           "--reverse",
+           "--format=%s",
+           request.base_branch <> ".." <> request.head_branch
+         ]) do
+      {output, 0} ->
+        output
+        |> String.split("\n", trim: true)
+        |> Enum.map(&String.trim/1)
+        |> Enum.find(&conventional_subject?/1)
+
+      {output, exit_code} ->
+        # An unreadable history is not "no conventional subject": say so, then take the legacy
+        # title, which is the one consequence a failed read is allowed to have.
+        Logger.warning(
+          "PhasePR.run_id=#{request.run_id} could not read commit subjects for #{request.head_branch} into #{request.base_branch} (git log exited #{exit_code}: #{String.slice(output, 0, 200)}); using the phase title",
+          run_id: request.run_id,
+          base_branch: request.base_branch,
+          head_branch: request.head_branch,
+          operation: "phase_pr.title",
+          outcome: "history_unreadable",
+          exit_code: exit_code
+        )
+
+        nil
+    end
+  end
+
+  @conventional_subject ~r/^[a-z]+(\([^()]+\))?!?: \S/
+
+  defp conventional_subject?(subject), do: Regex.match?(@conventional_subject, subject)
+
   defp gh_pr_create(request, tip) do
-    title = "feat(phase): #{request.phase_name}"
+    title = pr_title(request)
 
     body =
       "Foreman run `#{request.run_id}` phase `#{request.phase_name}` complete.\n" <>

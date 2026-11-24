@@ -39,6 +39,11 @@ defmodule ForemanServer.Workflow.PhasePRBodyTest do
       "gh", ["pr", "create" | _rest] = args, _opts ->
         send(test_pid, {:gh_pr_create_args, args})
         {"https://github.com/example/repo/pull/1", 0}
+
+      # The title fallback reads the run's subjects; no subject here, so the request's own
+      # `task_title` (or the legacy phase title) is what `gh pr create` is asked for.
+      "git", ["log" | _rest], _opts ->
+        {"", 0}
     end
   end
 
