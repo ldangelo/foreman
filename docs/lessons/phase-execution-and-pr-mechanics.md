@@ -308,6 +308,19 @@ When a variable "is exported but has no effect", read that function FIRST. An
 export in `foreman_env/3` proves only that Foreman computed the value; it is not
 evidence that any agent received it.
 
+**Every pi worker Foreman launches carries `PI_SUBAGENT_CHILD=1`.** Injected in
+`RunExecutor.prepare_agent_launch/5`, the same function that builds
+`foreman_env/4` (and so `FOREMAN_MODEL`), which is why it hangs off
+`prepare_agent_launch/5` and not `foreman_env/4`: the marker must be present
+wherever Foreman resolved a model, even if pipeline dispatch moves. Machine-wide
+pi extensions honour it by standing down — `pi-advisor-flow` skips its
+`setExecutorModel`/`setThinkingLevel` override and model-select sync, and
+`pi-subagents` registers nothing. Without it, an extension installed on the host
+silently replaces the project `thread_model` mid-phase. Deliberate consequence:
+the advisor gates (`advisorCompletionGate`, `advisorPlanGate`,
+`advisorBlockOnBlocked`) do not supervise Foreman phases either; Foreman's own
+review phases are the substitute. Operator-facing note: `docs/user-guide.md` §7.3.
+
 **Jido Harness provider/model selection is explicit.**
 `ForemanServer.AgentRuntime.JidoHarness` is the source of truth for supported
 providers (`@supported_providers == [:pi, :claude]`) and normalizes string

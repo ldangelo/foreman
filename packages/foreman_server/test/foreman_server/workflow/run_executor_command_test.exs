@@ -786,6 +786,9 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
     delivered = Keyword.fetch!(worker_state.driver_opts, :env)
 
     assert delivered["FOREMAN_RUN_ID"] == run_id
+    # Foreman marks its pi workers as child sessions so machine-wide pi
+    # extensions do not override the phase model; the contract keeps FOREMAN_*. (#1025)
+    assert delivered["PI_SUBAGENT_CHILD"] == "1"
     assert Enum.all?(Map.keys(delivered), &String.starts_with?(&1, "FOREMAN_"))
     assert worker_state.secrets == []
 

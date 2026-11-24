@@ -2078,6 +2078,23 @@ is a deliberate change. To use a proxy router model elsewhere, set the project's
 After editing bundled workflows run `foreman init --force` to refresh the
 installed copies.
 
+Every phase agent Foreman launches is a supervised worker, not an interactive
+session, so `RunExecutor.prepare_agent_launch/5` sets **`PI_SUBAGENT_CHILD=1`**
+in the environment of every **pi** worker it starts (non-pi providers are
+unaffected). pi extensions installed machine-wide in `~/.pi/agent/settings.json`
+that follow the `pi-subagents` convention treat a marked session as a child and
+stand down: `pi-advisor-flow` skips its `setExecutorModel` and `setThinkingLevel`
+override and its model-select sync, and `pi-subagents` itself registers nothing
+at all in a child. Without the marker, such an extension silently replaces the
+project's `thread_model` (and the phase's `models.default`) with the model chosen
+in its own config, and the `model=` line in the run log still shows what Foreman
+resolved — so the override is invisible unless you read the agent's status line.
+The cost is symmetric and deliberate: the same extension's advisor gates
+(`advisorCompletionGate`, `advisorPlanGate`, `advisorBlockOnBlocked`) do not
+supervise Foreman phases either. Foreman's own review phases are that substitute;
+if you want advisor supervision on a run, run the work as a project thread
+instead of a Foreman phase, or disable the extension for Foreman-launched pi.
+
 ### 7.4 Bundled skills
 
 Skills bundled at
