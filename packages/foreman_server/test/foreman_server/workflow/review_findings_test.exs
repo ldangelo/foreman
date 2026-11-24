@@ -458,6 +458,28 @@ defmodule ForemanServer.Workflow.ReviewFindingsTest do
     end
   end
 
+  describe "unfenced_lines/1" do
+    test "returns every line outside a fence with its index in the file, a CR removed" do
+      contents = "a\r\n```\nin\n```\nb\n~~~~\nin\n~~~\nstill in\n~~~~\nc"
+
+      assert ReviewFindings.unfenced_lines(contents) == [{0, "a"}, {4, "b"}, {10, "c"}]
+    end
+
+    test "a fence that is never closed hides the rest of the file" do
+      assert ReviewFindings.unfenced_lines("a\n```\nb\nc") == [{0, "a"}]
+    end
+
+    test "a fence opens after at most three spaces, and an info string with a backtick opens none" do
+      assert ReviewFindings.unfenced_lines("   ```\nin\n   ```\nout") == [{3, "out"}]
+
+      assert ReviewFindings.unfenced_lines("    ```\nnot a fence") ==
+               [{0, "    ```"}, {1, "not a fence"}]
+
+      assert ReviewFindings.unfenced_lines("``` not `a` fence\nb") ==
+               [{0, "``` not `a` fence"}, {1, "b"}]
+    end
+  end
+
   describe "defect/1" do
     test "maps every malformed reason and the unreadable error to a closed code and bounded detail" do
       for reason <-
