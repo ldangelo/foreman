@@ -38,12 +38,24 @@ const LOAD_TOKEN =
   'if [ -z "$FOREMAN_API_TOKEN" ]; then FOREMAN_API_TOKEN=$(sed -n "s/^FOREMAN_API_TOKEN=//p" "$1" 2>/dev/null); export FOREMAN_API_TOKEN; fi; shift;';
 export const foremanArgv = (args) => ["sh", "-c", `${LOAD_TOKEN} exec foreman "$@"`, "sh", ENV_FILE, ...args];
 
-// Runs `foreman <args>` and returns its parsed JSON, or throws the CLI's own error line.
-export async function foreman(args) {
+// Runs `foreman <args>` and returns what it printed, or throws the CLI's own error line. `timeout` (ms) is how long
+// the CLI may run before it is killed; the default suits reads.
+async function foremanText(args, timeout) {
   const [cmd, ...rest] = foremanArgv(args);
-  const r = await exec(cmd, rest, { timeout: 15000 });
+  const r = await exec(cmd, rest, { timeout });
   if (r.code !== 0) throw new Error(r.stderr.trim().replace(/^foreman:\s*/, "") || `foreman exited ${r.code}`);
-  return JSON.parse(r.stdout);
+  return r.stdout;
+}
+
+// Runs `foreman <args>` and returns its parsed JSON, or throws the CLI's own error line.
+export async function foreman(args, timeout = 15000) {
+  return JSON.parse(await foremanText(args, timeout));
+}
+
+// Runs a verb that changes the server. It worked when the CLI exited 0, whatever it printed: its JSON answer is not
+// read, so an answer that cannot be parsed is never mistaken for a refusal of something the server did accept.
+export async function foremanDo(args, timeout = 15000) {
+  await foremanText(args, timeout);
 }
 
 // GET <server>/api/... as parsed JSON, for what the CLI does not offer (docs/cli-reference.md lists
@@ -180,3 +192,184 @@ export const openUrlArgv = (url) => {
   const platform = window()?.platform;
   return platform === "macos" ? ["open", [url]] : platform === "windows" ? ["cmd", ["/c", "start", "", url]] : ["xdg-open", [url]];
 };
+
+// ------------------------------------------------------------------------------------ completion notifications
+// The runs panel raises a Herdr notification when a run completes, and clicking it opens the run's detail tab on
+// Activity. What is not Herdr (what counts as a completion, what the notification says, what its click delivers)
+// lives here so that test/common.test.js can run it.
+
+// A run in any other status is still going: in_progress, awaiting_worker, paused, and the stall detector's stuck / blocked.
+const ENDED = new Set(["completed", "failed", "cancelled"]);
+
+// One poll of the run list: the runs that completed since the poll before, and the state to give the next call (null
+// before the first poll that worked). Pure: nothing it is given is changed.
+//   - The first poll only records what is there. A run that is already completed is not news, and neither is one that
+//     completed while the app was closed.
+//   - A run is news when the poll before saw it in a status that is not an end status and it is now `completed`. A run
+//     first seen already completed was not seen going, so it is not announced. failed and cancelled never are.
+//   - A run is announced at most once (`notified`), however its status flaps between the sources the list is built from.
+//     `notified` keeps a run only while the listing still has it, so the state is bounded by the listing, not by the
+//     number of runs that completed since the panel started.
+//   - An empty listing is a failed or racing read (as for pruneCleared): it changes nothing.
+export function trackCompletions(state, runs) {
+  if (state !== null && runs.length === 0) return { state, completed: [] };
+  const seen = new Map();
+  for (const r of runs) if (typeof r?.run_id === "string" && typeof r.status === "string") seen.set(r.run_id, r.status);
+  if (state === null) return { state: { seen, notified: new Set() }, completed: [] };
+  const notified = new Set([...state.notified].filter((id) => seen.has(id)));
+  const completed = [];
+  for (const r of runs) {
+    const before = state.seen.get(r?.run_id);
+    if (r?.status === "completed" && before !== undefined && !ENDED.has(before) && !notified.has(r.run_id)) {
+      completed.push(r);
+      notified.add(r.run_id);
+    }
+  }
+  return { state: { seen, notified }, completed };
+}
+
+// The notify() argument for a completed run. Herdr drops `args` when a notification (or a key) runs a mod command and
+// delivers only "<command>[:<value>]" to the mod's nextCommand(), so the run id travels in the command's name. A toast
+// lasts about 6 s unless told otherwise, too short to notice and click while looking elsewhere: this one stays 30 s.
+const COMPLETION_TOAST_MS = 30000;
+export const completionToast = (r) => ({
+  title: "Foreman",
+  body: `${workflowName(r)} ${beadId(r) ?? r.task_id ?? r.title ?? r.run_id} completed`,
+  level: "success",
+  timeout: COMPLETION_TOAST_MS,
+  action: { name: `foreman-runs.open-run-activity:${r.run_id}` },
+});
+
+const RUN_ID = /^[A-Za-z0-9_.-]+$/;
+// What the panel's command loop gets for `foreman-runs.open-run-activity:<run id>`: null when it is another command,
+// else {runId}, runId being null when the id is missing or is not a run id.
+export function parseActivityCommand(raw) {
+  const m = /^(?:foreman-runs[.:])?open-run-activity(?::([\s\S]*))?$/.exec(String(raw ?? ""));
+  if (!m) return null;
+  return { runId: m[1] !== undefined && RUN_ID.test(m[1]) ? m[1] : null };
+}
+
+// ------------------------------------------------------------------------------------------------ merging a PR
+// The run-detail tab can merge a run's pull request: two operator-only steps on the server, sent through the
+// `foreman` verbs so that the CLI builds the command and prints the server's own refusal
+// (packages/foreman_cli/cmd/foreman/run.go):
+//   foreman run approve-merge --id <run> --approver <login> --identity github:<login> --head-sha <FULL sha> [--repo-id <id>]
+//   foreman run merge --id <run> [--repo-id <id>]
+// The server enforces the gate whatever this file decides: approve-merge re-reads the PR's head from GitHub and refuses
+// any other commit than the one named, and merge squash-merges on GitHub only a head that was approved.
+
+const FULL_SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
+const GH_LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/;
+const REPO_ID = /^[a-z0-9][a-z0-9-]{0,31}$/; // a server repository id (Projects.RepoValidation)
+export const isFullSha = (s) => typeof s === "string" && FULL_SHA.test(s);
+export const shortSha = (s) => String(s ?? "").slice(0, 8);
+const reasonCode = (x) => `${x?.code ?? "?"}${x?.subject ? ` (${x.subject})` : ""}`;
+
+// Whether one PR may be merged with one click: {ok: true, step} or {ok: false, reason}. `p` is model.js's summary of
+// the server's PR record (GET /api/runs/:id/prs, ForemanServer.PrWatch.DTO). `step` is what is left to do: "approve"
+// (then merge) while the PR's merge gate is pending, "merge" once it is approved. Every condition has to hold:
+//   - status is exactly "open" (the server's other values: conflicted, merged, closed),
+//   - the head is a FULL commit SHA (an approval names the exact commit that was reviewed),
+//   - eligibility.status is exactly "eligible". The server's values are off | eligible | ineligible | waived | unknown;
+//     `off` (the project has no required checks) would need the explicit --acknowledge-gate-off, and `waived` is an
+//     operator's override of evidence, so neither is one-click; a value this code does not know is not a pass either,
+//   - no check is failing (the server's eligibility counts the required ones only),
+//   - the merge gate is pending or approved. The server reports it only for the run's primary PR.
+export function canMerge(p) {
+  const no = (reason) => ({ ok: false, reason });
+  if (!p) return no("the server has no pull request recorded for this run");
+  if (p.status === "merged") return no("it is already merged");
+  if (p.status === "closed") return no("it was closed without being merged");
+  if (p.status === "conflicted") return no("it has merge conflicts");
+  if (p.status !== "open") return no(p.status ? `its status is ${p.status}, not open` : "the server reported no status for it");
+  if (!isFullSha(p.headSha)) return no("the server reported no full head commit SHA, and an approval names the exact commit reviewed");
+  const status = p.eligibility?.status ?? "unknown";
+  const reasons = (p.eligibility?.reasons ?? []).map(reasonCode).join("; ");
+  if (status === "off") return no("the project has no required checks (merge gate off), so no CI evidence was checked; approving it anyway takes `foreman run approve-merge --acknowledge-gate-off`");
+  if (status === "waived") return no(`its evidence is eligible only through an operator's waiver (${(p.eligibility.waived ?? []).map(reasonCode).join("; ") || "no codes listed"}); approve it deliberately with \`foreman run approve-merge\``);
+  if (status === "ineligible") return no(`the server says it is not eligible: ${reasons || "no reason given"}`);
+  if (status === "unknown") return no(`the server could not judge its evidence${reasons ? `: ${reasons}` : ""}`);
+  if (status !== "eligible") return no(`its eligibility is ${status}, not eligible`);
+  const failing = p.checks?.fail ?? 0;
+  if (failing > 0) return no(`${failing} check${failing === 1 ? " is" : "s are"} failing (the server's eligibility counts the required checks only)`);
+  if (p.gate === "approved") return { ok: true, step: "merge", reason: "" };
+  if (p.gate === "pending") return { ok: true, step: "approve", reason: "" };
+  return no(p.gate ? `its merge gate is ${p.gate}: there is no approval to give or use` : "the server reports no merge gate for it (it reports the gate of a run's primary PR only)");
+}
+
+const need = (ok, what) => {
+  if (!ok) throw new Error(`refusing to build a merge command: ${what}`);
+};
+const str = (re, v) => typeof v === "string" && re.test(v);
+
+// `foreman run approve-merge …` for one PR. The head SHA must be the FULL commit the operator was shown. There is no
+// --acknowledge-gate-off: canMerge refuses a project whose gate is off, so this never sends it.
+export function approveMergeArgs({ runId, login, headSha, repoId = null }) {
+  need(str(RUN_ID, runId), "not a run id");
+  need(str(GH_LOGIN, login), "not a GitHub login");
+  need(isFullSha(headSha), "the head is not a full commit SHA");
+  need(repoId === null || str(REPO_ID, repoId), "not a repository id");
+  return ["run", "approve-merge", "--id", runId, "--approver", login, "--identity", `github:${login}`, "--head-sha", headSha, ...(repoId === null ? [] : ["--repo-id", repoId])];
+}
+
+// `foreman run merge …`: the server builds the whole merge from the approval, so only the run (and repository) is named.
+export function mergeArgs({ runId, repoId = null }) {
+  need(str(RUN_ID, runId), "not a run id");
+  need(repoId === null || str(REPO_ID, repoId), "not a repository id");
+  return ["run", "merge", "--id", runId, ...(repoId === null ? [] : ["--repo-id", repoId])];
+}
+
+// The operator's login, from `gh api user --jq .login` (a login and a newline). Anything else is no login.
+export const parseGhLogin = (stdout) => {
+  const s = String(stdout ?? "").trim();
+  return GH_LOGIN.test(s) ? s : null;
+};
+
+// Herdr's confirmation dialog for the merge: which PR, which base and head, what its checks say, and that it cannot be
+// taken back. `step` is canMerge's; `label` names the run; `login` is who approves; `checks` is the one-line summary of
+// the PR's checks that the tab shows beside the button (empty: not said).
+export function mergePrompt(p, { step, login, label, checks = "" }) {
+  const what = `${label ? `${label}: ` : ""}PR #${p.number ?? "?"} into ${p.base ?? "its base branch"}, head ${shortSha(p.headSha)}${checks ? `, checks ${checks}` : ""}.`;
+  const how = step === "merge"
+    ? "It is already approved; this merges it: squash merge on GitHub; this cannot be undone."
+    : `Approves it as github:${login}, then merges it: squash merge on GitHub; this cannot be undone.`;
+  return { title: `Merge PR #${p.number ?? "?"}?`, detail: `${what} ${how}` };
+}
+
+// Whether the installed `foreman` has the two verbs, from the usage `foreman run --help` prints (it prints it to stderr
+// and exits 1, and reads nothing from the server). {ok: true}, or {ok: false, reason} with the toast's text. An output
+// that is not that usage at all says so rather than claiming the verbs are missing.
+const MERGE_VERBS = ["approve-merge", "merge"];
+export function mergeVerbsCheck(usage) {
+  const text = String(usage ?? "");
+  if (!/^\s*foreman run list(?=\s|$)/m.test(text)) return { ok: false, reason: "could not read the usage of the installed foreman (`foreman run --help`); nothing was sent" };
+  const missing = MERGE_VERBS.filter((v) => !new RegExp(`^\\s*foreman run ${v}(?=\\s|$)`, "m").test(text));
+  if (missing.length === 0) return { ok: true };
+  return { ok: false, reason: `installed foreman lacks ${missing.map((v) => `\`run ${v}\``).join(" and ")}; update it` };
+}
+
+// A refusal of the server as the CLI prints it: "HTTP <status>: <JSON body>" with the body's `message`, `error` (what
+// Elixir's inspect/1 made of the reason) or `code`. The server's text is always kept; the refusals this flow can meet
+// get a plain-words explanation in front of it. Anything else (no server, a timeout) is shown as the CLI said it.
+const MERGE_REFUSALS = [
+  [/^:unauthorized_approver\b/, "the server does not accept this GitHub identity as a merge approver (its approver allowlist)"],
+  [/^\{:head_sha_mismatch\b/, "the PR's head on GitHub is not the commit that was shown"],
+  [/^\{:head_moved_since_approval\b/, "the PR's head moved after it was approved, which voids the approval"],
+  [/^\{:evidence_ineligible\b/, "the server judged the PR's evidence not eligible"],
+  [/^:merge_gate_already_approved\b/, "the merge gate is already approved"],
+  [/^:pr_not_acceptable\b/, "the merge gate is not approved"],
+];
+export function mergeErrorText(text) {
+  const line = String(text ?? "").split("\n")[0].trim();
+  const m = /^HTTP (\d{3}): (.*)$/.exec(line);
+  if (!m) return line || "the foreman command failed";
+  let body = null;
+  try {
+    body = JSON.parse(m[2]);
+  } catch {
+    /* not JSON: shown as it is */
+  }
+  const said = [body?.message, body?.error, body?.code].find((v) => typeof v === "string" && v !== "") ?? m[2];
+  const why = MERGE_REFUSALS.find(([re]) => re.test(said))?.[1];
+  return why ? `${why} (${said})` : said;
+}

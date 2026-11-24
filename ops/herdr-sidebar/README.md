@@ -5,12 +5,14 @@ panel that lists Foreman runs, grouped by project and status, next to your
 terminals and agents, and a **run-detail tab** the panel opens for a run: what it
 is doing right now or how it ended, its phases and their reports, a live activity
 feed (the agent's output, your steers, status and review verdicts), its code
-changes, its pull request's evidence and anything waiting on you. Both are Herdr
-"mods" (small JavaScript programs) plus a layout and a set of keyboard
-shortcuts. They read from Foreman through the `foreman` CLI and `GET` requests to the
-server's HTTP API, and change the server only through two buttons that ask first:
-resetting a failed run (`foreman run reset`) and approving a task that is awaiting
-approval (`POST /api/commands`); both are described below.
+changes, its pull request's evidence and anything waiting on you, and it can merge
+that pull request. Both are Herdr "mods" (small JavaScript programs) plus a layout
+and a set of keyboard shortcuts. The panel also raises a notification when a run
+completes. They read from Foreman through the `foreman` CLI and `GET` requests to the
+server's HTTP API, and change the server only through buttons that ask first:
+resetting a failed run (`foreman run reset`), approving a task that is awaiting
+approval (`POST /api/commands`) and merging a run's pull request (`foreman run
+approve-merge` and `foreman run merge`); all three are described below.
 
 ```
 FOREMAN   4 failed  0 active  13:22:22  ↻
@@ -31,8 +33,8 @@ FOREMAN   4 failed  0 active  13:22:22  ↻
 | Needs | Why |
 |---|---|
 | The Herdr desktop app (`herdr-app` on your `PATH`) | Hosts the panel. Start it once so `~/.config/herdr-app` exists. |
-| `foreman` on the `PATH` the Herdr app sees | The panel runs `foreman run list` and `foreman project list`. A GUI app inherits your login shell's `PATH`, so `~/bin` or `/usr/local/bin` is fine. |
-| `curl`, `git` (and `gh` for finished runs) | The run-detail tab reads the activity feed over HTTP, runs `git` in the run's worktree for its changes, and falls back to `gh pr view` for a run whose worktree is gone. |
+| `foreman` on the `PATH` the Herdr app sees | The panel runs `foreman run list` and `foreman project list`; the run-detail tab's merge button runs `foreman run approve-merge` and `foreman run merge` (a `foreman` without them gets a toast saying so and nothing is sent). A GUI app inherits your login shell's `PATH`, so `~/bin` or `/usr/local/bin` is fine. |
+| `curl`, `git` (and `gh` for finished runs and for merging) | The run-detail tab reads the activity feed over HTTP, runs `git` in the run's worktree for its changes, and falls back to `gh pr view` for a run whose worktree is gone. Merging a PR asks `gh api user` who you are on GitHub: that login is the approver. |
 | A server with `GET /api/runs/:id/phases` | `foreman run phases`, added with the run-detail tab. An older server answers 404: the tab still works, the phase strip loses its per-phase status and says so. |
 | A server with `GET /api/runs/:id/artifacts` and `/artifacts/:phase_id` | The recorded phase reports of the Phases tab (original file or the server's archived copy, with a digest check). An older server answers 404: the tab says so and reads each finished phase's report from this machine instead: the run's own files under `~/.foreman/runs/<run-id>/`, else the commit Foreman made for the phase (see below). A report that exists in neither place shows `not found` until the server has the route. |
 | A server with `GET /api/runs/:id/prs` | The PR evidence of the Overview and the PR tab. Without it they say so. |
@@ -138,10 +140,12 @@ not shown; `GET /api/projects/<id>/usage` reports it as `limits.deferred_tasks`.
 | Reset a failed run (asks first) | click `reset` on its row | `⇧⌘H` on the selected run |
 | Approve a task that is awaiting approval (asks first) | click `approve` on its row in the queue | `⇧⌘A` for the task that has waited longest |
 | Switch the sidebar between the full panel and a compact rail | | `⇧⌘B` |
+| Next / previous tab of the run-detail view on screen | click a tab | `⌃⌥→` / `⌃⌥←` (`ctrl-alt-right` / `ctrl-alt-left`) |
 
-On macOS the shortcuts are `cmd-shift-<letter>`; the footer under the list shows
-whichever chords are actually bound in your `keys.json`. Collapsed groups are
-remembered across restarts. While the panel holds the keyboard (after `⇧⌘J` or
+On macOS the shortcuts are `cmd-shift-<letter>`, except the two tab chords, which act on the run-detail
+view (`foreman-run.next-tab` / `foreman-run.prev-tab`, wrapping around); the footer under the list shows
+whichever panel chords are actually bound in your `keys.json` (it does not list the tab chords). Collapsed
+groups are remembered across restarts. While the panel holds the keyboard (after `⇧⌘J` or
 turning the filter on) typing goes to the panel, not your terminal; `Esc`
 hands it back to the pane that had it.
 
@@ -197,6 +201,24 @@ one tile per project, outlined red while it has failed runs. Clicking it widens
 the sidebar again. `cmd-b` is Herdr's own show/hide for the whole sidebar and is
 unchanged.
 
+**Completion notifications.** When a run goes from running, queued or paused to `completed`, the panel
+raises a Herdr notification, `fix foreman-vbfmo.12 completed` (the workflow, then the bead id, else the
+task id, else the title). Clicking it opens that run's detail tab on **Activity**.
+
+- The first poll after the panel starts only records what is there: runs that were already completed, or
+  that completed while Herdr was closed, are not announced.
+- A run is announced once per session, however its status flaps between the sources the list is built from (the
+  panel remembers an announced run only while the listing still has it, so that memory stays as small as the listing).
+  Only `completed` is announced (not failed or cancelled), and only a run that was seen running: one that
+  started and completed between two 10 s polls, or that first shows up already completed, is not.
+- The notification is Herdr's own toast, so it shows in the Herdr window (for 30 s: a default toast lasts about
+  6 s, too short to click if you are looking elsewhere), and the panel posts it: it comes while the panel is
+  loaded (the `foreman` layout is showing), with the sidebar folded or not.
+- `herdr-app do 'foreman-runs.open-run-activity:<run-id>'` does what the click does. Herdr delivers only the
+  *name* of a mod command to the mod and drops its `args`, so the run id travels in the name after a colon
+  (a notification's `action: {name, args}` is that same command). Each click opens a new tab: Herdr does not
+  tell a mod which run a tab shows, so an open tab for the run cannot be found and focused.
+
 ## The run-detail tab
 
 ```
@@ -220,7 +242,10 @@ tab); and banners for the failure reason, a stall (its reason and idle time), wh
 every read that failed.
 
 **Tabs.** `Overview`, `Activity`, `Phases`, `Changes`, `PR`. A run that is over opens on Overview,
-one that is going on Activity; the tab you click stays.
+one that is going on Activity; the tab you click stays. `⌃⌥→` / `⌃⌥←` (`ctrl-alt-right` /
+`ctrl-alt-left`, bound to `foreman-run.next-tab` / `prev-tab` in the `layout:foreman` section of
+`keys.json`) step to the next / previous tab and wrap around. The `tab` prop (see the end of this
+section) picks the tab it opens on; a completion notification opens `activity`.
 
 - **Overview.** *Outcome*: how it ended (or, for a run that is going, what it is doing now with its
   newest output), the failure reason in full (six lines, `show more`, `copy`; a cancelled run has none
@@ -244,7 +269,9 @@ one that is going on Activity; the tab you click stays.
   the tab keeps the whole one when the fragments are provably its own; whatever it cannot prove is shown
   as sent, marked `unmerged chunks`. Scrolling up stops the auto-follow; `jump to latest` turns it on
   again. The server's log window is bounded, so a long run shows `N earlier log entries are not
-  available`.
+  available`. While the run's pull request may be merged, a banner under the tab bar offers **Approve &
+  merge** (see "Merging the pull request"); it sits outside the scrolling feed so that following the feed
+  does not scroll it away.
 - **Phases.** One section per phase; click to open. Open: when it started and ended, its provider and
   model, attempts, failure reason or stall, then its **phase report** (the markdown the agent wrote,
   from `GET /api/runs/:id/artifacts/:phase_id`, fetched when you open the phase and kept per sha256):
@@ -267,11 +294,49 @@ one that is going on Activity; the tab you click stays.
   disposition, source, description, `path:line`) and the review's judgement; risk level, rationale and
   instructions; the agent review's verdict and gaps, the published report, a delivery issue; next
   actions. Anything the server could not read is a line saying so; `unknown` is never shown as clean.
+  The row under the PR's title is its **Approve & merge** button (**Merge** once the PR is approved): live
+  only when the server says the PR may be merged, otherwise dimmed with the reason beside it.
+
+**Merging the pull request.** This is the one thing the run-detail tab does that changes anything on GitHub,
+so it is narrow, asks first and trusts the server over itself. Merging is two operator-only steps on the
+server, run through the `foreman` CLI so that its error text is the server's own.
+
+- *When the button is live.* The PR is `open`; its head is a full commit SHA; the server's
+  `eligibility.status` is exactly `eligible` (its values are `off`, `eligible`, `ineligible`, `waived` and
+  `unknown`); no check is failing; and its merge gate is `pending` (or already `approved`: the button then
+  says **Merge** and skips the approval). Otherwise it is dimmed and says why: `off` (the project has no
+  required checks, so no CI evidence was checked: approving that needs the explicit
+  `foreman run approve-merge --acknowledge-gate-off`, which this button never sends), `waived` (an
+  operator's waiver, not passing evidence), not eligible (with the evidence codes), merged, closed,
+  conflicted, no full head SHA, or a gate that is not pending. Only the run's primary PR can be merged
+  here: the server reports a merge gate for that one only. It is also dimmed while the last read of the PR
+  evidence has failed, because what is on screen may be old.
+- *Who approves.* You, as the GitHub login that `gh api user --jq .login` prints on this machine
+  (`--approver <login> --identity github:<login>`). If it cannot be read, an error toast says so and
+  nothing is sent. The server accepts an approval only from identities on its approver allowlist; its refusal
+  is shown in the toast with an explanation.
+- *The confirmation.* A click first checks that the installed `foreman` has `run approve-merge` and
+  `run merge` (it reads `foreman run --help`, which only prints usage; a `foreman` without them gets the toast
+  "installed foreman lacks `run approve-merge`; update it" and nothing is sent), then reads your login, then
+  opens Herdr's confirmation dialog: the PR number, its base, the short head SHA, its checks (the passing,
+  failing and pending counts that the button's row shows), who approves, and "squash merge on GitHub; this
+  cannot be undone". Esc cancels, and nothing has been sent at that point. A
+  confirmation answered more than a minute after it was asked is ignored.
+- *On confirm* the tab reads the PR from the server again and stops with an info toast if it is no longer
+  mergeable or its head is not the commit the dialog showed. Otherwise it runs
+  `foreman run approve-merge --id <run> --approver <login> --identity github:<login> --head-sha <FULL sha>`
+  (the server reads the PR's head back from GitHub and refuses any other commit, then pins the merge to it)
+  and, only if that was accepted, `foreman run merge --id <run>` (the server squash-merges on GitHub only
+  the pinned head, and checks its gate again). The result is a toast and a reload. A busy flag makes a
+  second click or a second confirmation do nothing while one is under way.
+- *If the second step fails* the first stands: the toast says "Approved …, but the merge failed: …" and the
+  button reads **Merge**, to retry. A push after the approval voids it (the gate is held again), and the new
+  head then needs a new approval, which the dialog shows.
 
 **What is read, and how often.** The run, its phases and the transcript every 3 s while the run is going
 (30 s once it is over); approvals and questions only while it is going; PR evidence and the report list
 at most every 10 s (30 s once over; `↻` reads them at once); a report's text only when its phase is open,
-once per sha256; git every 10 s for a run that is going. Everything is read-only. A read that fails is
+once per sha256; git every 10 s for a run that is going. Everything is read-only except the merge above. A read that fails is
 shown with its reason and never turned into "nothing there"; a server that lacks a route is told as
 that. All text that came from an agent or from GitHub is drawn as plain text: nothing in it is
 interpreted, linked or loaded.
@@ -281,6 +346,9 @@ interpreted, linked or loaded.
 Open it from the panel, or directly:
 `herdr-app do tab.new '{"name":"run","mod":"foreman-run","props":{"run_id":"run-…","tab":"phases","phase":"fix"}}'`
 (`tab` is optional: `overview`, `activity`, `phases`, `changes` or `pr`; `phase` is optional too, a phase name or its number: that phase opens in the Phases tab, which then becomes the starting tab unless `tab` says otherwise).
+
+The panel opens it that way for a click on a run (no `tab`: the run's state decides) and for a completion
+notification (`tab: "activity"`).
 
 ## Troubleshooting
 
@@ -298,6 +366,11 @@ Open it from the panel, or directly:
 | "No readable output: the log holds only N blank chunks" | The agent wrote nothing but blank chunks into the part of the log the server keeps (about the newest 500 entries). |
 | "unmerged chunks" on a turn | The turn ends with fragments of a message whose whole text has not arrived (or is outside the server's log window); they are shown as sent. |
 | "the server has no thread for this run" | The run failed before its thread existed: no transcript, title or branch. The other tabs still work. |
+| "installed foreman lacks `run approve-merge`; update it" | The `foreman` on the Herdr app's `PATH` predates the merge verbs. Update it; the merge button sends nothing until the installed binary has both. |
+| "Could not read your GitHub login" | `gh` is not on the `PATH` the Herdr app sees, or is not logged in (`gh auth status`). The merge needs your login as the approver; nothing was sent. |
+| "the server does not accept this GitHub identity as a merge approver" | `github:<your login>` is not on the server's approver allowlist (`ForemanServer.Workflow.ApproverAuthorizer`). Nothing was approved or merged. |
+| **Approve & merge** is dimmed | The reason is written beside it. `off` means the project has no `required_checks` (a project setting: `foreman project update --required-checks '<json>'`, see "Enabling the gate for a project" in `docs/user-guide.md`): the server then has no CI evidence to call a PR eligible, so the button stays dimmed for that project and approving its PRs remains the deliberate `foreman run approve-merge --acknowledge-gate-off`. `waived` evidence is never one-click either; see "Merging the pull request". |
+| No notification when a run completes | The panel has to be loaded (the `foreman` layout showing); the first poll only records a baseline; a run that completed while Herdr was closed, between two polls or before it was first seen running is not announced; failed and cancelled runs never are. The notification is a toast in the Herdr window. |
 
 ## Uninstall
 
@@ -318,7 +391,8 @@ example the sidebar width) it is kept and only the panel's block is removed.
 | `mods/foreman-runs/`, `mods/foreman-run/` | The panel and the run-detail tab (`main.js`, `mod.json`). No dependencies beyond Herdr's `gpui-kit` / `herdr` modules. |
 | `mods/foreman-run/model.js` | The run-detail tab's logic without any drawing: duration math, phase rows, transcript clean-up and grouping, report markdown, PR evidence reduction, the status and outcome summaries. No imports; `install.sh` copies every `*.js` of a mod's folder. |
 | `test/model.test.js` | Regression tests for `model.js` (`bun:test`, plain fixtures, fixed clock, no network or filesystem). Not installed. See [Tests](#tests). |
-| `common.js` | Helpers both mods share: status styling, the CLI and HTTP callers (`api()` and `apiPost()` report the HTTP status), the token lookup. Copied into each mod by `install.sh`. |
+| `test/common.test.js` | Regression tests for `common.js`'s pure helpers (clearing, the reset, approval and merge confirmations, approving a task, completion tracking, `canMerge`, the argument builders). `bun:test`, the `herdr` module stubbed, no network or filesystem. Not installed. |
+| `common.js` | Helpers both mods share: status styling, the CLI and HTTP callers (`api()` and `apiPost()` report the HTTP status), the token lookup, the approval of a task, the completion tracking behind the notifications, the merge decision (`canMerge`) and the `foreman` argument builders of the two merge steps. Copied into each mod by `install.sh`. |
 | `keys.layout-foreman.json` | The `layout:foreman` shortcut section merged into `keys.json`. |
 | `install.sh` | Installer / uninstaller. |
 
@@ -330,7 +404,11 @@ example the sidebar width) it is kept and only the panel's block is removed.
 bun test ops/herdr-sidebar/test
 ```
 
-`bun` is not a devbox package and CI does not run this suite: it is a local check you run when you change `model.js`.
+`bun` is not a devbox package and CI does not run this suite: it is a local check you run when you change `model.js` or `common.js`. The same command runs
+`test/common.test.js` too: the pure helpers of `common.js`, namely clearing and resetting runs, the completion
+tracking and the notification it builds, the parsing of a click's command, `canMerge` for every eligibility state and
+PR status, the `foreman` argument builders (full head SHA, identity, no gate-off acknowledgement), the missing-verb
+check and the wording of the server's refusals.
 
 ## For maintainers
 
@@ -378,6 +456,23 @@ The panel posts one command itself, `task.approve` (`apiPost()` in `common.js`, 
 A refusal is `422 {"error": "<inspect(reason)>"}` (`{:task_not_found, id}`, `{:task_not_approvable, status}`,
 `{:task_dependencies_unsatisfied, …}`), shown as it came; so is any other answer.
 
+The merge button reads the same PR records (`ForemanServer.PrWatch.DTO`): `status` (`open`, `conflicted`,
+`merged`, `closed`; only `open` merges), `head_sha`, `repo_id` (null for the run's primary PR), `merge_gate`
+(`none`, `pending`, `approved`; present only for the run's primary PR) and `eligibility.status` (`off`,
+`eligible`, `ineligible`, `waived`, `unknown`; `ForemanServer.PrEvidence`). The server decides an approval on
+`off` (only with `acknowledge_gate_off`), `eligible` and `waived`; the tab offers `eligible` alone, so
+`--acknowledge-gate-off` and waived evidence stay deliberate CLI acts. The steps are `foreman run
+approve-merge` and `foreman run merge` (`packages/foreman_cli/cmd/foreman/run.go`: `merge_approve` and
+`run.pr.merge` on `POST /api/commands`). The CLI prints a refusal as `foreman: HTTP 422: {"error":
+"<inspect(reason)>"}`; the ones this flow meets are `:unauthorized_approver` (the allowlist is
+`Workflow.ApproverAuthorizer`'s), `{:head_sha_mismatch, named, live}`, `{:head_moved_since_approval, approved,
+live}`, `{:evidence_ineligible, head, codes}`, `:merge_gate_already_approved` and `:pr_not_acceptable`.
+
+A completion notification's `action: {name, args}` is run by Herdr's `toast` mod as `run(name, args)`. For a mod
+command Herdr delivers `<command>[:<value>]` to the mod's `nextCommand()` (the mod's name stripped) and drops
+`args` (checked with a probe mod: `run("m.c:x.y", {a: 1})` delivers `c:x.y`), which is why the panel's
+`open-run-activity` command carries the run id after a colon (`parseActivityCommand` in `common.js`).
+
 Verification so far: the panel was exercised against a live server and against
 stub servers, and the commands behind each shortcut were driven with
 `herdr-app do foreman-runs.<command>`. The run-detail tab's logic (`model.js`) was exercised with plain
@@ -385,3 +480,15 @@ fixtures and with transcripts captured from a live server; its views were render
 stand-in for `gpui-kit` (every element method checked against `gpui-kit.d.ts`) with a live server, a
 server without the new routes and fixture servers; both mods pass `herdr-app check`. The key chords,
 mouse clicks, scrolling and how it looks in a real window were not exercised by an automated check.
+
+The completion notification and the merge flow were checked three ways. `test/common.test.js` covers their pure
+logic. Their `main.js` code (the poll that announces, the command a click delivers, the asking and confirming
+steps with every refusal path, the double-click guard) was driven through the real files against a recording
+stand-in for `gpui-kit` and for the `herdr` module, with a fake `exec`: no server was contacted and no merge could
+be sent. A copy of the detail tab, pointed at a fixture server and at a stub `foreman` that only logged what
+it would have run, was opened in a real Herdr window: the banner, the live button and the confirmation dialog
+rendered, nothing ran before the dialog was answered, and answering it (with the command the
+Confirm button runs) ran approve-merge and then merge, in that order, with the full head SHA. Not exercised: a
+click on a notification's toast (the toast mod runs `run(name, args)`, and a probe mod confirmed that this
+delivers `<command>:<value>` to a mod and drops `args`) and a real merge. The dimmed button, with its reason beside
+it, was also seen in the installed tab on a real run's PR tab (its project has no required checks).

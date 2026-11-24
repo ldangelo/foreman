@@ -1,17 +1,20 @@
 // One Foreman run, live: what it is doing right now (or how it ended), its phases and their reports, the
 // agent's output, what it has changed, its pull request's evidence and anything waiting on the operator.
 // Opened from the runs panel (`tab.new {mod: "foreman-run", props: {run_id, tab?}}`); it polls the Foreman
-// server itself and only ever reads from it. The logic that is not drawing lives in ./model.js.
+// server itself and only reads from it, except for the PR's merge button (see "merging the PR"), which asks first.
+// The logic that is not drawing lives in ./model.js and ./common.js.
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, ScrollHandle } from "gpui-base";
-import { theme, checking, run, exec, home, notify, readTextFile, settings, nextCommand, props as tabProps } from "herdr";
-import { info, clock, api, foreman, foremanArgv, prUrl, beadId, workflowName, openUrlArgv } from "./common.js";
+import { theme, checking, run, exec, home, notify, readTextFile, settings, nextCommand, openOverlay, props as tabProps } from "herdr";
+import { info, clock, api, foreman, foremanDo, foremanArgv, prUrl, beadId, workflowName, openUrlArgv, canMerge, approveMergeArgs, mergeArgs, mergePrompt, mergeVerbsCheck, mergeErrorText, parseGhLogin, shortSha } from "./common.js";
 import * as M from "./model.js";
 
 const LIVE_POLL_MS = 3000; // while the run is active
 const DONE_POLL_MS = 30000; // a finished run changes little; refreshing it is only a safety net
 const CHANGES_EVERY_MS = 10000; // git is run at most this often for an active run
 const SIDE_EVERY_MS = 10000; // PR evidence and the report list are read at most this often while the run is active
+const MERGE_CONFIRM_MS = 60000; // a merge confirmation answered later than this is ignored: what it was about is long forgotten
+const MERGE_CLI_MS = 45000; // approve-merge and merge wait on GitHub; the CLI's own HTTP timeout (30 s) ends them first
 const PAGE = 200; // transcript turns per request
 const MAX_TURNS = 500; // turns kept in memory; older ones are dropped from the top
 const MAX_LINES = 8; // lines of one turn shown before "show more"
@@ -113,6 +116,9 @@ export default class ForemanRun extends View {
     this.loaded = false;
     this.busy = false;
     this.refreshing = false;
+    this.mergeBusy = false; // a merge is being checked, confirmed or run: the merge buttons do nothing meanwhile
+    this.pendingMerge = null; // {url, repoId, headSha, number, login, at}: the PR Herdr's confirm dialog is asking about
+    this.mergeVerbsOk = false; // the installed foreman was seen to have approve-merge and merge
     this.updatedAt = 0;
     this.lastLoadAt = 0;
     if (!RUN_ID.test(this.runId)) {
@@ -124,13 +130,15 @@ export default class ForemanRun extends View {
       if (!this.run || !M.isFinished(this.run) || Date.now() - this.lastLoadAt >= DONE_POLL_MS) this.refresh(cx);
     });
     this.refresh(cx);
-    // Key commands from keys.json ("foreman-run.next-tab" / "foreman-run.prev-tab") switch the tab.
+    // Key commands from keys.json ("foreman-run.next-tab" / "foreman-run.prev-tab") switch the tab. The merge's confirm
+    // dialog answers with "foreman-run.merge-confirmed" (see confirmMerge).
     if (!checking()) {
       cx.spawn(async (cx) => {
         for (;;) {
           const command = String(await nextCommand()).split(/[.:]/).pop();
           if (command === "next-tab") this.stepTab(1, cx);
           else if (command === "prev-tab") this.stepTab(-1, cx);
+          else if (command === "merge-confirmed") this.confirmMerge(cx);
         }
       });
     }
@@ -602,6 +610,156 @@ export default class ForemanRun extends View {
     return finished ? "This run produced no output." : "No output yet. The agent has not written anything.";
   }
 
+  // ------------------------------------------------------------------------------------ merging the PR
+  // Two operator-only steps on the server, both run through the `foreman` CLI (common.js, "merging a PR"): approve-merge,
+  // then merge. Nothing is sent before the operator confirms in Herdr's dialog, what they confirm is read again from the
+  // server first, and the server applies its own gate on top.
+
+  // What the merge button may do for one PR now. When the last read of the PR evidence failed, what is on screen may be
+  // old, and nothing is offered from it.
+  mergeState(p) {
+    if (this.warn.prs) return { ok: false, reason: "the last read of the PR evidence failed, so what is shown may be old (↻ reads it again)" };
+    return canMerge(p);
+  }
+
+  // Whether the installed `foreman` has approve-merge and merge (`foreman run --help` only prints its usage). A yes is
+  // kept. Returns the problem to show, or null.
+  async mergeVerbsProblem() {
+    if (this.mergeVerbsOk) return null;
+    const [cmd, ...rest] = foremanArgv(["run", "--help"]);
+    let r;
+    try {
+      r = await exec(cmd, rest, { timeout: 10000 });
+    } catch (e) {
+      throw new Error(`Could not run foreman to check that it has the merge verbs: ${errLine(e)}. Nothing was sent.`);
+    }
+    const check = mergeVerbsCheck(`${r.stdout}\n${r.stderr}`);
+    this.mergeVerbsOk = check.ok;
+    return check.ok ? null : check.reason;
+  }
+
+  // The operator's GitHub login, which is who approves (`gh api user`). Throws the text to show when there is none.
+  async ghLogin() {
+    let r;
+    try {
+      r = await exec("gh", ["api", "user", "--jq", ".login"], { timeout: 15000 });
+    } catch (e) {
+      throw new Error(`Could not run gh to read your GitHub login: ${errLine(e)}. Nothing was sent.`);
+    }
+    const login = r.code === 0 ? parseGhLogin(r.stdout) : null;
+    if (!login) throw new Error(`Could not read your GitHub login with \`gh api user\`: ${firstLine(r.stderr) || "no login in its answer"}. Nothing was sent.`);
+    return login;
+  }
+
+  // "Approve & merge" (or "Merge") was clicked. This sends nothing to the server: it checks what the click cannot know
+  // (the installed foreman has the verbs; who the operator is on GitHub), then asks in Herdr's confirmation dialog
+  // (Enter confirms, Esc cancels). Confirming sends "foreman-run.merge-confirmed" back to this tab: see confirmMerge.
+  askMerge(p, cx) {
+    if (this.mergeBusy) return;
+    const can = this.mergeState(p);
+    if (!can.ok) return notify({ title: "Foreman", body: `PR #${p.number ?? "?"} cannot be merged here: ${can.reason}.`, level: "info" });
+    this.mergeBusy = true;
+    cx.notify();
+    cx.spawn(async (cx) => {
+      try {
+        const problem = await this.mergeVerbsProblem();
+        if (problem) return notify({ title: "Foreman", body: problem, level: "error" });
+        const login = await this.ghLogin();
+        const label = `${[workflowName(this.run), beadId(this.run) ?? this.run.task_id].filter(Boolean).join(" ")} (${this.runId})`;
+        const { title, detail } = mergePrompt(p, { step: can.step, login, label, checks: checksText(p) });
+        this.pendingMerge = { url: p.url, repoId: p.repoId, headSha: p.headSha, number: p.number, login, at: Date.now() };
+        openOverlay({ mod: "confirm", kind: "dialog", modal: true, width: 460, height: 270, props: { title, detail, command: { name: "foreman-run.merge-confirmed", args: {} } } });
+      } catch (e) {
+        notify({ title: "Foreman", body: errLine(e), level: "error" });
+      } finally {
+        this.mergeBusy = false;
+        cx.notify();
+      }
+    });
+  }
+
+  // The answer of Herdr's dialog. Herdr delivers it to every shown copy of this mod, so a copy that asked nothing stays
+  // quiet. Nothing the dialog showed is trusted: the PR is read again, and it is approved and merged only if it is still
+  // open and eligible with the same head. A failure after the approval says so: the approval stands, and the button then
+  // offers the merge alone.
+  async confirmMerge(cx) {
+    const ask = this.pendingMerge;
+    if (!ask) return;
+    this.pendingMerge = null;
+    const label = `PR #${ask.number ?? "?"}`;
+    const say = (body, level = "info", timeout = 0) => notify({ title: "Foreman", body, level, ...(timeout > 0 ? { timeout } : {}) });
+    if (Date.now() - ask.at > MERGE_CONFIRM_MS) return say(`That confirmation came more than a minute after it was asked: ${label} was not merged.`);
+    if (this.mergeBusy) return;
+    this.mergeBusy = true;
+    cx.notify();
+    let approved = false;
+    try {
+      const fresh = M.summarizePrs(await api(`/api/runs/${this.runId}/prs`));
+      this.prSum = fresh;
+      this.prsAt = this.prsOkAt = Date.now();
+      delete this.warn.prs;
+      const p = fresh.find((x) => x.url === ask.url && x.repoId === ask.repoId);
+      const can = canMerge(p);
+      if (!can.ok) return say(`${label} was not merged: ${can.reason}.`);
+      if (p.headSha !== ask.headSha) return say(`${label} was not merged: its head moved from ${shortSha(ask.headSha)} to ${shortSha(p.headSha)} after you were asked. Review the new head, then ask again.`);
+      if (can.step === "approve") {
+        await foremanDo(approveMergeArgs({ runId: this.runId, login: ask.login, headSha: p.headSha, repoId: p.repoId }), MERGE_CLI_MS);
+        approved = true;
+      }
+      await foremanDo(mergeArgs({ runId: this.runId, repoId: p.repoId }), MERGE_CLI_MS);
+      say(`Merged ${label}${p.base ? ` into ${p.base}` : ""} (squash).`, "success", 8000);
+    } catch (e) {
+      const why = mergeErrorText(errLine(e));
+      say(approved ? `Approved ${label}, but the merge failed: ${why}. The approval stands: use the button again to retry.` : `${label} was not merged: ${why}.`, "error");
+    } finally {
+      this.mergeBusy = false;
+      await this.loadPrs();
+      cx.notify();
+      this.refresh(cx, true);
+    }
+  }
+
+  // What the server says about a PR that may be merged, in one line.
+  mergeFacts(p) {
+    return `eligible · checks ${checksText(p)} · head ${shortSha(p.headSha)}${p.base ? ` · base ${p.base}` : ""}`;
+  }
+
+  // The merge button of one PR. Live only when `can.ok`; otherwise, and while a merge is under way, it is dimmed and does
+  // nothing. "Merge" alone once the PR is approved.
+  mergeButton(th, p, id, can) {
+    const label = this.mergeBusy ? "Merging…" : can.ok && can.step === "merge" ? "Merge" : "Approve & merge";
+    const button = div().id(id).px(10).py(3).rounded(4).text_size(12).font_semibold().child(label);
+    if (!can.ok || this.mergeBusy) return button.bg(th.surface).text_color(th.dim);
+    return button.bg(th.solid).text_color(th.solid_foreground).cursor_pointer().hover((s) => s.opacity(0.88)).on_click((_e, cx) => this.askMerge(p, cx));
+  }
+
+  // The PR tab's merge row: the button, and why it is not live when it is not. A merged PR needs no button.
+  mergeRow(p, i, vm) {
+    const { th } = vm;
+    if (p.status === "merged") return h_flex().px(12).py(4).child(div().text_size(12).font_semibold().text_color(th.done).child("Merged"));
+    const can = this.mergeState(p);
+    const text = can.ok
+      ? `${this.mergeFacts(p)} — ${can.step === "merge" ? "already approved: this merges it" : "approves it as you, then merges it"}`
+      : `Cannot merge: ${can.reason}.`;
+    return h_flex().px(12).py(4).gap(10).items_center().flex_wrap()
+      .child(this.mergeButton(th, p, `pr-merge-${i}`, can))
+      .child(div().flex_1().min_w(0).text_size(12).text_color(can.ok ? th.muted : th.idle).child(text));
+  }
+
+  // On the Activity view, outside its scrolling feed so that it stays in sight while the feed follows: one line for each
+  // PR the server says may be merged. Null when there is none.
+  mergeBanner(vm) {
+    const { th } = vm;
+    const ready = (this.prSum ?? []).map((p, i) => ({ p, i, can: this.mergeState(p) })).filter((x) => x.can.ok);
+    if (ready.length === 0) return null;
+    return v_flex().border_b(1).border_color(th.border).children(ready.map(({ p, i, can }) =>
+      h_flex().id(`merge-banner-${i}`).px(12).py(4).gap(8).items_center().bg(th.surface)
+        .child(div().text_size(12).font_semibold().text_color(th.done).child(`PR #${p.number ?? "?"} is ${can.step === "merge" ? "approved and " : ""}ready to merge`))
+        .child(div().flex_1().min_w(0).truncate().text_size(12).text_color(th.muted).child(this.mergeFacts(p)))
+        .child(chip(th, `merge-banner-pr-${i}`, "details", false, (_e, cx) => this.setTab("pr", cx)))
+        .child(this.mergeButton(th, p, `merge-banner-btn-${i}`, can))));
+  }
+
   // ------------------------------------------------------------------------------------ rendering
 
   render() {
@@ -637,9 +795,11 @@ export default class ForemanRun extends View {
       this.scroll.scroll_to_item(0);
     }
 
+    const banner = tab === "activity" && r && this.loaded ? this.mergeBanner(vm) : null;
     return v_flex().id("foreman-run").size_full().bg(th.chrome)
       .child(this.headerRows(vm))
       .child(this.tabBar(vm, tab))
+      .when(banner, (el) => el.child(banner))
       // The wheel handler sits on a wrapper, never on the scroll area: gpui-kit documents
       // on_scroll_wheel as the gesture for something other than scrolling, and putting it on the
       // scroll container itself can take the wheel away from it. Reading back through the output
@@ -944,6 +1104,7 @@ export default class ForemanRun extends View {
       .child(chip(th, `pr-open-${i}`, "Open PR ↗", false, () => this.openUrl(p.url)))
       .child(chip(th, `pr-copy-${i}`, "copy URL", false, (_e, cx) => this.copy(p.url, "the PR URL", cx))));
     out.push(dim(`${p.url}${p.base ? `  ·  base ${p.base}` : ""}${p.branch ? `  ·  ${p.branch}` : ""}${p.headSha ? `  ·  head ${p.headSha.slice(0, 8)}` : ""}${p.watching ? "  ·  watching" : p.stopReason ? `  ·  watch stopped: ${p.stopReason}` : ""}`));
+    out.push(this.mergeRow(p, i, vm));
 
     out.push(heading(th, "Checks"));
     if (!p.checks.observed) out.push(note(th, `No checks have been observed for this head${p.checks.state ? ` (the watch says ${p.checks.state})` : ""}. That is not the same as passing.`, "idle"));
