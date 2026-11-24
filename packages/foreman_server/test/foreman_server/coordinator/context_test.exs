@@ -360,6 +360,7 @@ defmodule ForemanServer.Coordinator.ContextTest do
     assert Context.card_state(thread(1, "in_progress")) == :working
     assert Context.card_state(thread(1, "blocked")) == :waiting_on_you
     assert Context.card_state(thread(1, "failed")) == :waiting_on_you
+    assert Context.card_state(thread(1, "cancelled")) == :idle
     assert Context.card_state(thread(1, "completed")) == :ready_for_review
     assert Context.card_state(thread(1, "completed", resolved: true)) == :resolved
     assert Context.card_state(thread(1, "queued")) == :idle

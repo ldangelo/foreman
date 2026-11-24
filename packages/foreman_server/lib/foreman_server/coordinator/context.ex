@@ -135,7 +135,7 @@ defmodule ForemanServer.Coordinator.Context do
   def card_state(%Thread{resolved: true}), do: :resolved
 
   def card_state(%Thread{status: status})
-      when status in ~w(blocked stuck needs_recovery paused failed cancelled), do: :waiting_on_you
+      when status in ~w(blocked stuck needs_recovery paused failed), do: :waiting_on_you
 
   def card_state(%Thread{last_report: %{verdict: _}}), do: :ready_for_review
   def card_state(%Thread{status: "completed"}), do: :ready_for_review
