@@ -632,6 +632,8 @@ test("phase times: a finished phase ran from its start to its last event, a phas
     { name: "coderabbit-review", attempt: 1, glyph: "✕", ms: 300_000 }, // left open by a failed run: to the run's last event
   ]);
   expect(phaseDurations({ status: "cancelled", last_event_at_ms: T + 900_000 }, phases)[2].glyph).toBe("–");
+  expect(phaseDurations({ status: "completed", last_event_at_ms: T + 900_000 }, phases)[2].glyph).toBe("✓"); // the tab marks it done too
+  expect(phaseDurations({ status: "stuck", last_event_at_ms: T + 900_000 }, phases)[2].glyph).toBe("✕");
 });
 
 test("phase times: a missing or backwards time is no duration, and rows with no name or a non-list answer are dropped", () => {

@@ -152,8 +152,8 @@ export const span = (ms) => {
 };
 // One line per phase a finished run started, from GET /api/runs/:id/phases: {name, attempt, glyph, ms}. A phase ran from
 // its start to its last event; one the run left open (a failed or stuck run) to the run's last event, as in the run tab
-// (buildPhaseRows). ms is null when either time is missing. The glyph: ✓ completed, ✕ failed (or left open by a run that
-// failed or got stuck), – cancelled, skipped or left open by a cancelled run, ? anything else.
+// (buildPhaseRows). ms is null when either time is missing. The glyph: ✓ completed; ✕ failed; a phase the run left open
+// takes the run's own outcome, as in the run tab (✓ completed run, – cancelled, ✕ failed or stuck); – cancelled or skipped; ? anything else.
 export const phaseDurations = (run, phases) => (Array.isArray(phases) ? phases : [])
   .filter((p) => typeof p?.name === "string" && p.name !== "")
   .map((p) => {
@@ -161,8 +161,9 @@ export const phaseDurations = (run, phases) => (Array.isArray(phases) ? phases :
     const end = open ? run?.last_event_at_ms : p.last_event_at_ms;
     const ms = Number.isFinite(p.started_at_ms) && Number.isFinite(end) && end >= p.started_at_ms ? end - p.started_at_ms : null;
     const glyph = p.status === "completed" ? "✓"
-      : p.status === "failed" || (open && run?.status !== "cancelled") ? "✕"
-      : p.status === "cancelled" || p.status === "skipped" || open ? "–" : "?";
+      : p.status === "failed" ? "✕"
+      : open ? (run?.status === "completed" ? "✓" : run?.status === "cancelled" ? "–" : "✕")
+      : p.status === "cancelled" || p.status === "skipped" ? "–" : "?";
     return { name: p.name, attempt: Number.isFinite(p.attempt) ? p.attempt : 1, glyph, ms };
   });
 // The run's pull request URL when it has a usable (http/https) one, else null.
