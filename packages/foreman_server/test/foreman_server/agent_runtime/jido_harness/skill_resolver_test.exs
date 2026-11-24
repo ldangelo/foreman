@@ -144,6 +144,12 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.SkillResolverTest do
     # boot, so the default branch is not reachable in-process; an explicit `home:`
     # exercises the same guard.
     test "a home the VM does not know is unverifiable", ctx do
+      # The skill must exist for the `nil` home to be what decides the verdict:
+      # an absent skill is unverifiable for that reason alone, so the same skill
+      # is first shown available under the usable home.
+      put_skill!(Path.join(ctx.agent, "skills"), "fix-issue")
+
+      assert resolve("fix-issue", ctx.opts) == :available
       assert resolve("fix-issue", Keyword.put(ctx.opts, :home, nil)) == :unverifiable
       assert resolve("absent", Keyword.put(ctx.opts, :home, nil)) == :unverifiable
     end
