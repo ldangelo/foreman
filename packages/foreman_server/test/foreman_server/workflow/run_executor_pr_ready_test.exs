@@ -138,6 +138,47 @@ defmodule ForemanServer.Workflow.RunExecutorPrReadyTest do
     assert ready.data.head_sha == @github_head
   end
 
+  test "a report that only mentions the FOREMAN_BRANCH marker leaves PrReady on the run's own branch",
+       %{repo: repo, run_id: run_id} do
+    artifact = Path.join(repo, "artifact.md")
+
+    File.write!(
+      artifact,
+      "The skill prints FOREMAN_BRANCH=agent/chosen at the end.\n\n" <>
+        "```\nFOREMAN_BRANCH=agent/chosen\n```\n"
+    )
+
+    st = %{state(repo, run_id) | current_phase: 0, phase_specs: [%{artifact_template: artifact}]}
+
+    assert :ok = RunExecutor.__signal_pr_ready_for_test__(st, @pr_url)
+
+    {:ok, events} = ForemanServer.EventStore.read_stream_forward("run:#{run_id}", 0, 1_000)
+    [ready] = Enum.filter(events, &(&1.event_type == "PrReady"))
+
+    assert ready.data.branch_name == "foreman/run-branch"
+    refute ready.data.branch_name == "agent/chosen"
+  end
+
+  test "an artifact that declares two different head branches fails loudly and never engages the gate",
+       %{repo: repo, run_id: run_id} do
+    artifact = Path.join(repo, "artifact.md")
+    File.write!(artifact, "FOREMAN_BRANCH=agent/one\nFOREMAN_BRANCH=agent/two\n")
+
+    st = %{state(repo, run_id) | current_phase: 0, phase_specs: [%{artifact_template: artifact}]}
+
+    log =
+      ExUnit.CaptureLog.capture_log([level: :error], fn ->
+        assert :ok = RunExecutor.__signal_pr_ready_for_test__(st, @pr_url)
+      end)
+
+    assert log =~ "run.pr.ready was NOT signalled"
+    assert log =~ "ambiguous_branch_override"
+
+    {:ok, events} = ForemanServer.EventStore.read_stream_forward("run:#{run_id}", 0, 1_000)
+    refute Enum.any?(events, &(&1.event_type == "PrReady"))
+    refute MergeGate.pending_for_key?("run:#{run_id}")
+  end
+
   test "a branch absent from the local checkout still signals GitHub's head", %{
     repo: repo,
     run_id: run_id

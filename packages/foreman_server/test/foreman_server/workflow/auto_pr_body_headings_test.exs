@@ -120,6 +120,65 @@ defmodule ForemanServer.Workflow.AutoPRBodyHeadingsTest do
     assert body =~ "## Testing\n\n- `abc1234` feat: the change"
   end
 
+  @tag :tmp_dir
+  test "a report that only mentions the marker lists the run's own commits", %{tmp_dir: tmp_dir} do
+    agent = self()
+
+    command_runner = fn
+      "git", ["log", "--format=%H%x09%s", "main..foreman/run-1/implement"], _opts ->
+        send(agent, :listed_own_branch)
+        {"abc1234567890def\tfeat: the change\n", 0}
+
+      "git", args, _opts ->
+        flunk("listed a branch the report only mentions: #{inspect(args)}")
+    end
+
+    artifact = Path.join(tmp_dir, "artifact.md")
+
+    File.write!(
+      artifact,
+      "The skill prints FOREMAN_BRANCH=skill/own-branch at the end.\n\n" <>
+        "```\nFOREMAN_BRANCH=skill/own-branch\n```\n"
+    )
+
+    context = %{
+      run_id: "run-1",
+      base_branch: "main",
+      head_branch: "foreman/run-1/implement",
+      task_title: "T",
+      pr_body_headings: @headings,
+      artifact_path: artifact,
+      command_runner: command_runner
+    }
+
+    assert {:ok, %AutoPR.PrContent{body: body}} = AutoPR.__pr_content_for_test__(context)
+
+    assert_received :listed_own_branch
+    assert body =~ "## Testing\n\n- `abc1234` feat: the change"
+  end
+
+  @tag :tmp_dir
+  test "an artifact that declares two different head branches is an error, not a body for either",
+       %{tmp_dir: tmp_dir} do
+    artifact = Path.join(tmp_dir, "artifact.md")
+    File.write!(artifact, "FOREMAN_BRANCH=skill/one\nFOREMAN_BRANCH=skill/two\n")
+
+    context = %{
+      run_id: "run-1",
+      base_branch: "main",
+      head_branch: "foreman/run-1/implement",
+      task_title: "T",
+      pr_body_headings: @headings,
+      artifact_path: artifact,
+      command_runner: fn executable, args, _opts ->
+        flunk("ran #{executable} #{inspect(args)} for a head branch nobody settled")
+      end
+    }
+
+    assert AutoPR.__pr_content_for_test__(context) ==
+             {:error, {:ambiguous_branch_override, "skill/one", "skill/two"}}
+  end
+
   # The phase artifact is the third block under the headings. The section under it is the
   # one the untemplated body carries, rendered from the same `ReviewFindings.Context`
   # (`artifact_path`, `run_id`, `repo_root`): a context that is not threaded through to it

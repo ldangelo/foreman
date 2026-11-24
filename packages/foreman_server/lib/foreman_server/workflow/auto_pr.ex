@@ -25,8 +25,16 @@ defmodule ForemanServer.Workflow.AutoPR do
   `state.last_worktree`, so the head branch is derived from run state and a PR
   no longer depends on an agent formatting output correctly.
 
-  A `FOREMAN_BRANCH=` marker in the artifact is still honoured as an explicit
-  override for skills that manage their own branch.
+  A `FOREMAN_BRANCH=<branch>` line in the artifact is still honoured as an explicit
+  override for a skill that manages its own branch, in exactly one form
+  (`branch_override/1`): the whole line, starting at column 0 (trailing whitespace and a
+  CR are ignored), outside any fenced code block, and naming a valid git branch. The
+  artifact is the agent's whole report, so the same text anywhere else (in a sentence, an
+  inline code span, a list item or a quote, on an indented line, in a quoted diff or in a
+  fence) is a mention, not a declaration, and changes nothing. A declared name that is not a
+  valid branch name, or two different declared names, is an error
+  (`{:invalid_branch_override, name, reason}`, `{:ambiguous_branch_override, first,
+  second}`), never a fallback to the run's own branch: the PR is not opened.
 
   ## Whether to open a PR is decided by commits, not a marker
 
@@ -126,7 +134,10 @@ defmodule ForemanServer.Workflow.AutoPR do
 
   # System.cmd/3 prepends the executable, so these are subcommand args only.
   @gh_args ~w[pr create]
-  @branch_regex ~r/FOREMAN_BRANCH=(\S+)/
+  # The one line an artifact declares its head branch with: this prefix, then the branch name.
+  @branch_marker "FOREMAN_BRANCH="
+  # The artifact is the agent's text: an error carries at most this much of a name taken from it.
+  @max_reported_chars 120
 
   defmodule TaskMetadataError do
     @moduledoc "Typed AutoPR task metadata validation error."
@@ -164,14 +175,36 @@ defmodule ForemanServer.Workflow.AutoPR do
 
   @type result :: {:ok, String.t()} | :noop | {:error, term()}
 
+  # The rule a declared branch name breaks (`branch_override/1`).
+  @type branch_name_defect ::
+          :empty
+          | :not_utf8
+          | :space
+          | :control_character
+          | :leading_dash
+          | :leading_plus
+          | :reserved_name
+          | :forbidden_character
+          | :double_dot
+          | :at_brace
+          | :trailing_dot
+          | :empty_component
+          | :dot_component
+          | :lock_component
+
+  @type branch_override_error ::
+          {:invalid_branch_override, String.t(), branch_name_defect()}
+          | {:ambiguous_branch_override, String.t(), String.t()}
+
   @doc """
   Opens a PR for the run described by `context`.
 
   Returns `{:ok, pr_url}` (the PR it created, or the one GitHub already had for the run's head),
   `:noop` when the head branch has no commits beyond the base, or `{:error, reason}`
   (`{:pr_lookup_mismatch, url, expected, actual}` names a PR of this repository whose head is
-  not the tip). `base_branch` must be the branch the run's work was cut from; it is not
-  defaulted.
+  not the tip; `{:invalid_branch_override, name, reason}` and `{:ambiguous_branch_override,
+  first, second}` refuse a head branch the artifact declares badly, before any `git` or `gh`
+  call). `base_branch` must be the branch the run's work was cut from; it is not defaulted.
   """
   @spec maybe_create_pr(context()) :: result()
   def maybe_create_pr(%{run_id: run_id, base_branch: base_branch} = context)
@@ -205,16 +238,50 @@ defmodule ForemanServer.Workflow.AutoPR do
   end
 
   @doc """
-  Extracts an explicit `FOREMAN_BRANCH=` override from skill output.
+  The head branch the artifact `content` declares with `FOREMAN_BRANCH=`.
 
-  Returns `nil` when the artifact declares no branch, in which case the caller
-  falls back to the Foreman-derived branch.
+  A declaration is one form only: a whole line that is `FOREMAN_BRANCH=` and the branch
+  name, starting at column 0 (trailing whitespace and a CR are ignored), outside a fenced
+  code block (`ReviewFindings.unfenced_lines/1`, the rule the findings marker lines
+  follow). The artifact is the agent's whole report, so the same text anywhere else (in a
+  sentence, an inline code span, a list item or a quote, on an indented line, in a quoted
+  diff or in a fence) is a mention and declares nothing.
+
+  Returns
+
+    * `{:ok, branch}`: one name is declared (once, or the same name more than once);
+    * `:none`: nothing is declared, so the caller falls back to the Foreman-derived branch;
+    * `{:error, {:invalid_branch_override, name, reason}}`: the declared name is not a valid
+      git branch name; `reason` is the rule it breaks (`t:branch_name_defect/0`);
+    * `{:error, {:ambiguous_branch_override, first, second}}`: two different names are
+      declared, and neither is picked.
+
+  A declaration that cannot be honoured is never `:none`: falling back would open the PR
+  from a branch the artifact did not name.
   """
-  @spec branch_override(String.t()) :: String.t() | nil
+  @spec branch_override(String.t()) ::
+          {:ok, String.t()} | :none | {:error, branch_override_error()}
   def branch_override(content) when is_binary(content) do
-    case Regex.run(@branch_regex, content, capture: :all_but_first) do
-      [branch | _] -> String.trim(branch)
-      nil -> nil
+    declared =
+      content
+      |> ForemanServer.Workflow.ReviewFindings.unfenced_lines()
+      |> Enum.flat_map(fn {_index, line} ->
+        case String.trim_trailing(line) do
+          @branch_marker <> name -> [name]
+          _ -> []
+        end
+      end)
+      |> Enum.uniq()
+
+    case declared do
+      [] ->
+        :none
+
+      [name] ->
+        valid_override(name)
+
+      [first, second | _more] ->
+        {:error, {:ambiguous_branch_override, excerpt(first), excerpt(second)}}
     end
   end
 
@@ -223,27 +290,79 @@ defmodule ForemanServer.Workflow.AutoPR do
   # ------------------------------------------------------------------
 
   @doc """
-  The branch `maybe_create_pr/1` pushes and opens the PR from: the artifact's
-  `FOREMAN_BRANCH=` override when present, otherwise `context.head_branch`.
+  The branch `maybe_create_pr/1` pushes and opens the PR from: the one the artifact declares
+  (`branch_override/1`) when it declares one, otherwise `context.head_branch`.
 
-  Public so a caller that must name the PR's head (the merge gate's `PrReady`)
-  resolves it exactly as AutoPR does rather than re-deriving it.
+  A declaration that cannot be honoured is an error, never a fallback to
+  `context.head_branch` (`t:branch_override_error/0`). With no declaration and no
+  `context.head_branch` the error is `:no_head_branch`. An artifact that is absent or cannot
+  be read declares nothing.
+
+  Public so a caller that must name the PR's head (the merge gate's `PrReady`) resolves it
+  exactly as AutoPR does rather than re-deriving it.
   """
-  @spec resolve_head_branch(map()) :: {:ok, String.t()} | {:error, :no_head_branch}
+  @spec resolve_head_branch(map()) ::
+          {:ok, String.t()} | {:error, :no_head_branch | branch_override_error()}
   def resolve_head_branch(context) do
-    override =
-      case read_artifact(Map.get(context, :artifact_path)) do
-        {:ok, content} -> branch_override(content)
-        :skip -> nil
-      end
-
-    case override || Map.get(context, :head_branch) do
-      branch when is_binary(branch) and branch != "" ->
-        {:ok, branch}
-
-      _ ->
-        {:error, :no_head_branch}
+    case declared_override(Map.get(context, :artifact_path)) do
+      {:ok, _branch} = declared -> declared
+      :none -> own_head_branch(Map.get(context, :head_branch))
+      {:error, _reason} = refused -> refused
     end
+  end
+
+  defp declared_override(artifact_path) do
+    case read_artifact(artifact_path) do
+      {:ok, content} -> branch_override(content)
+      :skip -> :none
+    end
+  end
+
+  defp own_head_branch(branch) when is_binary(branch) and branch != "", do: {:ok, branch}
+  defp own_head_branch(_branch), do: {:error, :no_head_branch}
+
+  defp valid_override(name) do
+    case branch_name_defect(name) do
+      nil -> {:ok, name}
+      reason -> {:error, {:invalid_branch_override, excerpt(name), reason}}
+    end
+  end
+
+  # `git check-ref-format --branch` as a pure function: the rules of git-check-ref-format(1)
+  # for `refs/heads/<name>`, plus its two branch-only rules (no leading `-`, not `HEAD`), plus
+  # two refusals git does not make: a leading `+` (`git push -u origin +name` reads it as a
+  # forced refspec) and text that is not UTF-8 (the name is stored in events). Returns the
+  # first rule the name breaks, or nil.
+  defp branch_name_defect(name) do
+    cond do
+      name == "" -> :empty
+      not String.valid?(name) -> :not_utf8
+      String.contains?(name, " ") -> :space
+      String.match?(name, ~r/[\x00-\x1f\x7f]/) -> :control_character
+      String.starts_with?(name, "-") -> :leading_dash
+      String.starts_with?(name, "+") -> :leading_plus
+      name == "HEAD" -> :reserved_name
+      String.contains?(name, ["~", "^", ":", "?", "*", "[", "\\"]) -> :forbidden_character
+      String.contains?(name, "..") -> :double_dot
+      String.contains?(name, "@{") -> :at_brace
+      String.ends_with?(name, ".") -> :trailing_dot
+      true -> component_defect(String.split(name, "/"))
+    end
+  end
+
+  defp component_defect(components) do
+    cond do
+      "" in components -> :empty_component
+      Enum.any?(components, &String.starts_with?(&1, ".")) -> :dot_component
+      Enum.any?(components, &String.ends_with?(&1, ".lock")) -> :lock_component
+      true -> nil
+    end
+  end
+
+  defp excerpt(text) do
+    if String.length(text) > @max_reported_chars,
+      do: String.slice(text, 0, @max_reported_chars) <> "…",
+      else: text
   end
 
   defp read_artifact(nil), do: :skip
@@ -679,6 +798,8 @@ defmodule ForemanServer.Workflow.AutoPR do
     case resolve_head_branch(context) do
       {:ok, head_branch} -> pr_content(context, head_branch)
       {:error, :no_head_branch} -> pr_content(context, nil)
+      {:error, {:invalid_branch_override, _name, _reason}} = refused -> refused
+      {:error, {:ambiguous_branch_override, _first, _second}} = refused -> refused
     end
   end
 
