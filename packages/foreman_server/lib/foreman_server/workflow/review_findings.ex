@@ -335,7 +335,7 @@ defmodule ForemanServer.Workflow.ReviewFindings do
   end
 
   defp finding_line(%Finding{} = f) do
-    path = flatten(f.path, @listed_path)
+    path = f.path |> ForemanServer.Workflow.PrBodyPath.display_path() |> flatten(@listed_path)
     location = if f.line, do: "#{path}:#{f.line}", else: path
     declined = if f.disposition == :declined, do: " (declined by the agent)", else: ""
 

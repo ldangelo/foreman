@@ -54,6 +54,7 @@ defmodule ForemanServer.Workflow.PhasePR do
   alias ForemanServer.Idempotency.Effect
   alias ForemanServer.Idempotency.Reconcilers.BranchPush
   alias ForemanServer.Idempotency.Reconcilers.PrCreate, as: PrCreateEffect
+  alias ForemanServer.Workflow.PrBodyPath
 
   require Logger
 
@@ -408,7 +409,7 @@ defmodule ForemanServer.Workflow.PhasePR do
 
     body =
       "Foreman run `#{request.run_id}` phase `#{request.phase_name}` complete.\n" <>
-        if(request.artifact_path, do: "\nArtifact: #{request.artifact_path}\n", else: "") <>
+        PrBodyPath.artifact_line(request.artifact_path, request.cwd) <>
         findings_section(request.artifact_path)
 
     args = [
