@@ -23,6 +23,9 @@ test("an active run is labelled with the phase it is in, then its workflow", () 
   expect(runLabel(prdRun("in_progress"))).toBe("refine-prd · prd");
   expect(runLabel(prdRun("in_progress", ["r-p001"]))).toBe("create-prd · prd");
   expect(runLabel(prdRun("in_progress", ["r-p003", "r-p001", "r-p002"]))).toBe("create-trd · prd"); // the highest index, whatever the order
+  // The snapshot's own phase_id decides, not the shape of the id: ids that do not end in -pNNN still resolve.
+  const odd = { status: "in_progress", phase_ids: ["x-a", "x-b"], workflow_snapshot: { workflow_name: "prd", phases: [{ name: "one", index: 1, phase_id: "x-a" }, { name: "two", index: 2, phase_id: "x-b" }] } };
+  expect(runLabel(odd)).toBe("two · prd");
 });
 
 test("a run with no phase to name, or one that is not active, is labelled by its workflow", () => {

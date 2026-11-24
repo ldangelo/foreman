@@ -88,8 +88,9 @@ The mod only supplies the token. A non-default server address
 ## Use
 
 Rows show how long ago the run last had an event and its task id, and name the run by its workflow. While a run is active the
-name leads with the phase it is in (`refine-prd · prd`), read from the run list (its newest started phase, named by the
-workflow snapshot), so it moves on as the run does; a finished run shows the workflow alone.
+name leads with the phase it is in (`refine-prd · prd`), read from the run list (its newest *started* phase, named by the
+workflow snapshot), so it moves on as the run does; a finished run shows the workflow alone. Between one phase finishing and
+the next starting the row still names the finished one; the run's tab (Phases) has each phase's status.
 Project headers show a `N failed` count and `active/total`; counters always
 describe all runs, even while the failed filter hides rows. The header shows the
 time of the last successful refresh (red while the latest refresh is failing).
