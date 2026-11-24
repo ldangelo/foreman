@@ -17,7 +17,17 @@
   empty directory already sitting at the path is still created into (git accepts it), and a
   registered worktree whose checkout no longer resolves to its own git dir — a stale
   registration left behind by a deleted `gitdir` pointer — fails with
-  `{:worktree_path_unusable, path, :worktree_checkout_broken}` instead of being reused.
+  `{:worktree_path_unusable, path, :worktree_checkout_broken}` instead of being reused, and so
+  does one whose checkout never finished (`git worktree add` killed before git wrote its
+  index, so the files it never wrote would read as deleted and the next phase commit would
+  record the deletions): `{:worktree_path_unusable, path, :worktree_checkout_incomplete}`.
+  `Workflow.Worktree.provision/1` answers the path and whether the worktree was reused
+  (`create/1` is unchanged). For a reused worktree `RunExecutor` first reaps the agents a
+  dead server left running in it, as a resume does (one that survives fails the phase), does
+  not run the project's setup script again (it runs once, on a worktree it created) and,
+  when provisioning a secondary repository fails, rolls back only the worktrees that call
+  created: a reused worktree and its branch, which may hold the run's committed work, are
+  left alone.
 
 - **A report that merely mentions `FOREMAN_BRANCH=` no longer retargets the PR.**
   `AutoPR.branch_override/1` took the first `FOREMAN_BRANCH=(\S+)` match anywhere in the final
