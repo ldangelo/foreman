@@ -3,8 +3,8 @@
 // click a project, status or queue header to collapse it.
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, ScrollHandle } from "gpui-base";
-import { theme, checking, run, focused, nextCommand, notify, keys, layout, shared, setShared, exec, window, openOverlay } from "herdr";
-import { info, isActive, ago, clock, foreman, api, beadId, workflowName, runLabel, prUrl, openUrlArgv, isClearable, hideCleared, countCleared, clearRuns, pruneCleared, parseCleared, isResettable, resetPrompt, isApprovable, findApprovable, approveTask, approvePrompt, trackCompletions, completionToast, parseActivityCommand } from "./common.js";
+import { theme, checking, run, focused, nextCommand, notify, keys, layout, shared, setShared, exec, window, openOverlay, spaces } from "herdr";
+import { info, isActive, ago, clock, foreman, api, beadId, workflowName, runLabel, prUrl, openUrlArgv, isClearable, hideCleared, countCleared, clearRuns, pruneCleared, parseCleared, isResettable, resetPrompt, isApprovable, findApprovable, approveTask, approvePrompt, trackCompletions, completionToast, parseActivityCommand, parseRunTabs, tabIds, findRunTab, newTabId, rememberRunTab } from "./common.js";
 
 const POLL_MS = 10000;
 const RESET_CONFIRM_MS = 60000; // a confirmation answered later than this is ignored: the reset it was for is long forgotten
@@ -93,6 +93,10 @@ export default class ForemanRuns extends View {
     try { this.collapsed = new Set(JSON.parse(localStorage.getItem("collapsed") ?? "[]")); } catch { this.collapsed = new Set(); }
     // Runs cleared from the panel (run id -> the status it had when cleared): view state only, kept across restarts.
     try { this.cleared = parseCleared(localStorage.getItem("cleared")); } catch { this.cleared = {}; }
+    // The run-detail tab opened for each run (run id -> tab id), so a second click focuses it (see open()). `pendingTab`
+    // is a tab.new the app has not shown yet: {run_id, name, before: ids of the tabs then, at}.
+    try { this.runTabs = parseRunTabs(localStorage.getItem("runTabs")); } catch { this.runTabs = {}; }
+    this.pendingTab = null;
     this.allRuns = []; // the listing as the server gave it, cleared runs included (this.runs is it without them)
     this.completions = null; // trackCompletions' state: null until the first poll that worked (see announceCompletions)
     this.pendingReset = null; // {run_id, at}: the run Herdr's confirm dialog is asking about
@@ -273,6 +277,7 @@ export default class ForemanRuns extends View {
   }
 
   refresh(cx, manual = false) {
+    this.adoptNewTab();
     if (this.busy || checking()) return;
     this.busy = true;
     if (manual) {
@@ -311,6 +316,13 @@ export default class ForemanRuns extends View {
       localStorage.setItem("cleared", JSON.stringify(this.cleared));
       localStorage.flush().catch(() => {});
     } catch { /* the clearing still applies until the panel restarts */ }
+  }
+
+  saveRunTabs() {
+    try {
+      localStorage.setItem("runTabs", JSON.stringify(this.runTabs));
+      localStorage.flush().catch(() => {});
+    } catch { /* the tabs still get reused until the panel restarts */ }
   }
 
   // The runs the panel works on: the listing without the cleared ones. Counts, groups, the failed filter and the
@@ -470,11 +482,43 @@ export default class ForemanRuns extends View {
 
   // Opens the run-detail tab (the foreman-run mod): phases, live activity, changes, PR and anything
   // waiting on the operator. It looks the run up itself, so it only needs the id. `tab` is the view it starts on
-  // (overview, activity, phases, changes or pr); without it the run's state decides.
+  // (overview, activity, phases, changes or pr); without it the run's state decides. A run whose tab is already open
+  // gets that tab shown (its space too) instead of a second one; it keeps the view it is on, `tab` only applies to a
+  // tab that is opened. The panel knows a tab by the id it saw appear (adoptNewTab), so tabs opened before this
+  // panel remembered them, or by someone else, are not found and a click opens one more.
   open(r, tab = null) {
+    this.adoptNewTab();
+    const all = spaces();
+    const there = findRunTab(all, this.runTabs[r.run_id]);
+    if (there) {
+      run("space.select", { id: there.space });
+      run("tab.select", { id: there.tab });
+      return;
+    }
     // The tab is named after the bead when there is one: the id is the end of the task id, which a cut-off name loses.
     const short = beadId(r) ?? String(r.task_id ?? r.run_id).slice(0, 24);
-    run("tab.new", { name: `${workflowName(r)} ${short}`, mod: "foreman-run", props: tab ? { run_id: r.run_id, tab } : { run_id: r.run_id } });
+    const name = `${workflowName(r)} ${short}`;
+    // Not yet adopted, not yet shown: a click now would open a second tab for the same run.
+    if (this.pendingTab?.run_id === r.run_id) return;
+    this.pendingTab = { run_id: r.run_id, name, before: tabIds(all), at: Date.now() };
+    run("tab.new", { name, mod: "foreman-run", props: tab ? { run_id: r.run_id, tab } : { run_id: r.run_id } });
+    this.adoptNewTab();
+  }
+
+  // Learns the id of the tab a tab.new made: the one new tab with the name it was given. The app may apply the
+  // command a moment after run() returns, so this is tried again on the next open() and every poll; a tab that never
+  // shows up (the command failed) is given up on after a minute rather than adopting a stranger.
+  adoptNewTab() {
+    const p = this.pendingTab;
+    if (!p) return;
+    const id = newTabId(p.before, spaces(), p.name);
+    if (id !== null) {
+      this.runTabs = rememberRunTab(this.runTabs, p.run_id, id);
+      this.saveRunTabs();
+      this.pendingTab = null;
+    } else if (Date.now() - p.at > 60000) {
+      this.pendingTab = null;
+    }
   }
 
   // Opens a run on its Activity view: what a completion notification's click runs. The run is looked up for the tab's

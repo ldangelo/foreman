@@ -126,7 +126,7 @@ not shown; `GET /api/projects/<id>/usage` reports it as `limits.deferred_tasks`.
 
 | Action | Mouse | Shortcut |
 |---|---|---|
-| Open a run in its detail tab | click the row | `⏎` while navigating |
+| Open a run in its detail tab (a run whose tab is open gets that tab, even in another space) | click the row | `⏎` while navigating |
 | Collapse / expand a project or status group | click its header | |
 | Collapse / expand every project | | `⇧⌘E` |
 | Collapse / expand every status group | | `⇧⌘S` |
