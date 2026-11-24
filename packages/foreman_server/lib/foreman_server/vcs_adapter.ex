@@ -33,6 +33,16 @@ defmodule ForemanServer.VcsAdapter do
 
   Returns the captured git stdout/stderr in the `:output` key on success
   so callers can correlate with telemetry.
+
+  When `worktree_path` already holds a worktree registered on `:branch`,
+  that checkout is reused and returned with `reused: true` and an empty
+  `:output`; it is never reset, checked out or cleaned, so uncommitted work
+  survives. An existing empty directory is created into as usual and
+  returns `reused: false`. A path that exists but is not a usable worktree
+  on `:branch` fails with
+  `{:error, {:worktree_path_unusable, path, reason}}`, where `reason` is
+  `{:branch_mismatch, branch}`, `:not_a_git_worktree`,
+  `:worktree_checkout_broken` or `{:worktree_list_failed, reason}`.
   """
   @callback create_worktree(
               repo_path :: String.t(),
