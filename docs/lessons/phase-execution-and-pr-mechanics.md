@@ -182,10 +182,10 @@ that is present but blank or non-string is a typed metadata error before the
 branch is published; a field the task never set is omitted from the context, so
 a title-only task (no description) falls back to the generated title/body
 rather than failing. For no-task runs AutoPR preserves the legacy generated
-title/body;
-only that generated-body path appends `ForemanServer.Workflow.ReviewFindings`
-content under `## Unresolved review findings` when the artifact contains the
-bundled review markers. Phase PRs keep their separate body behavior; their title starts from the same
+title/body; only the generated-body path and the `pr_body_headings` template append the
+`ForemanServer.Workflow.ReviewFindings` section `## Review findings (the review
+agent's report)` (an artifact with no valid findings block gets the section too, worded
+as not a clean review). Phase PRs keep their separate body behavior; their title starts from the same
 source as the final AutoPR title — the run's task title — but falls back
 differently: the first conventional-commit subject among the run's own commits,
 else the legacy `feat(phase): <phase>` form.
