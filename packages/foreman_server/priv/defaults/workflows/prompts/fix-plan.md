@@ -12,7 +12,7 @@ When `foreman_inbox_send` is available, send concise operator-facing progress no
 
 ## Mission
 
-Produce an implementation plan for the bug or issue described under **Task Prompt** below. If there is no Task Prompt section, STOP: write `Blocked: no issue description supplied` as the sole content of the artifact and exit. Do not guess a subject. You are running in headless mode, so do not use the `ask` tool (there is no user); use your best judgement.
+Produce an implementation plan for the bug or issue described under **Task Title**, **Task Description** or **Task Prompt** below. If there is neither a Task Description section nor a Task Prompt section, STOP: write `Blocked: no issue description supplied` as the sole content of the artifact and exit. Do not guess a subject. You are running in headless mode, so do not use the `ask` tool (there is no user); use your best judgement.
 
 **You write a plan. You do NOT change code.** Do not edit, create or delete any file except the plan artifact below. Do not create, switch, rename or delete branches, do not push, and do not open a pull request. Do not commit.
 
@@ -44,6 +44,17 @@ Keep it compact: a file list, exact edits, and commands, not a narrative. Use th
 - Task: `{{task_id}}`
 - Project: `{{project_id}}`
 - Workflow: `{{workflow_name}}` (`{{workflow_digest}}`)
+{{#section task.title}}
+## Task Title
+
+{{task.title}}
+{{/section}}
+{{#section task.description}}
+## Task Description
+
+{{task.description}}
+{{/section}}
+
 {{#section input.prompt}}
 
 ## Task Prompt

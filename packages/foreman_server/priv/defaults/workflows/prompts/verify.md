@@ -41,6 +41,17 @@ If a section has no data, write `Unknown` and explain why.
 - Task: `{{task_id}}`
 - Project: `{{project_id}}`
 - Workflow: `{{workflow_name}}` (`{{workflow_digest}}`)
+{{#section task.title}}
+## Task Title
+
+{{task.title}}
+{{/section}}
+{{#section task.description}}
+## Task Description
+
+{{task.description}}
+{{/section}}
+
 {{#section input.prompt}}
 
 ## Task Prompt
