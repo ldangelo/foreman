@@ -15,7 +15,7 @@ This file is loaded into every agent prompt, so it holds **rules only**. Mechani
 A gate, not a suggestion: it blocks calling a task done, like running the tests.
 
 1. List every externally visible identifier your diff added, removed or renamed: command/event types (`"foo.bar"`), MCP tools (`foreman_*`), HTTP routes, CLI flags/verbs, env vars, config keys, workflow/prompt names.
-2. `grep` each removed/renamed identifier in `CLAUDE.md`, `README.md`, `docs/user-guide.md`, `docs/cli-reference.md`. A hit is a stale reference: fix it or annotate it as historical.
+2. `grep` each removed/renamed identifier in `CLAUDE.md` and the `docs/lessons/*.md` it indexes, `README.md`, `docs/user-guide.md`, `docs/cli-reference.md`. A hit is a stale reference: fix it or annotate it as historical.
 3. `grep` the *replaced* counterpart of each added identifier so the replacement is documented where the old name was.
 4. State which of those four files needed edits and which didn't, and why ("no operator-visible change" is valid; silence is not).
 

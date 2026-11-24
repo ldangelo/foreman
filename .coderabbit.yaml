@@ -114,7 +114,7 @@ reviews:
         and pass in isolation; a failure there is not automatically a
         regression.
 
-    - path: "{CLAUDE.md,README.md,docs/user-guide.md,docs/cli-reference.md}"
+    - path: "{CLAUDE.md,README.md,docs/user-guide.md,docs/cli-reference.md,docs/lessons/*.md}"
       instructions: >-
         These four files are a documentation GATE, not optional prose. If a
         change adds, removes, or renames an externally visible identifier —
