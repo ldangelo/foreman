@@ -757,6 +757,7 @@ types have been retired; ad-hoc dispatch is unified onto the task path.
   forwards it inside the `task.create` envelope, but nothing server-side
   reads it, so an explicit value cannot yet override the checkout. Use
   `gh pr edit <n> --base <branch>` to retarget a PR onto a different base.
+
 **Phase worker environment.** A `:pi` phase worker is launched with
 `PI_SUBAGENT_CHILD=1` in its environment, so a pi extension installed
 machine-wide cannot replace the model Foreman resolved for the phase. The

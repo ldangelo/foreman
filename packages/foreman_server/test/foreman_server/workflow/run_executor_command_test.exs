@@ -774,7 +774,7 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
              RunExecutor.phase_launch(state, %{name: :implement}, 0, %{})
   end
 
-  test "a project with no config.env gets only the FOREMAN_* env" do
+  test "a project with no config.env gets only the FOREMAN_* env and the pi child marker" do
     %{run_id: run_id} =
       run_plan_capture_phase!(write_paths: ["docs/PRD/PRD-2026-22222222-no-project-env.md"])
 

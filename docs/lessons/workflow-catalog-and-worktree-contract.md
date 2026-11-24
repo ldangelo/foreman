@@ -111,8 +111,9 @@ is resolved lazily at completion time to honor pushes that landed
 during the phase.
 
 Every **pi** phase worker additionally gets `PI_SUBAGENT_CHILD=1` in its
-environment, so a machine-wide pi extension cannot replace the model
-Foreman resolved for the phase (see `docs/user-guide.md` §7.3).
+environment, whether or not the worktree is enabled, so a machine-wide pi
+extension cannot replace the model Foreman resolved for the phase (see
+`docs/user-guide.md` §7.3).
 
 **Project environment (E4).** `ForemanServer.ProjectEnvironment.resolve/2` is the
 single producer of a project's agent env and redaction list; `RunExecutor`,

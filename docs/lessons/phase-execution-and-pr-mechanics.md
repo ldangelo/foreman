@@ -312,13 +312,22 @@ evidence that any agent received it.
 in `RunExecutor.build_agent_launch/10`, the same function that builds
 `foreman_env/4` (and so `FOREMAN_MODEL`), which is why it hangs off the launch
 env and not `foreman_env/4`: the marker must be present
-wherever Foreman resolved a model, even if pipeline dispatch moves. Machine-wide
-pi extensions honour it, but each only as far as it chooses: `pi-advisor-flow`
-skips its `setExecutorModel`/`setThinkingLevel` override and model-select sync,
-and `pi-subagents` registers nothing at all. Without the marker, an extension
-installed on the host silently replaces the project `thread_model` mid-phase.
-Scope limit, verified against `~/.pi/agent/npm/node_modules/pi-advisor-flow/dist/index.js`:
-`isMarkedSubagent()` gates only the model/effort override (model refs at
+wherever Foreman resolved a model, even if pipeline dispatch moves. pi itself
+does not read the variable (no reference in pi-coding-agent 1.6.0); it is the
+convention `pi-subagents` uses to mark the child sessions it starts, and
+machine-wide pi extensions honour it, each only as far as it chooses. Verified
+against the extensions installed on the operator's host: `pi-advisor-flow` 0.9.1
+skips its `setExecutorModel`/`setThinkingLevel` override and model-select sync;
+`pi-subagents` 0.89.0 registers nothing (`index.js`), so a phase agent has no
+`subagent` tool; `pi-goal-x` registers no goal tools or commands
+(`goal-session-safety.ts`). Without the marker, an extension installed on the
+host silently replaces the project `thread_model` mid-phase. Delivery, observed
+with a stand-in `pi` executable that dumped `env -0`: the launch's `env_map`
+reaches the process through `Overwatch.start_phase/2`, `JidoHarnessWorker.init/1`
+(driver `:env`) and the harness pi adapter, overlaid on the ambient
+environment; a claude phase got no marker.
+Scope limit, verified against `~/.pi/agent/npm/node_modules/pi-advisor-flow/dist/index.js`
+(0.9.1): `isMarkedSubagent()` gates only the model/effort override (model refs at
 `:288`, `:290`, `:295`, `:4799`, `:4845`, `:4855`, `:4887`), so the advisor gates
 (`advisorPlanGate` `:51`, `advisorCompletionGate` `:53`, `advisorBlockOnBlocked`
 `:57`) still apply to Foreman phases — they follow the extension's own config,

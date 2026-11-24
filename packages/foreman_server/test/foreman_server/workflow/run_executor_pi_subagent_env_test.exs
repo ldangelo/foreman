@@ -43,4 +43,20 @@ defmodule ForemanServer.Workflow.RunExecutorPiSubagentEnvTest do
   test "a non-pi phase is not marked" do
     refute Map.has_key?(env(%{provider: "claude"}), "PI_SUBAGENT_CHILD")
   end
+
+  test "a project environment value does not replace the marker" do
+    previous = Application.get_env(:foreman_server, :worker_environment)
+
+    Application.put_env(:foreman_server, :worker_environment, %{
+      projects: %{"pi-subagent-proj" => %{env: %{"PI_SUBAGENT_CHILD" => "0"}}}
+    })
+
+    on_exit(fn ->
+      if previous,
+        do: Application.put_env(:foreman_server, :worker_environment, previous),
+        else: Application.delete_env(:foreman_server, :worker_environment)
+    end)
+
+    assert env(%{provider: :pi})["PI_SUBAGENT_CHILD"] == "1"
+  end
 end
