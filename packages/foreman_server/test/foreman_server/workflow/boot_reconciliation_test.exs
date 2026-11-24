@@ -43,6 +43,12 @@ defmodule ForemanServer.Workflow.BootReconciliationTest do
       ForemanServer.Workflow.BootReconciliation
     )
 
+    # `init/1` continues into the boot pass, which releases the Beads leases other test files
+    # left held and so dispatches through aggregate Actors and the CommandRouter for as long as
+    # there are any. Without this wait the first test runs beside it: a test that has a deadline
+    # (the orphan scans wait 1 s) or removes the router races the pass.
+    flush_boot_reconciliation()
+
     :ok
   end
 
@@ -527,6 +533,20 @@ defmodule ForemanServer.Workflow.BootReconciliationTest do
       app_sup = Process.whereis(ForemanServer.Application)
       assert is_pid(app_sup)
 
+      boot_reconciliation = Process.whereis(BootReconciliation)
+      assert is_pid(boot_reconciliation)
+
+      # The router may only go while BootReconciliation is between two messages. A dispatch it
+      # has under way ends in an aggregate Actor that sends its append to the router by name;
+      # with the router gone that send raises, the Actor dies, the call BootReconciliation made
+      # exits with it and BootReconciliation dies mid-scan, so the `flush_boot_reconciliation/0`
+      # below exits instead of returning. Such a dispatch can be under way: a scan an earlier test
+      # cast and did not wait for, or the `run_terminated` cast the Dispatcher makes for a run an
+      # earlier test file left behind. `suspend!/1` returns once the message being handled is
+      # done and holds back every later one until the resume below, by which time the router is
+      # gone and each of them defers instead of dispatching.
+      :ok = ForemanServer.DispatcherQuiesce.suspend!(pid: boot_reconciliation)
+
       :ok = Supervisor.terminate_child(app_sup, ForemanServer.CommandRouter)
       assert is_nil(Process.whereis(ForemanServer.CommandRouter))
 
@@ -536,6 +556,8 @@ defmodule ForemanServer.Workflow.BootReconciliationTest do
           _pid -> :ok
         end
       end)
+
+      :ok = :sys.resume(boot_reconciliation)
 
       seed_terminal_run!(run_id)
 

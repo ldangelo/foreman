@@ -50,6 +50,26 @@
   is exercised on every run. The tail itself waits the full 250 ms poll period after every
   round: there is no production change.
 
+- **The BootReconciliation startup-deferral test no longer fails at random.**
+  "run_terminated/2 defers dispatch when CommandRouter is not registered" took the
+  `CommandRouter` out of its supervisor while `BootReconciliation` could still be dispatching
+  through it. The module starts the process in `setup_all`, and `init/1` continues into a boot
+  pass that releases the Beads leases other test files leave held (`beads_db_lease:/tmp/cg-ic-*`,
+  from `command_gateway_test.exs`), so the first test ran beside it; a scan an earlier test cast
+  and did not wait for is the same overlap. An aggregate Actor sends its append to the router by
+  name, so with the router gone the send raised (`Aggregate.Actor.append_and_commit/7`), the
+  Actor died, the `lease.release` call exited with it and `BootReconciliation` died mid-scan, so
+  the test's own `flush_boot_reconciliation/0` exited (CI run 45300859440, partition 2, seed
+  253260; a router that dies between the Actor's send and its reply times the call out instead).
+  The same overlap fails the orphan-scan tests' 1 s deadline when one of them runs first and the
+  pass is slow. `setup_all` now waits for the boot pass, and the deferral test suspends
+  `BootReconciliation` (`DispatcherQuiesce.suspend!/1` answers once the message being handled is
+  done) while the router is removed and resumes it after, so everything it handles from then on
+  takes the deferral branch. There is no production change: `BootReconciliation` starts before
+  the router in the supervision tree, so its readiness check only ever sees the router appear,
+  and an Actor that finds no router crashes on the send by design (`Keeper`,
+  `CommandRouter.dispatch/2`).
+
 ### Added
 
 - **Kata task provider.** `ForemanServer.TaskProviders.KataAdapter` implements the
