@@ -40,7 +40,13 @@ defmodule ForemanServer.VcsAdapter do
               opts :: keyword()
             ) ::
               {:ok,
-               %{path: String.t(), base: String.t(), branch: String.t() | nil, output: String.t()}}
+               %{
+                 path: String.t(),
+                 base: String.t(),
+                 branch: String.t() | nil,
+                 output: String.t(),
+                 reused: boolean()
+               }}
               | {:error, term()}
 
   @doc """

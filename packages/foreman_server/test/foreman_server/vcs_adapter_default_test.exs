@@ -298,6 +298,10 @@ defmodule ForemanServer.VcsAdapter.DefaultTest do
       run_git!(["-C", worktree_path, "commit", "--no-gpg-sign", "-m", "ahead of base"])
       ahead_sha = run_git!(["-C", worktree_path, "rev-parse", "HEAD"]) |> String.trim()
 
+      # A tracked edit left UNSTAGED after the commit: an adapter that reset or
+      # re-checked-out the worktree would drop exactly this.
+      File.write!(Path.join(worktree_path, "README.md"), "uncommitted\n")
+
       assert {:ok, result} = Default.create_worktree(repo, worktree_path, opts)
       assert result.reused == true
       assert result.path == worktree_path
@@ -307,7 +311,8 @@ defmodule ForemanServer.VcsAdapter.DefaultTest do
 
       # Nothing was reset, cleaned or checked out.
       assert File.read!(Path.join(worktree_path, "untracked.txt")) == "precious\n"
-      assert File.read!(Path.join(worktree_path, "README.md")) == "modified\n"
+      assert File.read!(Path.join(worktree_path, "README.md")) == "uncommitted\n"
+      assert run_git!(["-C", worktree_path, "status", "--porcelain"]) =~ "M README.md"
 
       head = run_git!(["-C", worktree_path, "rev-parse", "HEAD"]) |> String.trim()
       assert head == ahead_sha
@@ -406,6 +411,131 @@ defmodule ForemanServer.VcsAdapter.DefaultTest do
 
       assert {:ok, %{reused: true}} = Default.create_worktree(repo, worktree_path, opts)
       assert File.read!(Path.join(beads_dir, "issues.jsonl")) == "{}\n"
+    end
+
+    test "creates the worktree into a pre-existing empty directory", %{repo: repo} do
+      base_sha = init_repo!(repo)
+      worktree_path = Path.join(repo, ".worktrees/wt-empty")
+      File.rm_rf!(worktree_path)
+      File.mkdir_p!(worktree_path)
+
+      assert {:ok, result} =
+               Default.create_worktree(repo, worktree_path,
+                 operation_id: "wt-empty-#{System.unique_integer([:positive])}",
+                 base: base_sha,
+                 branch: "feat/empty",
+                 project_id: "p",
+                 run_id: "r",
+                 phase_id: "ph"
+               )
+
+      refute result.reused
+      assert result.path == worktree_path
+      assert result.branch == "feat/empty"
+      assert result.base == base_sha
+      assert File.read!(Path.join(worktree_path, "README.md")) == "x"
+    end
+
+    test "refuses a registered worktree whose checkout is no longer usable", %{repo: repo} do
+      base_sha = init_repo!(repo)
+      worktree_path = Path.join(repo, ".worktrees/wt-broken")
+      File.rm_rf!(worktree_path)
+
+      opts = [
+        operation_id: "wt-broken-#{System.unique_integer([:positive])}",
+        base: base_sha,
+        branch: "feat/broken",
+        project_id: "p",
+        run_id: "r",
+        phase_id: "ph"
+      ]
+
+      assert {:ok, _} = Default.create_worktree(repo, worktree_path, opts)
+
+      # Deleting the checkout's `gitdir` pointer leaves git's registration (and
+      # the worktree list entry, flagged prunable) behind while the directory
+      # stops being a worktree of its own. Reusing it would hand the caller a
+      # path that silently resolves to the parent checkout.
+      File.rm!(Path.join(worktree_path, ".git"))
+
+      assert {:error, {:worktree_path_unusable, path, :worktree_checkout_broken}} =
+               Default.create_worktree(repo, worktree_path, opts)
+
+      assert path == worktree_path
+    end
+
+    test "reuses a worktree whose gitdir pointer is relative to the checkout", %{repo: repo} do
+      base_sha = init_repo!(repo)
+      worktree_path = Path.join(repo, ".worktrees/wt-relative")
+      File.rm_rf!(worktree_path)
+
+      opts = [
+        operation_id: "wt-relative-#{System.unique_integer([:positive])}",
+        base: base_sha,
+        branch: "feat/relative",
+        project_id: "p",
+        run_id: "r",
+        phase_id: "ph"
+      ]
+
+      assert {:ok, _} = Default.create_worktree(repo, worktree_path, opts)
+
+      # Git can record the checkout's `gitdir` pointer relative to the checkout
+      # itself (`worktree.useRelativePaths`). Such a pointer is resolved
+      # against the directory holding the `.git` file, not against the cwd.
+      relative =
+        run_git!(["-C", worktree_path, "rev-parse", "--path-format=relative", "--git-dir"])
+        |> String.trim()
+
+      assert Path.type(relative) == :relative
+
+      File.write!(Path.join(worktree_path, ".git"), "gitdir: #{relative}\n")
+
+      assert {:ok, %{reused: true, branch: "feat/relative"}} =
+               Default.create_worktree(repo, worktree_path, opts)
+    end
+
+    test "refuses a checkout whose own branch differs from the requested branch", %{repo: repo} do
+      base_sha = init_repo!(repo)
+      worktree_path = Path.join(repo, ".worktrees/wt-repointed")
+      other_path = Path.join(repo, ".worktrees/wt-other")
+      File.rm_rf!(worktree_path)
+      File.rm_rf!(other_path)
+
+      opts = [
+        operation_id: "wt-repointed-#{System.unique_integer([:positive])}",
+        base: base_sha,
+        branch: "feat/repointed",
+        project_id: "p",
+        run_id: "r",
+        phase_id: "ph"
+      ]
+
+      assert {:ok, _} = Default.create_worktree(repo, worktree_path, opts)
+
+      other_opts = [
+        operation_id: "wt-other-#{System.unique_integer([:positive])}",
+        base: base_sha,
+        branch: "feat/other",
+        project_id: "p",
+        run_id: "r",
+        phase_id: "ph"
+      ]
+
+      assert {:ok, _} = Default.create_worktree(repo, other_path, other_opts)
+
+      # The registration keeps the branch it was created on, but the checkout
+      # now points at another worktree's admin dir: the branch a command run in
+      # that directory would see is the other one.
+      other_admin =
+        run_git!(["-C", other_path, "rev-parse", "--absolute-git-dir"]) |> String.trim()
+
+      File.write!(Path.join(worktree_path, ".git"), "gitdir: #{other_admin}\n")
+
+      assert {:error, {:worktree_path_unusable, path, {:branch_mismatch, "feat/other"}}} =
+               Default.create_worktree(repo, worktree_path, opts)
+
+      assert path == worktree_path
     end
   end
 

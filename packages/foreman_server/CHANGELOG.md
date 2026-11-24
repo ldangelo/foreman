@@ -4,6 +4,21 @@
 
 ### Fixed
 
+- **A relaunched run no longer fails when its worktree already exists.**
+  `VcsAdapter.Default.create_worktree/3` ran `git worktree add` on a path that already held a
+  worktree, so git exited 128 ("already exists") and the run was marked failed with
+  `{:git_worktree_create_failed, 128, output}` even though that worktree still held the
+  uncommitted work of the interrupted phase. It now checks `git worktree list` first: a
+  worktree already registered on the requested branch is reused as-is (no reset, checkout or
+  clean, and no re-run of the `.beads/` sparse-checkout exclusion) and returned with
+  `reused: true`; a path holding a worktree on another branch fails with
+  `{:worktree_path_unusable, path, {:branch_mismatch, branch}}` and a path that is not a
+  registered worktree fails with `{:worktree_path_unusable, path, :not_a_git_worktree}`. An
+  empty directory already sitting at the path is still created into (git accepts it), and a
+  registered worktree whose checkout no longer resolves to its own git dir — a stale
+  registration left behind by a deleted `gitdir` pointer — fails with
+  `{:worktree_path_unusable, path, :worktree_checkout_broken}` instead of being reused.
+
 - **A report that merely mentions `FOREMAN_BRANCH=` no longer retargets the PR.**
   `AutoPR.branch_override/1` took the first `FOREMAN_BRANCH=(\S+)` match anywhere in the final
   artifact as the PR's head branch. Since the artifact is the agent's whole report (the entry
