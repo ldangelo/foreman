@@ -122,6 +122,91 @@ defmodule ForemanServer.Workflow.RunExecutorPromptSectionTest do
       refute result =~ "## Task Prompt"
       refute result =~ "{{input.prompt}}"
     end
+
+    test "task title and description reach a prompt template and open their own sections" do
+      template = """
+      {{#section task.title}}
+      ## Task Title
+      {{task.title}}
+      {{/section}}
+      {{#section task.description}}
+      ## Task Description
+      {{task.description}}
+      {{/section}}
+      {{#section input.prompt}}
+      ## Task Prompt
+      {{input.prompt}}
+      {{/section}}
+      """
+
+      result =
+        render_for_test(template, %{
+          "task.title" => "Fix the widget",
+          "task.description" => "Widget rotates counter-clockwise.",
+          "input.prompt" => ""
+        })
+
+      assert result =~ "## Task Title\nFix the widget\n"
+      assert result =~ "## Task Description\nWidget rotates counter-clockwise.\n"
+      refute result =~ "## Task Prompt"
+      refute result =~ "{{task.title}}"
+      refute result =~ "{{task.description}}"
+    end
+
+    test "task title and description fall back to empty string and close their sections" do
+      template = """
+      {{#section task.title}}
+      ## Task Title
+      {{task.title}}
+      {{/section}}
+      {{#section task.description}}
+      ## Task Description
+      {{task.description}}
+      {{/section}}
+      {{#section input.prompt}}
+      ## Task Prompt
+      {{input.prompt}}
+      {{/section}}
+      """
+
+      result =
+        render_for_test(template, %{
+          "task.title" => "",
+          "task.description" => "",
+          "input.prompt" => "do the thing"
+        })
+
+      refute result =~ "## Task Title"
+      refute result =~ "## Task Description"
+      assert result =~ "## Task Prompt\ndo the thing\n"
+    end
+
+    test "bundled fix.md renders a dispatched title and description and keeps the plan STOP" do
+      content = File.read!(Path.join(@prompts_dir, "fix.md"))
+
+      assigns = %{
+        "artifact_path" => "/tmp/FIX_REPORT.md",
+        "phase_index" => "2",
+        "phase_name" => "fix",
+        "project_id" => "proj-1",
+        "run_id" => "run-1",
+        "task_id" => "task-1",
+        "workflow_digest" => "abc123",
+        "workflow_name" => "fix",
+        "input.prompt" => "",
+        "input.prompt_argument" => "\"\"",
+        "task.title" => "Retries drop the schedule anchor",
+        "task.description" => "The anchor is not re-registered after a retry."
+      }
+
+      result = render_for_test(content, assigns)
+
+      assert result =~ "## Task Title\nRetries drop the schedule anchor\n"
+      assert result =~ "## Task Description\nThe anchor is not re-registered after a retry.\n"
+      refute result =~ "## Task Prompt"
+      assert result =~ "Blocked: no plan found"
+      refute result =~ "blocked on a missing plan alone"
+    end
   end
 
   # Internal test helper — mirrors the logic in RunExecutor.render_prompt_template/4

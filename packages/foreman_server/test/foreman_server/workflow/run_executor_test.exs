@@ -4358,5 +4358,29 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
       assert assigns["input.prompt"] == "multi\nline"
       assert assigns["input.prompt_argument"] == "\"multi\\nline\""
     end
+
+    test "task title and description come from task state; empty string when absent" do
+      snapshot = %{"workflow_name" => "test", "workflow_digest" => "abc"}
+
+      assigns =
+        RunExecutor.prompt_template_assigns(
+          Map.put(make_state(snapshot), :task, %{
+            "title" => "Validate task prompt",
+            "description" => "A dispatched task description."
+          }),
+          phase_spec(),
+          1,
+          %{},
+          nil
+        )
+
+      assert assigns["task.title"] == "Validate task prompt"
+      assert assigns["task.description"] == "A dispatched task description."
+
+      no_task = RunExecutor.prompt_template_assigns(make_state(snapshot), phase_spec(), 1, %{}, nil)
+
+      assert no_task["task.title"] == ""
+      assert no_task["task.description"] == ""
+    end
   end
 end
