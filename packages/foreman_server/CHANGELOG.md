@@ -13,7 +13,9 @@
   artifact path before the agent launches and `ArtifactTemplate.write/5` keeps a non-empty
   file whose content changed since; a file identical to that snapshot, an empty file or no file
   is written from the final message as before. Content, not mtime, decides, so a file a
-  checkout just touched is not mistaken for the agent's.
+  checkout just touched is not mistaken for the agent's. The same holds for every phase whose
+  agent writes to its artifact path (the plan, fix and assess reports too): the recorded
+  artifact, its archive copy and its digest are now the agent's file, not its final message.
 
 - **The review section of a PR body is never only the missing-evidence note.** An absent,
   malformed or unreadable review block still said "not a clean review" and nothing else, so a
