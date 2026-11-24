@@ -139,6 +139,33 @@ export const runLabel = (r, stopped = {}) => {
   const phase = isActive(r) ? currentPhase(r) : stoppedStatus(r) ? (stopped[stoppedKey(r)] || null) : null;
   return phase === null || phase === wf ? wf : `${phase} · ${wf}`;
 };
+
+// A run that is over, whose phases it makes sense to list with their times (a paused, blocked or running one is not).
+export const isFinishedRun = (r) => r?.status === "completed" || r?.status === "failed" || r?.status === "stuck" || r?.status === "cancelled";
+// A duration the way the run tab writes it ("35m 35s", "1h 17m"); the run tab's span() in mods/foreman-run/model.js.
+export const span = (ms) => {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+  return `${Math.floor(s / 86400)}d ${Math.floor((s % 86400) / 3600)}h`;
+};
+// One line per phase a finished run started, from GET /api/runs/:id/phases: {name, attempt, glyph, ms}. A phase ran from
+// its start to its last event; one the run left open (a failed or stuck run) to the run's last event, as in the run tab
+// (buildPhaseRows). ms is null when either time is missing. The glyph: ✓ completed; ✕ failed; a phase the run left open
+// takes the run's own outcome, as in the run tab (✓ completed run, – cancelled, ✕ failed or stuck); – cancelled or skipped; ? anything else.
+export const phaseDurations = (run, phases) => (Array.isArray(phases) ? phases : [])
+  .filter((p) => typeof p?.name === "string" && p.name !== "")
+  .map((p) => {
+    const open = p.status === "in_progress";
+    const end = open ? run?.last_event_at_ms : p.last_event_at_ms;
+    const ms = Number.isFinite(p.started_at_ms) && Number.isFinite(end) && end >= p.started_at_ms ? end - p.started_at_ms : null;
+    const glyph = p.status === "completed" ? "✓"
+      : p.status === "failed" ? "✕"
+      : open ? (run?.status === "completed" ? "✓" : run?.status === "cancelled" ? "–" : "✕")
+      : p.status === "cancelled" || p.status === "skipped" ? "–" : "?";
+    return { name: p.name, attempt: Number.isFinite(p.attempt) ? p.attempt : 1, glyph, ms };
+  });
 // The run's pull request URL when it has a usable (http/https) one, else null.
 export const prUrl = (r) => (typeof r.pr_url === "string" && /^https?:\/\//.test(r.pr_url) ? r.pr_url : null);
 // The bead a run (or queued item) works on, for copying into `br show <id>`. A beads task's id is

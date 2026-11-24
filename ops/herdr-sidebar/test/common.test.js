@@ -8,9 +8,9 @@ let execImpl = async () => ({ code: 0, stdout: "", stderr: "" }); // what the st
 mock.module("herdr", () => ({ exec: (...a) => execImpl(...a), home: () => "/h", window: () => ({ platform: "macos" }) }));
 const {
   approveBody, approveMergeArgs, approvePrompt, approveTask, beadId, canMerge, clearRuns, completionToast, countCleared, currentPhase, findApprovable, findRunTab, foreman,
-  foremanArgv, foremanDo, hideCleared, isApprovable, isClearable, isFullSha, isResettable, mergeArgs, mergeErrorText, mergePrompt, mergeVerbsCheck, newTabId,
-  parseActivityCommand, parseCleared, parseGhLogin, parseRunTabs, pruneCleared, rememberRunTab, rememberStopped, resetPrompt, runLabel, shortSha, stoppedKey, stoppedPhase,
-  tabIds, trackCompletions,
+  foremanArgv, foremanDo, hideCleared, isApprovable, isClearable, isFinishedRun, isFullSha, isResettable, mergeArgs, mergeErrorText, mergePrompt, mergeVerbsCheck, newTabId,
+  parseActivityCommand, parseCleared, parseGhLogin, parseRunTabs, phaseDurations, pruneCleared, rememberRunTab, rememberStopped, resetPrompt, runLabel, shortSha, span,
+  stoppedKey, stoppedPhase, tabIds, trackCompletions,
 } = await import("../common.js");
 
 // What the run list carries for a run in the middle of a workflow (sunstoneos-m1zz: create-prd done, refine-prd running).
@@ -606,4 +606,43 @@ test("a run's answer is keyed by its status and phases started, so a run that mo
   let m = {};
   for (let i = 0; i < 605; i++) m = rememberStopped(m, { run_id: `r${i}`, status: "failed" }, "fix");
   expect(Object.keys(m)).toHaveLength(600);
+});
+
+test("span writes a duration the way the run tab does", () => {
+  expect([0, 999, 59_000, 125_000, 2_135_500, 3_600_000, 4_620_000, 90_000_000].map(span)).toEqual(["0s", "0s", "59s", "2m 5s", "35m 35s", "1h 0m", "1h 17m", "1d 1h"]);
+  expect(span(-5)).toBe("0s");
+});
+
+test("only a completed, failed, stuck or cancelled run is finished", () => {
+  for (const status of ["completed", "failed", "stuck", "cancelled"]) expect(isFinishedRun({ status })).toBe(true);
+  for (const status of ["in_progress", "awaiting_worker", "paused", "blocked", undefined]) expect(isFinishedRun({ status })).toBe(false);
+  expect(isFinishedRun(undefined)).toBe(false);
+});
+
+test("phase times: a finished phase ran from its start to its last event, a phase left open to the run's last event", () => {
+  const T = 1_700_000_000_000;
+  const phases = [
+    { name: "plan", status: "completed", attempt: 1, started_at_ms: T, last_event_at_ms: T + 125_000 },
+    { name: "fix", status: "failed", attempt: 2, started_at_ms: T + 125_000, last_event_at_ms: T + 600_000 },
+    { name: "coderabbit-review", status: "in_progress", attempt: 1, started_at_ms: T + 600_000, last_event_at_ms: T + 600_004 },
+  ];
+  expect(phaseDurations({ status: "failed", last_event_at_ms: T + 900_000 }, phases)).toEqual([
+    { name: "plan", attempt: 1, glyph: "✓", ms: 125_000 },
+    { name: "fix", attempt: 2, glyph: "✕", ms: 475_000 },
+    { name: "coderabbit-review", attempt: 1, glyph: "✕", ms: 300_000 }, // left open by a failed run: to the run's last event
+  ]);
+  expect(phaseDurations({ status: "cancelled", last_event_at_ms: T + 900_000 }, phases)[2].glyph).toBe("–");
+  expect(phaseDurations({ status: "completed", last_event_at_ms: T + 900_000 }, phases)[2].glyph).toBe("✓"); // the tab marks it done too
+  expect(phaseDurations({ status: "stuck", last_event_at_ms: T + 900_000 }, phases)[2].glyph).toBe("✕");
+});
+
+test("phase times: a missing or backwards time is no duration, and rows with no name or a non-list answer are dropped", () => {
+  const T = 1_700_000_000_000;
+  const run = { status: "completed", last_event_at_ms: T + 1000 };
+  expect(phaseDurations(run, [{ name: "a", status: "completed", started_at_ms: null, last_event_at_ms: T }])[0].ms).toBeNull();
+  expect(phaseDurations(run, [{ name: "a", status: "completed", started_at_ms: T + 5, last_event_at_ms: T }])[0].ms).toBeNull();
+  expect(phaseDurations(run, [{ name: "a", status: "skipped", started_at_ms: T, last_event_at_ms: T + 10 }])[0]).toMatchObject({ glyph: "–", ms: 10, attempt: 1 });
+  expect(phaseDurations(run, [{ name: "a", status: "weird", started_at_ms: T, last_event_at_ms: T }])[0].glyph).toBe("?");
+  expect(phaseDurations(run, [{ status: "completed" }, { name: "", status: "completed" }])).toEqual([]);
+  expect(phaseDurations(run, undefined)).toEqual([]);
 });

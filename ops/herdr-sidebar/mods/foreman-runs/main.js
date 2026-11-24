@@ -4,11 +4,12 @@
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, ScrollHandle } from "gpui-base";
 import { theme, checking, run, focused, nextCommand, notify, keys, layout, shared, setShared, exec, window, openOverlay, spaces } from "herdr";
-import { info, isActive, ago, clock, foreman, api, beadId, workflowName, runLabel, prUrl, openUrlArgv, isClearable, hideCleared, countCleared, clearRuns, pruneCleared, parseCleared, isResettable, resetPrompt, isApprovable, findApprovable, approveTask, approvePrompt, trackCompletions, completionToast, parseActivityCommand, parseRunTabs, tabIds, findRunTab, newTabId, rememberRunTab, stoppedStatus, stoppedKey, stoppedPhase, rememberStopped } from "./common.js";
+import { info, isActive, ago, clock, foreman, api, beadId, workflowName, runLabel, prUrl, openUrlArgv, isClearable, hideCleared, countCleared, clearRuns, pruneCleared, parseCleared, isResettable, resetPrompt, isApprovable, findApprovable, approveTask, approvePrompt, trackCompletions, completionToast, parseActivityCommand, parseRunTabs, tabIds, findRunTab, newTabId, rememberRunTab, stoppedStatus, stoppedKey, stoppedPhase, rememberStopped, isFinishedRun, span, phaseDurations } from "./common.js";
 
 const POLL_MS = 10000;
 const STOPPED_PER_POLL = 6; // failed and stuck runs whose phases are read per poll (each is one request, read once)
 const STOPPED_RETRY_MS = 300000; // a read that failed is tried again after this
+const PHASE_TIMES_KEPT = 200; // finished runs whose phase times are held in memory
 const RESET_CONFIRM_MS = 60000; // a confirmation answered later than this is ignored: the reset it was for is long forgotten
 const APPROVE_CONFIRM_MS = 60000; // likewise for an approval: an answer later than this is ignored
 const LIMIT = 40;
@@ -60,6 +61,7 @@ const HINTS = [
   ["open-pr", "open PR"],
   ["copy-id", "copy id"],
   ["copy-bead", "copy bead"],
+  ["toggle-phases", "phase times"],
   ["copy-pr", "copy PR"],
   ["clear-run", "clear"],
   ["clear-all", "clear all"],
@@ -103,6 +105,11 @@ export default class ForemanRuns extends View {
     // run's phases do not change, so each is read once (see loadStoppedAt). `stoppedRetry` is the in-memory backoff.
     try { this.stopped = parseCleared(localStorage.getItem("stoppedAt")); } catch { this.stopped = {}; }
     this.stoppedRetry = new Map();
+    // Runs whose phases are folded open under their row (view state, not kept), and the phase times read for them:
+    // stoppedKey -> "loading" | [{name, attempt, glyph, ms}] | {error}. A finished run's phases do not change, and a run
+    // that moves on has a new key, so an answer is read once.
+    this.expanded = new Set();
+    this.phaseTimes = new Map();
     this.allRuns = []; // the listing as the server gave it, cleared runs included (this.runs is it without them)
     this.completions = null; // trackCompletions' state: null until the first poll that worked (see announceCompletions)
     this.pendingReset = null; // {run_id, at}: the run Herdr's confirm dialog is asking about
@@ -151,6 +158,7 @@ export default class ForemanRuns extends View {
           else if (command === "open-pr") this.openPr();
           else if (command === "copy-id") this.copyRunId(cx);
           else if (command === "copy-bead") this.copyBead(cx);
+          else if (command === "toggle-phases") this.togglePhasesSelected(cx);
           else if (command === "clear-run") this.clearSelected(cx);
           else if (command === "clear-all") this.clearAll(cx);
           else if (command === "restore-cleared") this.restoreCleared(cx);
@@ -298,6 +306,7 @@ export default class ForemanRuns extends View {
         this.updatedAt = Date.now();
         await this.loadProjects();
         await this.loadStoppedAt();
+        this.loadExpandedPhases(cx);
         await this.loadQueue(manual);
       } catch (e) {
         this.error = String(e?.message ?? e).split("\n")[0];
@@ -358,6 +367,47 @@ export default class ForemanRuns extends View {
       }
     }));
     this.saveStopped();
+  }
+
+  // Folds a finished run's phases, each with how long it took, open under its row, or shut again.
+  togglePhases(r, cx) {
+    if (!isFinishedRun(r)) return notify({ title: "Foreman", body: `${workflowName(r)} ${r.task_id ?? r.run_id} is ${r.status}: phase times show once a run is over.`, level: "info" });
+    if (this.expanded.has(r.run_id)) this.expanded.delete(r.run_id);
+    else {
+      this.expanded.add(r.run_id);
+      this.loadPhaseTimes(r, cx);
+    }
+    cx.notify();
+  }
+
+  togglePhasesSelected(cx) {
+    const r = this.runs.find((x) => x.run_id === this.cursor);
+    if (!r) return notify({ title: "Foreman", body: "Select a run first (focus the panel, then ↑/↓).", level: "info" });
+    this.togglePhases(r, cx);
+  }
+
+  // Reads the phases of one finished run, once (a failed read is read again the next time the run is folded open).
+  async loadPhaseTimes(r, cx) {
+    const key = stoppedKey(r);
+    const have = this.phaseTimes.get(key);
+    if (Array.isArray(have) || have === "loading") return;
+    if (this.phaseTimes.size >= PHASE_TIMES_KEPT) this.phaseTimes.delete(this.phaseTimes.keys().next().value);
+    this.phaseTimes.set(key, "loading");
+    try {
+      const body = await api(`/api/runs/${encodeURIComponent(r.run_id)}/phases`);
+      if (!Array.isArray(body?.phases)) throw new Error("the server answered no phases list");
+      this.phaseTimes.set(key, phaseDurations(r, body.phases));
+    } catch (e) {
+      this.phaseTimes.set(key, { error: String(e?.message ?? e).split("\n")[0] });
+    }
+    cx.notify();
+  }
+
+  // A run folded open that changed state since (a stuck run that failed, a retry that finished) has a new key: read it.
+  loadExpandedPhases(cx) {
+    for (const r of this.runs) {
+      if (this.expanded.has(r.run_id) && isFinishedRun(r) && !this.phaseTimes.has(stoppedKey(r))) this.loadPhaseTimes(r, cx);
+    }
   }
 
   // The runs the panel works on: the listing without the cleared ones. Counts, groups, the failed filter and the
@@ -849,16 +899,36 @@ export default class ForemanRuns extends View {
         .when(clearedN > 0, (el) => el.child(div().id("foreman-restore").px(4).rounded(3).cursor_pointer().text_size(10.5).text_color(t.dim)
           .hover((s) => s.bg(t.hover)).on_click((_e, cx) => this.restoreCleared(cx)).child(`↺ ${clearedN} cleared`)));
 
+    // A finished run's phases folded open under its row: each phase with how long it took.
+    const phaseLines = (r) => {
+      const got = this.phaseTimes.get(stoppedKey(r));
+      if (got === undefined || got === "loading") return div().text_size(10.5).text_color(t.dim).child("reading phases…");
+      if (!Array.isArray(got)) return div().text_size(10.5).text_color(t.blocked).child(`could not read the phases: ${got.error}`);
+      if (got.length === 0) return div().text_size(10.5).text_color(t.dim).child("no phase started");
+      return v_flex().gap(1).children(got.map((p) => h_flex().gap(6).items_center()
+        .child(div().w(10).text_size(10.5).text_color(p.glyph === "✕" ? t.blocked : t.dim).child(p.glyph))
+        .child(div().flex_1().truncate().text_size(11).text_color(t.foreground).child(p.attempt > 1 ? `${p.name} ×${p.attempt}` : p.name))
+        .child(div().text_size(11).text_color(t.dim).child(p.ms === null ? "–" : span(p.ms)))));
+    };
+
     const row = (r) => {
-      return v_flex().id(`run-${r.run_id}`).pl(38).pr(12).py(4).gap(1).cursor_pointer().hover((s) => s.bg(t.hover))
+      const finished = isFinishedRun(r);
+      const open = finished && this.expanded.has(r.run_id);
+      return v_flex().id(`run-${r.run_id}`).pl(18).pr(12).py(4).gap(1).cursor_pointer().hover((s) => s.bg(t.hover))
         .when(r.run_id === this.cursor, (el) => el.bg(t.selected))
         .on_click(() => this.open(r))
-        .child(h_flex().gap(8).items_center()
+        .child(h_flex().gap(6).items_center()
+          .child(finished
+            ? div().id(`phases-${r.run_id}`).w(14).text_size(10).text_color(t.dim).cursor_pointer().hover((s) => s.bg(t.hover))
+              .on_click((_e, cx) => { cx.stop_propagation(); this.togglePhases(r, cx); }).child(open ? "▾" : "▸")
+            : div().w(14))
           .child(div().flex_1().truncate().text_size(12.5).text_color(t.foreground).child(runLabel(r, this.stopped)))
           .child(div().text_size(11).text_color(t.dim).child(ago(r.last_event_at_ms)))
           .when(isResettable(r), (el) => el.child(resetButton(r)))
           .when(isClearable(r), (el) => el.child(clearButton(`clear-${r.run_id}`, "✕", [r]))))
-        .child(idLine(r, r.run_id, r.task_id ?? r.run_id, ""));
+        .child(v_flex().pl(20).gap(1)
+          .child(idLine(r, r.run_id, r.task_id ?? r.run_id, ""))
+          .when(open, (el) => el.child(phaseLines(r))));
     };
 
     // Status subgroup header inside a project; each collapses on its own.
