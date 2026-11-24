@@ -23,3 +23,24 @@ Phase 4 done. Repo-rules review of `git diff main...HEAD` (4 files: 3 run report
 Progress note sent to inbox (`msg_xA1EYpzD6gUxW3CNeO2G6g`) + task Work Log comment. Kata issue `3kyc` created/claimed/closed.
 
 Caveat: `ask_advisor` unavailable — Anthropic oauth 400 `invalid_grant` "Refresh token expired" (known env issue, not task-specific).
+
+## Manual follow-up review (not the run's own review phase)
+
+The run's review phase above did not leave the typed findings and risk-judgement blocks in this file (the report claims markers it does not contain), so the PR body had no review evidence. This section was added afterwards by an independent manual review; it is not output of the run's review phase. The review phase's decision to decline documenting the `pr_body_headings` setting was made against a base 16 commits behind main and no longer holds: the branch has been rebased onto main, which now documents that setting (PR #963).
+
+**Verdict**: the docs now match the code. Every claim was checked against `workflow/auto_pr.ex`, `pr_body.ex`, `pr_body_path.ex`, `phase_pr.ex`, `review_findings.ex`, `mcp/tools.ex`, `aggregates/project/settings.ex`, `project_settings_live.ex` and `cmd/foreman/project.go` on main.
+
+**Fixed in this pass**:
+- `docs/cli-reference.md`: the argument list of the MCP tool `foreman_project_settings_update` lacked `pr_auto_fix` (bead foreman-qgq7x); it is in the tool schema and in the user guide.
+- `docs/user-guide.md`: the run's added paragraph on the `Artifact:` line said the same rule covers the review report link, but the report link degrades to a file name while the artifact line is omitted; it also omitted the templated body and the title-only-task fallback, which both carry the line. Reworded. The phase PR title paragraph now states how commit subjects are matched and the typed error name.
+- `docs/lessons/phase-execution-and-pr-mechanics.md`: named a section heading that no code produces (`## Unresolved review findings`) and said the section appears only when markers are present; the code appends `## Review findings (the review agent's report)` in every state.
+
+**Unverified**: the claim that a `commit: false` phase can open its stacked PR before its artifact is committed is read from the code path (`request_phase_pr` runs after the commit decision, before any later commit), not observed on a live run.
+
+<!-- FOREMAN_REVIEW_FINDINGS_START -->
+{"schema": "foreman.review_findings/1", "reviewed": true, "findings": [{"severity": "minor", "path": "docs/cli-reference.md", "line": 1658, "description": "The MCP argument list of foreman_project_settings_update omitted pr_auto_fix, which the tool schema in mcp/tools.ex accepts. Added.", "disposition": "fixed", "source": "manual-review"}, {"severity": "minor", "path": "docs/user-guide.md", "line": 3077, "description": "The added paragraph claimed the review report link follows the same rule as the Artifact line, but the link falls back to a file name while the Artifact line is dropped; it also left out the templated and title-only-task bodies. Reworded from review_findings.ex and auto_pr.ex.", "disposition": "fixed", "source": "manual-review"}, {"severity": "minor", "path": "docs/lessons/phase-execution-and-pr-mechanics.md", "line": 185, "description": "Named the heading '## Unresolved review findings' and a markers-only condition; the code always appends '## Review findings (the review agent's report)'. Corrected.", "disposition": "fixed", "source": "manual-review"}, {"severity": "nitpick", "path": "docs/user-guide.md", "line": 3071, "description": "The commit: false behaviour of a stacked phase PR (artifact not yet on the pushed branch) is inferred from the code path and was not observed on a live run.", "disposition": "open", "source": "manual-review"}]}
+<!-- FOREMAN_REVIEW_FINDINGS_END -->
+
+<!-- FOREMAN_RISK_JUDGEMENT_START -->
+{"schema": "foreman.risk_judgement/1", "level": "LOW", "rationale": "Documentation-only change (user guide, CLI reference, one lessons file) plus run reports; each statement was checked against the current code on main, and the doc-reading tests and the Go usage drift test are run against the result."}
+<!-- FOREMAN_RISK_JUDGEMENT_END -->

@@ -3019,8 +3019,11 @@ final AutoPR; no-op records do not.
 is titled with the task's title; a run without one falls back to the first
 conventional-commit subject among the run's own commits (`fix(...)`,
 `feat(...)`, and so on); a run with neither keeps the legacy `feat(phase):
-<phase>` title. A task title that is present but unusable (blank) is a typed
-error, and the phase PR is not opened.
+<phase>` title. The commits are read oldest first and a subject counts only in the
+`type(scope)!: text` form, so Foreman's own phase commits (`Foreman run <id> phase <n>`)
+never match; a commit history that cannot be read is warned about in the server log and takes
+the legacy title. A task title that is present but unusable (blank or not a string) is a typed
+error (`task_title_invalid`), and the phase PR is not opened.
 
 **PR bodies carry the review agent's report only when Foreman generates the body.**
 Phase PRs, and final AutoPRs for ad-hoc no-task runs, append a `## Review findings
@@ -3063,21 +3066,26 @@ malformed record refuses the approval (`findings_*`, see "Approval evidence" und
 PR watching and auto-fix), and so does a recorded `HIGH` risk level (`risk_high`, waivable with a
 recorded reason); unresolved critical or major findings refuse only through that level. Read from the source, not observed.
 
-**A generated PR body carries no absolute host path.** A generated body (every phase PR,
-and a final AutoPR for an ad-hoc no-task run) names the PR-creating phase's artifact on an
-`Artifact:` line, and that path is always relative to the repository: the relative form keeps
-the operator's home layout (`/Users/<user>/.foreman/worktrees/…`) out of the PR, and the file
-it names is on the run branch only once the artifact is committed. A phase that defers its
-commit (`commit: false`) can open its PR before that commit, so its `Artifact:` line names a
-file the pushed branch does not carry yet — the path resolves once a later commit on the run
-branch adds the file, and never if no later commit does. An artifact that cannot be expressed
-relative to the repository root gets **no** `Artifact:` line at all, rather than an absolute
-one — and neither does a phase that recorded no artifact path, so a missing line means one of
-those two, not that the phase produced nothing. The same rule covers the review report
-linked from the `## Review findings (the review agent's report)` section above. A task-backed
-final AutoPR uses the task description verbatim as its body and adds no `Artifact:` line of
-its own — a description that carries one brings its own — while a task with a title but no
-description falls back to a generated body, which does carry the line.
+**A generated PR body carries no absolute host path.** A generated body (every phase PR; a
+final AutoPR for an ad-hoc no-task run or for a task with a title but no description; and the
+templated body of a project that sets `pr_body_headings`) names the PR-creating phase's
+artifact on an `Artifact:` line, and that path is always relative to the repository: the
+relative form keeps the operator's home layout (`/Users/<user>/.foreman/worktrees/…`) out of
+the PR, and the file it names is on the run branch only once the artifact is committed. A
+phase that defers its commit (`commit: false`) can open its PR before that commit, so its
+`Artifact:` line names a file the pushed branch does not carry yet — the path resolves once a
+later commit on the run branch adds the file, and never if no later commit does. An artifact
+that cannot be expressed relative to the repository root gets **no** `Artifact:` line at all,
+rather than an absolute one — and neither does a phase that recorded no artifact path, so a
+missing line means one of those two, not that the phase produced nothing. The review report
+linked from the `## Review findings (the review agent's report)` section above follows the
+same no-host-path rule but degrades differently: a report under the repository root, or under
+a `docs/reports/` directory, is linked by its repository-relative path, and any other report
+is named by its file name only (`…/REPORT.md`) rather than dropped. A task-backed final AutoPR
+of a project that sets no `pr_body_headings` uses the task description verbatim as its body and
+adds no `Artifact:` line of its own — a description that carries one brings its own — while a
+task with a title but no description falls back to a generated body, which does carry the
+line. Read from the source, not observed.
 
 **Marker lines.** Each block (the `FOREMAN_REVIEW_FINDINGS` block and the
 `FOREMAN_RISK_JUDGEMENT` block) is delimited by two marker lines, each the whole
