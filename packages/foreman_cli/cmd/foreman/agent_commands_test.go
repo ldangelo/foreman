@@ -136,6 +136,14 @@ func TestRenderAgentSupportStates(t *testing.T) {
 		}
 	}
 
+	pi := renderAgentCommands("pi", specs)
+	if pi.RecommendedProjectDir != ".pi/skills" {
+		t.Fatalf("pi project dir must be the directory pi reads (.pi/skills), got %q", pi.RecommendedProjectDir)
+	}
+	if pi.RecommendedGlobalDir != os.ExpandEnv("$HOME/.pi/agent/skills") {
+		t.Fatalf("pi global dir must stay $HOME/.pi/agent/skills, got %q", pi.RecommendedGlobalDir)
+	}
+
 	for _, agent := range []string{"codex", "opencode"} {
 		result := renderAgentCommands(agent, specs)
 		if result.NativeInstallSupported {
@@ -144,6 +152,32 @@ func TestRenderAgentSupportStates(t *testing.T) {
 		if result.UnsupportedNativeReason == "" {
 			t.Fatalf("%s missing unsupported reason", agent)
 		}
+	}
+}
+
+func TestCommandsInstallPiDefaultWritesProjectSkillsDir(t *testing.T) {
+	// The install default must be a directory pi actually reads. pi's
+	// project-scoped loader reads `<cwd>/.pi/skills`; `.pi/agent/skills` is the
+	// global layout and is invisible under a project.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("FOREMAN_API_TOKEN", "")
+	project := t.TempDir()
+	t.Chdir(project)
+
+	if err := commandsInstall([]string{"--agent", "pi"}); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+
+	matches, err := filepath.Glob(filepath.Join(project, ".pi", "skills", "*", "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) == 0 {
+		t.Fatalf("pi install wrote no skills under %s", filepath.Join(project, ".pi", "skills"))
+	}
+	if _, err := os.Stat(filepath.Join(project, ".pi", "agent")); !os.IsNotExist(err) {
+		t.Fatalf("pi install must not create %s (pi never reads it), stat err = %v", filepath.Join(project, ".pi", "agent"), err)
 	}
 }
 

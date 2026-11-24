@@ -468,7 +468,13 @@ func renderAgentCommands(agent string, specs []agentCommandSpec) agentRenderResu
 	case "claude":
 		result.NativeInstallSupported = true
 		result.RecommendedProjectDir = ".claude/commands/foreman"
-	case "pi", "omp":
+	case "pi":
+		result.NativeInstallSupported = true
+		// pi's project-scoped skill directory is `<project>/.pi/skills`; `.pi/agent/skills`
+		// is the GLOBAL layout (`<agent_dir>/skills`) and is not read under a project.
+		result.RecommendedProjectDir = ".pi/skills"
+		result.RecommendedGlobalDir = os.ExpandEnv("$HOME/.pi/agent/skills")
+	case "omp":
 		result.NativeInstallSupported = true
 		result.RecommendedProjectDir = ".pi/agent/skills"
 		result.RecommendedGlobalDir = os.ExpandEnv("$HOME/.pi/agent/skills")
