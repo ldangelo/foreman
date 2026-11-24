@@ -1433,9 +1433,14 @@ defmodule ForemanServer.Workflow.Dispatcher do
     :exit, _ -> nil
   end
 
-  # Task statuses that must not have a run started on their behalf. An operator can close, fail
-  # or block a task while its run is still queued for a slot; the promotion must not resurrect it.
-  @non_startable_task_statuses ~w(closed failed blocked)
+  # Task statuses that must not have a run started on their behalf. An operator can close or fail
+  # a task while its run is still queued for a slot; the promotion must not resurrect it.
+  #
+  # "blocked" is deliberately absent. It is a recoverable status (`Aggregates.Task` accepts
+  # `"blocked" -> "open"`), so promotion starts its run like any other startable
+  # status. Terminating on it would release the slot with `"task_blocked"`, which is not in
+  # `@capacity_freeing_release_reasons`, so `remove_waiter/2` would never re-dispatch the run.
+  @non_startable_task_statuses ~w(closed failed)
 
   defp start_promoted_run(run_id, state) do
     # Find the task associated with this run to build the admission payload.
