@@ -96,6 +96,12 @@ panel reads `GET /api/runs/:id/phases` once per run (six a poll, newest first, s
 the answer is kept across restarts). A run that never started a phase, or whose phases all completed before it failed,
 and any run when that route answers an error (an older server: 404), shows the workflow alone; a read that failed is
 tried again after five minutes. Completed and cancelled runs show the workflow alone.
+A finished run (completed, failed, stuck or cancelled) has a `▸` at the left of its row: click it to fold its phases open
+under the row, each with how long it took (`✓ plan 2m 3s`, `✕ coderabbit-review 12m 40s`; `×2` after a retry), and
+again to fold them shut (`⇧⌘M` does it for the selected run). A phase ran from its start to its last event; one the run
+left open (a failed or stuck run) to the run's last event, the same as the run tab's Phases view. The phases of a run
+are read from `GET /api/runs/:id/phases` when it is folded open, once per run and state; a read that fails says so under
+the row and is tried again the next time. Clicking elsewhere on the row still opens the run's tab.
 Project headers show a `N failed` count and `active/total`; counters always
 describe all runs, even while the failed filter hides rows. The header shows the
 time of the last successful refresh (red while the latest refresh is failing).
@@ -132,6 +138,7 @@ not shown; `GET /api/projects/<id>/usage` reports it as `limits.deferred_tasks`.
 | Action | Mouse | Shortcut |
 |---|---|---|
 | Open a run in its detail tab (a tab the panel opened for that run is shown again, even in another space, instead of a new one) | click the row | `⏎` while navigating |
+| Fold a finished run's phases and their times open or shut | click the `▸` on its row | `⇧⌘M` on the selected run |
 | Collapse / expand a project or status group | click its header | |
 | Collapse / expand every project | | `⇧⌘E` |
 | Collapse / expand every status group | | `⇧⌘S` |
