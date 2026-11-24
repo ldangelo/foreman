@@ -135,6 +135,24 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.SkillResolverTest do
       put_skill!(Path.join(other, "skills"), "fix-issue")
       assert resolve("fix-issue", Keyword.put(ctx.opts, :agent_dir, other)) == :available
     end
+
+    # A home the VM does not know is an expected input, not a bug: `resolve_pi/2`
+    # used to call `System.user_home!/0` eagerly, and an explicit `nil` reached
+    # `Path.type/1`, so both raised out of `kickoff_skill_preflight/1` instead of
+    # recording a verdict. `nil` must answer `:unverifiable` like any other unknown
+    # input. `System.user_home/0` reads `:init.get_argument(:home)` captured at VM
+    # boot, so the default branch is not reachable in-process; an explicit `home:`
+    # exercises the same guard.
+    test "a home the VM does not know is unverifiable", ctx do
+      # The skill must exist for the `nil` home to be what decides the verdict:
+      # an absent skill is unverifiable for that reason alone, so the same skill
+      # is first shown available under the usable home.
+      put_skill!(Path.join(ctx.agent, "skills"), "fix-issue")
+
+      assert resolve("fix-issue", ctx.opts) == :available
+      assert resolve("fix-issue", Keyword.put(ctx.opts, :home, nil)) == :unverifiable
+      assert resolve("absent", Keyword.put(ctx.opts, :home, nil)) == :unverifiable
+    end
   end
 
   describe "settings skills entries" do
