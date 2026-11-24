@@ -166,6 +166,31 @@ export const parseCleared = (text) => {
   }
 };
 
+// A run's detail tab is opened once and then focused, not opened again on every click. The panel remembers which tab it
+// opened for which run (run id -> tab id, kept in localStorage); Herdr's spaces() says whether that tab still exists.
+// Tabs are named after the bead, which several runs of one bead share, so a name never identifies a run's tab.
+export const parseRunTabs = parseCleared;
+const MAX_RUN_TABS = 100;
+// The ids of all the tabs in these spaces (Herdr's spaces()).
+export const tabIds = (spaces) => new Set((spaces ?? []).flatMap((s) => (s.tabs ?? []).map((t) => t.id)));
+// Where a remembered tab is now: {space, tab}, or null for an id that is unknown or whose tab has been closed.
+export const findRunTab = (spaces, tabId) => {
+  if (typeof tabId !== "string" || tabId === "") return null;
+  const space = (spaces ?? []).find((s) => (s.tabs ?? []).some((t) => t.id === tabId));
+  return space ? { space: space.id, tab: tabId } : null;
+};
+// The tab that `tab.new {name}` just made: the one tab that was not in `before` and carries that name. Null when there
+// is none yet (the app has not applied the command) or when several qualify; the caller never guesses.
+export const newTabId = (before, spaces, name) => {
+  const fresh = (spaces ?? []).flatMap((s) => s.tabs ?? []).filter((t) => !before.has(t.id) && t.name === name);
+  return fresh.length === 1 ? fresh[0].id : null;
+};
+// The map with this run's tab recorded last; the oldest entries beyond MAX_RUN_TABS fall away.
+export const rememberRunTab = (map, runId, tabId) => {
+  const { [runId]: _replaced, ...rest } = map;
+  return Object.fromEntries(Object.entries({ ...rest, [runId]: tabId }).slice(-MAX_RUN_TABS));
+};
+
 // Unlike clearing, a reset changes the server: `foreman run reset` (run.reset) drops the run's record from the run
 // list; its event history stays and the work is not restarted (docs/user-guide.md, `run reset`). The server accepts
 // a failed, stuck, blocked or paused run; the panel offers it on failed runs only.

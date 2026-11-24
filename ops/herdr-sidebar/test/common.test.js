@@ -7,9 +7,9 @@ import { summarizePr } from "../mods/foreman-run/model.js";
 let execImpl = async () => ({ code: 0, stdout: "", stderr: "" }); // what the stubbed exec() answers; a test sets it
 mock.module("herdr", () => ({ exec: (...a) => execImpl(...a), home: () => "/h", window: () => ({ platform: "macos" }) }));
 const {
-  approveBody, approveMergeArgs, approvePrompt, approveTask, beadId, canMerge, clearRuns, completionToast, countCleared, currentPhase, findApprovable, foreman, foremanArgv,
-  foremanDo, hideCleared, isApprovable, isClearable, isFullSha, isResettable, mergeArgs, mergeErrorText, mergePrompt, mergeVerbsCheck, parseActivityCommand, parseCleared,
-  parseGhLogin, pruneCleared, resetPrompt, runLabel, shortSha, trackCompletions,
+  approveBody, approveMergeArgs, approvePrompt, approveTask, beadId, canMerge, clearRuns, completionToast, countCleared, currentPhase, findApprovable, findRunTab, foreman,
+  foremanArgv, foremanDo, hideCleared, isApprovable, isClearable, isFullSha, isResettable, mergeArgs, mergeErrorText, mergePrompt, mergeVerbsCheck, newTabId,
+  parseActivityCommand, parseCleared, parseGhLogin, parseRunTabs, pruneCleared, rememberRunTab, resetPrompt, runLabel, shortSha, tabIds, trackCompletions,
 } = await import("../common.js");
 
 // What the run list carries for a run in the middle of a workflow (sunstoneos-m1zz: create-prd done, refine-prd running).
@@ -529,4 +529,39 @@ test("foreman and foremanDo both throw the CLI's own error line, without its pre
   execImpl = async () => ({ code: 0, stdout: '{"runs":[]}', stderr: "" });
   expect(await foreman(["run", "list"])).toEqual({ runs: [] });
   execImpl = async () => ({ code: 0, stdout: "", stderr: "" });
+});
+
+// Herdr's spaces(): two spaces, the second holding the tab of run A (named like run B's: they are runs of one bead).
+const SPACES = [
+  { id: "s1", tabs: [{ id: "t1", name: "zsh" }] },
+  { id: "s2", tabs: [{ id: "t2", name: "prd sunstoneos-m1zz" }, { id: "t3", name: "fix foreman-x" }] },
+];
+
+test("a run's remembered tab is found with its space, and a closed or unknown one is not", () => {
+  expect(findRunTab(SPACES, "t2")).toEqual({ space: "s2", tab: "t2" });
+  expect(findRunTab(SPACES, "t9")).toBeNull(); // closed since
+  expect(findRunTab(SPACES, undefined)).toBeNull(); // never opened
+  expect(findRunTab(SPACES, "")).toBeNull();
+  expect(findRunTab(undefined, "t2")).toBeNull();
+});
+
+test("the tab a tab.new made is the one new tab with its name, never a guess", () => {
+  const before = tabIds(SPACES);
+  const after = [...SPACES, { id: "s3", tabs: [{ id: "t4", name: "prd sunstoneos-m1zz" }] }];
+  expect(newTabId(before, SPACES, "prd sunstoneos-m1zz")).toBeNull(); // the app has not applied it yet: the old tab has that name too
+  expect(newTabId(before, after, "prd sunstoneos-m1zz")).toBe("t4");
+  expect(newTabId(before, after, "fix foreman-x")).toBeNull(); // a new tab, but not the one asked for
+  const two = [...SPACES, { id: "s3", tabs: [{ id: "t4", name: "a" }, { id: "t5", name: "a" }] }];
+  expect(newTabId(before, two, "a")).toBeNull(); // two candidates: not adopted
+});
+
+test("remembered run tabs: the newest entry wins and the oldest beyond 100 fall away; bad storage is no tabs", () => {
+  expect(rememberRunTab({ a: "t1" }, "a", "t2")).toEqual({ a: "t2" });
+  let m = {};
+  for (let i = 0; i < 105; i++) m = rememberRunTab(m, `run-${i}`, `t${i}`);
+  expect(Object.keys(m)).toHaveLength(100);
+  expect(m["run-4"]).toBeUndefined();
+  expect(m["run-104"]).toBe("t104");
+  expect(parseRunTabs('{"run-1":"t1","run-2":7}')).toEqual({ "run-1": "t1" });
+  expect(parseRunTabs("not json")).toEqual({});
 });
