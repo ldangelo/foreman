@@ -216,6 +216,44 @@ defmodule ForemanServer.Workflow.RunExecutorPromptSectionTest do
       assert result =~ "Blocked: no plan found"
       refute result =~ "blocked on a missing plan alone"
     end
+
+    test "bundled review prompts render a dispatched title and description" do
+      assigns = %{
+        "artifact_path" => "/tmp/REVIEW_REPORT.md",
+        "phase_index" => "4",
+        "phase_name" => "repo-rules-review",
+        "project_id" => "proj-1",
+        "run_id" => "run-1",
+        "task_id" => "task-1",
+        "workflow_digest" => "abc123",
+        "workflow_name" => "fix",
+        "input.prompt" => "",
+        "input.prompt_argument" => "\"\"",
+        "task.title" => "Retries drop the schedule anchor",
+        "task.description" => "The anchor is not re-registered after a retry."
+      }
+
+      for name <- ["review-repo-rules.md", "review-coderabbit.md"] do
+        result = render_for_test(File.read!(Path.join(@prompts_dir, name)), assigns)
+
+        assert result =~ "## Task Title\n\nRetries drop the schedule anchor\n", name
+
+        assert result =~ "## Task Description\n\nThe anchor is not re-registered after a retry.\n",
+               name
+
+        refute result =~ "## Task Prompt", name
+
+        empty =
+          render_for_test(File.read!(Path.join(@prompts_dir, name)), %{
+            assigns
+            | "task.title" => "",
+              "task.description" => ""
+          })
+
+        refute empty =~ "## Task Title", name
+        refute empty =~ "## Task Description", name
+      end
+    end
   end
 
   # Internal test helper — mirrors the logic in RunExecutor.render_prompt_template/4

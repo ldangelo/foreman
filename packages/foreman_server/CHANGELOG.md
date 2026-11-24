@@ -5,7 +5,8 @@
 ### Fixed
 
 - **A description-only task reaches the worker.** The bundled `discover.md`, `fix-plan.md`,
-  `fix.md`, `implement.md` and `verify.md` prompts now render the dispatched task's title and
+  `fix.md`, `implement.md`, `verify.md`, `review-coderabbit.md` and `review-repo-rules.md`
+  prompts now render the dispatched task's title and
   description as their own `Task Title` / `Task Description` sections, and `fix-plan.md` stops
   with `Blocked: no issue description supplied` only when neither a Task Prompt nor a Task
   Description section is present — a task carrying only a description used to block. The new
