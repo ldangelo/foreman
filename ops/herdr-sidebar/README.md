@@ -89,8 +89,13 @@ The mod only supplies the token. A non-default server address
 
 Rows show how long ago the run last had an event and its task id, and name the run by its workflow. While a run is active the
 name leads with the phase it is in (`refine-prd · prd`), read from the run list (its newest *started* phase, named by the
-workflow snapshot), so it moves on as the run does; a finished run shows the workflow alone. Between one phase finishing and
-the next starting the row still names the finished one; the run's tab (Phases) has each phase's status.
+workflow snapshot), so it moves on as the run does; between one phase finishing and the next starting the row still names
+the finished one (the run's tab, Phases, has each phase's status). A failed or stuck run leads with the phase it stopped
+in: the one that failed, or for a stuck run the one still in progress. The run list cannot say how a phase ended, so the
+panel reads `GET /api/runs/:id/phases` once per run (six a poll, newest first, so a long list fills in over a few polls;
+the answer is kept across restarts). A run that never started a phase, or whose phases all completed before it failed,
+and any run when that route answers an error (an older server: 404), shows the workflow alone; a read that failed is
+tried again after five minutes. Completed and cancelled runs show the workflow alone.
 Project headers show a `N failed` count and `active/total`; counters always
 describe all runs, even while the failed filter hides rows. The header shows the
 time of the last successful refresh (red while the latest refresh is failing).
@@ -255,7 +260,9 @@ section) picks the tab it opens on; a completion notification asks for `activity
 - **Overview.** *Outcome*: how it ended (or, for a run that is going, what it is doing now with its
   newest output), the failure reason in full (six lines, `show more`, `copy`; a cancelled run has none
   on the projection, so it is read from the transcript's `Run cancelled: …` turn), phases done, the PR
-  line. *Needs you*: pending tool approvals and open questions, with the CLI line that answers them
+  line. A failed or stuck run says `at phase X` for the phase that failed (or, stuck, the one it left open),
+  the same phase the panel's row names; a run that failed after all its phases completed names none, and a
+  cancelled one names the last phase it started. *Needs you*: pending tool approvals and open questions, with the CLI line that answers them
   (the tab itself changes nothing). *Phases*: one row per phase of the workflow with its status
   (`✓` done, `▶` running, `Ⅱ` paused, `✕` failed, `–` cancelled or not run, `○` pending, `×N` after a
   retry), duration, the size of its report and its failure reason; a click opens the phase. *Pull

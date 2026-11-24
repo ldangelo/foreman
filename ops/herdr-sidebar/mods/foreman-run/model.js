@@ -455,7 +455,10 @@ export function nowSummary(run, rows, turns, now) {
 export function outcomeOf(run, rows, turns, now) {
   if (!isFinished(run)) return null;
   const status = run.status;
-  const failing = rows.find((r) => r.state === "failed") ?? rows.filter((r) => r.started).pop() ?? null;
+  // The phase a failed or stuck run stopped in: the one that failed (a phase the run left open counts as failed here,
+  // see buildPhaseRows). One that merely ran last did not fail: the run may have failed after it, so it is not named.
+  // The panel's row says the same (common.js stoppedPhase); a cancelled or blocked run names the last phase it started.
+  const failing = rows.find((r) => r.state === "failed") ?? (status === "failed" || status === "stuck" ? null : rows.filter((r) => r.started).pop()) ?? null;
   let reason = typeof run.failure_reason === "string" && run.failure_reason !== "" ? run.failure_reason : null;
   let reasonFrom = reason ? "run" : null;
   if (!reason && status !== "completed") {

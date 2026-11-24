@@ -115,11 +115,28 @@ export const currentPhase = (r) => {
     : phases.find((p) => p.index === Math.max(...ids.map((id) => Number(/-p(\d+)$/.exec(id)?.[1] ?? NaN))));
   return typeof pick?.name === "string" && pick.name !== "" ? pick.name : null;
 };
-// What a panel row calls a run: while it is active, the phase it is in then the workflow ("refine-prd · prd"; just the
-// workflow when the two are the same, or when the phase is unknown). A finished run is named by its workflow alone.
-export const runLabel = (r) => {
+// A failed or stuck run stopped somewhere, which the run list cannot say: it knows which phases started, not how they
+// ended (a run that failed after every phase completed would be named after its last phase). GET /api/runs/:id/phases
+// does; the panel reads it once per run, and the answer is kept under the run's id, status and number of started
+// phases (a finished run's phases do not change; a stuck run that moves on, or a failed one that is retried, is a new key).
+export const stoppedStatus = (r) => r?.status === "failed" || r?.status === "stuck";
+export const stoppedKey = (r) => `${r.run_id}:${r.status}:${Array.isArray(r.phase_ids) ? r.phase_ids.length : 0}`;
+// The phase a run stopped in, from its phase rows ({name, status}): the one that failed; else the one still in progress
+// (a stuck run). Null when no phase started, or every phase completed (the run failed after its last phase).
+export const stoppedPhase = (phases) => {
+  const rows = Array.isArray(phases) ? phases : [];
+  const hit = rows.find((p) => p?.status === "failed") ?? rows.filter((p) => p?.status === "in_progress").pop();
+  return typeof hit?.name === "string" && hit.name !== "" ? hit.name : null;
+};
+const MAX_STOPPED = 600;
+// The map with this run's answer recorded last ("" for a run with no phase to name: asked once, not again).
+export const rememberStopped = (map, r, name) => remembered(map, stoppedKey(r), name ?? "", MAX_STOPPED);
+// What a panel row calls a run: while it is active, the phase it is in then the workflow ("refine-prd · prd"); while it
+// is failed or stuck, the phase it stopped in, if `stopped` (what rememberStopped built) has it. Just the workflow when
+// the two names are the same or the phase is unknown. Any other run is named by its workflow alone.
+export const runLabel = (r, stopped = {}) => {
   const wf = workflowName(r);
-  const phase = isActive(r) ? currentPhase(r) : null;
+  const phase = isActive(r) ? currentPhase(r) : stoppedStatus(r) ? (stopped[stoppedKey(r)] || null) : null;
   return phase === null || phase === wf ? wf : `${phase} · ${wf}`;
 };
 // The run's pull request URL when it has a usable (http/https) one, else null.
@@ -185,11 +202,13 @@ export const newTabId = (before, spaces, name) => {
   const fresh = (spaces ?? []).flatMap((s) => s.tabs ?? []).filter((t) => !before.has(t.id) && t.name === name);
   return fresh.length === 1 ? fresh[0].id : null;
 };
-// The map with this run's tab recorded last; the oldest entries beyond MAX_RUN_TABS fall away.
-export const rememberRunTab = (map, runId, tabId) => {
-  const { [runId]: _replaced, ...rest } = map;
-  return Object.fromEntries(Object.entries({ ...rest, [runId]: tabId }).slice(-MAX_RUN_TABS));
+// The newest `max` entries of a string map, `key` recorded last.
+const remembered = (map, key, value, max) => {
+  const { [key]: _replaced, ...rest } = map;
+  return Object.fromEntries(Object.entries({ ...rest, [key]: value }).slice(-max));
 };
+// The map with this run's tab recorded last; the oldest entries beyond MAX_RUN_TABS fall away.
+export const rememberRunTab = (map, runId, tabId) => remembered(map, runId, tabId, MAX_RUN_TABS);
 
 // Unlike clearing, a reset changes the server: `foreman run reset` (run.reset) drops the run's record from the run
 // list; its event history stays and the work is not restarted (docs/user-guide.md, `run reset`). The server accepts
