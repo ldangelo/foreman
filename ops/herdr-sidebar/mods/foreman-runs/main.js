@@ -4,7 +4,7 @@
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, ScrollHandle } from "gpui-base";
 import { theme, checking, run, focused, nextCommand, notify, keys, layout, shared, setShared, exec, window, openOverlay } from "herdr";
-import { info, isActive, ago, clock, foreman, api, beadId, workflowName, prUrl, openUrlArgv, isClearable, hideCleared, countCleared, clearRuns, pruneCleared, parseCleared, isResettable, resetPrompt, isApprovable, findApprovable, approveTask, approvePrompt } from "./common.js";
+import { info, isActive, ago, clock, foreman, api, beadId, workflowName, prUrl, openUrlArgv, isClearable, hideCleared, countCleared, clearRuns, pruneCleared, parseCleared, isResettable, resetPrompt, isApprovable, findApprovable, approveTask, approvePrompt, trackCompletions, completionToast, parseActivityCommand } from "./common.js";
 
 const POLL_MS = 10000;
 const RESET_CONFIRM_MS = 60000; // a confirmation answered later than this is ignored: the reset it was for is long forgotten
@@ -94,6 +94,7 @@ export default class ForemanRuns extends View {
     // Runs cleared from the panel (run id -> the status it had when cleared): view state only, kept across restarts.
     try { this.cleared = parseCleared(localStorage.getItem("cleared")); } catch { this.cleared = {}; }
     this.allRuns = []; // the listing as the server gave it, cleared runs included (this.runs is it without them)
+    this.completions = null; // trackCompletions' state: null until the first poll that worked (see announceCompletions)
     this.pendingReset = null; // {run_id, at}: the run Herdr's confirm dialog is asking about
     this.resetBusy = false;
     this.pendingApprove = null; // {task_id, at}: the task Herdr's confirm dialog is asking about
@@ -122,12 +123,17 @@ export default class ForemanRuns extends View {
     this.refresh(cx);
     // Key commands from keys.json ("<mod>.<command>"): "foreman-runs.toggle-failed" flips the
     // failed filter, "foreman-runs.refresh" reloads now, "foreman-runs.focus-panel" moves the keyboard
-    // here for arrow-key navigation. Anything else is ignored.
+    // here for arrow-key navigation. "foreman-runs.open-run-activity:<run id>" (what a completion notification runs when
+    // clicked: Herdr delivers a mod command's name and nothing else, so the id rides in it) opens that run's detail tab
+    // on Activity. Anything else is ignored.
     if (!checking()) {
       cx.spawn(async (cx) => {
         for (;;) {
-          const command = String(await nextCommand()).split(/[.:]/).pop();
-          if (command === "toggle-failed") this.toggleFailedFilter(cx);
+          const raw = String(await nextCommand());
+          const command = raw.split(/[.:]/).pop();
+          const activity = parseActivityCommand(raw);
+          if (activity) this.openRunActivity(activity.runId);
+          else if (command === "toggle-failed") this.toggleFailedFilter(cx);
           else if (command === "refresh") this.refresh(cx, true);
           else if (command === "toggle-all") this.toggleAllProjects(cx);
           else if (command === "toggle-statuses") this.toggleAllStatuses(cx);
@@ -276,6 +282,7 @@ export default class ForemanRuns extends View {
     cx.spawn(async (cx) => {
       try {
         this.setRuns(await this.loadRuns(manual));
+        this.announceCompletions();
         this.error = null;
         this.updatedAt = Date.now();
         await this.loadProjects();
@@ -462,11 +469,29 @@ export default class ForemanRuns extends View {
   }
 
   // Opens the run-detail tab (the foreman-run mod): phases, live activity, changes, PR and anything
-  // waiting on the operator. It looks the run up itself, so it only needs the id.
-  open(r) {
+  // waiting on the operator. It looks the run up itself, so it only needs the id. `tab` is the view it starts on
+  // (overview, activity, phases, changes or pr); without it the run's state decides.
+  open(r, tab = null) {
     // The tab is named after the bead when there is one: the id is the end of the task id, which a cut-off name loses.
     const short = beadId(r) ?? String(r.task_id ?? r.run_id).slice(0, 24);
-    run("tab.new", { name: `${workflowName(r)} ${short}`, mod: "foreman-run", props: { run_id: r.run_id } });
+    run("tab.new", { name: `${workflowName(r)} ${short}`, mod: "foreman-run", props: tab ? { run_id: r.run_id, tab } : { run_id: r.run_id } });
+  }
+
+  // Opens a run on its Activity view: what a completion notification's click runs. The run is looked up for the tab's
+  // name; one that has left the listing still opens, named by its id.
+  openRunActivity(runId) {
+    if (runId === null) return notify({ title: "Foreman", body: "open-run-activity needs a run id: foreman-runs.open-run-activity:<run id>", level: "info" });
+    this.open(this.allRuns.find((x) => x.run_id === runId) ?? { run_id: runId }, "activity");
+  }
+
+  // A Herdr notification for each run that went from running (or queued, or paused) to completed since the poll before
+  // (trackCompletions): the first poll that works only records what is there, and a run is announced once. Clicking it
+  // opens the run on Activity. This panel posts it, so notifications come while the panel is loaded (the foreman
+  // layout is showing), whether or not its sidebar is folded.
+  announceCompletions() {
+    const { state, completed } = trackCompletions(this.completions, this.allRuns);
+    this.completions = state;
+    for (const r of completed) notify(completionToast(r));
   }
 
   // Runs the panel lists: all of them, or only the failed ones while the header filter is on.

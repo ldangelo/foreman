@@ -619,6 +619,7 @@ export function summarizePr(d) {
   const out = {
     url: d.pr_url, number: prNumber(d.pr_url), status: d.status ?? null, watching: d.watching === true, stopReason: d.stop_reason ?? null,
     headSha: d.head_sha ?? null, base: d.base_branch ?? null, branch: d.branch_name ?? null, gate: d.merge_gate ?? null,
+    repoId: d.repo_id ?? null, // null: the run's primary repository
     checks: {
       observed: checks !== null, state: d.checks_state ?? null, items, ...counts, total: items.length,
       old: checks?.old === true, stale: checks?.stale === true, truncated: checks?.truncated === true, failing: listOf(d.failing, "failing"),
