@@ -3100,8 +3100,9 @@ unconditionally, which is the rule now narrowed to the cleanup case above.
 
 See `AGENTS.md`'s "Documentation Gate" section for the mandatory
 pre-completion gate: enumerate externally-visible identifiers a change
-adds/removes/renames, grep them across `CLAUDE.md`,
-`README.md`, this file, and `docs/cli-reference.md`, and fix or
+adds/removes/renames, grep them across `CLAUDE.md` and the
+`docs/lessons/*.md` files it indexes, `README.md`, this file, and
+`docs/cli-reference.md`, and fix or
 explicitly annotate any stale hit. `docs/PRD/*` and `docs/TRD/*` are
 point-in-time design specs, not living docs — leave their historical
 claims as written; add a forward-pointer note instead of rewriting them.
