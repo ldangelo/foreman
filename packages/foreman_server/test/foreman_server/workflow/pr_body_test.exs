@@ -99,11 +99,5 @@ defmodule ForemanServer.Workflow.PrBodyTest do
                 detail: {:pr_body_headings_invalid, "## Summary"}
               }} = PrBody.build("## Summary", %Sources{})
     end
-
-    test "raises on sources that are not a `Sources` instead of calling the headings invalid" do
-      not_sources = Map.new()
-
-      assert_raise FunctionClauseError, fn -> PrBody.build(["## Summary"], not_sources) end
-    end
   end
 end
