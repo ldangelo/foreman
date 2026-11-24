@@ -15,7 +15,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
        `phase_begin/3` (`PhaseStarted` + the run's worktree),
        `phase_launch/4` (the agent dispatch the
        `ForemanServer.Exec.Runners.Overwatch` runner performs),
-       `ArtifactTemplate.write/4`, `enforce_required_file/4`, the commit and
+       `ArtifactTemplate.write/5`, `enforce_required_file/4`, the commit and
        `phase_finish/5` (`PhaseCompleted`) — or `emit_phase_failure/4`
        (`PhaseFailed` + `TaskExecutionFailed`) when a phase fails.
     3. Finalize: complete the task, open the run's PR, mark the run
