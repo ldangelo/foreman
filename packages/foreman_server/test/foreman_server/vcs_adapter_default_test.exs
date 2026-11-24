@@ -271,6 +271,142 @@ defmodule ForemanServer.VcsAdapter.DefaultTest do
       assert File.dir?(worktree_path)
       assert File.read!(Path.join(worktree_path, "README.md")) == "x"
     end
+
+    test "reuses an existing worktree already on the requested branch, leaving it untouched",
+         %{repo: repo} do
+      base_sha = init_repo!(repo)
+      worktree_path = Path.join(repo, ".worktrees/wt-reuse")
+      File.rm_rf!(worktree_path)
+
+      opts = [
+        operation_id: "wt-reuse-#{System.unique_integer([:positive])}",
+        base: base_sha,
+        branch: "feat/reuse",
+        project_id: "p",
+        run_id: "r",
+        phase_id: "ph"
+      ]
+
+      assert {:ok, first} = Default.create_worktree(repo, worktree_path, opts)
+      refute Map.get(first, :reused, false)
+
+      # Uncommitted work, plus a tracked-file edit and a commit ahead of base:
+      # the recovery path must not discard any of it.
+      File.write!(Path.join(worktree_path, "untracked.txt"), "precious\n")
+      File.write!(Path.join(worktree_path, "README.md"), "modified\n")
+      run_git!(["-C", worktree_path, "add", "README.md"])
+      run_git!(["-C", worktree_path, "commit", "--no-gpg-sign", "-m", "ahead of base"])
+      ahead_sha = run_git!(["-C", worktree_path, "rev-parse", "HEAD"]) |> String.trim()
+
+      assert {:ok, result} = Default.create_worktree(repo, worktree_path, opts)
+      assert result.reused == true
+      assert result.path == worktree_path
+      assert result.branch == "feat/reuse"
+      assert result.base == base_sha
+      assert result.output == ""
+
+      # Nothing was reset, cleaned or checked out.
+      assert File.read!(Path.join(worktree_path, "untracked.txt")) == "precious\n"
+      assert File.read!(Path.join(worktree_path, "README.md")) == "modified\n"
+
+      head = run_git!(["-C", worktree_path, "rev-parse", "HEAD"]) |> String.trim()
+      assert head == ahead_sha
+    end
+
+    test "errors when the path is a worktree on an unrelated branch", %{repo: repo} do
+      base_sha = init_repo!(repo)
+      worktree_path = Path.join(repo, ".worktrees/wt-other")
+      File.rm_rf!(worktree_path)
+
+      {:ok, _} =
+        Default.create_worktree(repo, worktree_path,
+          operation_id: "wt-other-#{System.unique_integer([:positive])}",
+          base: base_sha,
+          branch: "feat/other",
+          project_id: "p",
+          run_id: "r",
+          phase_id: "ph"
+        )
+
+      assert {:error, {:worktree_path_unusable, path, reason}} =
+               Default.create_worktree(repo, worktree_path,
+                 operation_id: "wt-other-2-#{System.unique_integer([:positive])}",
+                 base: base_sha,
+                 branch: "feat/wanted",
+                 project_id: "p",
+                 run_id: "r",
+                 phase_id: "ph"
+               )
+
+      assert path == worktree_path
+      assert reason == {:branch_mismatch, "feat/other"}
+      assert File.dir?(worktree_path)
+    end
+
+    test "errors with a clear message when the path is a plain directory", %{repo: repo} do
+      base_sha = init_repo!(repo)
+      worktree_path = Path.join(repo, ".worktrees/wt-plain")
+      File.rm_rf!(worktree_path)
+      File.mkdir_p!(worktree_path)
+      File.write!(Path.join(worktree_path, "keep.txt"), "x\n")
+
+      assert {:error, {:worktree_path_unusable, path, :not_a_git_worktree}} =
+               Default.create_worktree(repo, worktree_path,
+                 operation_id: "wt-plain-#{System.unique_integer([:positive])}",
+                 base: base_sha,
+                 branch: "feat/plain",
+                 project_id: "p",
+                 run_id: "r",
+                 phase_id: "ph"
+               )
+
+      assert path == worktree_path
+      assert File.read!(Path.join(worktree_path, "keep.txt")) == "x\n"
+    end
+
+    test "detached request reuses an existing detached worktree at the base", %{repo: repo} do
+      base_sha = init_repo!(repo)
+      worktree_path = Path.join(repo, ".worktrees/wt-detached-reuse")
+      File.rm_rf!(worktree_path)
+
+      opts = [
+        operation_id: "wt-detached-reuse-#{System.unique_integer([:positive])}",
+        base: base_sha,
+        branch: nil,
+        project_id: "p",
+        run_id: "r",
+        phase_id: "ph"
+      ]
+
+      assert {:ok, %{branch: nil}} = Default.create_worktree(repo, worktree_path, opts)
+      assert {:ok, result} = Default.create_worktree(repo, worktree_path, opts)
+      assert result.reused == true
+      assert result.branch == nil
+    end
+
+    test "reused worktree keeps a pre-existing .beads/ directory", %{repo: repo} do
+      base_sha = init_repo!(repo)
+      worktree_path = Path.join(repo, ".worktrees/wt-beads-reuse")
+      File.rm_rf!(worktree_path)
+
+      opts = [
+        operation_id: "wt-beads-reuse-#{System.unique_integer([:positive])}",
+        base: base_sha,
+        branch: "feat/beads-reuse",
+        project_id: "p",
+        run_id: "r",
+        phase_id: "ph"
+      ]
+
+      assert {:ok, _} = Default.create_worktree(repo, worktree_path, opts)
+
+      beads_dir = Path.join(worktree_path, ".beads")
+      File.mkdir_p!(beads_dir)
+      File.write!(Path.join(beads_dir, "issues.jsonl"), "{}\n")
+
+      assert {:ok, %{reused: true}} = Default.create_worktree(repo, worktree_path, opts)
+      assert File.read!(Path.join(beads_dir, "issues.jsonl")) == "{}\n"
+    end
   end
 
   describe "clean_worktree/2" do
@@ -530,6 +666,18 @@ defmodule ForemanServer.VcsAdapter.DefaultTest do
   # Run a git command and return combined stdout/stderr. Raises on
   # non-zero exit so test failures surface immediately with the git
   # output that caused them.
+  defp init_repo!(repo) do
+    run_git!(["-C", repo, "init", "--initial-branch=main"])
+    run_git!(["-C", repo, "config", "user.email", "t@x"])
+    run_git!(["-C", repo, "config", "user.name", "T"])
+    File.write!(Path.join(repo, "README.md"), "x")
+    File.mkdir_p!(Path.join(repo, ".beads"))
+    File.write!(Path.join(repo, ".beads/issues.jsonl"), "{\"id\":\"x\"}\n")
+    run_git!(["-C", repo, "add", "."])
+    run_git!(["-C", repo, "commit", "--no-gpg-sign", "-m", "init"])
+    run_git!(["-C", repo, "rev-parse", "HEAD"]) |> String.trim()
+  end
+
   defp run_git!(args) do
     {output, 0} = System.cmd("git", args, stderr_to_stdout: true)
     output
