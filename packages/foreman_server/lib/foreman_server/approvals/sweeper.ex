@@ -27,7 +27,8 @@ defmodule ForemanServer.Approvals.Sweeper do
   @doc """
   Start the sweeper. Options: `:name`, `:now_fun` (ms clock, injectable),
   `:interval_ms` (`:manual` disables the timer), `:tool_call_timeout_ms`,
-  `:on_timeout`, `:gateway`.
+  `:on_timeout` (`:surface` or `:deny`; defaults to `Config.on_timeout/0` and validated
+  here, so a bad value fails the sweeper at start instead of mid-sweep), `:gateway`.
   """
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
@@ -51,10 +52,27 @@ defmodule ForemanServer.Approvals.Sweeper do
       interval_ms: Keyword.get_lazy(opts, :interval_ms, &Config.sweep_interval_ms/0),
       tool_call_timeout_ms:
         Keyword.get_lazy(opts, :tool_call_timeout_ms, &Config.tool_call_timeout_ms/0),
-      policy_opts: Keyword.take(opts, [:on_timeout, :gateway])
+      policy_opts:
+        opts
+        |> Keyword.take([:gateway])
+        |> Keyword.put(:on_timeout, validated_on_timeout(opts))
     }
 
     {:ok, state, {:continue, :recover}}
+  end
+
+  # Resolve and validate the policy once, at start: `TimeoutPolicy.apply/3` reads
+  # `:on_timeout` lazily per subject, so an invalid value would otherwise raise inside
+  # the sweep after requests were already handled but before any question expired.
+  defp validated_on_timeout(opts) do
+    case Keyword.get_lazy(opts, :on_timeout, &Config.on_timeout/0) do
+      policy when policy in [:surface, :deny] ->
+        policy
+
+      other ->
+        raise ArgumentError,
+              "ForemanServer.Approvals.Sweeper :on_timeout must be :surface or :deny, got: #{inspect(other)}"
+    end
   end
 
   @impl true
