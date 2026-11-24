@@ -12,6 +12,13 @@
   link when the report is repository-relative (inside `repo_root` or under `docs/reports/`),
   otherwise an inert code span of its basename, never the absolute host path.
 
+- **A blocked task no longer loses its queued run at slot promotion.**
+  `Workflow.Dispatcher` treated a `"blocked"` task as non-startable, so promoting a queued run
+  whose task was blocked released the slot and dropped the waiter. The release reason
+  `"task_blocked"` is not a capacity-freeing one, so nothing re-dispatched the run. `"blocked"`
+  is a recoverable status (`Aggregates.Task` accepts `"blocked" -> "open"`), so it is no longer
+  non-startable: promotion now starts the run for a blocked task instead of dropping it.
+
 - **A slow aggregate actor no longer kills the process that sent it a command.**
   `CommandRouter.dispatch/2` let the `GenServer.call` timeout exit escape, so the Overwatch
   `Tracker` (and every live worker with it), the `BeadsWatcher` and a `RunExecutor` that had
