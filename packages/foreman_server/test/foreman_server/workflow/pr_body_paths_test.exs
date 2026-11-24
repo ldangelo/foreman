@@ -212,14 +212,14 @@ defmodule ForemanServer.Workflow.PrBodyPathsTest do
       "git", ["rev-parse", "--verify", _ref], _opts ->
         {"0123456789abcdef0123456789abcdef01234567", 0}
 
+      # The PR title reads the run's commit subjects (#957): none here, so the title falls back.
+      "git", ["log" | _rest], _opts ->
+        {"", 0}
+
       "git", ["ls-remote", "origin", _ref], _opts ->
         {"", 0}
 
       "git", ["push", "-u", "origin", _branch], _opts ->
-        {"", 0}
-
-      # The title lookup reads the run's commit subjects; none is conventional here.
-      "git", ["log" | _rest], _opts ->
         {"", 0}
 
       "gh", ["pr", "list" | _rest], _opts ->
