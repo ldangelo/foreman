@@ -136,6 +136,14 @@ func TestRenderAgentSupportStates(t *testing.T) {
 		}
 	}
 
+	pi := renderAgentCommands("pi", specs)
+	if pi.RecommendedProjectDir != ".pi/skills" {
+		t.Fatalf("pi project dir must be the directory pi reads (.pi/skills), got %q", pi.RecommendedProjectDir)
+	}
+	if pi.RecommendedGlobalDir != os.ExpandEnv("$HOME/.pi/agent/skills") {
+		t.Fatalf("pi global dir must stay $HOME/.pi/agent/skills, got %q", pi.RecommendedGlobalDir)
+	}
+
 	for _, agent := range []string{"codex", "opencode"} {
 		result := renderAgentCommands(agent, specs)
 		if result.NativeInstallSupported {
