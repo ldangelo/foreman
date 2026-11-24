@@ -1,1 +1,15 @@
 Now writing failing-first tests:
+
+## Manual follow-up (not the run's own fix phase)
+
+The fix phase's own report ends at the line above. This section describes the fix as it stands on the branch, written by a manual review that read and ran it.
+
+**Root cause.** `ForemanServer.VcsAdapter.Default.create_worktree/3` ran `git worktree add` unconditionally, so a run executor relaunched over its own worktree failed with `{:git_worktree_create_failed, 128, "... already exists"}` while that worktree still held the interrupted phase's uncommitted work (bead foreman-1lo2p, part 1; part 2, resuming a failed run in place, is not in this change).
+
+**Fix, by the run.** `create_worktree/3` looks at the path first. Nothing there, or an empty directory, is created into as before (`reused: false`). A worktree registered on the requested branch, whose checkout resolves to its own git dir and is on that branch, is returned as it stands (`reused: true`; never reset, checked out or cleaned). Any other occupied path fails with `{:worktree_path_unusable, path, reason}`.
+
+**Fix, added by the manual follow-up.** `Workflow.Worktree.provision/1` reports `reused`. `RunExecutor` reaps orphaned agents in a reused worktree first, does not run the project's setup script on it, and never rolls it back (a failure at a secondary repository used to remove it and force-delete its branch). A checkout git never finished (no index) is refused with `:worktree_checkout_incomplete`. The branch is rebased onto `origin/main` (the CHANGELOG conflict kept both entries) and the docs describe the reuse contract.
+
+**Tests.** `vcs_adapter_default_test.exs`: 10 new `create_worktree/3` tests (reuse untouched, other branch, plain directory, detached, `.beads/` kept, empty directory, broken checkout, relative gitdir, repointed checkout, incomplete checkout). `run_executor_multi_repo_test.exs`: 4 new tests under "a relaunch over worktrees the interrupted launch left on disk" (the `provision/1` report, reap and one setup run across a relaunch, a surviving orphan, no rollback of reused worktrees). Each was shown red with its production change reverted alone: the run's 9 adapter tests with `default.ex` reverted to `origin/main` (22 of 31 passed), and the four follow-up mutations (rollback includes reused worktrees, setup runs on a reused one, no reap, no index check).
+
+**Verification.** On a private database, `mix test --warnings-as-errors` over every `run_executor*_test.exs` plus `repo_id_replay_test.exs`, `vcs_adapter_default_test.exs`, `vcs_adapter_test.exs`, `worktree_clean_for_run_test.exs`, `worktree_discard_test.exs` and `worktree_spec_test.exs` (38 files): `Result: 560 passed`, exit 0. `mix format --check-formatted` on the changed Elixir files, `mix credo --min-priority higher` and `mix doctor --raise`: exit 0. Not run: the full suite (CI runs it) and a real worker relaunch against a restarted server.
