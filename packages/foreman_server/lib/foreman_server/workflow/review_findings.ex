@@ -97,6 +97,19 @@ defmodule ForemanServer.Workflow.ReviewFindings do
           }
   end
 
+  defmodule Context do
+    @moduledoc "Where a review artifact came from: the PR body links it and names it."
+    @enforce_keys [:artifact_path, :run_id, :phase_name, :repo_root]
+    defstruct [:artifact_path, :run_id, :phase_name, :repo_root]
+
+    @type t :: %__MODULE__{
+            artifact_path: String.t() | nil,
+            run_id: String.t(),
+            phase_name: String.t() | nil,
+            repo_root: String.t() | nil
+          }
+  end
+
   @doc """
   Reads the artifact once and parses it. `nil` is `:absent`; a file that cannot
   be read is `{:error, {:unreadable, reason}}` (never a clean record); a file
@@ -245,35 +258,39 @@ defmodule ForemanServer.Workflow.ReviewFindings do
   @section_heading "\n## Review findings (the review agent's report)\n\n"
 
   @doc """
-  Reads the artifact at `artifact_path` and renders the PR-body section (see
-  `section/1`). A block that is not `:recorded` is logged as a warning naming
+  Reads the report described by `context` and renders the PR-body section (see
+  `section/2`). A block that is not `:recorded` is logged as a warning naming
   `caller` (`"AutoPR"`, `"PhasePR"`), so the missing evidence is visible in the
-  server log as well as in the body.
+  server log as well as in the body, and the section itself links the report and
+  names the run and phase it came from.
   """
-  @spec pr_section(String.t() | nil, String.t()) :: String.t()
-  def pr_section(artifact_path, caller) when is_binary(caller) do
-    result = read(artifact_path)
+  @spec pr_section(Context.t(), String.t()) :: String.t()
+  def pr_section(%Context{} = context, caller) when is_binary(caller) do
+    result = read(context.artifact_path)
 
     case result do
       {:recorded, _record} ->
         :ok
 
       :absent ->
-        Logger.warning("#{caller} found no review findings block in #{inspect(artifact_path)}")
+        Logger.warning(
+          "#{caller} found no review findings block in #{inspect(context.artifact_path)}"
+        )
 
       other ->
         {defect, detail} = defect(other)
 
         Logger.warning(
-          "#{caller} could not read review findings in #{inspect(artifact_path)}: #{defect} (#{detail})"
+          "#{caller} could not read review findings in #{inspect(context.artifact_path)}: #{defect} (#{detail})"
         )
     end
 
-    section(result)
+    section(result, context)
   end
 
   @doc """
-  Renders the one PR-body section from a `read/1` result. The text is bounded:
+  Renders the one PR-body section from a `read/1` result and the `Context` the
+  report came from. The text is bounded:
   at most #{@max_listed} unresolved findings are listed, each path and
   description cut and flattened to one line, because the body is a `gh` write
   and the findings are the agent's untrusted text.
@@ -282,15 +299,18 @@ defmodule ForemanServer.Workflow.ReviewFindings do
   `declined` critical or major one) and counts the fixed and declined ones;
   `:absent` says the review evidence is missing; `{:malformed, _}` and an
   unreadable artifact name the defect. None of them says a block that could not
-  be read held no findings.
+  be read held no findings, and each of those two states also links the report
+  and names the run (and phase) it belongs to, so a reviewer always has
+  something to open.
   """
   @spec section(
           {:recorded, Record.t()}
           | :absent
           | {:malformed, reason}
-          | {:error, {:unreadable, File.posix()}}
+          | {:error, {:unreadable, File.posix()}},
+          Context.t()
         ) :: String.t()
-  def section({:recorded, %Record{findings: findings}}) do
+  def section({:recorded, %Record{findings: findings}}, %Context{}) do
     unresolved =
       findings
       |> Enum.filter(&unresolved?/1)
@@ -306,19 +326,95 @@ defmodule ForemanServer.Workflow.ReviewFindings do
       "(a declined critical or major finding is listed above as unresolved).\n"
   end
 
-  def section(:absent) do
+  def section(:absent, %Context{} = context) do
     @section_heading <>
       "The review evidence is missing: the review artifact has no findings block. " <>
-      "This is not a clean review. Check the review artifact.\n"
+      "This is not a clean review. Check the review artifact.\n" <>
+      evidence_text(context)
   end
 
-  def section(error) do
+  def section(error, %Context{} = context) do
     {defect, detail} = defect(error)
 
     @section_heading <>
       "The review evidence is malformed or unreadable (`#{defect}`): #{detail}. " <>
-      "This is not a clean review. Check the review artifact.\n"
+      "This is not a clean review. Check the review artifact.\n" <>
+      evidence_text(context)
   end
+
+  # Only a conservative path becomes a Markdown link; anything else stays an
+  # inert code span, since the report path is agent-influenced in name only.
+  @safe_location ~r{\A[A-Za-z0-9._:/-]+\z}
+
+  defp evidence_text(%Context{artifact_path: nil} = context),
+    do: "\nNo review report was recorded for #{where(context)}.\n"
+
+  defp evidence_text(%Context{artifact_path: path} = context) when is_binary(path) do
+    "\nReview report: #{report_reference(context)} (#{where(context)}).\n"
+  end
+
+  # A Markdown link names a repository file, so the mapping to one has to be
+  # established: the report lives under `docs/reports/` (already relative to
+  # the repository) or inside the repository root. An unknown location keeps
+  # the path it was given, as inert text; a guessed path would point at a
+  # file that does not exist.
+  defp report_reference(%Context{artifact_path: path} = context) do
+    case report_location(context) do
+      {:known, location} ->
+        if Regex.match?(@safe_location, location),
+          do: "[#{location}](#{location})",
+          else: code_span(location)
+
+      # Never the host path: an unknown location reduces to its basename.
+      {:unknown, _path} ->
+        code_span(ForemanServer.Workflow.PrBodyPath.display_path(path))
+    end
+  end
+
+  # Containment decides the location first: a report inside the tree the PR
+  # renders from is relative to that root, even when it sits under a nested
+  # package path. Only a report outside it falls back to the `docs/reports/`
+  # suffix the run worktree writes it with, and a report with neither keeps its
+  # original path as inert text.
+  defp report_location(%Context{artifact_path: path, repo_root: root})
+       when is_binary(root) and root != "" and is_binary(path) do
+    cond do
+      inside?(path, root) -> {:known, Path.relative_to(path, root)}
+      relative = reports_relative(path) -> {:known, relative}
+      true -> {:unknown, path}
+    end
+  end
+
+  defp report_location(%Context{artifact_path: path}) do
+    case reports_relative(path) do
+      nil -> {:unknown, path}
+      relative -> {:known, relative}
+    end
+  end
+
+  # A report under `docs/reports/` is repository-relative wherever the PR is
+  # rendered from.
+  defp reports_relative(path) do
+    case Regex.run(~r{docs/reports/.*\z}, path) do
+      [relative | _] -> relative
+      _ -> nil
+    end
+  end
+
+  # Containment is decided per path component: "/work/repo-run/x" is not
+  # inside "/work/repo", although a string prefix check says it is.
+  defp inside?(path, root) do
+    path_parts = Path.split(Path.expand(path))
+    root_parts = Path.split(Path.expand(root))
+
+    length(path_parts) > length(root_parts) and
+      Enum.take(path_parts, length(root_parts)) == root_parts
+  end
+
+  defp where(%Context{run_id: run_id, phase_name: nil}), do: "run `#{run_id}`"
+
+  defp where(%Context{run_id: run_id, phase_name: phase}),
+    do: "run `#{run_id}`, phase `#{phase}`"
 
   defp unresolved_text([]), do: "The review agent reported nothing unresolved.\n"
 

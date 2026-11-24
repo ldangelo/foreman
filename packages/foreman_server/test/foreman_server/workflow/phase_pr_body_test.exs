@@ -147,6 +147,15 @@ defmodule ForemanServer.Workflow.PhasePRBodyTest do
     @heading <> rest
   end
 
+  # The evidence line names the phase only on the PhasePR path, so the two paths
+  # are compared with it removed.
+  defp without_evidence(section) do
+    section
+    |> String.split("\n")
+    |> Enum.reject(&String.starts_with?(&1, ["Review report:", "No review report"]))
+    |> Enum.join("\n")
+  end
+
   test "the PR body lists the unresolved findings from a recorded block" do
     artifact =
       temp_artifact!(
@@ -194,7 +203,9 @@ defmodule ForemanServer.Workflow.PhasePRBodyTest do
           legacy
         ] do
       artifact = temp_artifact!(contents)
-      assert section(phase_body(artifact)) == section(auto_body(artifact))
+
+      assert without_evidence(section(phase_body(artifact))) ==
+               without_evidence(section(auto_body(artifact)))
     end
   end
 
@@ -268,10 +279,40 @@ defmodule ForemanServer.Workflow.PhasePRBodyTest do
     refute body =~ "nothing unresolved"
   end
 
+  test "an absent block still links the review report and names the run and phase" do
+    artifact = temp_artifact!("# Report\n\nNothing to report.\n")
+    body = phase_body(artifact)
+
+    assert body =~ "review evidence is missing"
+    assert body =~ "not a clean review"
+    assert body =~ "Review report: ["
+
+    location = Path.relative_to(artifact, System.tmp_dir!())
+
+    assert body =~ ~r{\[#{Regex.escape(location)}\]\(#{Regex.escape(location)}\)}
+    assert body =~ "run `run-1`, phase `repo-rules-review`"
+  end
+
+  test "an absent block with a report outside the repository names its basename, never the host path" do
+    artifact = temp_artifact!("# Report\n\nNothing to report.\n")
+
+    request = %{request(artifact) | cwd: Path.join(System.tmp_dir!(), "elsewhere-repo")}
+    assert {:ok, %PhasePR.Record{status: "created"}} = PhasePR.maybe_create(request)
+    assert_receive {:gh_pr_create_args, args}
+    body = body_arg(args)
+
+    assert body =~ "review evidence is missing"
+    assert body =~ "Review report: `…/REPORT.md`"
+    refute body =~ "Review report: ["
+    refute body =~ artifact
+    refute body =~ "Artifact:"
+  end
+
   test "a nil artifact path is missing evidence too" do
     body = phase_body(nil)
 
     assert body =~ "review evidence is missing"
+    assert body =~ "No review report was recorded for run `run-1`, phase `repo-rules-review`"
   end
 
   test "multiple_blocks and legacy_format name the defect and are not a clean review" do

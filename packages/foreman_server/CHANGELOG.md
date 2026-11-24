@@ -4,6 +4,14 @@
 
 ### Fixed
 
+- **The review section of a PR body is never only the missing-evidence note.** An absent,
+  malformed or unreadable review block still said "not a clean review" and nothing else, so a
+  reviewer had nowhere to go. `ReviewFindings.pr_section/2` now takes a
+  `ReviewFindings.Context` (`artifact_path`, `run_id`, `phase_name`, `repo_root`) and each of
+  those states names the run (and the phase for a phase PR) and the review report: a Markdown
+  link when the report is repository-relative (inside `repo_root` or under `docs/reports/`),
+  otherwise an inert code span of its basename, never the absolute host path.
+
 - **A slow aggregate actor no longer kills the process that sent it a command.**
   `CommandRouter.dispatch/2` let the `GenServer.call` timeout exit escape, so the Overwatch
   `Tracker` (and every live worker with it), the `BeadsWatcher` and a `RunExecutor` that had

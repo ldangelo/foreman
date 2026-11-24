@@ -410,7 +410,7 @@ defmodule ForemanServer.Workflow.PhasePR do
     body =
       "Foreman run `#{request.run_id}` phase `#{request.phase_name}` complete.\n" <>
         PrBodyPath.artifact_line(request.artifact_path, request.cwd) <>
-        findings_section(request.artifact_path)
+        findings_section(request)
 
     args = [
       "pr",
@@ -667,6 +667,15 @@ defmodule ForemanServer.Workflow.PhasePR do
 
   defp blank?(value), do: not is_binary(value) or value == ""
 
-  defp findings_section(artifact_path),
-    do: ForemanServer.Workflow.ReviewFindings.pr_section(artifact_path, "PhasePR")
+  defp findings_section(%Request{} = request),
+    do:
+      ForemanServer.Workflow.ReviewFindings.pr_section(
+        %ForemanServer.Workflow.ReviewFindings.Context{
+          artifact_path: request.artifact_path,
+          run_id: request.run_id,
+          phase_name: request.phase_name,
+          repo_root: request.cwd
+        },
+        "PhasePR"
+      )
 end

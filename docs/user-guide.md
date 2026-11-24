@@ -2993,7 +2993,11 @@ review agent and not verified by Foreman);
 an absent block, a malformed block (an unterminated block, more than one block, the
 old bullet format, invalid JSON or schema, an invalid field, a block over 32768 bytes
 or a file over 4 MiB, more than 100 findings) and an unreadable artifact are each
-named as **not a clean review**, and a warning is logged. The old bullet format is
+named as **not a clean review**, and a warning is logged. Each of those states also
+names the run (and the phase for a phase PR) and points at the review report, so there
+is always something to open: the report is a link when it resolves to a repository-relative
+path, and otherwise its file name only (`…/REPORT.md`), never an absolute host path. The
+old bullet format is
 now malformed, not parsed. Task-backed final AutoPR bodies are exact task
 descriptions and do not append artifact or review-finding sections. The PR body is
 the agent's own report, written for a human to read, and refuses nothing. The
