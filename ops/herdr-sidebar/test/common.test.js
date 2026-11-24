@@ -399,14 +399,16 @@ test("the GitHub login is what `gh api user --jq .login` prints, and nothing els
   for (const bad of ["", "\n", "-x", "x-", "a b", "gh: command not found", '{"login":"x"}', "x".repeat(40), "ldangelo\nother", null, undefined]) expect(parseGhLogin(bad)).toBeNull();
 });
 
-test("the confirmation names the PR, its base, the short head and what cannot be undone; the approval step names who approves", () => {
+test("the confirmation names the PR, its base, the short head, its checks and what cannot be undone; the approval step names who approves", () => {
   const p = pr();
-  const { title, detail } = mergePrompt(p, { step: "approve", login: "ldangelo", label: "fix foreman-x (run-1)" });
+  const { title, detail } = mergePrompt(p, { step: "approve", login: "ldangelo", label: "fix foreman-x (run-1)", checks: "1 passing · 0 failing · 0 pending" });
   expect(title).toBe("Merge PR #12?");
-  expect(detail).toContain("fix foreman-x (run-1): PR #12 into main, head 1a2b3c4d.");
+  expect(detail).toContain("fix foreman-x (run-1): PR #12 into main, head 1a2b3c4d, checks 1 passing · 0 failing · 0 pending.");
   expect(detail).toContain("Approves it as github:ldangelo");
   expect(detail).toContain("squash merge on GitHub; this cannot be undone");
   expect(detail).not.toContain(SHA); // the short head, not the whole SHA
+  // no checks summary given: the sentence has no checks clause rather than an empty one
+  expect(mergePrompt(p, { step: "approve", login: "ldangelo", label: "" }).detail).toContain("PR #12 into main, head 1a2b3c4d. Approves it");
 });
 
 test("an already approved PR's confirmation says so and approves nothing", () => {

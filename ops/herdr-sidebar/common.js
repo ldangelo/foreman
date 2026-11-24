@@ -325,10 +325,11 @@ export const parseGhLogin = (stdout) => {
   return GH_LOGIN.test(s) ? s : null;
 };
 
-// Herdr's confirmation dialog for the merge: which PR, which base and head, and that it cannot be taken back.
-// `step` is canMerge's; `label` names the run; `login` is who approves.
-export function mergePrompt(p, { step, login, label }) {
-  const what = `${label ? `${label}: ` : ""}PR #${p.number ?? "?"} into ${p.base ?? "its base branch"}, head ${shortSha(p.headSha)}.`;
+// Herdr's confirmation dialog for the merge: which PR, which base and head, what its checks say, and that it cannot be
+// taken back. `step` is canMerge's; `label` names the run; `login` is who approves; `checks` is the one-line summary of
+// the PR's checks that the tab shows beside the button (empty: not said).
+export function mergePrompt(p, { step, login, label, checks = "" }) {
+  const what = `${label ? `${label}: ` : ""}PR #${p.number ?? "?"} into ${p.base ?? "its base branch"}, head ${shortSha(p.headSha)}${checks ? `, checks ${checks}` : ""}.`;
   const how = step === "merge"
     ? "It is already approved; this merges it: squash merge on GitHub; this cannot be undone."
     : `Approves it as github:${login}, then merges it: squash merge on GitHub; this cannot be undone.`;

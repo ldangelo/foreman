@@ -666,9 +666,9 @@ export default class ForemanRun extends View {
         if (problem) return notify({ title: "Foreman", body: problem, level: "error" });
         const login = await this.ghLogin();
         const label = `${[workflowName(this.run), beadId(this.run) ?? this.run.task_id].filter(Boolean).join(" ")} (${this.runId})`;
-        const { title, detail } = mergePrompt(p, { step: can.step, login, label });
+        const { title, detail } = mergePrompt(p, { step: can.step, login, label, checks: checksText(p) });
         this.pendingMerge = { url: p.url, repoId: p.repoId, headSha: p.headSha, number: p.number, login, at: Date.now() };
-        openOverlay({ mod: "confirm", kind: "dialog", modal: true, width: 460, height: 250, props: { title, detail, command: { name: "foreman-run.merge-confirmed", args: {} } } });
+        openOverlay({ mod: "confirm", kind: "dialog", modal: true, width: 460, height: 270, props: { title, detail, command: { name: "foreman-run.merge-confirmed", args: {} } } });
       } catch (e) {
         notify({ title: "Foreman", body: errLine(e), level: "error" });
       } finally {

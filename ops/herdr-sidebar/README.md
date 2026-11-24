@@ -318,8 +318,9 @@ server, run through the `foreman` CLI so that its error text is the server's own
 - *The confirmation.* A click first checks that the installed `foreman` has `run approve-merge` and
   `run merge` (it reads `foreman run --help`, which only prints usage; a `foreman` without them gets the toast
   "installed foreman lacks `run approve-merge`; update it" and nothing is sent), then reads your login, then
-  opens Herdr's confirmation dialog: the PR number, its base, the short head SHA, who approves, and "squash
-  merge on GitHub; this cannot be undone". Esc cancels, and nothing has been sent at that point. A
+  opens Herdr's confirmation dialog: the PR number, its base, the short head SHA, its checks (the passing,
+  failing and pending counts that the button's row shows), who approves, and "squash merge on GitHub; this
+  cannot be undone". Esc cancels, and nothing has been sent at that point. A
   confirmation answered more than a minute after it was asked is ignored.
 - *On confirm* the tab reads the PR from the server again and stops with an info toast if it is no longer
   mergeable or its head is not the commit the dialog showed. Otherwise it runs
