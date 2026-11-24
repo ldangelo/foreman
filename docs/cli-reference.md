@@ -21,7 +21,7 @@ Project-aware operator commands (`run`, `status`, `reset`, and `retry`) accept `
 > foreman project create    --format --id --idempotency-key --path --task-provider --task-provider-database-path
 > foreman project get       --format
 > foreman project open      # no flags beyond -h; opens /dashboard/projects/<id> in the browser; needs FOREMAN_API_TOKEN
-> foreman project update    --format --idempotency-key --task-provider --task-provider-database-path --goal --instructions --instructions-file --thread-model --thread-effort --coordinator-provider --coordinator-model --coordinator-effort --max-concurrent-runs --daily-thread-cap --coordinator-propose-before-start --coordinator-max-active-threads --coordinator-reuse-threads --library-collect-produced --pr-auto-fix --required-checks --notification-preference --repo-allowlist --max-repos-per-run --clear
+> foreman project update    --format --idempotency-key --task-provider --task-provider-database-path --goal --instructions --instructions-file --thread-model --thread-effort --coordinator-provider --coordinator-model --coordinator-effort --max-concurrent-runs --daily-thread-cap --coordinator-propose-before-start --coordinator-max-active-threads --coordinator-reuse-threads --library-collect-produced --pr-auto-fix --pr-body-heading --required-checks --notification-preference --repo-allowlist --max-repos-per-run --clear
 > foreman project settings  --format
 > foreman project context   --format
 > foreman usage             --project --from --to --by --limit --format
@@ -327,6 +327,7 @@ foreman project update --task-provider kata project-123
 | `--repo-allowlist <abs-path-prefix>` | Operator-only: absolute path prefix under which a thread may attach repositories to its run (`foreman_run_request_repo`). Repeatable; the flags given **replace** the whole list; `--clear repo_allowlist` empties it (the feature is then off). `..`, relative entries and `/` are rejected by the server. Not settable through MCP `foreman_project_settings_update` |
 | `--max-repos-per-run <n>` | Operator-only: most repositories one run may hold, primary included (server range 1..1000, default 4). Not settable through MCP |
 | `--required-checks <json>` | Operator-only: the checks a PR must show, as a JSON array of at most 20 entries `{"name": "...", "kind": "check_run"\|"status_context", "workflow": "...", "allow_skipped": true}` (`workflow` and `allow_skipped` are for `check_run` only). `'[]'` turns the gate on with no checks; `--clear required_checks` turns it off. A value that is not a JSON array fails before any request. Not settable through MCP or by the coordinator (a `clear` naming it over MCP is `operator_only_setting`). Setting it, `[]` included, is refused `{:store_not_durable, note}` (HTTP 422) while `:require_durable_store_for_gating` is on and the idempotency store is not durable. Since Phase 1 PR 8, with it set, `run approve-merge` is refused unless the PR's evidence for the approved head is eligible or waived (unset: no evidence refusal; the one refusal such a project can meet is `{:policy_unavailable, _}` for a run or project the server does not know). Read from the source, not observed |
+| `--pr-body-heading <heading>` | A required pull-request body heading, repeatable and ordered (at most 10; each 1..200 characters, starting with one to six `#` characters). The headings given replace the list; `--clear pr_body_headings` turns it off. When set, the pull-request body Foreman opens carries those headings, filled from the task, the run's commits and the phase artifact (see [Project settings](user-guide.md#project-settings)) |
 | `--clear <setting>` | Clear a setting (repeatable) |
 | `--idempotency-key <key>` | Idempotency key (without it the command id hashes the whole update; an identical update re-sent after a `--clear` is a replay and is reported as `no change`, see [Repeating an identical command](#foreman-project-pause-id--resume-id--reactivate-id)) |
 | `--format json` | Print the raw command response as JSON |
@@ -620,6 +621,7 @@ Workflow PR/merge behavior is not driven by `create-pr`, `pr-wait`, or `merge` p
 `default_timeout_ms` and then the built-in `:infinity` default (no wall-clock deadline
 unless one is configured; a BEAM that still applies a fixed ceiling after #510 is a
 stale runtime or unshipped override, not this code path — see `docs/lessons/phase-execution-and-pr-mechanics.md`). Created/reused phase PR records suppress final AutoPR; no-op phase PR records do not. A phase PR is titled with the run's task title when the run has one, else with the first conventional-commit subject among the run's commits, else with the legacy `feat(phase): <phase>` title. When reusing an open phase PR, Foreman pushes the run branch before recording reuse so the provider diff cannot remain stuck on an older head. `foreman run get <id>` JSON includes `run.phase_prs` when phase records exist. See "PR creation and merge reconciliation" in the User Guide.
+A project that sets `pr_body_headings` gets a templated pull-request body (the headings, filled from the task, the run's commits and the phase artifact) instead of the exact task description; see "Project settings" in the User Guide.
 
 Run `foreman init --force` after editing bundled workflow YAML or prompts. `foreman run`, `foreman run --watch`, and direct worker startup fail fast if installed runtime prompts/workflows are stale, so scheduler-launched agents cannot run with outdated instructions.
 
@@ -1653,7 +1655,7 @@ no env values). Project reads over HTTP and MCP replace `config.env` /
 (arguments: `project_id`, `goal`, `instructions`, `thread_model`, `thread_effort`,
 `coordinator_provider`, `coordinator_model`, `coordinator_effort`,
 `max_concurrent_runs`, `daily_thread_cap`, `coordinator_propose_before_start`,
-`coordinator_max_active_threads`, `coordinator_reuse_threads`, `library_collect_produced`, `notification_preference`, `clear`, `idempotency_key`; nothing
+`coordinator_max_active_threads`, `coordinator_reuse_threads`, `library_collect_produced`, `notification_preference`, `pr_body_headings`, `clear`, `idempotency_key`; nothing
 else), `foreman_project_pause` and `foreman_project_resume` dispatch the same
 operator commands as the CLI, are refused unless `allow_workflow_writes: true`, and
 report the server's error code (`instructions_too_long`, `project_paused`, ...).

@@ -733,12 +733,60 @@ foreman project settings project-123
 | `repo_allowlist` | `--repo-allowlist <abs-path-prefix>` (repeatable) | Operator-only: absolute path prefixes under which a thread may attach repositories to its run (off while empty; `--clear repo_allowlist` turns it off; see [Repositories](#repositories)). Not settable over MCP |
 | `max_repos_per_run` | 1..1000 (`--max-repos-per-run`, default 4) | Operator-only: most repositories one run may hold, primary included. Not settable over MCP |
 | `required_checks` | `--required-checks <json>` (a JSON array of at most 20 entries `{"name", "kind": "check_run"\|"status_context", "workflow"?, "allow_skipped"?}`; `[]` = gate on with no checks; unset or `--clear required_checks` = off) | Operator-only: the checks a PR must show before the merge gate accepts it (see [PR watching and auto-fix](#pr-watching-and-auto-fix)). Not settable over MCP or by the coordinator. Setting it needs a durable idempotency store while `:require_durable_store_for_gating` is on. Since Phase 1 PR 8 a project with it set has `approve-merge` refused unless the PR's evidence for the approved head is eligible or waived (unset: no evidence refusal) |
+| `pr_body_headings` | `--pr-body-heading <heading>` (repeatable; at most 10 headings, each 1..200 characters and starting with one to six `#` characters; `--clear pr_body_headings` turns it off) | The markdown headings a pull request Foreman opens must carry, in order. When set, the pull-request body is built from these headings and what the run knows; when unset, the body is the one the task or workflow produced (see **Pull-request body template** below) |
 
 Text values are trimmed and `CRLF` is normalised to `LF`; a blank value clears the
 setting. Validation is done once, by the server, and its error is shown verbatim
 (for example `{:instructions_too_long, 16001, 16000}`). `status` is not settable
 through `project update`: use `pause` / `resume` / `reactivate`. Unknown config keys
 are rejected (`{:unknown_setting, key}`).
+
+**Pull-request body template.** A project that sets `pr_body_headings` gets a
+pull-request body that always carries those headings, in the order given:
+
+```markdown
+## Summary
+
+<the task title and description>
+
+## Testing
+
+- `abc1234` feat: the change
+```
+
+Foreman fills the headings from what the run knows, in the order given: the task
+under the first heading, the run's commits (`git log` between the run's base
+branch and its own branch) under the next, and the phase artifact — named
+relative to the repository, never by its host path, with the review findings
+section — under the next. A source Foreman has nothing for (a run without a task
+or without an artifact) is skipped and the next one moves up to that heading.
+Any content beyond the last heading goes under that last heading. A heading
+Foreman has nothing for reads
+`_Not recorded by Foreman._`: it never leaves a heading empty and never invents
+content. A heading list the server refuses is reported with the
+reason (`{:pr_body_headings_entry_invalid, heading}`,
+`{:pr_body_headings_too_many, count, limit}`,
+`{:pr_body_headings_invalid, value}`).
+
+The template applies to the pull request Foreman opens for the run. A phase
+pull request — one a workflow phase opens for its own work — keeps that
+phase's own body, which is the phase report rather than the run's task,
+commits and artifact. The run's own pull request uses the headings the project
+had when the run started; one opened through `run.pr.create`, or for another
+repository of the run, reads the project's current headings. When `git log`
+fails, the commits heading says so with the exit code only: git's own output
+stays in the server log, never in the public body.
+
+Set it from the CLI, one flag per heading:
+
+```bash
+foreman project update <id> \
+  --pr-body-heading '## Summary' \
+  --pr-body-heading '## Testing' \
+  --pr-body-heading '## Risk' \
+  --pr-body-heading '## How to revert' \
+  --pr-body-heading '## Directed by'
+```
 
 **Model and effort precedence.** An explicit phase `models.default` wins over the project's `thread_model` /
 `thread_effort`, which win over the provider default. The project value is read
@@ -2291,7 +2339,7 @@ no env values). Project reads over HTTP and MCP replace `config.env` /
 (arguments: `project_id`, `goal`, `instructions`, `thread_model`, `thread_effort`,
 `coordinator_provider`, `coordinator_model`, `coordinator_effort`,
 `max_concurrent_runs`, `daily_thread_cap`, `coordinator_propose_before_start`,
-`coordinator_max_active_threads`, `coordinator_reuse_threads`, `library_collect_produced`, `pr_auto_fix`, `notification_preference`, `clear`, `idempotency_key`; nothing
+`coordinator_max_active_threads`, `coordinator_reuse_threads`, `library_collect_produced`, `pr_auto_fix`, `notification_preference`, `pr_body_headings`, `clear`, `idempotency_key`; nothing
 else), `foreman_project_pause` and `foreman_project_resume` dispatch the same
 operator commands as the CLI, are refused unless `allow_workflow_writes: true`, and
 report the server's error code (`instructions_too_long`, `project_paused`, ...).
@@ -2833,6 +2881,7 @@ Every project has one durable **coordinator conversation**: paste a bug, a stack
 **Conversation log.** The pane reads every output chunk the store still holds for the run (`ProjectionStore.run_logs/2` with the store's maximum: up to 5,000 entries or 1 MiB per run), not the 500-entry tail the API and MCP read by default: a streamed message is one stored entry per delta, so a run of about a minute is already longer than that tail. When the store has dropped entries the log starts with the line `The first N output entries are no longer stored.` (and `N earlier turns not shown.` counts what the pane's own newest-100-blocks tail leaves out); a run that fits shows neither line. The coordinator's chip beside `Project chat` and in the conversation header reads `idle`, `working` (a coordinator turn is open) or `unhealthy`.
 
 **Settings.** One form for goal, instructions (live counter against the 16000-character limit), thread and coordinator model/effort/provider, `max_concurrent_runs`, `daily_thread_cap`, the coordinator tuning keys, the notification preference (`every_turn` / `blocked_only` / `off`; blank is the default `blocked_only`), the repository allowlist (one absolute path prefix per line; empty means agents cannot attach repositories; shown with an operator-only warning) and `max_repos_per_run`, written through `project.update`; a blank field clears the setting and the aggregate's own error is shown next to the field. A *Repositories* section lists the project's repositories (primary first) and attaches or detaches extra ones with `project.repo.add` / `project.repo.remove`, the commands behind `foreman project repo add|remove` (an absolute path of a git checkout on the server host, typed errors shown at the id or path field, `Remove` behind a confirm step, the primary cannot be removed). A *Setup script* section edits the script through `project.environment.set`, the command behind `foreman project setup-script`, with a warning that it is arbitrary shell code run on the server host in every new run worktree before any agent starts; saving it changes only the script, never the variables or the network policy, and an empty box removes it. Browsers submit textarea line breaks as CRLF, so the page normalises them to LF before it compares with what was loaded: an untouched multi-line field never counts as changed and a saved script contains no `\r`. Pause/Resume/Archive/Reactivate (each with a confirm step), the project memory (list, edit, forget; the same `ProjectMemory` functions as the HTTP API, author `dashboard`), limits and the usage rollup. Save writes only the fields you changed since the page loaded (a setting changed elsewhere in the meantime is left alone), and a failed usage or limits read shows an error instead of an empty pane. An *Environment* section lists the plain variables with their values and sets, changes or removes one at a time (`Save <name>`, `Set variable`, `Remove <name>` behind a confirm step) through `project.environment.set`, the command behind `foreman project env set|unset`. That command replaces the whole variable set, so the page sends what the server stores at that moment plus your one change: a variable changed elsewhere in the meantime survives, and the setup script and the network policy are not in the payload. A name that looks like a secret (`*_API_KEY`, `*_TOKEN`, `*_PASSWORD`, ...) or starts with `FOREMAN_` is refused at the name field by the same aggregate rule as `foreman project env set` (the first with a pointer to Secrets); the refused value is never stored, logged or written to an event, and the name stays typed while the value box is emptied. A project that still keeps its variables in the legacy flat `config.env` lists the names with the values hidden, as `GET /api/projects/:id/environment` does; setting or removing any variable moves all of them into the environment record, which then shows its values, and a stored variable that looks like a secret refuses that move and is named in the message (remove it, then set it as a secret). A *Secrets* section lists each project secret by name, version and time and sets or rotates one through `ProjectSecrets`, the path behind `foreman project secret set` and `PUT /api/projects/:id/secrets/:name`: the box is write-only (a password input, emptied after every submit, no live sync of what is typed), the value goes straight to the secret store on the server host and is never rendered, kept by the page, logged or written to an event (only name, version and the author `dashboard` are recorded), and `Remove secret <name>` is behind a confirm step.
+The form also has a *Pull-request body headings* box: one required heading per line, in order, each beginning with one to six `#` characters; an empty box clears the setting and keeps the body the task or workflow produced (see "Project settings").
 
 **Updates, not polling.** A connected page subscribes once to `ProjectionStore` and coalesces bursts: the first relevant event arms one timer (`config :foreman_server, :workspace, coalesce_ms:`, default 250) and everything that arrives inside the window is folded into a single refresh; an idle project does no work and worker-output events do not refresh the workspace, except `WorkerStdout`/`WorkerStderr` of the open thread, which arm a second coalesced refresh of that pane (telemetry `[:foreman_server, :workspace, :thread_refresh]`). All thread titles, reports, conversation text and memory content are escaped; only `http(s)` PR URLs become links.
 
@@ -2943,10 +2992,12 @@ accepted and ignored.
 By default one run yields at most one final PR. `auto_pr/1` is called from
 `finalize_run/1`, after every phase has completed, and opens from the run's
 single branch — `foreman/<task-id>/<run-id>` unless the workflow's `worktree.branch` says
-otherwise. For task-backed runs, when both the task title and task description
-are set, the final PR title is exactly the task title and the final PR body is
-exactly the task description; if either is present but blank or malformed,
-AutoPR returns a typed metadata error before publishing the branch. A task field
+otherwise. For task-backed runs whose project sets no `pr_body_headings`, when
+both the task title and task description are set, the final PR title is exactly
+the task title and the final PR body is exactly the task description; if either
+is present but blank or malformed, AutoPR returns a typed metadata error before
+publishing the branch. A project that sets `pr_body_headings` gets the templated
+body instead (see **Pull-request body template**). A task field
 that was never set (for example, a title-only task) does not fail: AutoPR falls
 back to the generated title/body. Ad-hoc no-task runs keep the legacy generated
 run/artifact title and body either way.
@@ -3000,7 +3051,11 @@ is always something to open: the report is a link when it resolves to a reposito
 path, and otherwise its file name only (`…/REPORT.md`), never an absolute host path. The
 old bullet format is
 now malformed, not parsed. Task-backed final AutoPR bodies are exact task
-descriptions and do not append artifact or review-finding sections. The PR body is
+descriptions and do not append artifact or review-finding sections when the
+project sets no `pr_body_headings`; a project that sets `pr_body_headings` gets
+the templated body instead, which carries the task title and description, the
+run's commits and the phase artifact's `AutoPR` review-findings section under the
+required headings (see **Pull-request body template**). The PR body is
 the agent's own report, written for a human to read, and refuses nothing. The
 findings RECORD the server writes from the same artifact does matter: for a
 project with `required_checks` set, an absent, legacy-format, other-head or

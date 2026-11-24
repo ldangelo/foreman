@@ -13,6 +13,7 @@ defmodule ForemanServer.Workflow.RepoPrContext do
   """
 
   alias ForemanServer.ProjectionStore
+  alias ForemanServer.Workflow.PrBodyContext
 
   @enforce_keys [:run_id, :repo_id, :primary?, :project_id, :task_id, :auto_pr]
   defstruct [:run_id, :repo_id, :primary?, :project_id, :task_id, :auto_pr]
@@ -50,6 +51,7 @@ defmodule ForemanServer.Workflow.RepoPrContext do
           cwd: worktree.repo_path
         }
         |> put_task_metadata(run_id, Map.get(run, :task_id))
+        |> PrBodyContext.put_project_headings(Map.get(run, :project_id))
 
       {:ok,
        %__MODULE__{

@@ -287,7 +287,9 @@ the provider-facing identifier when available (falls back to `<run-id>` for ad-h
 so each retry of the same task gets a unique branch. `stack_pr:` reuses the existing head/base PR when present, pushes before reuse so provider diffs stay current, records
 no-op when there are no committed diffs, and suppresses final AutoPR only for
 created/reused phase PR records. For task-backed runs, final AutoPR uses the task title as
-the PR title and the task description as the PR body; ad-hoc no-task runs keep the legacy
+the PR title and the task description as the PR body, unless the project sets
+`pr_body_headings`: then the body carries those headings, filled from the task, the
+run's commits and the phase artifact. Ad-hoc no-task runs keep the legacy
 generated run/artifact body. Full operator semantics live in
 [`docs/user-guide.md`](./docs/user-guide.md#pr-creation-and-merge-reconciliation).
 

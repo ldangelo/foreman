@@ -7,7 +7,8 @@ defmodule ForemanServer.PrCreate do
   runs BEFORE the command is dispatched - `CommandGateway.dispatch_operator/1` calls
   `execute/1` - and never inside the `Run` aggregate, which the actor re-runs on a
   version conflict (a second `gh pr create`). It reuses `ForemanServer.Workflow.AutoPR`
-  unchanged: the same push, the same task-derived title/body and the same
+  unchanged: the same push, the same task-derived title/body (the body is the
+  project's `pr_body_headings` template when it sets one) and the same
   "commits ahead of the base" rule that the automatic path applies.
 
   The branch is the run's own worktree branch (`WorktreeCreated`, the last one), the
@@ -38,6 +39,7 @@ defmodule ForemanServer.PrCreate do
 
   alias ForemanServer.{EventStore, PrAssociate, PrReadySignal, ProjectionStore}
   alias ForemanServer.Workflow.AutoPR
+  alias ForemanServer.Workflow.PrBodyContext
 
   @runner_key {__MODULE__, :command_runner}
 
@@ -186,6 +188,7 @@ defmodule ForemanServer.PrCreate do
     context =
       %{run_id: run.run_id, base_branch: base, head_branch: head, cwd: repo_path}
       |> put_task_fields(run.task_id)
+      |> PrBodyContext.put_project_headings(run.project_id)
       |> put_runner()
 
     case AutoPR.maybe_create_pr(context) do

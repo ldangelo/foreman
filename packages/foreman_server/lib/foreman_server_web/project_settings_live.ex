@@ -60,7 +60,7 @@ defmodule ForemanServerWeb.ProjectSettingsLive do
                  max_repos_per_run)a
   @bool_fields ~w(coordinator_propose_before_start coordinator_reuse_threads)a
   # A textarea with one entry per line, stored as a list of strings.
-  @list_fields ~w(repo_allowlist)a
+  @list_fields ~w(repo_allowlist pr_body_headings)a
   @blank_repo_form %{"id" => "", "path" => "", "default_branch" => ""}
   @blank_env_form %{"name" => ""}
   @blank_secret_form %{"name" => ""}
@@ -873,6 +873,7 @@ defmodule ForemanServerWeb.ProjectSettingsLive do
         <.field name="coordinator_model" label="Coordinator model" errors={@errors} form={@form} />
         <.field name="coordinator_effort" label="Coordinator effort" errors={@errors} form={@form} options={@efforts} />
         <.field name="max_concurrent_runs" label="Max concurrent runs" errors={@errors} form={@form} kind="number" />
+        <.field name="pr_body_headings" label="Pull-request body headings" errors={@errors} form={@form} kind="textarea" help="One required heading per line, in order, each beginning with one to six # characters. Leave empty to keep the body the task or workflow produced." />
         <.field name="daily_thread_cap" label="Daily thread cap" errors={@errors} form={@form} kind="number" />
         <.field name="coordinator_max_active_threads" label="Coordinator max active threads" errors={@errors} form={@form} kind="number" />
         <.field name="coordinator_propose_before_start" label="Propose before starting" errors={@errors} form={@form} options={["true", "false"]} />

@@ -106,6 +106,21 @@ defmodule ForemanServer.Workflow.AutoPR do
   alias ForemanServer.Idempotency.Reconcilers.Command
   alias ForemanServer.Idempotency.Reconcilers.BranchPush
   alias ForemanServer.Idempotency.Reconcilers.PrCreate, as: PrCreateEffect
+  alias ForemanServer.Workflow.PrBody
+  alias ForemanServer.Workflow.PrBodyPath
+
+  defmodule PrContent do
+    @moduledoc """
+    The title and body AutoPR proposes for a pull request.
+
+    A struct, not a bare map, so the payload's shape is enforced where it is
+    built (AGENTS.md §5.1).
+    """
+
+    @enforce_keys [:title, :body]
+    @type t :: %__MODULE__{title: String.t(), body: String.t()}
+    defstruct [:title, :body]
+  end
 
   require Logger
 
@@ -139,6 +154,10 @@ defmodule ForemanServer.Workflow.AutoPR do
           # than store nil, so presence and nil never mean the same thing.
           optional(:task_title) => String.t(),
           optional(:task_description) => String.t(),
+          # The headings the project requires in its pull-request bodies. Present
+          # only when the project sets them; absent means the body keeps the
+          # task's own text.
+          optional(:pr_body_headings) => [String.t()],
           optional(:command_runner) => (String.t(), [String.t()], keyword() ->
                                           {String.t(), integer()})
         }
@@ -162,7 +181,7 @@ defmodule ForemanServer.Workflow.AutoPR do
     with {:ok, head_branch} <- resolve_head_branch(context),
          {:ok, ahead} <- commits_ahead(context, base_branch, head_branch, cwd) do
       if ahead > 0 do
-        with {:ok, pr_content} <- pr_content(context) do
+        with {:ok, pr_content} <- pr_content(context, head_branch) do
           propose(context, run_id, base_branch, head_branch, pr_content, cwd)
         end
       else
@@ -445,7 +464,7 @@ defmodule ForemanServer.Workflow.AutoPR do
          run_id,
          base_branch,
          head_branch,
-         %{title: title, body: body},
+         %PrContent{title: title, body: body},
          cwd,
          tip
        ) do
@@ -656,9 +675,27 @@ defmodule ForemanServer.Workflow.AutoPR do
   defp log_refusal(result, _run_id, _head_branch, _operation, _what), do: result
 
   @doc false
-  def __pr_content_for_test__(context), do: pr_content(context)
+  def __pr_content_for_test__(context) do
+    case resolve_head_branch(context) do
+      {:ok, head_branch} -> pr_content(context, head_branch)
+      {:error, :no_head_branch} -> pr_content(context, nil)
+    end
+  end
 
-  defp pr_content(context) do
+  defp pr_content(context, head_branch) do
+    case Map.fetch(context, :pr_body_headings) do
+      {:ok, headings} when headings != [] ->
+        templated_pr_content(context, headings, head_branch)
+
+      {:ok, []} ->
+        task_or_legacy_pr_content(context)
+
+      :error ->
+        task_or_legacy_pr_content(context)
+    end
+  end
+
+  defp task_or_legacy_pr_content(context) do
     title = fetch_task_field(context, :task_title)
     description = fetch_task_field(context, :task_description)
 
@@ -670,9 +707,113 @@ defmodule ForemanServer.Workflow.AutoPR do
         with {:ok, title} <- resolve_task_field(context, title, :task_title, :title),
              {:ok, body} <-
                resolve_task_field(context, description, :task_description, :description) do
-          {:ok, %{title: title, body: body}}
+          {:ok, %PrContent{title: title, body: body}}
         end
     end
+  end
+
+  # A project that requires headings gets a body that carries them, whatever the
+  # task says: the task, the run's commits and the phase artifact are placed
+  # under the headings, and a heading Foreman has no content for says so.
+  defp templated_pr_content(context, headings, head_branch) do
+    with {:ok, title} <- pr_title(context) do
+      case PrBody.build(headings, pr_body_sources(context, head_branch)) do
+        {:ok, body} -> {:ok, %PrContent{title: title, body: body}}
+        {:error, error} -> {:error, error}
+      end
+    end
+  end
+
+  defp pr_title(context) do
+    case fetch_task_field(context, :task_title) do
+      {:present, title} -> validate_task_value(context, title, :title)
+      :absent -> {:ok, legacy_pr_title(context)}
+    end
+  end
+
+  defp pr_body_sources(context, head_branch) do
+    %PrBody.Sources{
+      task_title: Map.get(context, :task_title),
+      task_description: Map.get(context, :task_description),
+      commits: run_commits(context, head_branch),
+      artifact_path: artifact_reference(context),
+      artifact_section: artifact_section(context)
+    }
+  end
+
+  # The artifact is named the way the untemplated body names it (`PrBodyPath`):
+  # relative to the tree the PR renders from, and not at all when it sits outside
+  # that tree, so a body never carries the host path of the worktree it was
+  # written in.
+  defp artifact_reference(context) do
+    case PrBodyPath.repo_relative(Map.get(context, :artifact_path), body_path_root(context)) do
+      {:ok, relative} -> relative
+      :outside_repo -> nil
+    end
+  end
+
+  # The review-findings section is the one the untemplated body carries
+  # (`findings_section/1`: one renderer, AGENTS.md §5.7). A run with no artifact
+  # has none, and the heading that would have held it says so.
+  defp artifact_section(context) do
+    case Map.get(context, :artifact_path) do
+      nil -> nil
+      _artifact_path -> findings_section(context)
+    end
+  end
+
+  # The head branch is the one `maybe_create_pr/1` resolved (an artifact's
+  # `FOREMAN_BRANCH=` override can name a branch other than the run's own), so
+  # the listed range is the range the PR is opened for.
+  defp run_commits(context, head_branch) do
+    base_branch = Map.get(context, :base_branch)
+
+    cond do
+      not (is_binary(base_branch) and base_branch != "") ->
+        {:error, "the run's base branch is unknown"}
+
+      not (is_binary(head_branch) and head_branch != "") ->
+        {:error, "the run's head branch is unknown"}
+
+      true ->
+        list_commits(context, base_branch, head_branch)
+    end
+  end
+
+  defp list_commits(context, base_branch, head_branch) do
+    opts =
+      case Map.get(context, :cwd) do
+        cwd when is_binary(cwd) and cwd != "" -> [stderr_to_stdout: true, cd: cwd]
+        _ -> [stderr_to_stdout: true]
+      end
+
+    case run(context, "git", ["log", "--format=%H%x09%s", "#{base_branch}..#{head_branch}"], opts) do
+      {output, 0} ->
+        {:ok, parse_commits(output)}
+
+      {output, exit_code} ->
+        Logger.warning(
+          "AutoPR could not list the commits of #{base_branch}..#{head_branch}: " <>
+            "git log exited with #{exit_code}: #{output}",
+          run_id: Map.get(context, :run_id),
+          outcome: "commits_unavailable"
+        )
+
+        # The body is public: git's own output can name host paths, so it stays in
+        # the log above and the body carries the exit code only.
+        {:error, "git log exited with #{exit_code}"}
+    end
+  end
+
+  defp parse_commits(output) do
+    output
+    |> String.split("\n", trim: true)
+    |> Enum.map(fn line ->
+      case String.split(line, "\t", parts: 2) do
+        [sha, subject] -> {String.trim(sha), String.trim(subject)}
+        [sha] -> {String.trim(sha), ""}
+      end
+    end)
   end
 
   # A task key the producer never set is `:absent` (fall back); a key explicitly
@@ -724,7 +865,7 @@ defmodule ForemanServer.Workflow.AutoPR do
   end
 
   defp legacy_pr_content(context) do
-    %{title: legacy_pr_title(context), body: generated_body(context)}
+    %PrContent{title: legacy_pr_title(context), body: generated_body(context)}
   end
 
   defp run(context, executable, args, opts), do: runner(context).(executable, args, opts)

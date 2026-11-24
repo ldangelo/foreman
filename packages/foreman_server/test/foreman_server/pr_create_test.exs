@@ -37,6 +37,7 @@ defmodule ForemanServer.PrCreateTest do
     state = %{
       gh: {pr_url <> "\n", 0},
       ahead: "2\n",
+      log: "abc1234567890def\tAdd the widget screen\n",
       push: {"", 0},
       view: PrReadyGithub.view_reply(@head_sha),
       list: [{"[]\n", 0}]
@@ -50,6 +51,8 @@ defmodule ForemanServer.PrCreateTest do
 
       case {cmd, args} do
         {"git", ["rev-list" | _]} -> {reply.ahead, 0}
+        # Read only for a project that requires PR body headings: the body lists the commits.
+        {"git", ["log" | _]} -> {reply.log, 0}
         # The push's intent reads the branch tip and the remote head before pushing. The gate
         # signal reads no local revision: the head is GitHub's (`gh pr view`, `script.view`).
         {"git", ["rev-parse", "--verify", "refs/heads/" <> _]} -> {@head_sha <> "\n", 0}
@@ -260,6 +263,36 @@ defmodule ForemanServer.PrCreateTest do
       assert Enum.chunk_every(gh_args, 2, 1, :discard) |> Enum.member?(["--head", t.branch])
       assert Enum.chunk_every(gh_args, 2, 1, :discard) |> Enum.member?(["--base", @base])
       assert Enum.chunk_every(gh_args, 2, 1, :discard) |> Enum.member?(["--title", "Add widgets"])
+    end
+
+    test "a project that requires PR body headings gets a body that carries them", %{
+      pr_url: pr_url
+    } do
+      t = thread!()
+
+      :ok =
+        ProjectionStore.apply_events([
+          %{
+            event_type: "ProjectUpdated",
+            payload: %{project_id: t.project_id, pr_body_headings: ["## Summary", "## Testing"]}
+          }
+        ])
+
+      assert {:ok, %{pr_url: ^pr_url}} = PrCreate.execute(t.run_id)
+
+      assert [_list, {gh_args, _opts}] = ran("gh")
+
+      body =
+        gh_args
+        |> Enum.chunk_every(2, 1, :discard)
+        |> Enum.find_value(fn
+          ["--body", body] -> body
+          _ -> nil
+        end)
+
+      assert body ==
+               "## Summary\n\nAdd widgets\n\nAdds the widget screen\n\n" <>
+                 "## Testing\n\n- `abc1234` Add the widget screen"
     end
 
     test "a second execute before PrCreated was recorded resumes the open PR and opens nothing",

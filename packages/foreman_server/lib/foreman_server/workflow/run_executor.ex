@@ -60,6 +60,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   alias ForemanServer.Workflow.CommitDeferral
   alias ForemanServer.Workflow.AttachBranch
   alias ForemanServer.Workflow.AutoPR
+  alias ForemanServer.Workflow.PrBodyContext
   alias ForemanServer.Workflow.PhasePR
   alias ForemanServer.Workflow.PhaseSpec
   alias ForemanServer.Workflow.PlanContext
@@ -3141,6 +3142,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
       cwd: vcs_working_directory(state)
     }
     |> maybe_put_auto_pr_task_metadata(state)
+    |> PrBodyContext.put_headings(Map.get(state, :project_settings))
   end
 
   defp maybe_put_auto_pr_task_metadata(context, state) do

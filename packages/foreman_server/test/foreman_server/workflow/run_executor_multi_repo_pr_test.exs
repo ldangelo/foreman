@@ -391,6 +391,25 @@ defmodule ForemanServer.Workflow.RunExecutorMultiRepoPrTest do
       assert {:error, :run_not_found} = RepoPrContext.build("run-none", "b")
     end
 
+    test "build/2 carries the PR body headings the project requires now", ctx do
+      assert {:ok, %{auto_pr: auto}} = RepoPrContext.build(ctx.run_id, "b")
+      refute Map.has_key?(auto, :pr_body_headings)
+
+      :ok =
+        ProjectionStore.apply_events([
+          %{
+            event_type: "ProjectUpdated",
+            payload: %{
+              project_id: ctx.project_id,
+              pr_body_headings: ["## Summary", "## Testing"]
+            }
+          }
+        ])
+
+      assert {:ok, %{auto_pr: %{pr_body_headings: ["## Summary", "## Testing"]}}} =
+               RepoPrContext.build(ctx.run_id, "b")
+    end
+
     test "open/2 on an untouched repo is :noop and on a touched one pushes from its root", ctx do
       assert RepoPr.open(ctx.run_id, "b") == :noop
       touch!(ctx, "b")

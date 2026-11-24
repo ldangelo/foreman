@@ -31,6 +31,7 @@ defmodule ForemanServer.Events.ProjectUpdated do
           coordinator_reuse_threads: boolean() | nil,
           notification_preference: String.t() | nil,
           required_checks: [map()] | nil,
+          pr_body_headings: [String.t()] | nil,
           cleared_settings: [String.t()]
         }
   @derive Jason.Encoder
@@ -55,6 +56,7 @@ defmodule ForemanServer.Events.ProjectUpdated do
     :coordinator_reuse_threads,
     :notification_preference,
     :required_checks,
+    :pr_body_headings,
     config: %{},
     cleared_settings: []
   ]
