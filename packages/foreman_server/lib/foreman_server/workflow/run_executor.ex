@@ -1252,6 +1252,19 @@ defmodule ForemanServer.Workflow.RunExecutor do
     JidoHarness.request_provider(%{context: %{"provider" => Map.get(phase_spec, :provider)}})
   end
 
+  # Foreman owns the model of each phase (`ModelResolution`), so every pi phase
+  # worker it launches is marked as a child session. Machine-wide pi extensions
+  # honour `PI_SUBAGENT_CHILD=1` by standing down: `pi-advisor-flow` skips its
+  # `setExecutorModel`/`setThinkingLevel` override and model-select sync, and
+  # `pi-subagents` registers nothing at all. Deliberate trade-off: the marker
+  # suppresses only that extension's model/effort override — its advisor gates
+  # (`advisorPlanGate`, `advisorCompletionGate`, `advisorBlockOnBlocked`) are not
+  # keyed on it, so a machine-wide advisor still supervises Foreman phases per its
+  # own config. In exchange every phase runs on the model Foreman resolved.
+  # Documented in `docs/user-guide.md` §7.3.
+  defp maybe_put_pi_child_marker(env, :pi), do: Map.put(env, "PI_SUBAGENT_CHILD", "1")
+  defp maybe_put_pi_child_marker(env, _provider), do: env
+
   # What pi will read at launch. The harness inherits the server's environment
   # overlaid with the project's environment record and secrets
   # (`jido_harness_worker.ex` `put_env/2`, `env_mode: :overlay`); Foreman sets no
@@ -2202,6 +2215,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
       resolved.env
       |> Map.merge(ForemanServer.Library.env(project_id(state)))
       |> Map.merge(foreman_env)
+      |> maybe_put_pi_child_marker(JidoHarness.request_provider(request))
 
     {:ok,
      %{

@@ -774,7 +774,7 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
              RunExecutor.phase_launch(state, %{name: :implement}, 0, %{})
   end
 
-  test "a project with no config.env gets only the FOREMAN_* env" do
+  test "a project with no config.env gets only the FOREMAN_* env and the pi child marker" do
     %{run_id: run_id} =
       run_plan_capture_phase!(write_paths: ["docs/PRD/PRD-2026-22222222-no-project-env.md"])
 
@@ -786,7 +786,15 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
     delivered = Keyword.fetch!(worker_state.driver_opts, :env)
 
     assert delivered["FOREMAN_RUN_ID"] == run_id
-    assert Enum.all?(Map.keys(delivered), &String.starts_with?(&1, "FOREMAN_"))
+    # Foreman marks its pi workers as child sessions so machine-wide pi
+    # extensions do not override the phase model. The marker is Foreman's own key,
+    # not project environment, so the namespace check allows it explicitly.
+    assert delivered["PI_SUBAGENT_CHILD"] == "1"
+
+    assert Enum.all?(Map.keys(delivered), fn key ->
+             String.starts_with?(key, "FOREMAN_") or key == "PI_SUBAGENT_CHILD"
+           end)
+
     assert worker_state.secrets == []
 
     assert {:ok, _} =

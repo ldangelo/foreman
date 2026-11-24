@@ -2078,6 +2078,34 @@ is a deliberate change. To use a proxy router model elsewhere, set the project's
 After editing bundled workflows run `foreman init --force` to refresh the
 installed copies.
 
+Every phase agent Foreman launches is a supervised worker, not an interactive
+session, so `RunExecutor.build_agent_launch/10` sets **`PI_SUBAGENT_CHILD=1`**
+in the environment of every **pi** phase worker it starts (non-pi providers are
+unaffected). pi itself does not read the variable (checked in pi-coding-agent
+1.6.0): it is the convention `pi-subagents` uses to mark the child sessions it
+starts, so only pi extensions installed machine-wide in
+`~/.pi/agent/settings.json` that follow that convention scale back in a marked
+session. `pi-advisor-flow` skips the parts that would take the model away from
+Foreman: its `setExecutorModel` and `setThinkingLevel` overrides and its
+model-select sync. `pi-subagents` goes further and registers nothing in a
+child, so a Foreman phase agent has no `subagent` tool and none of that
+extension's slash commands: it cannot delegate to pi subagents. Without the
+marker, an advisor extension such as `pi-advisor-flow` silently replaces the
+project's `thread_model` (and the phase's `models.default`) with the model
+chosen in its own config, while the `model=` line in Foreman's log still shows
+what Foreman resolved: Foreman records no effective model, so the override is
+invisible there.
+The marker is not a switch for the whole extension: `pi-advisor-flow`'s advisor
+gates (`advisorPlanGate`, `advisorCompletionGate`, `advisorBlockOnBlocked`) are
+not keyed on it, so a machine-wide advisor extension still asks a Foreman phase
+to call `ask_advisor`, and its `ask_advisor` tool is still registered. Gate
+behaviour follows that extension's own `enabled`/gate settings, not this marker
+(Foreman's phase workers are launched with extensions enabled; only the
+coordinator's own harness agents pass `no_extensions`). If you want advisor
+gating off for Foreman workers, turn those gates off in the extension config.
+The marker itself is not configurable: Foreman sets it on every pi phase
+worker.
+
 ### 7.4 Bundled skills
 
 Skills bundled at
