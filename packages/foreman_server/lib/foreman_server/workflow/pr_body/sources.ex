@@ -6,6 +6,11 @@ defmodule ForemanServer.Workflow.PrBody.Sources do
   Every field is optional: a project may require headings Foreman has no
   content for, and the body then says so instead of carrying an empty
   section.
+
+  `artifact_path` is printed as given, so the caller passes the path the way the
+  body should name it: relative to the repository (`ForemanServer.Workflow.PrBodyPath`),
+  or `nil` when the artifact has no such form. A body is public; a host path
+  never belongs in it.
   """
 
   @typedoc "One commit of the run: its sha and its subject line."

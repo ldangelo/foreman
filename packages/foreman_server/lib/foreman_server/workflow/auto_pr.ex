@@ -107,6 +107,7 @@ defmodule ForemanServer.Workflow.AutoPR do
   alias ForemanServer.Idempotency.Reconcilers.BranchPush
   alias ForemanServer.Idempotency.Reconcilers.PrCreate, as: PrCreateEffect
   alias ForemanServer.Workflow.PrBody
+  alias ForemanServer.Workflow.PrBodyPath
 
   defmodule PrContent do
     @moduledoc """
@@ -731,19 +732,35 @@ defmodule ForemanServer.Workflow.AutoPR do
   end
 
   defp pr_body_sources(context, head_branch) do
-    artifact_path = Map.get(context, :artifact_path)
-
     %PrBody.Sources{
       task_title: Map.get(context, :task_title),
       task_description: Map.get(context, :task_description),
       commits: run_commits(context, head_branch),
-      artifact_path: artifact_path,
-      artifact_section: artifact_section(artifact_path)
+      artifact_path: artifact_reference(context),
+      artifact_section: artifact_section(context)
     }
   end
 
-  defp artifact_section(nil), do: nil
-  defp artifact_section(artifact_path), do: findings_section(artifact_path)
+  # The artifact is named the way the untemplated body names it (`PrBodyPath`):
+  # relative to the tree the PR renders from, and not at all when it sits outside
+  # that tree, so a body never carries the host path of the worktree it was
+  # written in.
+  defp artifact_reference(context) do
+    case PrBodyPath.repo_relative(Map.get(context, :artifact_path), body_path_root(context)) do
+      {:ok, relative} -> relative
+      :outside_repo -> nil
+    end
+  end
+
+  # The review-findings section is the one the untemplated body carries
+  # (`findings_section/1`: one renderer, AGENTS.md §5.7). A run with no artifact
+  # has none, and the heading that would have held it says so.
+  defp artifact_section(context) do
+    case Map.get(context, :artifact_path) do
+      nil -> nil
+      _artifact_path -> findings_section(context)
+    end
+  end
 
   # The head branch is the one `maybe_create_pr/1` resolved (an artifact's
   # `FOREMAN_BRANCH=` override can name a branch other than the run's own), so
@@ -782,7 +799,9 @@ defmodule ForemanServer.Workflow.AutoPR do
           outcome: "commits_unavailable"
         )
 
-        {:error, "git log exited with #{exit_code}: #{String.trim(output)}"}
+        # The body is public: git's own output can name host paths, so it stays in
+        # the log above and the body carries the exit code only.
+        {:error, "git log exited with #{exit_code}"}
     end
   end
 

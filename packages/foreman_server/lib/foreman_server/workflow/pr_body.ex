@@ -29,7 +29,8 @@ defmodule ForemanServer.Workflow.PrBody do
 
   @type result :: {:ok, String.t()} | {:error, error()}
 
-  # GitHub caps a pull-request body at 65535 characters.
+  # GitHub refuses a pull-request body over 65536 characters. The check counts
+  # bytes, which are never fewer than the characters, so it can only refuse early.
   @max_body_bytes 65_535
 
   # What a heading carries when Foreman has no content for it. Written so the
@@ -58,7 +59,7 @@ defmodule ForemanServer.Workflow.PrBody do
     end
   end
 
-  def build(headings, _sources) do
+  def build(headings, _sources) when not is_list(headings) do
     {:error,
      %__MODULE__{reason: :invalid_headings, detail: {:pr_body_headings_invalid, headings}}}
   end
@@ -148,8 +149,14 @@ defmodule ForemanServer.Workflow.PrBody do
   defp put_artifact_path(parts, path) when is_binary(path), do: ["Artifact: `#{path}`" | parts]
   defp put_artifact_path(parts, _path), do: parts
 
-  defp put_artifact_section(parts, section) when is_binary(section) and section != "",
-    do: [section | parts]
+  # The section arrives padded with newlines of its own; the block joins its
+  # parts on one blank line.
+  defp put_artifact_section(parts, section) when is_binary(section) do
+    case String.trim(section) do
+      "" -> parts
+      trimmed -> [trimmed | parts]
+    end
+  end
 
   defp put_artifact_section(parts, _section), do: parts
 

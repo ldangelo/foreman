@@ -66,13 +66,44 @@ defmodule ForemanServer.Workflow.PrBodyTest do
     end
 
     test "says why the run's commits are missing instead of leaving the heading empty" do
-      sources = %Sources{commits: {:error, "git log exited with 128: fatal: bad revision"}}
+      sources = %Sources{commits: {:error, "git log exited with 128"}}
 
       assert {:ok, body} = PrBody.build(["## Testing"], sources)
 
       assert body ==
-               "## Testing\n\nForeman could not list the run's commits: " <>
-                 "git log exited with 128: fatal: bad revision"
+               "## Testing\n\nForeman could not list the run's commits: git log exited with 128"
+    end
+
+    test "joins the review section on one blank line, whatever newlines it arrives padded with" do
+      sources = %Sources{
+        artifact_path: "docs/reports/r.md",
+        artifact_section: "\n## Review findings\n\nNothing unresolved.\n"
+      }
+
+      assert {:ok, body} = PrBody.build(["## Risk"], sources)
+
+      assert body ==
+               "## Risk\n\nArtifact: `docs/reports/r.md`\n\n## Review findings\n\nNothing unresolved."
+    end
+
+    test "does not count a review section that is only whitespace as content" do
+      assert {:ok, body} = PrBody.build(["## Risk"], %Sources{artifact_section: "\n \n"})
+
+      assert body == "## Risk\n\n_Not recorded by Foreman._"
+    end
+
+    test "refuses headings that are not a list instead of ignoring them" do
+      assert {:error,
+              %PrBody{
+                reason: :invalid_headings,
+                detail: {:pr_body_headings_invalid, "## Summary"}
+              }} = PrBody.build("## Summary", %Sources{})
+    end
+
+    test "raises on sources that are not a `Sources` instead of calling the headings invalid" do
+      not_sources = Map.new()
+
+      assert_raise FunctionClauseError, fn -> PrBody.build(["## Summary"], not_sources) end
     end
   end
 end
