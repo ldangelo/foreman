@@ -4,7 +4,7 @@
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, ScrollHandle } from "gpui-base";
 import { theme, checking, run, focused, nextCommand, notify, keys, layout, shared, setShared, exec, window, openOverlay } from "herdr";
-import { info, isActive, ago, clock, foreman, api, apiPost, beadId, workflowName, prUrl, openUrlArgv, isClearable, hideCleared, countCleared, clearRuns, pruneCleared, parseCleared, isResettable, resetPrompt, isApprovable, approveBody, approvePrompt } from "./common.js";
+import { info, isActive, ago, clock, foreman, api, beadId, workflowName, prUrl, openUrlArgv, isClearable, hideCleared, countCleared, clearRuns, pruneCleared, parseCleared, isResettable, resetPrompt, isApprovable, findApprovable, approveTask, approvePrompt } from "./common.js";
 
 const POLL_MS = 10000;
 const RESET_CONFIRM_MS = 60000; // a confirmation answered later than this is ignored: the reset it was for is long forgotten
@@ -413,15 +413,14 @@ export default class ForemanRuns extends View {
     const p = this.pendingApprove;
     this.pendingApprove = null;
     if (!p || Date.now() - p.at > APPROVE_CONFIRM_MS) return notify({ title: "Foreman", body: "No approval is waiting for a confirmation.", level: "info" });
-    const e = this.queue.entries.find((x) => x.task_id === p.task_id);
-    if (!e || !isApprovable(e)) return notify({ title: "Foreman", body: `${p.task_id} is no longer waiting for approval: nothing was approved.`, level: "info" });
+    const e = findApprovable(this.queue.entries, p.task_id);
+    if (!e) return notify({ title: "Foreman", body: `${p.task_id} is no longer waiting for approval: nothing was approved.`, level: "info" });
     if (this.approveBusy) return;
     this.approveBusy = true;
     const label = e.title ?? beadId(e) ?? e.task_id;
     try {
-      const body = await apiPost("/api/commands", approveBody(p.task_id));
-      if (body?.status !== "accepted") throw new Error(`unexpected answer: ${JSON.stringify(body).slice(0, 120)}`);
-      notify({ title: "Foreman", body: `Approved ${label}: a run is being started for it.`, level: "success", timeout: 5000 });
+      await approveTask(p.task_id);
+      notify({ title: "Foreman", body: `Approved ${label}: the server is dispatching a run for it.`, level: "success", timeout: 5000 });
     } catch (err) {
       notify({ title: "Foreman", body: `Could not approve ${label}: ${String(err?.message ?? err).split("\n")[0]}`, level: "error" });
     } finally {

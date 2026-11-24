@@ -146,21 +146,32 @@ export const resetPrompt = (r) => {
   };
 };
 
-// Approving is the one action here that starts work: `task.approve` moves an open task to ready and a run is dispatched
-// for it. `foreman task approve` was removed (TRD-018), so the panel sends the command itself, with the body that verb
-// sent: task_id and approved_by. No command_id: the command controller mints a unique one per request
+// Approving is the one action here that starts work: `task.approve` moves an open task to ready and the server then
+// dispatches a run for it. `foreman task approve` was removed (TRD-018), so the panel sends the command itself, with the
+// body that verb sent: task_id and approved_by. No command_id: the command controller mints a unique one per request
 // (`default_command_id`, command_controller.ex), and the gateway makes it the approval_id and so the run_id. A fixed id
 // would turn a later re-approval of the same task into an idempotent retry of the first and dispatch nothing. The
-// gateway rejects an approval_id, approved_at, run_id or workflow_snapshot from a client.
+// gateway rejects an approval_id, approved_at, run_id or workflow_snapshot from a client. Only an `open` task is
+// approvable (`Task.require_approvable/1`): the server refuses any other status.
 export const isApprovable = (e) => e?.kind === "open" && e.stale !== true && typeof e.task_id === "string" && e.task_id !== "";
 export const approveBody = (taskId) => ({ type: "task.approve", payload: { task_id: taskId, approved_by: "herdr-sidebar" } });
+// The entry of the queue that is awaiting approval for this task. Not just the first entry of that task: a stale slot
+// entry left over from an earlier run of the same task comes first in the queue and must not hide the open one.
+export const findApprovable = (entries, taskId) => entries.find((x) => x.task_id === taskId && isApprovable(x));
+// Sends the approval. It resolves only for an accepted command (HTTP 201 `{status: "accepted"}`); a refusal, a failed
+// call or any other answer throws with what the server said, so the caller can never report success it did not get.
+export async function approveTask(taskId) {
+  const body = await apiPost("/api/commands", approveBody(taskId));
+  if (body?.status !== "accepted") throw new Error(`unexpected answer: ${JSON.stringify(body).slice(0, 120)}`);
+  return body;
+}
 // The confirmation's wording for a queue entry that is awaiting approval.
 export const approvePrompt = (e) => {
   const which = [e.title, beadId(e) ?? e.task_id].filter(Boolean).join(" · ");
   return {
     title: "Approve this task?",
-    detail: `${which}${e.project_id ? ` (project ${e.project_id})` : ""}. Approving it starts a run: an agent will work on the task. ` +
-      "The server picks the workflow from the task, and refuses if the task's dependencies are not closed or the project is paused.",
+    detail: `${which}${e.project_id ? ` (project ${e.project_id})` : ""}. Approving it starts a run: an agent will work on the task ` +
+      "(the run waits if the project is paused or at a limit). The server refuses if the task's dependencies are not all closed.",
   };
 };
 

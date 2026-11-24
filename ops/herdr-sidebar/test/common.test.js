@@ -3,8 +3,9 @@
 // Run: bun test ops/herdr-sidebar/test   (bun is not a devbox package and CI does not run this suite)
 import { test, expect, mock } from "bun:test";
 
-mock.module("herdr", () => ({ exec: async () => ({ code: 0, stdout: "", stderr: "" }), home: () => "/h", window: () => ({ platform: "macos" }) }));
-const { approveBody, approvePrompt, beadId, clearRuns, countCleared, hideCleared, isApprovable, isClearable, isResettable, parseCleared, pruneCleared, resetPrompt } = await import("../common.js");
+let execImpl = async () => ({ code: 0, stdout: "", stderr: "" }); // what the stubbed exec() answers; a test sets it
+mock.module("herdr", () => ({ exec: (...a) => execImpl(...a), home: () => "/h", window: () => ({ platform: "macos" }) }));
+const { approveBody, approvePrompt, approveTask, beadId, clearRuns, countCleared, findApprovable, hideCleared, isApprovable, isClearable, isResettable, parseCleared, pruneCleared, resetPrompt } = await import("../common.js");
 
 test("beadId takes the bead id off a beads task id", () => {
   expect(beadId({ task_id: "beads:foreman:foreman-jzycy" })).toBe("foreman-jzycy");
@@ -114,4 +115,61 @@ test("the approval confirmation names the task and its project and says that it 
   expect(detail).toContain("Fix the thing · foreman-x (project foreman)");
   expect(detail).toContain("starts a run");
   expect(approvePrompt({ task_id: "adhoc-1" }).detail).toContain("adhoc-1. Approving");
+});
+
+test("the entry awaiting approval is found even when a stale slot entry of the same task is listed before it", () => {
+  const stale = { kind: "slot", task_id: "beads:foreman:foreman-x", run_id: "run-old", stale: true };
+  const open = { kind: "open", task_id: "beads:foreman:foreman-x", stale: false };
+  expect(findApprovable([stale, open], "beads:foreman:foreman-x")).toBe(open);
+  expect(findApprovable([stale], "beads:foreman:foreman-x")).toBeUndefined(); // nothing awaits approval any more
+  expect(findApprovable([open], "beads:foreman:foreman-y")).toBeUndefined();
+});
+
+// What curl prints as callApi reads it: the body, then the HTTP status on a line of its own.
+const curlSaid = (body, status) => ({ code: 0, stdout: `${typeof body === "string" ? body : JSON.stringify(body)}\n${status}`, stderr: "" });
+// Runs approveTask against what exec() answers and reports how it ended: {body} for a resolution, {error} for a rejection.
+const approval = (answer) => {
+  execImpl = async () => answer;
+  return approveTask("beads:foreman:foreman-x").then((body) => ({ body }), (error) => ({ error }));
+};
+
+test("an accepted approval resolves; the request is a POST whose JSON body is an argument of its own and whose token never is", async () => {
+  let call;
+  execImpl = async (cmd, args) => {
+    call = { cmd, args };
+    return curlSaid({ status: "accepted", result: { task_id: "beads:foreman:foreman-x", run_id: "run-1", replayed: false } }, 201);
+  };
+  expect((await approveTask("beads:foreman:foreman-x")).status).toBe("accepted");
+  const [flag, script, ...positional] = call.args;
+  expect([call.cmd, flag]).toEqual(["sh", "-c"]);
+  expect(positional.slice(-2)).toEqual(["/api/commands", JSON.stringify(approveBody("beads:foreman:foreman-x"))]); // $1 and $2 of the script
+  expect(script).toContain("-X POST");
+  expect(script).toContain('--data "$2"'); // the body is data: it is never spliced into the script
+  expect(script).toContain("-H @-"); // the token header is read from stdin ...
+  expect(script).not.toMatch(/-H\s+["']?Authorization/); // ... and is never an argument of curl
+});
+
+test("a refusal, a failed call and any answer that is not an accepted command are errors, never a success", async () => {
+  // the command controller's refusals: 422 {error: inspect(reason)}, 403 {error: "command_not_allowed"}
+  const refused = await approval(curlSaid({ error: '{:task_not_approvable, "ready"}' }, 422));
+  expect(refused.body).toBeUndefined();
+  expect([refused.error.message, refused.error.status]).toEqual(['{:task_not_approvable, "ready"}', 422]);
+  const notAllowed = await approval(curlSaid({ error: "command_not_allowed", type: "task.approve" }, 403));
+  expect([notAllowed.error.message, notAllowed.error.status]).toEqual(["command_not_allowed", 403]);
+  // an error status whose body has no `error` field (409 version_conflict, 504 command_timeout carry `code`)
+  const timeout = await approval(curlSaid({ code: "command_timeout", retryable: true }, 504));
+  expect(timeout.body).toBeUndefined();
+  expect([timeout.error.message, timeout.error.status]).toEqual(["HTTP 504 from /api/commands", 504]);
+  // a 2xx that is not the controller's acceptance: another server, a proxy, a changed contract
+  const odd = await approval(curlSaid({ ok: true }, 200));
+  expect(odd.body).toBeUndefined();
+  expect(odd.error.message).toBe('unexpected answer: {"ok":true}');
+  // not JSON at all, and no answer at all
+  const html = await approval(curlSaid("<html>Bad Gateway</html>", 502));
+  expect(html.error.message).toBe("unexpected response from /api/commands (HTTP 502)");
+  const silent = await approval({ code: 0, stdout: "", stderr: "" });
+  expect(silent.error.message).toBe("unexpected response from /api/commands");
+  // curl itself failed (the server is down): its own line
+  const down = await approval({ code: 7, stdout: "", stderr: "curl: (7) Failed to connect to 127.0.0.1 port 4766 after 0 ms\n" });
+  expect(down.error.message).toBe("curl: (7) Failed to connect to 127.0.0.1 port 4766 after 0 ms");
 });
