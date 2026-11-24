@@ -2471,6 +2471,9 @@ defmodule ForemanServer.Workflow.RunExecutor do
       end
     end
 
+    # A path that is missing, empty, not a regular file or unreadable reads as "no file". Nothing is
+    # hidden by that: `write/5` then writes the final message, and a path it cannot write (a
+    # directory, no permission) fails there with the File error.
     defp file_fingerprint(path) do
       with {:ok, %File.Stat{type: :regular, size: size}} when size > 0 <- File.stat(path),
            {:ok, contents} <- File.read(path) do
