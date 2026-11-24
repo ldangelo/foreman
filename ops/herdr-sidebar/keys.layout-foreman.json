@@ -14,5 +14,6 @@
   "cmd-shift-h": "foreman-runs.reset-run",
   "ctrl-alt-right": "foreman-run.next-tab",
   "ctrl-alt-left": "foreman-run.prev-tab",
+  "cmd-shift-a": "foreman-runs.approve-next",
   "cmd-shift-b": "foreman-runs.toggle-sidebar"
 }

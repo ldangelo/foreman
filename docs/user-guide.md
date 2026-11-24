@@ -1642,9 +1642,11 @@ This is a guard, not a scheduler. Nothing dispatches the task
 automatically when its last dependency closes. `foreman task approve`
 is REMOVED (TRD-018, 2026-09-13); BeadsWatcher dispatches
 `task.approve` only once, at bead import (TRD-007), so there is
-currently no operator-invocable path to retry approval after a
-dependency later closes — the same category of gap as `task.retry`
-below. There is also no ordering or cycle detection.
+currently no `foreman` CLI path to retry approval after a
+dependency later closes (the Herdr sidebar's `approve` button,
+`ops/herdr-sidebar/`, sends `task.approve` through `POST /api/commands`
+for a task that is still `open`, after a confirmation) — the same
+category of gap as `task.retry` below. There is also no ordering or cycle detection.
 
 The Go CLI has no `--dependencies` flag, so the field is settable only through a
 raw `POST /api/commands` `task.create` payload, the same as `priority`. And

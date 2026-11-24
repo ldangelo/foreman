@@ -4,10 +4,11 @@
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, ScrollHandle } from "gpui-base";
 import { theme, checking, run, focused, nextCommand, notify, keys, layout, shared, setShared, exec, window, openOverlay } from "herdr";
-import { info, isActive, ago, clock, foreman, api, beadId, workflowName, prUrl, openUrlArgv, isClearable, hideCleared, countCleared, clearRuns, pruneCleared, parseCleared, isResettable, resetPrompt } from "./common.js";
+import { info, isActive, ago, clock, foreman, api, beadId, workflowName, prUrl, openUrlArgv, isClearable, hideCleared, countCleared, clearRuns, pruneCleared, parseCleared, isResettable, resetPrompt, isApprovable, findApprovable, approveTask, approvePrompt } from "./common.js";
 
 const POLL_MS = 10000;
 const RESET_CONFIRM_MS = 60000; // a confirmation answered later than this is ignored: the reset it was for is long forgotten
+const APPROVE_CONFIRM_MS = 60000; // likewise for an approval: an answer later than this is ignored
 const LIMIT = 40;
 const PROJECT_RETRY_MS = 60000;
 const HISTORY_LIMIT = 500; // each project's runs read for the history (the newest ones; the poll reads LIMIT overall)
@@ -61,6 +62,7 @@ const HINTS = [
   ["clear-run", "clear"],
   ["clear-all", "clear all"],
   ["reset-run", "reset"],
+  ["approve-next", "approve"],
   ["restore-cleared", "restore"],
   ["toggle-failed", "failed only"],
   ["refresh", "reload"],
@@ -94,6 +96,8 @@ export default class ForemanRuns extends View {
     this.allRuns = []; // the listing as the server gave it, cleared runs included (this.runs is it without them)
     this.pendingReset = null; // {run_id, at}: the run Herdr's confirm dialog is asking about
     this.resetBusy = false;
+    this.pendingApprove = null; // {task_id, at}: the task Herdr's confirm dialog is asking about
+    this.approveBusy = false;
     this.error = null;
     this.loaded = false;
     this.busy = false;
@@ -136,6 +140,8 @@ export default class ForemanRuns extends View {
           else if (command === "restore-cleared") this.restoreCleared(cx);
           else if (command === "reset-run") this.askResetSelected();
           else if (command === "reset-confirmed") this.confirmReset(cx);
+          else if (command === "approve-next") this.askApproveNext();
+          else if (command === "approve-confirmed") this.confirmApprove(cx);
           else if (command === "copy-pr") this.copyPrUrl(cx);
           else if (command === "toggle-sidebar") this.toggleSidebar();
           // A bare "focus" is the app's own message (e.g. a popup closed over this copy): keep
@@ -383,6 +389,42 @@ export default class ForemanRuns extends View {
       notify({ title: "Foreman", body: `Could not reset ${label}: ${String(e?.message ?? e).split("\n")[0]}`, level: "error" });
     } finally {
       this.resetBusy = false;
+    }
+    this.refresh(cx, true);
+  }
+
+  // Approving starts a run, so it asks first, like reset: Herdr's confirm dialog (Enter confirms, Esc cancels).
+  // Confirming sends "foreman-runs.approve-confirmed" back to this panel, which approves the task asked about.
+  askApprove(e) {
+    if (!isApprovable(e)) return notify({ title: "Foreman", body: "That task is not waiting for approval.", level: "info" });
+    this.pendingApprove = { task_id: e.task_id, at: Date.now() };
+    const { title, detail } = approvePrompt(e);
+    openOverlay({ mod: "confirm", kind: "dialog", modal: true, width: 460, height: 230, props: { title, detail, command: { name: "foreman-runs.approve-confirmed", args: {} } } });
+  }
+
+  // The keyboard way in: the task that has waited longest (the queue lists them oldest first).
+  askApproveNext() {
+    const e = this.queue.entries.find(isApprovable);
+    if (!e) return notify({ title: "Foreman", body: "No task is waiting for approval.", level: "info" });
+    this.askApprove(e);
+  }
+
+  async confirmApprove(cx) {
+    const p = this.pendingApprove;
+    this.pendingApprove = null;
+    if (!p || Date.now() - p.at > APPROVE_CONFIRM_MS) return notify({ title: "Foreman", body: "No approval is waiting for a confirmation.", level: "info" });
+    const e = findApprovable(this.queue.entries, p.task_id);
+    if (!e) return notify({ title: "Foreman", body: `${p.task_id} is no longer waiting for approval: nothing was approved.`, level: "info" });
+    if (this.approveBusy) return;
+    this.approveBusy = true;
+    const label = e.title ?? beadId(e) ?? e.task_id;
+    try {
+      await approveTask(p.task_id);
+      notify({ title: "Foreman", body: `Approved ${label}: the server is dispatching a run for it.`, level: "success", timeout: 5000 });
+    } catch (err) {
+      notify({ title: "Foreman", body: `Could not approve ${label}: ${String(err?.message ?? err).split("\n")[0]}`, level: "error" });
+    } finally {
+      this.approveBusy = false;
     }
     this.refresh(cx, true);
   }
@@ -686,6 +728,9 @@ export default class ForemanRuns extends View {
     // The reset button of a failed row: asks first (see askReset), and its click is stopped like the clear button's.
     const resetButton = (r) => div().id(`reset-${r.run_id}`).px(4).rounded(3).text_size(10.5).text_color(t.dim).cursor_pointer().hover((s) => s.bg(t.hover))
       .on_click((_e, cx) => { cx.stop_propagation(); this.askReset(r); }).child("reset");
+    // The approve button of a task awaiting approval: asks first (see askApprove).
+    const approveButton = (e) => div().id(`approve-${e.task_id}`).px(4).rounded(3).text_size(10.5).text_color(t.dim).cursor_pointer().hover((s) => s.bg(t.hover))
+      .on_click((_e, cx) => { cx.stop_propagation(); this.askApprove(e); }).child("approve");
 
     // Under the list: clear what is shown (failed, stuck, cancelled) and bring back what was cleared.
     const clearable = this.shownRuns().filter(isClearable);
@@ -753,7 +798,8 @@ export default class ForemanRuns extends View {
       return v_flex().id(`queued-${e.run_id ?? e.task_id}`).pl(38).pr(12).py(4).gap(1)
         .child(h_flex().gap(8).items_center()
           .child(div().flex_1().truncate().text_size(12.5).text_color(e.stale ? t.dim : t.foreground).child(what))
-          .child(div().text_size(11).text_color(t.dim).child(e.kind === "slot" ? `#${e.pos}` : "")))
+          .child(div().text_size(11).text_color(t.dim).child(e.kind === "slot" ? `#${e.pos}` : ""))
+          .when(isApprovable(e), (el) => el.child(approveButton(e))))
         .child(idLine(e, e.run_id ?? e.task_id, who, ` · ${tail}`));
     };
 
