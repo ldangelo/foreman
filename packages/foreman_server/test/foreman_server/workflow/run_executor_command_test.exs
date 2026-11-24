@@ -787,9 +787,14 @@ defmodule ForemanServer.Workflow.RunExecutorCommandTest do
 
     assert delivered["FOREMAN_RUN_ID"] == run_id
     # Foreman marks its pi workers as child sessions so machine-wide pi
-    # extensions do not override the phase model; the contract keeps FOREMAN_*. (#1025)
+    # extensions do not override the phase model. The marker is Foreman's own key,
+    # not project environment, so the namespace check allows it explicitly.
     assert delivered["PI_SUBAGENT_CHILD"] == "1"
-    assert Enum.all?(Map.keys(delivered), &String.starts_with?(&1, "FOREMAN_"))
+
+    assert Enum.all?(Map.keys(delivered), fn key ->
+             String.starts_with?(key, "FOREMAN_") or key == "PI_SUBAGENT_CHILD"
+           end)
+
     assert worker_state.secrets == []
 
     assert {:ok, _} =

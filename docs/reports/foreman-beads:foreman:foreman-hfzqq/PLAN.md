@@ -119,14 +119,16 @@ Leave the `FOREMAN_* always wins` comment above the pipe untouched.
 Insert immediately after `phase_launch_provider/1` (ends at line 1252):
 
 ```elixir
-  # Foreman owns the model for a phase (`ModelResolution`), so every pi worker
-  # it launches is marked as a child session. Machine-wide pi extensions honour
+  # Foreman owns the model of each phase (`ModelResolution`), so every pi worker it
+  # launches is marked as a child session. Machine-wide pi extensions honour
   # `PI_SUBAGENT_CHILD=1` by standing down: `pi-advisor-flow` skips its
-  # `setExecutorModel`/`setThinkingLevel` override and its model-select sync,
-  # and `pi-subagents` registers nothing at all. Deliberate trade-off: an
-  # operator's advisor extension does not supervise Foreman phases, and in
-  # exchange the phase actually runs on the resolved model. Documented in
-  # `docs/user-guide.md` §7.3.
+  # `setExecutorModel`/`setThinkingLevel` override and model-select sync, and
+  # `pi-subagents` registers nothing at all. Deliberate trade-off: the marker
+  # suppresses only that extension's model/effort override — its advisor gates
+  # (`advisorPlanGate`, `advisorCompletionGate`, `advisorBlockOnBlocked`) are not
+  # keyed on it, so a machine-wide advisor still supervises Foreman phases per its
+  # own config. In exchange every phase runs on the model Foreman resolved.
+  # Documented in `docs/user-guide.md` §7.3.
   defp maybe_put_pi_child_marker(env, :pi), do: Map.put(env, "PI_SUBAGENT_CHILD", "1")
   defp maybe_put_pi_child_marker(env, _provider), do: env
 ```
@@ -163,10 +165,13 @@ launches gets `PI_SUBAGENT_CHILD=1` in its environment. Foreman resolves the
 model for each phase itself (phase `models.default` > project `thread_model` >
 provider default) and this marker stops machine-wide pi extensions from
 overriding it — `pi-advisor-flow` skips its executor model/effort override, and
-`pi-subagents` registers nothing. The trade-off is deliberate: advisor
-extensions installed in your pi agent directory do not supervise Foreman phases,
-so advisor plan/completion gating applies to your interactive pi sessions only.
-Phases on other providers (`claude`) are unaffected.
+`pi-subagents` registers nothing. The trade-off is deliberate, and narrow: the
+marker is not a whole-extension switch, so `pi-advisor-flow`'s advisor gates
+(`advisorPlanGate`, `advisorCompletionGate`, `advisorBlockOnBlocked`) are not
+keyed on it — a machine-wide advisor extension still asks a Foreman phase to call
+`ask_advisor`, and its `ask_advisor` tool stays registered. Gate behaviour
+follows that extension's own `enabled`/gate settings, not this marker. Phases on
+other providers (`claude`) are unaffected.
 ```
 
 ## 5. Verification
@@ -186,12 +191,19 @@ devbox run -- bash -c 'cd packages/foreman_server && DATABASE_URL=postgres://pos
 (~825 s, ~9255 tests; without `DATABASE_URL` it fails at boot with Postgrex
 `28P01 invalid_password` — environment quirk, not a regression.)
 
-Documentation gate: added identifier is the env var `PI_SUBAGENT_CHILD`; nothing
-removed or renamed. `grep -n PI_SUBAGENT_CHILD CLAUDE.md README.md
-docs/user-guide.md docs/cli-reference.md` must hit `docs/user-guide.md` only.
-`CLAUDE.md:403-417` lists the injected **`FOREMAN_*`** vars and the project
-environment rules; this marker is neither, so no edit there. `README.md` and
-`docs/cli-reference.md` have no operator-visible change.
+Documentation gate: the added identifier is the env var `PI_SUBAGENT_CHILD`;
+nothing removed or renamed. All four gate documents carry it:
+`grep -n PI_SUBAGENT_CHILD CLAUDE.md README.md docs/user-guide.md
+docs/cli-reference.md` hits `CLAUDE.md` (the injected-env-var list, which the
+marker now joins — `CLAUDE.md:403-417` lists the injected **`FOREMAN_*`** vars
+and the marker is injected the same way), `README.md` (the agent-runtime
+paragraph that says how the resolved phase model reaches the provider), and
+`docs/cli-reference.md` (a "Phase worker environment" paragraph in the
+`foreman run submit` section, worded so it does not read as a CLI flag — no
+verb, flag or route changed). `docs/user-guide.md` §7.3 carries the
+operator-facing explanation. `docs/lessons/phase-execution-and-pr-mechanics.md`
+records the verified scope limit (the marker suppresses the model/effort
+override, not the advisor gates).
 
 ## 6. Out of scope
 

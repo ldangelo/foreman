@@ -2082,18 +2082,23 @@ Every phase agent Foreman launches is a supervised worker, not an interactive
 session, so `RunExecutor.prepare_agent_launch/5` sets **`PI_SUBAGENT_CHILD=1`**
 in the environment of every **pi** worker it starts (non-pi providers are
 unaffected). pi extensions installed machine-wide in `~/.pi/agent/settings.json`
-that follow the `pi-subagents` convention treat a marked session as a child and
-stand down: `pi-advisor-flow` skips its `setExecutorModel` and `setThinkingLevel`
-override and its model-select sync, and `pi-subagents` itself registers nothing
-at all in a child. Without the marker, such an extension silently replaces the
-project's `thread_model` (and the phase's `models.default`) with the model chosen
-in its own config, and the `model=` line in the run log still shows what Foreman
+that follow the `pi-subagents` convention scale back in a marked session.
+`pi-advisor-flow` skips the parts that would take the model away from Foreman:
+its `setExecutorModel` and `setThinkingLevel` overrides and its model-select
+sync. `pi-subagents` goes further and registers no extension at all in a child.
+Without the marker, such an extension silently replaces the project's
+`thread_model` (and the phase's `models.default`) with the model chosen in its
+own config, while the `model=` line in the run log still shows what Foreman
 resolved — so the override is invisible unless you read the agent's status line.
-The cost is symmetric and deliberate: the same extension's advisor gates
-(`advisorCompletionGate`, `advisorPlanGate`, `advisorBlockOnBlocked`) do not
-supervise Foreman phases either. Foreman's own review phases are that substitute;
-if you want advisor supervision on a run, run the work as a project thread
-instead of a Foreman phase, or disable the extension for Foreman-launched pi.
+The marker is not a switch for the whole extension: `pi-advisor-flow`'s advisor
+gates (`advisorPlanGate`, `advisorCompletionGate`, `advisorBlockOnBlocked`) are
+not keyed on it, so a machine-wide advisor extension still asks a Foreman phase
+to call `ask_advisor`, and its `ask_advisor` tool is still registered. Gate
+behaviour follows that extension's own `enabled`/gate settings, not this marker
+(Foreman's phase workers are launched with extensions enabled; only the
+coordinator's own harness agents pass `no_extensions`). If you want advisor
+gating off for Foreman workers, turn those gates off in the extension config;
+if you want the model Foreman resolved to stay authoritative, keep the marker.
 
 ### 7.4 Bundled skills
 

@@ -309,6 +309,10 @@ dispatcher reached through one of them, not a provider). Readiness is
 checked on every `execute/3` call, and workflow-phase `models.default`
 values are forwarded to the selected provider as the run model (see
 `CLAUDE.md` §1–§9, full text in `docs/lessons/agent-runtime-conventions.md`).
+Every `:pi` phase worker is launched with `PI_SUBAGENT_CHILD=1`, so a pi
+extension installed machine-wide cannot replace that model; the marker does
+not silence the extension's advisor gates (see
+[`docs/user-guide.md`](./docs/user-guide.md) §7.3).
 
 ```elixir
 defmodule MyApp.ClaudeAdapter do

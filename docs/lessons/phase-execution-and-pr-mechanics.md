@@ -313,13 +313,17 @@ evidence that any agent received it.
 `foreman_env/4` (and so `FOREMAN_MODEL`), which is why it hangs off
 `prepare_agent_launch/5` and not `foreman_env/4`: the marker must be present
 wherever Foreman resolved a model, even if pipeline dispatch moves. Machine-wide
-pi extensions honour it by standing down — `pi-advisor-flow` skips its
-`setExecutorModel`/`setThinkingLevel` override and model-select sync, and
-`pi-subagents` registers nothing. Without it, an extension installed on the host
-silently replaces the project `thread_model` mid-phase. Deliberate consequence:
-the advisor gates (`advisorCompletionGate`, `advisorPlanGate`,
-`advisorBlockOnBlocked`) do not supervise Foreman phases either; Foreman's own
-review phases are the substitute. Operator-facing note: `docs/user-guide.md` §7.3.
+pi extensions honour it, but each only as far as it chooses: `pi-advisor-flow`
+skips its `setExecutorModel`/`setThinkingLevel` override and model-select sync,
+and `pi-subagents` registers nothing at all. Without the marker, an extension
+installed on the host silently replaces the project `thread_model` mid-phase.
+Scope limit, verified against `~/.pi/agent/npm/node_modules/pi-advisor-flow/dist/index.js`:
+`isMarkedSubagent()` gates only the model/effort override (model refs at
+`:288`, `:290`, `:295`, `:4799`, `:4845`, `:4855`, `:4887`), so the advisor gates
+(`advisorPlanGate` `:51`, `advisorCompletionGate` `:53`, `advisorBlockOnBlocked`
+`:57`) still apply to Foreman phases — they follow the extension's own config,
+not this marker. Do not document the marker as "advisor extensions stand down
+entirely". Operator-facing note: `docs/user-guide.md` §7.3.
 
 **Jido Harness provider/model selection is explicit.**
 `ForemanServer.AgentRuntime.JidoHarness` is the source of truth for supported
