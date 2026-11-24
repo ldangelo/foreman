@@ -87,7 +87,6 @@ defmodule ForemanServer.Workflow.RepoPrContext do
   # The task's title/description, only when the run's task is projected with
   # both a title and a description. A nil field is omitted rather than stored
   # as nil (AutoPR distinguishes absent from malformed; AGENTS.md 5.3).
-
   defp put_task_metadata(context, run_id, task_id) do
     task =
       case ProjectionStore.tasks_by_run_id(run_id) do

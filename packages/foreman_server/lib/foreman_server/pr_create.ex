@@ -7,7 +7,8 @@ defmodule ForemanServer.PrCreate do
   runs BEFORE the command is dispatched - `CommandGateway.dispatch_operator/1` calls
   `execute/1` - and never inside the `Run` aggregate, which the actor re-runs on a
   version conflict (a second `gh pr create`). It reuses `ForemanServer.Workflow.AutoPR`
-  unchanged: the same push, the same task-derived title/body and the same
+  unchanged: the same push, the same task-derived title/body (the body is the
+  project's `pr_body_headings` template when it sets one) and the same
   "commits ahead of the base" rule that the automatic path applies.
 
   The branch is the run's own worktree branch (`WorktreeCreated`, the last one), the

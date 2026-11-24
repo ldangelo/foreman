@@ -3,6 +3,7 @@ defmodule ForemanServer.Workflow.RunExecutorAutoPRTaskMetadataTest do
 
   alias ForemanServer.Aggregates.Task
   alias ForemanServer.ProjectionStore
+  alias ForemanServer.ProjectSettings
   alias ForemanServer.TestSupport.ProjectionStoreReset
   alias ForemanServer.Workflow.RunExecutor
 
@@ -187,5 +188,35 @@ defmodule ForemanServer.Workflow.RunExecutorAutoPRTaskMetadataTest do
     assert string_context.task_title == "String title"
     assert string_context.task_description == "String body"
     refute Map.has_key?(string_context, :ignored)
+  end
+
+  test "AutoPR context carries the PR body headings the run latched, and none when it latched none" do
+    state = %{
+      run_id: "run-autopr-headings",
+      task: nil,
+      source: nil,
+      current_phase: nil,
+      phase_specs: [],
+      plan_context: %{"project_root" => "/tmp/foreman-autopr-headings"},
+      last_worktree: %{branch: "foreman/run-autopr-headings/implement"}
+    }
+
+    # AutoPR templates a body only when the key is present: no setting, no key.
+    for settings <- [nil, %ProjectSettings{}, %ProjectSettings{pr_body_headings: []}] do
+      context =
+        RunExecutor.__auto_pr_context_for_test__(
+          Map.put(state, :project_settings, settings),
+          "main"
+        )
+
+      refute Map.has_key?(context, :pr_body_headings)
+    end
+
+    latched = %ProjectSettings{pr_body_headings: ["## Summary", "## Testing"]}
+
+    context =
+      RunExecutor.__auto_pr_context_for_test__(Map.put(state, :project_settings, latched), "main")
+
+    assert context.pr_body_headings == ["## Summary", "## Testing"]
   end
 end

@@ -2,12 +2,17 @@ defmodule ForemanServer.Workflow.PrBodyContext do
   @moduledoc """
   Puts the project's required pull-request body headings into an AutoPR context.
 
-  Every door that builds an AutoPR context — the run executor's completion PR,
-  the `run.pr.create` executor, and a phase PR — needs the same
-  settings-to-context mapping. It lives here so the doors cannot drift apart
-  (AGENTS.md §5.7). Each door keeps its own source of truth for the settings:
-  the run executor passes the settings it latched at run start, the command
-  doors read the live project settings projection.
+  Every door that builds an AutoPR context needs the same settings-to-context
+  mapping: the run executor's completion PR, the `run.pr.create` executor
+  (`ForemanServer.PrCreate`) and the per-repository PR
+  (`ForemanServer.Workflow.RepoPrContext`). It lives here so the doors cannot
+  drift apart (AGENTS.md §5.7). Each door keeps its own source of truth for the
+  settings: the run executor passes the settings it latched at run start, the
+  other two build from projections and read the live project settings.
+
+  A phase PR is not a door: `ForemanServer.Workflow.PhasePR` does not go through
+  AutoPR and builds its body from the phase's own report, so the setting does
+  not reach it.
   """
 
   alias ForemanServer.ProjectSettings
