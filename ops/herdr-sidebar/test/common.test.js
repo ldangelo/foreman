@@ -7,11 +7,35 @@ import { summarizePr } from "../mods/foreman-run/model.js";
 let execImpl = async () => ({ code: 0, stdout: "", stderr: "" }); // what the stubbed exec() answers; a test sets it
 mock.module("herdr", () => ({ exec: (...a) => execImpl(...a), home: () => "/h", window: () => ({ platform: "macos" }) }));
 const {
-  approveBody, approveMergeArgs, approvePrompt, approveTask, beadId, canMerge, clearRuns, completionToast, countCleared, findApprovable, foreman, foremanArgv, foremanDo,
-  hideCleared, isApprovable, isClearable, isFullSha, isResettable, mergeArgs, mergeErrorText, mergePrompt, mergeVerbsCheck, parseActivityCommand, parseCleared, parseGhLogin,
-  pruneCleared, resetPrompt, shortSha, trackCompletions,
+  approveBody, approveMergeArgs, approvePrompt, approveTask, beadId, canMerge, clearRuns, completionToast, countCleared, currentPhase, findApprovable, findRunTab, foreman,
+  foremanArgv, foremanDo, hideCleared, isApprovable, isClearable, isFullSha, isResettable, mergeArgs, mergeErrorText, mergePrompt, mergeVerbsCheck, newTabId,
+  parseActivityCommand, parseCleared, parseGhLogin, parseRunTabs, pruneCleared, rememberRunTab, rememberStopped, resetPrompt, runLabel, shortSha, stoppedKey, stoppedPhase,
+  tabIds, trackCompletions,
 } = await import("../common.js");
 
+// What the run list carries for a run in the middle of a workflow (sunstoneos-m1zz: create-prd done, refine-prd running).
+const prdRun = (status, ids = ["r-p001", "r-p002"]) => ({
+  status, phase_ids: ids, workflow_name: null,
+  workflow_snapshot: { workflow_name: "prd", phases: ["create-prd", "refine-prd", "create-trd"].map((name, i) => ({ name, index: i + 1, phase_id: `r-p00${i + 1}` })) },
+});
+
+test("an active run is labelled with the phase it is in, then its workflow", () => {
+  expect(currentPhase(prdRun("in_progress"))).toBe("refine-prd");
+  expect(runLabel(prdRun("in_progress"))).toBe("refine-prd · prd");
+  expect(runLabel(prdRun("in_progress", ["r-p001"]))).toBe("create-prd · prd");
+  expect(runLabel(prdRun("in_progress", ["r-p003", "r-p001", "r-p002"]))).toBe("create-trd · prd"); // the highest index, whatever the order
+  // The snapshot's own phase_id decides, not the shape of the id: ids that do not end in -pNNN still resolve.
+  const odd = { status: "in_progress", phase_ids: ["x-a", "x-b"], workflow_snapshot: { workflow_name: "prd", phases: [{ name: "one", index: 1, phase_id: "x-a" }, { name: "two", index: 2, phase_id: "x-b" }] } };
+  expect(runLabel(odd)).toBe("two · prd");
+});
+
+test("a run with no phase to name, or one that is not active, is labelled by its workflow", () => {
+  expect(runLabel(prdRun("in_progress", []))).toBe("prd"); // no phase started yet
+  expect(runLabel(prdRun("in_progress", ["r-p009"]))).toBe("prd"); // the snapshot does not name it
+  expect(runLabel({ status: "in_progress", workflow_name: "fix" })).toBe("fix"); // a list without phases or snapshot
+  expect(runLabel(prdRun("failed"))).toBe("prd"); // finished: the workflow alone
+  expect(runLabel({ status: "in_progress", phase_ids: ["r-p001"], workflow_snapshot: { workflow_name: "fix", phases: [{ name: "fix", index: 1 }] } })).toBe("fix"); // same name, said once
+});
 test("beadId takes the bead id off a beads task id", () => {
   expect(beadId({ task_id: "beads:foreman:foreman-jzycy" })).toBe("foreman-jzycy");
   expect(beadId({ task_id: "beads:ensemble:br-bhj9" })).toBe("br-bhj9");
@@ -506,4 +530,80 @@ test("foreman and foremanDo both throw the CLI's own error line, without its pre
   execImpl = async () => ({ code: 0, stdout: '{"runs":[]}', stderr: "" });
   expect(await foreman(["run", "list"])).toEqual({ runs: [] });
   execImpl = async () => ({ code: 0, stdout: "", stderr: "" });
+});
+
+// Herdr's spaces(): two spaces, the second holding the tab of run A (named like run B's: they are runs of one bead).
+const SPACES = [
+  { id: "s1", tabs: [{ id: "t1", name: "zsh" }] },
+  { id: "s2", tabs: [{ id: "t2", name: "prd sunstoneos-m1zz" }, { id: "t3", name: "fix foreman-x" }] },
+];
+
+test("a run's remembered tab is found with its space, and a closed or unknown one is not", () => {
+  expect(findRunTab(SPACES, "t2")).toEqual({ space: "s2", tab: "t2" });
+  expect(findRunTab(SPACES, "t9")).toBeNull(); // closed since
+  expect(findRunTab(SPACES, undefined)).toBeNull(); // never opened
+  expect(findRunTab(SPACES, "")).toBeNull();
+  expect(findRunTab(undefined, "t2")).toBeNull();
+});
+
+test("the tab a tab.new made is the one new tab with its name, never a guess", () => {
+  const before = tabIds(SPACES);
+  const after = [...SPACES, { id: "s3", tabs: [{ id: "t4", name: "prd sunstoneos-m1zz" }] }];
+  expect(newTabId(before, SPACES, "prd sunstoneos-m1zz")).toBeNull(); // the app has not applied it yet: the old tab has that name too
+  expect(newTabId(before, after, "prd sunstoneos-m1zz")).toBe("t4");
+  expect(newTabId(before, after, "fix foreman-x")).toBeNull(); // a new tab, but not the one asked for
+  const two = [...SPACES, { id: "s3", tabs: [{ id: "t4", name: "a" }, { id: "t5", name: "a" }] }];
+  expect(newTabId(before, two, "a")).toBeNull(); // two candidates: not adopted
+});
+
+test("remembered run tabs: the newest entry wins and the oldest beyond 100 fall away; bad storage is no tabs", () => {
+  expect(rememberRunTab({ a: "t1" }, "a", "t2")).toEqual({ a: "t2" });
+  let m = {};
+  for (let i = 0; i < 105; i++) m = rememberRunTab(m, `run-${i}`, `t${i}`);
+  expect(Object.keys(m)).toHaveLength(100);
+  expect(m["run-4"]).toBeUndefined();
+  expect(m["run-104"]).toBe("t104");
+  expect(parseRunTabs('{"run-1":"t1","run-2":7}')).toEqual({ "run-1": "t1" });
+  expect(parseRunTabs("not json")).toEqual({});
+});
+
+// The phase rows of GET /api/runs/:id/phases, as the failed and stuck runs on a live server had them.
+const rows = (...statuses) => statuses.map((status, i) => ({ index: i + 1, name: ["plan", "fix", "coderabbit-review", "repo-rules-review"][i], status }));
+
+test("a run stopped in the phase that failed, or for a stuck run the one still in progress", () => {
+  expect(stoppedPhase(rows("completed", "failed"))).toBe("fix");
+  expect(stoppedPhase(rows("failed"))).toBe("plan");
+  expect(stoppedPhase(rows("completed", "completed", "failed"))).toBe("coderabbit-review");
+  expect(stoppedPhase(rows("completed", "in_progress"))).toBe("fix"); // stuck
+  expect(stoppedPhase(rows("completed", "in_progress", "failed"))).toBe("coderabbit-review"); // a failure wins
+});
+
+test("no phase is named for a run that never started one or failed after every phase completed", () => {
+  expect(stoppedPhase([])).toBeNull();
+  expect(stoppedPhase(rows("completed", "completed", "completed", "completed"))).toBeNull(); // not its last phase's fault
+  expect(stoppedPhase(undefined)).toBeNull();
+  expect(stoppedPhase([{ index: 1, status: "failed" }])).toBeNull(); // a row with no name
+});
+
+test("a failed or stuck row leads with the phase it stopped in, and only once that is known", () => {
+  const failed = { run_id: "r1", status: "failed", phase_ids: ["r1-p001", "r1-p002"], workflow_name: "fix" };
+  expect(runLabel(failed)).toBe("fix"); // not read yet
+  const stopped = rememberStopped({}, failed, "fix");
+  expect(runLabel(failed, stopped)).toBe("fix"); // the same name as the workflow: said once
+  expect(runLabel(failed, rememberStopped({}, failed, "coderabbit-review"))).toBe("coderabbit-review · fix");
+  expect(runLabel(failed, rememberStopped({}, failed, null))).toBe("fix"); // read, nothing to name
+  const stuck = { ...failed, status: "stuck" };
+  expect(runLabel(stuck, rememberStopped({}, failed, "coderabbit-review"))).toBe("fix"); // an answer for the failed state is not the stuck run's
+  expect(runLabel({ ...failed, status: "completed" }, rememberStopped({}, { ...failed, status: "completed" }, "plan"))).toBe("fix"); // completed: workflow alone
+});
+
+test("a run's answer is keyed by its status and phases started, so a run that moves on is read again", () => {
+  const r = { run_id: "r1", status: "stuck", phase_ids: ["r1-p001"] };
+  expect(stoppedKey(r)).toBe("r1:stuck:1");
+  expect(stoppedKey({ ...r, phase_ids: ["r1-p001", "r1-p002"] })).toBe("r1:stuck:2");
+  expect(stoppedKey({ ...r, status: "failed" })).toBe("r1:failed:1");
+  expect(stoppedKey({ run_id: "r2", status: "failed" })).toBe("r2:failed:0");
+  let m = {};
+  for (let i = 0; i < 605; i++) m = rememberStopped(m, { run_id: `r${i}`, status: "failed" }, "fix");
+  expect(Object.keys(m)).toHaveLength(600);
 });

@@ -100,6 +100,45 @@ export const apiPost = (path, body) => callApi(POST_SCRIPT, path, [JSON.stringif
 
 // The projection's top-level workflow_name can be null; the snapshot taken at run start has it.
 export const workflowName = (r) => r.workflow_name ?? r.workflow_snapshot?.workflow_name ?? "run";
+// The phase a run is in: the newest one it has started, named by the snapshot of the workflow taken at run start. The
+// run list carries both (phase_ids and the snapshot's phases, each with its own phase_id), so this costs no request.
+// A phase is matched by its phase_id; a snapshot whose phases carry no phase_id is read by the number the id ends in
+// (…-p002 is the phase with index 2). Null when no phase has started or the snapshot does not name it, never a guess.
+// "Newest started" is not "running": between one phase finishing and the next starting it still names the finished one.
+export const currentPhase = (r) => {
+  const ids = Array.isArray(r?.phase_ids) ? r.phase_ids.map(String) : [];
+  const phases = Array.isArray(r?.workflow_snapshot?.phases) ? r.workflow_snapshot.phases : [];
+  if (ids.length === 0) return null;
+  const named = phases.filter((p) => ids.includes(p.phase_id));
+  const pick = named.length > 0
+    ? named.reduce((a, b) => (b.index > a.index ? b : a))
+    : phases.find((p) => p.index === Math.max(...ids.map((id) => Number(/-p(\d+)$/.exec(id)?.[1] ?? NaN))));
+  return typeof pick?.name === "string" && pick.name !== "" ? pick.name : null;
+};
+// A failed or stuck run stopped somewhere, which the run list cannot say: it knows which phases started, not how they
+// ended (a run that failed after every phase completed would be named after its last phase). GET /api/runs/:id/phases
+// does; the panel reads it once per run, and the answer is kept under the run's id, status and number of started
+// phases (a finished run's phases do not change; a stuck run that moves on, or a failed one that is retried, is a new key).
+export const stoppedStatus = (r) => r?.status === "failed" || r?.status === "stuck";
+export const stoppedKey = (r) => `${r.run_id}:${r.status}:${Array.isArray(r.phase_ids) ? r.phase_ids.length : 0}`;
+// The phase a run stopped in, from its phase rows ({name, status}): the one that failed; else the one still in progress
+// (a stuck run). Null when no phase started, or every phase completed (the run failed after its last phase).
+export const stoppedPhase = (phases) => {
+  const rows = Array.isArray(phases) ? phases : [];
+  const hit = rows.find((p) => p?.status === "failed") ?? rows.filter((p) => p?.status === "in_progress").pop();
+  return typeof hit?.name === "string" && hit.name !== "" ? hit.name : null;
+};
+const MAX_STOPPED = 600;
+// The map with this run's answer recorded last ("" for a run with no phase to name: asked once, not again).
+export const rememberStopped = (map, r, name) => remembered(map, stoppedKey(r), name ?? "", MAX_STOPPED);
+// What a panel row calls a run: while it is active, the phase it is in then the workflow ("refine-prd · prd"); while it
+// is failed or stuck, the phase it stopped in, if `stopped` (what rememberStopped built) has it. Just the workflow when
+// the two names are the same or the phase is unknown. Any other run is named by its workflow alone.
+export const runLabel = (r, stopped = {}) => {
+  const wf = workflowName(r);
+  const phase = isActive(r) ? currentPhase(r) : stoppedStatus(r) ? (stopped[stoppedKey(r)] || null) : null;
+  return phase === null || phase === wf ? wf : `${phase} · ${wf}`;
+};
 // The run's pull request URL when it has a usable (http/https) one, else null.
 export const prUrl = (r) => (typeof r.pr_url === "string" && /^https?:\/\//.test(r.pr_url) ? r.pr_url : null);
 // The bead a run (or queued item) works on, for copying into `br show <id>`. A beads task's id is
@@ -143,6 +182,33 @@ export const parseCleared = (text) => {
     return {};
   }
 };
+
+// A run's detail tab is opened once and then focused, not opened again on every click. The panel remembers which tab it
+// opened for which run (run id -> tab id, kept in localStorage); Herdr's spaces() says whether that tab still exists.
+// Tabs are named after the bead, which several runs of one bead share, so a name never identifies a run's tab.
+export const parseRunTabs = parseCleared;
+const MAX_RUN_TABS = 100;
+// The ids of all the tabs in these spaces (Herdr's spaces()).
+export const tabIds = (spaces) => new Set((spaces ?? []).flatMap((s) => (s.tabs ?? []).map((t) => t.id)));
+// Where a remembered tab is now: {space, tab}, or null for an id that is unknown or whose tab has been closed.
+export const findRunTab = (spaces, tabId) => {
+  if (typeof tabId !== "string" || tabId === "") return null;
+  const space = (spaces ?? []).find((s) => (s.tabs ?? []).some((t) => t.id === tabId));
+  return space ? { space: space.id, tab: tabId } : null;
+};
+// The tab that `tab.new {name}` just made: the one tab that was not in `before` and carries that name. Null when there
+// is none yet (the app has not applied the command) or when several qualify; the caller never guesses.
+export const newTabId = (before, spaces, name) => {
+  const fresh = (spaces ?? []).flatMap((s) => s.tabs ?? []).filter((t) => !before.has(t.id) && t.name === name);
+  return fresh.length === 1 ? fresh[0].id : null;
+};
+// The newest `max` entries of a string map, `key` recorded last.
+const remembered = (map, key, value, max) => {
+  const { [key]: _replaced, ...rest } = map;
+  return Object.fromEntries(Object.entries({ ...rest, [key]: value }).slice(-max));
+};
+// The map with this run's tab recorded last; the oldest entries beyond MAX_RUN_TABS fall away.
+export const rememberRunTab = (map, runId, tabId) => remembered(map, runId, tabId, MAX_RUN_TABS);
 
 // Unlike clearing, a reset changes the server: `foreman run reset` (run.reset) drops the run's record from the run
 // list; its event history stays and the work is not restarted (docs/user-guide.md, `run reset`). The server accepts

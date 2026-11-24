@@ -1,0 +1,1 @@
+<invoke "bash"><parameter name="command">cd /Users/ldangelo/.foreman/worktrees/foreman/7gyd7-fix/run-17de9efd71f42e1698c8d82501bd1de4/workspace && grep -rn "prompt_template_assigns\|input.prompt" docs/lessons/*.md docs/user-guide.md | head -30</parameter>

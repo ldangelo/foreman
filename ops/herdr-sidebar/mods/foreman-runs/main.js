@@ -3,10 +3,12 @@
 // click a project, status or queue header to collapse it.
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, ScrollHandle } from "gpui-base";
-import { theme, checking, run, focused, nextCommand, notify, keys, layout, shared, setShared, exec, window, openOverlay } from "herdr";
-import { info, isActive, ago, clock, foreman, api, beadId, workflowName, prUrl, openUrlArgv, isClearable, hideCleared, countCleared, clearRuns, pruneCleared, parseCleared, isResettable, resetPrompt, isApprovable, findApprovable, approveTask, approvePrompt, trackCompletions, completionToast, parseActivityCommand } from "./common.js";
+import { theme, checking, run, focused, nextCommand, notify, keys, layout, shared, setShared, exec, window, openOverlay, spaces } from "herdr";
+import { info, isActive, ago, clock, foreman, api, beadId, workflowName, runLabel, prUrl, openUrlArgv, isClearable, hideCleared, countCleared, clearRuns, pruneCleared, parseCleared, isResettable, resetPrompt, isApprovable, findApprovable, approveTask, approvePrompt, trackCompletions, completionToast, parseActivityCommand, parseRunTabs, tabIds, findRunTab, newTabId, rememberRunTab, stoppedStatus, stoppedKey, stoppedPhase, rememberStopped } from "./common.js";
 
 const POLL_MS = 10000;
+const STOPPED_PER_POLL = 6; // failed and stuck runs whose phases are read per poll (each is one request, read once)
+const STOPPED_RETRY_MS = 300000; // a read that failed is tried again after this
 const RESET_CONFIRM_MS = 60000; // a confirmation answered later than this is ignored: the reset it was for is long forgotten
 const APPROVE_CONFIRM_MS = 60000; // likewise for an approval: an answer later than this is ignored
 const LIMIT = 40;
@@ -93,6 +95,14 @@ export default class ForemanRuns extends View {
     try { this.collapsed = new Set(JSON.parse(localStorage.getItem("collapsed") ?? "[]")); } catch { this.collapsed = new Set(); }
     // Runs cleared from the panel (run id -> the status it had when cleared): view state only, kept across restarts.
     try { this.cleared = parseCleared(localStorage.getItem("cleared")); } catch { this.cleared = {}; }
+    // The run-detail tab opened for each run (run id -> tab id), so a second click focuses it (see open()). `pendingTabs`
+    // holds the tab.new calls the app has not shown yet, by run id: {name, before: ids of the tabs then, at}.
+    try { this.runTabs = parseRunTabs(localStorage.getItem("runTabs")); } catch { this.runTabs = {}; }
+    this.pendingTabs = new Map();
+    // Where each failed or stuck run stopped (stoppedKey -> phase name, "" for none), kept across restarts: a finished
+    // run's phases do not change, so each is read once (see loadStoppedAt). `stoppedRetry` is the in-memory backoff.
+    try { this.stopped = parseCleared(localStorage.getItem("stoppedAt")); } catch { this.stopped = {}; }
+    this.stoppedRetry = new Map();
     this.allRuns = []; // the listing as the server gave it, cleared runs included (this.runs is it without them)
     this.completions = null; // trackCompletions' state: null until the first poll that worked (see announceCompletions)
     this.pendingReset = null; // {run_id, at}: the run Herdr's confirm dialog is asking about
@@ -273,6 +283,7 @@ export default class ForemanRuns extends View {
   }
 
   refresh(cx, manual = false) {
+    this.adoptNewTab();
     if (this.busy || checking()) return;
     this.busy = true;
     if (manual) {
@@ -286,6 +297,7 @@ export default class ForemanRuns extends View {
         this.error = null;
         this.updatedAt = Date.now();
         await this.loadProjects();
+        await this.loadStoppedAt();
         await this.loadQueue(manual);
       } catch (e) {
         this.error = String(e?.message ?? e).split("\n")[0];
@@ -311,6 +323,41 @@ export default class ForemanRuns extends View {
       localStorage.setItem("cleared", JSON.stringify(this.cleared));
       localStorage.flush().catch(() => {});
     } catch { /* the clearing still applies until the panel restarts */ }
+  }
+
+  saveRunTabs() {
+    try {
+      localStorage.setItem("runTabs", JSON.stringify(this.runTabs));
+      localStorage.flush().catch(() => {});
+    } catch { /* the tabs still get reused until the panel restarts */ }
+  }
+
+  saveStopped() {
+    try {
+      localStorage.setItem("stoppedAt", JSON.stringify(this.stopped));
+      localStorage.flush().catch(() => {});
+    } catch { /* the answers are read again after a restart */ }
+  }
+
+  // Reads the phases of a few failed or stuck runs that have no answer yet (the newest first, STOPPED_PER_POLL a poll),
+  // so a long list fills in over a few polls. The row's label is decoration: a read that fails (a server without
+  // GET /api/runs/:id/phases answers 404) leaves the row named by its workflow and is tried again later.
+  async loadStoppedAt() {
+    const now = Date.now();
+    const todo = this.runs
+      .filter((r) => stoppedStatus(r) && (r.phase_ids?.length ?? 0) > 0 && !(stoppedKey(r) in this.stopped) && (this.stoppedRetry.get(stoppedKey(r)) ?? 0) <= now)
+      .slice(0, STOPPED_PER_POLL);
+    if (todo.length === 0) return;
+    await Promise.all(todo.map(async (r) => {
+      try {
+        const body = await api(`/api/runs/${encodeURIComponent(r.run_id)}/phases`);
+        if (!Array.isArray(body?.phases)) throw new Error("no phases list");
+        this.stopped = rememberStopped(this.stopped, r, stoppedPhase(body.phases));
+      } catch {
+        this.stoppedRetry.set(stoppedKey(r), now + STOPPED_RETRY_MS);
+      }
+    }));
+    this.saveStopped();
   }
 
   // The runs the panel works on: the listing without the cleared ones. Counts, groups, the failed filter and the
@@ -470,11 +517,46 @@ export default class ForemanRuns extends View {
 
   // Opens the run-detail tab (the foreman-run mod): phases, live activity, changes, PR and anything
   // waiting on the operator. It looks the run up itself, so it only needs the id. `tab` is the view it starts on
-  // (overview, activity, phases, changes or pr); without it the run's state decides.
+  // (overview, activity, phases, changes or pr); without it the run's state decides. A run whose tab is already open
+  // gets that tab shown (its space too) instead of a second one; it keeps the view it is on, `tab` only applies to a
+  // tab that is opened. The panel knows a tab by the id it saw appear (adoptNewTab), so tabs opened before this
+  // panel remembered them, or by someone else, are not found and a click opens one more.
   open(r, tab = null) {
+    this.adoptNewTab();
+    const all = spaces();
+    const there = findRunTab(all, this.runTabs[r.run_id]);
+    if (there) {
+      run("space.select", { id: there.space });
+      run("tab.select", { id: there.tab });
+      return;
+    }
     // The tab is named after the bead when there is one: the id is the end of the task id, which a cut-off name loses.
     const short = beadId(r) ?? String(r.task_id ?? r.run_id).slice(0, 24);
-    run("tab.new", { name: `${workflowName(r)} ${short}`, mod: "foreman-run", props: tab ? { run_id: r.run_id, tab } : { run_id: r.run_id } });
+    const name = `${workflowName(r)} ${short}`;
+    // Not yet adopted, not yet shown: a click now would open a second tab for the same run.
+    if (this.pendingTabs.has(r.run_id)) return;
+    // Its own snapshot of the tabs: a run opened after it already has this one's tab in its snapshot, so each diff is exact.
+    this.pendingTabs.set(r.run_id, { name, before: tabIds(all), at: Date.now() });
+    run("tab.new", { name, mod: "foreman-run", props: tab ? { run_id: r.run_id, tab } : { run_id: r.run_id } });
+    this.adoptNewTab();
+  }
+
+  // Learns the id of the tab each tab.new made: the one new tab with the name it was given. The app may apply the
+  // command a moment after run() returns, so this is tried again on the next open() and every poll; a tab that never
+  // shows up (the command failed) is given up on after a minute rather than adopting a stranger.
+  adoptNewTab() {
+    if (this.pendingTabs.size === 0) return;
+    const all = spaces();
+    for (const [runId, p] of this.pendingTabs) {
+      const id = newTabId(p.before, all, p.name);
+      if (id !== null) {
+        this.runTabs = rememberRunTab(this.runTabs, runId, id);
+        this.saveRunTabs();
+        this.pendingTabs.delete(runId);
+      } else if (Date.now() - p.at > 60000) {
+        this.pendingTabs.delete(runId);
+      }
+    }
   }
 
   // Opens a run on its Activity view: what a completion notification's click runs. The run is looked up for the tab's
@@ -772,7 +854,7 @@ export default class ForemanRuns extends View {
         .when(r.run_id === this.cursor, (el) => el.bg(t.selected))
         .on_click(() => this.open(r))
         .child(h_flex().gap(8).items_center()
-          .child(div().flex_1().truncate().text_size(12.5).text_color(t.foreground).child(workflowName(r)))
+          .child(div().flex_1().truncate().text_size(12.5).text_color(t.foreground).child(runLabel(r, this.stopped)))
           .child(div().text_size(11).text_color(t.dim).child(ago(r.last_event_at_ms)))
           .when(isResettable(r), (el) => el.child(resetButton(r)))
           .when(isClearable(r), (el) => el.child(clearButton(`clear-${r.run_id}`, "✕", [r]))))

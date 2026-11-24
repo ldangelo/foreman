@@ -1655,7 +1655,7 @@ no env values). Project reads over HTTP and MCP replace `config.env` /
 (arguments: `project_id`, `goal`, `instructions`, `thread_model`, `thread_effort`,
 `coordinator_provider`, `coordinator_model`, `coordinator_effort`,
 `max_concurrent_runs`, `daily_thread_cap`, `coordinator_propose_before_start`,
-`coordinator_max_active_threads`, `coordinator_reuse_threads`, `library_collect_produced`, `notification_preference`, `pr_body_headings`, `clear`, `idempotency_key`; nothing
+`coordinator_max_active_threads`, `coordinator_reuse_threads`, `library_collect_produced`, `pr_auto_fix`, `notification_preference`, `pr_body_headings`, `clear`, `idempotency_key`; nothing
 else), `foreman_project_pause` and `foreman_project_resume` dispatch the same
 operator commands as the CLI, are refused unless `allow_workflow_writes: true`, and
 report the server's error code (`instructions_too_long`, `project_paused`, ...).

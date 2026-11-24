@@ -2840,7 +2840,7 @@ Every agent launch, on both doors, starts with the project's **standing context*
 
 Empty parts are omitted entirely: a project with no instructions and no memory gets no injected text and no behaviour change. Secret values (every value in the project's secret store, the values of secret-named `config.env` variables, bearer tokens, log-policy patterns) are redacted from the text before it is delivered, including the memory section.
 
-**Delivery.** The workflow door sets the harness `system_prompt` for every agent phase; for covered `command:` phases the inbox-progress prompt is appended after the context, separated by a blank line (merged, never overwritten). The jobsite door builds the context once per jobsite start and sends the same `system_prompt` on every iteration. A provider that does not declare `system_prompt` support (amp, kimi, opencode) gets the text prefixed to the prompt instead. Workflow prompt templates can place the text themselves with `{{project_context}}`, `{{project_instructions}}` and `{{project_memory}}` (each is the empty string when there is nothing; shipped templates do not use them).
+**Delivery.** The workflow door sets the harness `system_prompt` for every agent phase; for covered `command:` phases the inbox-progress prompt is appended after the context, separated by a blank line (merged, never overwritten). The jobsite door builds the context once per jobsite start and sends the same `system_prompt` on every iteration. A provider that does not declare `system_prompt` support (amp, kimi, opencode) gets the text prefixed to the prompt instead. Workflow prompt templates can place the text themselves with `{{project_context}}`, `{{project_instructions}}` and `{{project_memory}}` (each is the empty string when there is nothing; shipped templates do not use them). The dispatched task's own subject is placed the same way with `{{task.title}}` and `{{task.description}}` (each is the empty string when the run carries no task; the bundled `discover`, `fix-plan`, `fix`, `implement`, `verify`, `review-coderabbit` and `review-repo-rules` prompts render both as their own sections, so a task with only a description still reaches the worker). A `command:` phase gets no rendered prompt and reads the same two values from the `FOREMAN_TASK_TITLE` and `FOREMAN_TASK_DESCRIPTION` environment variables instead.
 
 **Budget and truncation.** Defaults: 24 000 characters total, instructions 16 000, repositories 1 000, memory 6 000, library 3 000 (`config :foreman_server, :project_context, max_chars:, section_caps:`). Every cap and the total count characters (`String.length/1`), the same unit as the 16000-character instructions limit, so instructions that `project update` accepted reach the agent whole even when they are multibyte (the manifest and `GET /api/projects/:id/context` still report `bytes`, and `omitted_bytes` of a cut, in bytes). Over-cap content is cut at a line boundary (never inside a character) and the injected text says so: `[truncated: N lines omitted from <section>; <how to fetch the rest>]`. If the total is still over budget, Library shrinks first, then Memory, then Repositories; instructions last.
 
@@ -3019,8 +3019,11 @@ final AutoPR; no-op records do not.
 is titled with the task's title; a run without one falls back to the first
 conventional-commit subject among the run's own commits (`fix(...)`,
 `feat(...)`, and so on); a run with neither keeps the legacy `feat(phase):
-<phase>` title. A task title that is present but unusable (blank) is a typed
-error, and the phase PR is not opened.
+<phase>` title. The commits are read oldest first and a subject counts only in the
+`type(scope)!: text` form, so Foreman's own phase commits (`Foreman run <id> phase <n>`)
+never match; a commit history that cannot be read is warned about in the server log and takes
+the legacy title. A task title that is present but unusable (blank or not a string) is a typed
+error (`task_title_invalid`), and the phase PR is not opened.
 
 **PR bodies carry the review agent's report only when Foreman generates the body.**
 Phase PRs, and final AutoPRs for ad-hoc no-task runs, append a `## Review findings
@@ -3062,6 +3065,27 @@ project with `required_checks` set, an absent, legacy-format, other-head or
 malformed record refuses the approval (`findings_*`, see "Approval evidence" under
 PR watching and auto-fix), and so does a recorded `HIGH` risk level (`risk_high`, waivable with a
 recorded reason); unresolved critical or major findings refuse only through that level. Read from the source, not observed.
+
+**A generated PR body carries no absolute host path.** A generated body (every phase PR; a
+final AutoPR for an ad-hoc no-task run or for a task with a title but no description; and the
+templated body of a project that sets `pr_body_headings`) names the PR-creating phase's
+artifact on an `Artifact:` line, and that path is always relative to the repository: the
+relative form keeps the operator's home layout (`/Users/<user>/.foreman/worktrees/…`) out of
+the PR, and the file it names is on the run branch only once the artifact is committed. A
+phase that defers its commit (`commit: false`) can open its PR before that commit, so its
+`Artifact:` line names a file the pushed branch does not carry yet — the path resolves once a
+later commit on the run branch adds the file, and never if no later commit does. An artifact
+that cannot be expressed relative to the repository root gets **no** `Artifact:` line at all,
+rather than an absolute one — and neither does a phase that recorded no artifact path, so a
+missing line means one of those two, not that the phase produced nothing. The review report
+linked from the `## Review findings (the review agent's report)` section above follows the
+same no-host-path rule but degrades differently: a report under the repository root, or under
+a `docs/reports/` directory, is linked by its repository-relative path, and any other report
+is named by its file name only (`…/REPORT.md`) rather than dropped. A task-backed final AutoPR
+of a project that sets no `pr_body_headings` uses the task description verbatim as its body and
+adds no `Artifact:` line of its own — a description that carries one brings its own — while a
+task with a title but no description falls back to a generated body, which does carry the
+line. Read from the source, not observed.
 
 **Marker lines.** Each block (the `FOREMAN_REVIEW_FINDINGS` block and the
 `FOREMAN_RISK_JUDGEMENT` block) is delimited by two marker lines, each the whole

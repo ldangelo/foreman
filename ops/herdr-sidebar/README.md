@@ -87,7 +87,15 @@ The mod only supplies the token. A non-default server address
 
 ## Use
 
-Rows show the workflow, how long ago the run last had an event, and its task id.
+Rows show how long ago the run last had an event and its task id, and name the run by its workflow. While a run is active the
+name leads with the phase it is in (`refine-prd · prd`), read from the run list (its newest *started* phase, named by the
+workflow snapshot), so it moves on as the run does; between one phase finishing and the next starting the row still names
+the finished one (the run's tab, Phases, has each phase's status). A failed or stuck run leads with the phase it stopped
+in: the one that failed, or for a stuck run the one still in progress. The run list cannot say how a phase ended, so the
+panel reads `GET /api/runs/:id/phases` once per run (six a poll, newest first, so a long list fills in over a few polls;
+the answer is kept across restarts). A run that never started a phase, or whose phases all completed before it failed,
+and any run when that route answers an error (an older server: 404), shows the workflow alone; a read that failed is
+tried again after five minutes. Completed and cancelled runs show the workflow alone.
 Project headers show a `N failed` count and `active/total`; counters always
 describe all runs, even while the failed filter hides rows. The header shows the
 time of the last successful refresh (red while the latest refresh is failing).
@@ -123,7 +131,7 @@ not shown; `GET /api/projects/<id>/usage` reports it as `limits.deferred_tasks`.
 
 | Action | Mouse | Shortcut |
 |---|---|---|
-| Open a run in its detail tab | click the row | `⏎` while navigating |
+| Open a run in its detail tab (a tab the panel opened for that run is shown again, even in another space, instead of a new one) | click the row | `⏎` while navigating |
 | Collapse / expand a project or status group | click its header | |
 | Collapse / expand every project | | `⇧⌘E` |
 | Collapse / expand every status group | | `⇧⌘S` |
@@ -203,7 +211,8 @@ unchanged.
 
 **Completion notifications.** When a run goes from running, queued or paused to `completed`, the panel
 raises a Herdr notification, `fix foreman-vbfmo.12 completed` (the workflow, then the bead id, else the
-task id, else the title). Clicking it opens that run's detail tab on **Activity**.
+task id, else the title). Clicking it opens that run's detail tab on **Activity**, or, when the panel already opened
+a tab for that run, shows that tab on whatever view it is on (a tab already open cannot be given a view).
 
 - The first poll after the panel starts only records what is there: runs that were already completed, or
   that completed while Herdr was closed, are not announced.
@@ -216,8 +225,9 @@ task id, else the title). Clicking it opens that run's detail tab on **Activity*
   loaded (the `foreman` layout is showing), with the sidebar folded or not.
 - `herdr-app do 'foreman-runs.open-run-activity:<run-id>'` does what the click does. Herdr delivers only the
   *name* of a mod command to the mod and drops its `args`, so the run id travels in the name after a colon
-  (a notification's `action: {name, args}` is that same command). Each click opens a new tab: Herdr does not
-  tell a mod which run a tab shows, so an open tab for the run cannot be found and focused.
+  (a notification's `action: {name, args}` is that same command). Herdr does not tell a mod which run a tab shows,
+  so the panel remembers the tab it opened for each run (see Use) and shows that one; a run whose tab it did not
+  open (before the panel remembered it, or by hand) gets one more tab, which is then reused.
 
 ## The run-detail tab
 
@@ -245,12 +255,14 @@ every read that failed.
 one that is going on Activity; the tab you click stays. `⌃⌥→` / `⌃⌥←` (`ctrl-alt-right` /
 `ctrl-alt-left`, bound to `foreman-run.next-tab` / `prev-tab` in the `layout:foreman` section of
 `keys.json`) step to the next / previous tab and wrap around. The `tab` prop (see the end of this
-section) picks the tab it opens on; a completion notification opens `activity`.
+section) picks the tab it opens on; a completion notification asks for `activity`, which applies only to a tab that is opened, not to one that is shown again.
 
 - **Overview.** *Outcome*: how it ended (or, for a run that is going, what it is doing now with its
   newest output), the failure reason in full (six lines, `show more`, `copy`; a cancelled run has none
   on the projection, so it is read from the transcript's `Run cancelled: …` turn), phases done, the PR
-  line. *Needs you*: pending tool approvals and open questions, with the CLI line that answers them
+  line. A failed or stuck run says `at phase X` for the phase that failed (or, stuck, the one it left open),
+  the same phase the panel's row names; a run that failed after all its phases completed names none, and a
+  cancelled one names the last phase it started. *Needs you*: pending tool approvals and open questions, with the CLI line that answers them
   (the tab itself changes nothing). *Phases*: one row per phase of the workflow with its status
   (`✓` done, `▶` running, `Ⅱ` paused, `✕` failed, `–` cancelled or not run, `○` pending, `×N` after a
   retry), duration, the size of its report and its failure reason; a click opens the phase. *Pull

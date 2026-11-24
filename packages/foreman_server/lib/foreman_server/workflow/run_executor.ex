@@ -3606,6 +3606,9 @@ defmodule ForemanServer.Workflow.RunExecutor do
         ),
       "input.prompt" => input_prompt(workflow_snapshot),
       "input.prompt_argument" => input_prompt_argument(workflow_snapshot),
+      "task.title" => render_template_value(task_field(Map.get(state, :task) || %{}, :title)),
+      "task.description" =>
+        render_template_value(task_field(Map.get(state, :task) || %{}, :description)),
       "repositories" => render_template_value(repositories),
       "repositories_count" => Integer.to_string(length(repositories))
     })

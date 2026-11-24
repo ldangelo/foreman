@@ -250,6 +250,17 @@ test("outcomeOf: a cancelled run's reason comes from the 'Run cancelled: …' st
   expect(outcomeOf({ ...run, failure_reason: "from projection" }, rows, turns, NOW)).toMatchObject({ reason: "from projection", reasonFrom: "run" });
 });
 
+test("outcomeOf: a failed or stuck run names the phase that stopped it, not one that merely ran last", () => {
+  const phaseOf = (status, ...phases) => {
+    const run = { ...running, status, last_event_at_ms: T0 + 150_000 };
+    return outcomeOf(run, buildPhaseRows(run, phases, snapshot, new Map(), NOW), [], NOW).phase?.name ?? null;
+  };
+  expect(phaseOf("failed", started(), impl({ status: "failed" }))).toBe("implement");
+  expect(phaseOf("stuck", started(), impl())).toBe("implement"); // left open
+  expect(phaseOf("failed", started(), impl({ status: "completed" }))).toBeNull(); // every phase it started completed
+  expect(phaseOf("cancelled", started(), impl({ status: "completed" }))).toBe("implement"); // a cancelled run names where it was
+});
+
 test("outcomeOf: a stalled (stuck) run is bad and carries its stall", () => {
   const stall = { reason: "no output", stall_kind: "idle", idle_ms: 125_000, detected_at_ms: T0 + 150_000, phase_name: "implement" };
   const run = { ...running, status: "stuck", latest_stall: stall, last_event_at_ms: T0 + 150_000 };
