@@ -123,7 +123,7 @@ Run, in the worktree root:
 grep -n "A generated PR body carries no absolute host path" docs/user-guide.md
 git diff --stat
 devbox run -- bash -c 'cd packages/foreman_server && DATABASE_URL=postgres://postgres:postgres@localhost:55432/foreman_test MIX_ENV=test mix test --warnings-as-errors test/foreman_server/observability/docs_test.exs'
-cd packages/foreman_cli && go test ./cmd/foreman/ -run 'TestUserGuide|TestUsageDrift' && cd -
+cd packages/foreman_cli && go test ./cmd/foreman/ -run 'TestUserGuideUsageExampleExecutesAgainstCLI|TestUserGuideProjectExamplesExecuteAgainstCLI|TestUsageAdvertisesExactlyTheDispatchedVerbs|TestCLIReferenceDocumentsEveryDispatchedVerb|TestAgentCommandSpecsRouteToDispatchedVerbs|TestCLIReferenceNotImplementedClaimsAreAccurate' && cd -
 ```
 
 Success means: the `grep` prints exactly one line; `git diff --stat` shows exactly one
