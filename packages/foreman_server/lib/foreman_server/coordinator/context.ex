@@ -134,8 +134,14 @@ defmodule ForemanServer.Coordinator.Context do
           :waiting_on_you | :ready_for_review | :working | :idle | :resolved
   def card_state(%Thread{resolved: true}), do: :resolved
 
+  # An operator-cancelled thread is terminal by the operator's own decision: it needs no
+  # attention. `Overview.Group.classify/1` groups it `:resolved` too, so this clause must sit
+  # above the `last_report` clause, or a cancelled thread that already reported would classify
+  # `:ready_for_review`.
+  def card_state(%Thread{status: "cancelled"}), do: :resolved
+
   def card_state(%Thread{status: status})
-      when status in ~w(blocked stuck needs_recovery paused failed cancelled), do: :waiting_on_you
+      when status in ~w(blocked stuck needs_recovery paused failed), do: :waiting_on_you
 
   def card_state(%Thread{last_report: %{verdict: _}}), do: :ready_for_review
   def card_state(%Thread{status: "completed"}), do: :ready_for_review
