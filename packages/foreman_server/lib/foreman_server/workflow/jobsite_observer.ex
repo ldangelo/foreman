@@ -21,7 +21,7 @@ defmodule ForemanServer.Workflow.JobsiteObserver do
   | `step_started` on a phase's first step | `phase.start`, then the run's worktree is provisioned (first phase) or re-entered with its `base_ref` refreshed (every later phase) |
   | `step_started` on `:worktree` | hands the engine the worktree just provisioned (`provided`) |
   | `step_started` on `:agent` (iteration 1) | asserts the plan subject and builds the `launch` the Overwatch runner dispatches |
-  | `step_completed` on `:agent` | `ArtifactTemplate.write/4`; sets `ctx.artifact_path` |
+  | `step_completed` on `:agent` | `ArtifactTemplate.write/5` with the agent's final text, unless the agent changed the file at the artifact path since it launched (that file is kept); sets `ctx.artifact_path` |
   | `step_completed` on `:gate` | `enforce_required_file/4`; a captured planning document is written back into the run's plan context |
   | `step_completed` on `:commit` | logs the commit outcome (`committed`, `nothing to commit`, `deferring`), then — after the LAST phase only — `verify_run_outcome/2` (an `implement-trd-beads` run's Beads tree must be closed), then the phase PR record when `stack_pr: true`, then `phase.complete` |
   | `step_failed` | `phase.fail`, or — for a failure inside the phase body while the operator has asked to pause or cancel — the pause/cancel handling below |
@@ -61,7 +61,8 @@ defmodule ForemanServer.Workflow.JobsiteObserver do
           number: pos_integer(),
           record: map() | nil,
           body?: boolean(),
-          artifact_path: String.t() | nil
+          artifact_path: String.t() | nil,
+          artifact_baseline: {:snapshot, String.t() | nil} | nil
         }
 
   @type t :: %{executor: map(), phase: phase() | nil}
@@ -91,7 +92,13 @@ defmodule ForemanServer.Workflow.JobsiteObserver do
 
     %{phase: phase, executor: executor} = state
 
-    case ArtifactTemplate.write(executor, phase.spec, phase.number, List.last(iterations).text) do
+    case ArtifactTemplate.write(
+           executor,
+           phase.spec,
+           phase.number,
+           List.last(iterations).text,
+           baseline: phase.artifact_baseline
+         ) do
       {:ok, path} ->
         {:ok, %{ctx | artifact_path: path}, put_in(state.phase.artifact_path, path)}
 
@@ -222,7 +229,8 @@ defmodule ForemanServer.Workflow.JobsiteObserver do
       number: PhaseSpec.number(spec, idx),
       record: nil,
       body?: false,
-      artifact_path: nil
+      artifact_path: nil,
+      artifact_baseline: nil
     }
   end
 
@@ -260,6 +268,8 @@ defmodule ForemanServer.Workflow.JobsiteObserver do
         # The engine's own step prompt is only the template reference (e.g.
         # `assess.md`); this is the rendered prompt the agent actually gets.
         trace_message("gen_ai.input.messages", "user", launch.launch_opts[:prompt], executor)
+        baseline = ArtifactTemplate.fingerprint(executor, phase.spec, phase.number)
+        state = put_in(state.phase.artifact_baseline, {:snapshot, baseline})
         {:ok, state, %{launch: launch}}
 
       {:error, reason} ->
