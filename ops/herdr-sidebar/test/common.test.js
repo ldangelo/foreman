@@ -246,6 +246,20 @@ test("trackCompletions changes neither its state nor the listing it is given", (
   expect(next.state.notified.has("a")).toBe(true);
 });
 
+test("an announced run is remembered only while it is listed, so the state cannot grow for the life of the panel", () => {
+  const a = poll(null, run("a", "in_progress"), run("b", "in_progress"));
+  const b = poll(a.state, run("a", "completed"), run("b", "completed"));
+  expect([...b.state.notified].sort()).toEqual(["a", "b"]);
+  const c = poll(b.state, run("b", "completed"), run("x", "in_progress")); // "a" has left the listing
+  expect([...c.state.notified]).toEqual(["b"]);
+  expect([...c.state.seen.keys()].sort()).toEqual(["b", "x"]);
+  // what is still listed stays announced once: a stale source flapping "b" back and forth does not announce it again
+  const d = poll(c.state, run("b", "in_progress"), run("x", "in_progress"));
+  expect(ids(poll(d.state, run("b", "completed"), run("x", "in_progress")))).toEqual([]);
+  // an empty listing (a failed read) forgets nothing
+  expect(poll(c.state).state).toBe(c.state);
+});
+
 test("the notification names the workflow and the bead, falls back to the task id, the title, the run id, and carries the run id in its action", () => {
   const t = completionToast({ run_id: "run-1", workflow_name: "fix", task_id: "beads:foreman:foreman-vbfmo.12" });
   expect(t).toEqual({ title: "Foreman", body: "fix foreman-vbfmo.12 completed", level: "success", timeout: 30000, action: { name: "foreman-runs.open-run-activity:run-1" } });

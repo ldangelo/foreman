@@ -207,7 +207,8 @@ task id, else the title). Clicking it opens that run's detail tab on **Activity*
 
 - The first poll after the panel starts only records what is there: runs that were already completed, or
   that completed while Herdr was closed, are not announced.
-- A run is announced once per session, however its status flaps between the sources the list is built from.
+- A run is announced once per session, however its status flaps between the sources the list is built from (the
+  panel remembers an announced run only while the listing still has it, so that memory stays as small as the listing).
   Only `completed` is announced (not failed or cancelled), and only a run that was seen running: one that
   started and completed between two 10 s polls, or that first shows up already completed, is not.
 - The notification is Herdr's own toast, so it shows in the Herdr window (for 30 s: a default toast lasts about

@@ -208,13 +208,15 @@ const ENDED = new Set(["completed", "failed", "cancelled"]);
 //   - A run is news when the poll before saw it in a status that is not an end status and it is now `completed`. A run
 //     first seen already completed was not seen going, so it is not announced. failed and cancelled never are.
 //   - A run is announced at most once (`notified`), however its status flaps between the sources the list is built from.
+//     `notified` keeps a run only while the listing still has it, so the state is bounded by the listing, not by the
+//     number of runs that completed since the panel started.
 //   - An empty listing is a failed or racing read (as for pruneCleared): it changes nothing.
 export function trackCompletions(state, runs) {
   if (state !== null && runs.length === 0) return { state, completed: [] };
   const seen = new Map();
   for (const r of runs) if (typeof r?.run_id === "string" && typeof r.status === "string") seen.set(r.run_id, r.status);
   if (state === null) return { state: { seen, notified: new Set() }, completed: [] };
-  const notified = new Set(state.notified);
+  const notified = new Set([...state.notified].filter((id) => seen.has(id)));
   const completed = [];
   for (const r of runs) {
     const before = state.seen.get(r?.run_id);
