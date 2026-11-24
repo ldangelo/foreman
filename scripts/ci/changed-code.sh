@@ -12,6 +12,8 @@
 # by a test or a build step. Checked 2026-10-27 by grepping packages/*/{test,lib,config,mix.exs}
 # for each path: the suites read README.md, CLAUDE.md, docs/user-guide.md,
 # docs/cli-reference.md, docs/ADT/, docs/spikes/ and ops/otel-collector/, so those are code.
+# docs/lessons/ is allowlisted too, except the six files that hold CLAUDE.md's section bodies
+# (docs_per_project_queue_test.exs and observability/docs_test.exs read them): those are code.
 # Everything else mentioned in the suites is a string inside a fixture or a comment. Adding a
 # test that reads a file under an allowlisted tree means removing that tree from the list.
 set -euo pipefail
@@ -19,6 +21,9 @@ set -euo pipefail
 is_non_code() {
   case "$1" in
     .beads/* | .coderabbit.yaml) return 0 ;;
+    docs/lessons/agent-runtime-conventions.md | docs/lessons/workflow-catalog-and-worktree-contract.md) return 1 ;;
+    docs/lessons/durable-execution-and-dashboard.md | docs/lessons/beads-sync-and-lease.md) return 1 ;;
+    docs/lessons/run-slots-logs-and-signoz.md | docs/lessons/claude-projects-invariants.md) return 1 ;;
     docs/acceptance/* | docs/plans/* | docs/lessons/* | docs/PRD/* | docs/TRD/*) return 0 ;;
     docs/reports/* | docs/decisions/* | docs/audit/* | docs/verification/*) return 0 ;;
     docs/architecture/* | docs/guides/* | docs/standards/* | docs/prompts/*) return 0 ;;
@@ -72,6 +77,12 @@ false|.coderabbit.yaml
 false|docs/acceptance/README.md
 false|docs/plans/live-steering.md
 false|docs/lessons/devbox-and-toolchain.md
+true|docs/lessons/agent-runtime-conventions.md
+true|docs/lessons/workflow-catalog-and-worktree-contract.md
+true|docs/lessons/durable-execution-and-dashboard.md
+true|docs/lessons/beads-sync-and-lease.md
+true|docs/lessons/run-slots-logs-and-signoz.md
+true|docs/lessons/claude-projects-invariants.md
 false|docs/PRD/PRD-2026-x.md
 false|docs/TRD/TRD-2026-x.md
 false|scripts/e2e/claude_projects/lib.sh
