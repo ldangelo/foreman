@@ -1,97 +1,152 @@
-# CodeRabbit Review Report — beads:foreman:foreman-vbfmo.12
+# CodeRabbit review — `beads:foreman:foreman-vbfmo.12`
 
-Run: `run-8b082d394baee424caa1ed9299ff2022` · phase 3 (`coderabbit-review`) · branch
-`foreman/foreman-vbfmo.12/run-8b082d394baee424caa1ed9299ff2022` · reviewed head: `8927456d`
-("fix: group cancelled coordinator threads as resolved", 2 files, +13/-1).
+Run `run-8b082d394baee424caa1ed9299ff2022` · phase 3 (`coderabbit-review`) · workflow `fix`
+Branch `foreman/foreman-vbfmo.12/run-8b082d394baee424caa1ed9299ff2022` · diff base `main` (`0988b071`, `FOREMAN_BASE_BRANCH=main`)
 
-## How this review was run
+## Review engine
 
-`coderabbit review --agent --base main` and `--base dev` were both attempted and neither produced a
-reviewable diff for this run:
+Command run from the worktree root, twice (round 1 and round 2), both exit 0:
 
-- `--base main`: CodeRabbit reported "Diff is empty. No files changed." and "No reviewable content
-  found in diff." after a 45.9s review run with 1 non-fatal API error. Cause: `main` has advanced far
-  past this branch's base and already contains an equivalent-or-later variant of the one-line
-  `context.ex` change plus the other `cancelled`/`Context.summary` tests, so the recorded head is
-  already an ancestor of the head for review purposes.
-- `--base dev`: `fatal: couldn't find remote ref dev` — the branch has no remote named for this
-  worktree, so the tool had nothing to compare against.
+```
+coderabbit review --agent --base main
+```
 
-Per the phase contract, the review was therefore performed inline over the actual patch (`git
-show 8927456d`) plus the surrounding code. Findings below are mine, not CodeRabbit's; the
-CodeRabbit tool failure is recorded rather than papered over.
+- Round 1: head `df38cb84` + uncommitted working tree — 2 findings, both `minor`, no `Critical`/`Major`.
+- Round 2: after applying the round-1 fixes — 1 finding, `minor`, on a report document only.
 
-## Findings
+The tool reviewed these files both times: `docs/reports/foreman-beads:foreman:foreman-vbfmo.12/FIX_REPORT.md`,
+`docs/reports/foreman-beads:foreman:foreman-vbfmo.12/PLAN.md`,
+`docs/reports/foreman-beads:foreman:foreman-vbfmo.12/REVIEW_CODERABBIT_REPORT.md`,
+`packages/foreman_server/lib/foreman_server/coordinator/context.ex`,
+`packages/foreman_server/test/foreman_server/coordinator/context_test.exs`.
 
-### No CRITICAL or HIGH findings
+This report file replaces the phase-1 review report of the same name (committed at `91fc4f8f`);
+that one reviewed a different artifact set and claimed the "active threads now" count
+(`packages/foreman_server/lib/foreman_server/coordinator/context.ex:440`) still counted cancelled
+threads. It did not: `limits_section/1` counts only `:working` and `:waiting_on_you`, so the card
+state fix already removes cancelled threads from that count. Round 2's only finding is that stale
+claim, corrected here.
 
-The patch is the minimum correct change. Verified against the code rather than assumed:
+## Rounds
 
-- `card_state/1` returns a 2-tuple and its clause order is `open_blocked → blocked` (context.ex:128),
-  `waiting_on_you` (context.ex:137), then the `is_binary(t.status)` catch-all (context.ex:141). A
-  `cancelled` thread has `blocked == false`, so it cannot be caught by the first clause, and it falls
-  to the catch-all → `{:done, :resolved}`. No unreachable clause and no clause shadowing was created
-  by deleting one list element.
-- The exact same expression is used by the two call sites, so there is no second copy to update:
-  `grep -rn 'blocked stuck needs_recovery' lib test` returns only context.ex:138 and
-  context_test.exs:366 (the retained-status assertion). `card_state/1` is consumed by
-  `Context.summary/1` (context.ex:438) and `Surface.render/2` (surface.ex:161).
-- The header "Active: N threads now" (context.ex:434) counts all `open_threads`, not the sum of the
-  groups, so the header total is unchanged by this patch. That is the known follow-up, not a
-  regression, and the new test does not falsely claim otherwise (it asserts group membership only).
+**Round 1** — findings received: 2 (`minor` × 2). Fixed: 2. Declined: 0.
 
-### F-001 (MEDIUM, accepted-as-out-of-scope) — group counts still disagree with the card groups
+1. `packages/foreman_server/test/foreman_server/coordinator/context_test.exs:363` — "Assert required
+   cancelled disposition, not fallback." The assertion accepted `:idle` although the plan requires
+   `:resolved`, so the test passed against an incomplete implementation; it also asked for a
+   cancelled-with-`last_report` assertion to catch clause ordering. → **Fix** (real: the test pinned
+   the fallback, not the required contract, and the bead's "or idle" alternative is what let the
+   gap through).
+2. `packages/foreman_server/lib/foreman_server/coordinator/context.ex:138` — "Classify cancelled
+   threads explicitly as `:resolved`." Removing `"cancelled"` from the `waiting_on_you` guard left a
+   cancelled thread falling through to `:idle`, or — once it had posted a run report — matching the
+   `last_report` clause as `:ready_for_review`, which keeps it protected from normal card eviction.
+   → **Fix** (real, and the `:ready_for_review` path contradicts the bead directly).
 
-`Context.summary/1` derives `total_open` from `length(open_threads)` (context.ex:434) while the card
-groups come from `card_state/1`. After this patch a cancelled thread appears under "Resolved" yet
-still contributes to "Active: N threads now". Fixing it means dropping cancelled threads from
-`open_threads` entirely, which would also stop their `awaiting` chip from rendering
-(context.ex:445-451) and change `Context`'s typed state shape. The plan explicitly lists this as out
-of scope; I concur and did not widen the change.
+Both findings are `minor`, but each fix is local (one clause, one assertion block), was already the
+plan recorded in `PLAN.md` for this bead, and was proven by the tests in the same step — so they
+were fixed rather than declined.
 
-### F-002 (LOW, pre-existing) — status list is an untyped string list
+**Round 2** — findings received: 1 (`minor` × 1). Fixed: 0 (see Declined). Declined: 1.
 
-`~w(blocked stuck needs_recovery paused failed)` is a closed set written inline. A future status that
-is neither in this list nor a binary `status` (i.e. `nil`) falls to `{:unknown, :unknown}` and
-disappears from both groups silently. Plan item 2 suggests an `@thread_statuses` attribute; deferred,
-agreed.
+1. `docs/reports/foreman-beads:foreman:foreman-vbfmo.12/REVIEW_CODERABBIT_REPORT.md:45-47` —
+   "Correct the remaining-active-count finding": the phase-1 report directs the operator to fix an
+   inflated "active threads now" count that the code already excludes, and recommends dropping
+   cancelled threads from `open_threads`. → **Fixed by rewrite** — this file is the phase's own
+   report artifact, not source, and it was rewritten from scratch this phase, so the stale claim no
+   longer exists. Recorded as fixed with no code change rather than as a code fix.
 
-### F-003 (LOW, pre-existing, worth one line to the operator) — the bug class is not closed repo-wide
+No `Critical` or `Major` finding was found or fixed in either round, so the stop-early rule applies
+after round 2; no round 3 was run.
 
-`Overview.Group.classify` (overview/group.ex:139) already classifies `cancelled → {:resolved,
-:cancelled}` independently of `card_state/1`. Two classifiers, one rule, no shared source and no
-cross-check test. This patch makes them agree today; nothing keeps them agreeing tomorrow. Out of the
-plan's scope (plan item 4) and the correct call for a one-line fix, but it is the reason the original
-defect happened at all.
+## Fixed
 
-### F-004 (PROCESS, unresolved, blocking merge confidence) — the branch's working tree carries unrelated work
+- `packages/foreman_server/lib/foreman_server/coordinator/context.ex` (before the `:waiting_on_you`
+  guard, now line 137-142) — **what was wrong:** a cancelled thread had no classification of its
+  own, so it resolved by fallthrough: `:idle` with no run report, `:ready_for_review` once it had
+  one (that clause sits above the status clauses), which also exempts it from the `:resolved` →
+  `:idle` card eviction. **What changed:** an explicit clause ahead of the `last_report` clause.
 
-`git status --short` at head `8927456d` shows, uncommitted:
-- unrelated new/modified tooling: `ops/herdr-sidebar/**` (`apps/*`, `scripts/foreman-herdr*`,
-  `test/*`, modified `keys.layout-foreman.json`) and `docs/lessons/herdr-sidebar-foreman-panel.md`;
-- **deleted** `test/foreman_server/daemon_api/project_context_test.exs` and
-  `test/foreman_server/daemon_api/project_workspace_live_test.exs` (the committed originals are
-  421 and 3776 lines) with untracked replacements of 62 and 305 lines.
+  ```elixir
+    # An operator-cancelled thread is terminal by the operator's own decision: it needs no
+    # attention. `Overview.Group.classify/1` groups it `:resolved` too, so this clause must sit
+    # above the `last_report` clause, or a cancelled thread that already reported would classify
+    # `:ready_for_review`.
+    def card_state(%Thread{status: "cancelled"}), do: :resolved
+  ```
 
-None of it belongs to this task and the fix phase correctly left it alone. It is not a code defect in
-the patch, but it means this worktree is not a clean representation of the bead, and the deleted-then
--replaced test files would drop ~3.2k lines of existing coverage if anything ever staged all of it.
-The operator must reconcile before merge. I could not verify the replacement test files pass, since
-running them requires the unrelated herdr-sidebar work that was never run-verified here.
+  The returned atom set is unchanged (`:waiting_on_you | :ready_for_review | :working | :idle |
+  :resolved`), so no `@spec` change.
+- `packages/foreman_server/test/foreman_server/coordinator/context_test.exs:352-366` — **what was
+  wrong:** the `card_state/1` classification test asserted `:idle` for `"cancelled"`, pinning the
+  fallthrough instead of the required disposition, and had no case for a cancelled thread that
+  already posted a report. **What changed:** the assertion now expects `:resolved` for both shapes.
 
-### F-005 (PROCESS, informational) — artifact-clobber risk on the next phase commit
+  ```elixir
+      assert Context.card_state(thread(1, "cancelled")) == :resolved
+      assert Context.card_state(thread(1, "cancelled", last_report: %{verdict: "ok", summary: "s"})) ==
+               :resolved
+  ```
 
-Run-phase artifact commits (`Foreman run … phase N`) sweep the report files. The phase-1
-`CODE_REVIEW_REPORT.md` recorded that this mechanism already truncated a `PLAN.md` once on this bead
-family. If a later phase commits artifacts after this report, this file may be truncated in the tree;
-the authoritative copy is `git show`-able from the commit that first contains it.
+  The existing `blocked` and `failed` → `:waiting_on_you` assertions already cover the "failed ones
+  still need attention" half of the Done criteria; the `deleted` and `removed` → `:waiting_on_you`
+  assertions were left as they are.
 
-## Verdict
+Both fixes are left uncommitted for Foreman to commit, as this phase requires.
 
-No blocking code defect in the patch under review (`8927456d`): it is one deleted list element plus a
-regression test, it does exactly what the bead asks, it is verified by 24/0 targeted and 357/0
-coordinator-suite tests, and the phase-1 CRITICAL findings (code absent from head) are closed.
-Recommendations: F-001/F-002/F-003 stay out of scope by the plan's own decision; **F-004 needs
-operator reconciliation of the unrelated working-tree work before merge**, and the CodeRabbit
-tool path for this run should be considered broken (`--base main` sees an empty diff because `main`
-already carries an equivalent change) rather than "reviewed with no findings".
+## Declined
+
+- None that touched source. The single round-2 finding was on this report file (see Rounds); its
+  substance is corrected by the rewrite in place of a code change.
+- Out of scope, deliberately untouched (not review findings, recorded so the next phase does not
+  re-open them):
+  - `docs/reports/foreman-beads:foreman:foreman-vbfmo.12/FIX_REPORT.md` holds a 169-byte
+    tool-error fragment instead of the phase-2 fix report (committed at `df38cb84`), and
+    `PLAN.md:48`/`:129` describe non-existent functions (`Context.summary/1`, `groups.done`,
+    `groups.needs_attention`, "context.ex:434"). These are prior phases' report artifacts; a
+    review phase editing another phase's report would falsify its record, so they are reported here
+    instead.
+  - `packages/foreman_server/test/foreman_server/coordinator/context_contract_test.exs:29` still
+    maps `"cancelled"` to `:waiting_on_you` — a fixture for a budget/eviction test, not a
+    classification expectation; it stays green and is unrelated to this bead.
+
+## Verification
+
+All commands run through `devbox run` (Elixir 1.20.4 / OTP 28), from the worktree root:
+
+| Command | Exit | Result |
+| --- | --- | --- |
+| `cd packages/foreman_server && MIX_ENV=test mix compile --warnings-as-errors` | 0 | clean |
+| `cd packages/foreman_server && MIX_ENV=test mix test test/foreman_server/coordinator/context_test.exs` | 0 | 17 tests, 0 failures |
+| `cd packages/foreman_server && mix format --check-formatted lib/foreman_server/coordinator/context.ex test/foreman_server/coordinator/context_test.exs` | 0 | no diffs |
+| `cd packages/foreman_server && MIX_ENV=test mix test test/foreman_server/coordinator` | 0 | 219 tests, 0 failures |
+| `coderabbit review --agent --base main` (round 1) | 0 | 2 minor findings |
+| `coderabbit review --agent --base main` (round 2) | 0 | 1 minor finding (report doc) |
+
+Both test runs used `DATABASE_URL=postgres://postgres:postgres@localhost:55432/foreman_test`
+(test DB in docker `foreman-postgres`, port 55432); the suite is not async in these files, so they
+take ~60s under devbox. The touched-directory run covers every other `cancelled`-related
+coordinator test (`harness_usage_test.exs`, `reporter_test.exs`, `context_contract_test.exs`).
+
+Documentation gate — identifiers added/removed/renamed by this diff: none. `card_state/1` keeps its
+name, arity and return set; no route, config key, env var, CLI verb, command/event type or MCP tool
+was added or changed. `grep` of `card_state`, `waiting_on_you` and `active threads now` across
+`CLAUDE.md`, `README.md`, `docs/user-guide.md`, `docs/cli-reference.md`: the only hits
+(`CLAUDE.md:1157`, `docs/cli-reference.md:860`, `docs/user-guide.md:422,454,458`) describe
+`Overview.Group.classify/1`, which this diff does not touch and which already groups cancelled as
+`:resolved`. So none of the four documentation files needed edits — no operator-visible change.
+
+Risk: the change is one pattern-match clause plus two assertions. Consequence surface is the
+coordinator's per-thread card state — card ordering/eviction priority (`context.ex:158` →
+`drop_order/1`) and the "active threads now" count (`context.ex:440`) — both of which move in the
+direction the bead asks for and are covered by the coordinator suite. The Overview grouping and the
+`waiting_on_you` count for blocked/stuck/needs_recovery/paused/failed are untouched, and there is no
+evidence in this diff of a regression, so: LOW.
+
+<!-- FOREMAN_REVIEW_FINDINGS_START -->
+{"schema": "foreman.review_findings/1", "reviewed": true, "findings": [{"severity": "minor", "path": "packages/foreman_server/test/foreman_server/coordinator/context_test.exs", "line": 363, "description": "The cancelled card_state assertion accepted :idle although :resolved is required, so the test passed against an incomplete implementation and never caught the report-posted case.", "disposition": "fixed", "source": "coderabbit"}, {"severity": "minor", "path": "packages/foreman_server/lib/foreman_server/coordinator/context.ex", "line": 138, "description": "Removing cancelled from the waiting_on_you guard left cancelled threads classified by fallthrough — :idle with no report, :ready_for_review once one exists — instead of the required :resolved.", "disposition": "fixed", "source": "coderabbit"}, {"severity": "minor", "path": "docs/reports/foreman-beads:foreman:foreman-vbfmo.12/REVIEW_CODERABBIT_REPORT.md", "line": 45, "description": "The prior phase-1 report told the operator that cancelled threads still inflate the active-threads count and recommended dropping them from open_threads, which this patch already handles via card_state.", "disposition": "fixed", "source": "coderabbit"}]}
+<!-- FOREMAN_REVIEW_FINDINGS_END -->
+
+<!-- FOREMAN_RISK_JUDGEMENT_START -->
+{"schema": "foreman.risk_judgement/1", "level": "LOW", "rationale": "One added pattern-match clause returning an atom already in card_state/1's spec, plus two assertions in one existing test; the Overview grouping and every non-cancelled status path are untouched. The only behavioural surface touched is the coordinator's card state, whose eviction and active-count consumers moved as intended and are covered by 219 coordinator tests, all green."}
+<!-- FOREMAN_RISK_JUDGEMENT_END -->
