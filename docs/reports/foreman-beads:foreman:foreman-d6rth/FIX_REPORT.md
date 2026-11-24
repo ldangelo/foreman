@@ -1,0 +1,1 @@
+Probe ended — that write was a false positive (the shell redirect ran before `cd`, so it went to the root checkout, not my worktree). Reverting it now.
