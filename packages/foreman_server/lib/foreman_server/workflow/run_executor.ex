@@ -15,7 +15,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
        `phase_begin/3` (`PhaseStarted` + the run's worktree),
        `phase_launch/4` (the agent dispatch the
        `ForemanServer.Exec.Runners.Overwatch` runner performs),
-       `ArtifactTemplate.write/4`, `enforce_required_file/4`, the commit and
+       `ArtifactTemplate.write/5`, `enforce_required_file/4`, the commit and
        `phase_finish/5` (`PhaseCompleted`) — or `emit_phase_failure/4`
        (`PhaseFailed` + `TaskExecutionFailed`) when a phase fails.
     3. Finalize: complete the task, open the run's PR, mark the run
@@ -2437,15 +2437,63 @@ defmodule ForemanServer.Workflow.RunExecutor do
       resolve_path(state, phase_spec, index)
     end
 
-    @spec write(map(), map(), pos_integer(), term()) :: {:ok, String.t()} | {:error, term()}
-    def write(state, phase_spec, index, output) do
-      rendered = render(output)
-      path = resolve_path(state, phase_spec, index)
-      File.mkdir_p!(Path.dirname(path))
+    @doc """
+    Writes `output` to the phase's artifact path.
 
-      case File.write(path, rendered) do
-        :ok -> {:ok, path}
-        {:error, _} = error -> error
+    With `baseline: {:snapshot, fingerprint}` (the value `fingerprint/3` gave
+    just before the agent launched), a non-empty file at that path whose
+    content differs from that snapshot is KEPT instead of replaced: the agent
+    wrote it. The agent's own report is richer than its final chat message,
+    and the review phases put the machine-read findings block in that report;
+    writing the chat message over it destroyed the block (every PR then read
+    `findings_absent`). A file identical to the snapshot is a leftover from an
+    earlier attempt or phase and is overwritten as before. Comparing content,
+    not mtimes, keeps a file a checkout just touched from passing as new.
+    """
+    @spec write(map(), map(), pos_integer(), term(), keyword()) ::
+            {:ok, String.t()} | {:error, term()}
+    def write(state, phase_spec, index, output, opts \\ []) do
+      path = resolve_path(state, phase_spec, index)
+
+      if written_by_agent?(path, Keyword.get(opts, :baseline)) do
+        {:ok, path}
+      else
+        File.mkdir_p!(Path.dirname(path))
+
+        case File.write(path, render(output)) do
+          :ok -> {:ok, path}
+          {:error, _} = error -> error
+        end
+      end
+    end
+
+    @doc """
+    The content fingerprint of the phase's artifact path right now: the SHA-256
+    of a non-empty regular file, `nil` when there is no such file. Taken before
+    the agent launches, it is the baseline `write/5` compares against.
+    """
+    @spec fingerprint(map(), map(), pos_integer()) :: String.t() | nil
+    def fingerprint(state, phase_spec, index),
+      do: state |> resolve_path(phase_spec, index) |> file_fingerprint()
+
+    defp written_by_agent?(_path, nil), do: false
+
+    defp written_by_agent?(path, {:snapshot, before}) do
+      case file_fingerprint(path) do
+        nil -> false
+        current -> current != before
+      end
+    end
+
+    # A path that is missing, empty, not a regular file or unreadable reads as "no file". Nothing is
+    # hidden by that: `write/5` then writes the final message, and a path it cannot write (a
+    # directory, no permission) fails there with the File error.
+    defp file_fingerprint(path) do
+      with {:ok, %File.Stat{type: :regular, size: size}} when size > 0 <- File.stat(path),
+           {:ok, contents} <- File.read(path) do
+        ForemanServer.Identity.sha256(contents)
+      else
+        _ -> nil
       end
     end
 

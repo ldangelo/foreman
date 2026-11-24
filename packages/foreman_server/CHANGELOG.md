@@ -4,6 +4,19 @@
 
 ### Fixed
 
+- **The review report the agent wrote is no longer overwritten by its chat message.** After
+  every agent step `JobsiteObserver` called `ArtifactTemplate.write/4`, which replaced the
+  phase's artifact file with the agent's final message. The review phases tell the agent to
+  put the machine-read findings block in that file, so finalization parsed the overwritten
+  copy, found no marker and recorded `findings_absent` (and therefore `risk_high`) for every
+  PR, though the agent's own commit held a valid block. The observer now fingerprints the
+  artifact path before the agent launches and `ArtifactTemplate.write/5` keeps a non-empty
+  file whose content changed since; a file identical to that snapshot, an empty file or no file
+  is written from the final message as before. Content, not mtime, decides, so a file a
+  checkout just touched is not mistaken for the agent's. The same holds for every phase whose
+  agent writes to its artifact path (the plan, fix and assess reports too): the recorded
+  artifact, its archive copy and its digest are now the agent's file, not its final message.
+
 - **A description-only task reaches the worker.** The bundled `discover.md`, `fix-plan.md`,
   `fix.md`, `implement.md`, `verify.md`, `review-coderabbit.md` and `review-repo-rules.md`
   prompts now render the dispatched task's title and
