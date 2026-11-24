@@ -7,8 +7,10 @@ is doing right now or how it ended, its phases and their reports, a live activit
 feed (the agent's output, your steers, status and review verdicts), its code
 changes, its pull request's evidence and anything waiting on you. Both are Herdr
 "mods" (small JavaScript programs) plus a layout and a set of keyboard
-shortcuts. They only read from Foreman, through the `foreman` CLI and the
-server's read-only HTTP API; they change nothing in the server.
+shortcuts. They read from Foreman through the `foreman` CLI and `GET` requests to the
+server's HTTP API, and change the server only through two buttons that ask first:
+resetting a failed run (`foreman run reset`) and approving a task that is awaiting
+approval (`POST /api/commands`); both are described below.
 
 ```
 FOREMAN   4 failed  0 active  13:22:22  ↻
@@ -174,14 +176,20 @@ minute after it was asked is ignored.
 shows in its project's `queued` group as "awaiting approval", oldest first. (The other
 queued rows, "waiting for a slot", are already approved and wait for a free run slot: they
 need nothing from you.) `approve` on the row, or `⇧⌘A` for the one that has waited longest,
-opens Herdr's confirmation dialog; confirming sends `POST /api/commands` with
+opens Herdr's confirmation dialog, which names the task and its project; confirming sends
+`POST /api/commands` with
 `{"type":"task.approve","payload":{"task_id":…,"approved_by":"herdr-sidebar"}}`, the
 request `foreman task approve` sent before TRD-018 removed that verb. **Approving starts a
-run**: an agent works on the task. The server picks the workflow from the task and can
-refuse (unsatisfied dependencies, a paused project): its own error is shown. A task is
+run**: an agent works on the task, once the project is not paused and has a free run slot.
+The server picks the workflow from the task and refuses the approval when a dependency of
+the task is not closed or the task is no longer `open` (only an `open` task can be
+approved); its own error is shown, and so is any answer that is not an accepted command:
+the panel never assumes success. The panel reloads after the answer either way. A task is
 normally approved by itself at bead import, so these are tasks created without
-auto-approve, such as a scheduled task with `auto_approve: false`. Only `open` tasks are
-listed; a `blocked` task, which the server would also accept, is not.
+auto-approve, such as a scheduled task with `auto_approve: false`. (A bead's task is also
+`open` for a moment before BeadsWatcher approves it, and after a `task.retry` until its next
+rescan: approving it yourself then is harmless, the first approval wins and the server
+refuses the other.) Only `open` tasks are listed.
 
 **The rail.** When the sidebar is narrower than 160 px (the shipped chrome's fold
 button, or `⇧⌘B`) the panel draws a compact rail: a failed / active summary and
@@ -310,7 +318,7 @@ example the sidebar width) it is kept and only the panel's block is removed.
 | `mods/foreman-runs/`, `mods/foreman-run/` | The panel and the run-detail tab (`main.js`, `mod.json`). No dependencies beyond Herdr's `gpui-kit` / `herdr` modules. |
 | `mods/foreman-run/model.js` | The run-detail tab's logic without any drawing: duration math, phase rows, transcript clean-up and grouping, report markdown, PR evidence reduction, the status and outcome summaries. No imports; `install.sh` copies every `*.js` of a mod's folder. |
 | `test/model.test.js` | Regression tests for `model.js` (`bun:test`, plain fixtures, fixed clock, no network or filesystem). Not installed. See [Tests](#tests). |
-| `common.js` | Helpers both mods share: status styling, the CLI and HTTP callers (`api()` reports the HTTP status), the token lookup. Copied into each mod by `install.sh`. |
+| `common.js` | Helpers both mods share: status styling, the CLI and HTTP callers (`api()` and `apiPost()` report the HTTP status), the token lookup. Copied into each mod by `install.sh`. |
 | `keys.layout-foreman.json` | The `layout:foreman` shortcut section merged into `keys.json`. |
 | `install.sh` | Installer / uninstaller. |
 
@@ -347,7 +355,7 @@ The run-detail tab reads these endpoints (all `GET`, all through `api()` in `com
 | `/api/runs/:id/approvals`, `/api/projects/:id/questions` | `approvals[]`: `tool_call_id`, `tool_name`, `input_summary`, `requested_at`; `questions[]`: `run_id`, `question_id`, `text` | banner says they could not be read |
 | `/api/threads/run:<id>` and `/transcript` | `repo_path`, `title`, `branch`; `turns[]`: `seq`, `at`, `kind`, `source`, `text`, `omitted_entries` (invalidates cursors). A run that failed before its thread existed answers `thread_not_found` | the feed says there is no transcript |
 
-`api()` appends curl's HTTP status to the response and throws an `Error` with `.status` (and `.code` when
+`api()` (and `apiPost()`, which shares its response handling) appends curl's HTTP status to the response and throws an `Error` with `.status` (and `.code` when
 the body was `{error: code}`). That is how the tab tells a server that has no such route (a 404 with
 its own HTML page and no code) from an answer, and why a **200** body with an `error` field is data
 while a 4xx/5xx body is a failure. A failed read keeps its reason in `this.warn.<source>` and is shown;
@@ -363,6 +371,12 @@ The queue reads `GET /api/queue?project_id=<id>` once per project from `foreman 
 `running`, `waiting` as `{run_id, position, waited_ms}`) and `GET /api/tasks` (`status`,
 `task_id`, `project_id`, `title`, `run_id`, `created_at_ms`); a waiting run is matched to its task by
 `run_id`, and an unmatched one is looked up with `GET /api/runs/<id>`.
+
+The panel posts one command itself, `task.approve` (`apiPost()` in `common.js`, `POST /api/commands`): the body is
+`{type, payload: {task_id, approved_by}}` and nothing the gateway reserves (`approval_id`, `approved_at`, `run_id`,
+`workflow_snapshot`; the controller mints the command id). Only HTTP 201 with `status: "accepted"` counts as approved.
+A refusal is `422 {"error": "<inspect(reason)>"}` (`{:task_not_found, id}`, `{:task_not_approvable, status}`,
+`{:task_dependencies_unsatisfied, …}`), shown as it came; so is any other answer.
 
 Verification so far: the panel was exercised against a live server and against
 stub servers, and the commands behind each shortcut were driven with
