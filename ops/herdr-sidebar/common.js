@@ -100,6 +100,28 @@ export const apiPost = (path, body) => callApi(POST_SCRIPT, path, [JSON.stringif
 
 // The projection's top-level workflow_name can be null; the snapshot taken at run start has it.
 export const workflowName = (r) => r.workflow_name ?? r.workflow_snapshot?.workflow_name ?? "run";
+// The phase a run is in: the newest one it has started, named by the snapshot of the workflow taken at run start. The
+// run list carries both (phase_ids and the snapshot's phases, each with its own phase_id), so this costs no request.
+// A phase is matched by its phase_id; a snapshot whose phases carry no phase_id is read by the number the id ends in
+// (…-p002 is the phase with index 2). Null when no phase has started or the snapshot does not name it, never a guess.
+// "Newest started" is not "running": between one phase finishing and the next starting it still names the finished one.
+export const currentPhase = (r) => {
+  const ids = Array.isArray(r?.phase_ids) ? r.phase_ids.map(String) : [];
+  const phases = Array.isArray(r?.workflow_snapshot?.phases) ? r.workflow_snapshot.phases : [];
+  if (ids.length === 0) return null;
+  const named = phases.filter((p) => ids.includes(p.phase_id));
+  const pick = named.length > 0
+    ? named.reduce((a, b) => (b.index > a.index ? b : a))
+    : phases.find((p) => p.index === Math.max(...ids.map((id) => Number(/-p(\d+)$/.exec(id)?.[1] ?? NaN))));
+  return typeof pick?.name === "string" && pick.name !== "" ? pick.name : null;
+};
+// What a panel row calls a run: while it is active, the phase it is in then the workflow ("refine-prd · prd"; just the
+// workflow when the two are the same, or when the phase is unknown). A finished run is named by its workflow alone.
+export const runLabel = (r) => {
+  const wf = workflowName(r);
+  const phase = isActive(r) ? currentPhase(r) : null;
+  return phase === null || phase === wf ? wf : `${phase} · ${wf}`;
+};
 // The run's pull request URL when it has a usable (http/https) one, else null.
 export const prUrl = (r) => (typeof r.pr_url === "string" && /^https?:\/\//.test(r.pr_url) ? r.pr_url : null);
 // The bead a run (or queued item) works on, for copying into `br show <id>`. A beads task's id is

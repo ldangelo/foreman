@@ -7,11 +7,34 @@ import { summarizePr } from "../mods/foreman-run/model.js";
 let execImpl = async () => ({ code: 0, stdout: "", stderr: "" }); // what the stubbed exec() answers; a test sets it
 mock.module("herdr", () => ({ exec: (...a) => execImpl(...a), home: () => "/h", window: () => ({ platform: "macos" }) }));
 const {
-  approveBody, approveMergeArgs, approvePrompt, approveTask, beadId, canMerge, clearRuns, completionToast, countCleared, findApprovable, foreman, foremanArgv, foremanDo,
-  hideCleared, isApprovable, isClearable, isFullSha, isResettable, mergeArgs, mergeErrorText, mergePrompt, mergeVerbsCheck, parseActivityCommand, parseCleared, parseGhLogin,
-  pruneCleared, resetPrompt, shortSha, trackCompletions,
+  approveBody, approveMergeArgs, approvePrompt, approveTask, beadId, canMerge, clearRuns, completionToast, countCleared, currentPhase, findApprovable, foreman, foremanArgv,
+  foremanDo, hideCleared, isApprovable, isClearable, isFullSha, isResettable, mergeArgs, mergeErrorText, mergePrompt, mergeVerbsCheck, parseActivityCommand, parseCleared,
+  parseGhLogin, pruneCleared, resetPrompt, runLabel, shortSha, trackCompletions,
 } = await import("../common.js");
 
+// What the run list carries for a run in the middle of a workflow (sunstoneos-m1zz: create-prd done, refine-prd running).
+const prdRun = (status, ids = ["r-p001", "r-p002"]) => ({
+  status, phase_ids: ids, workflow_name: null,
+  workflow_snapshot: { workflow_name: "prd", phases: ["create-prd", "refine-prd", "create-trd"].map((name, i) => ({ name, index: i + 1, phase_id: `r-p00${i + 1}` })) },
+});
+
+test("an active run is labelled with the phase it is in, then its workflow", () => {
+  expect(currentPhase(prdRun("in_progress"))).toBe("refine-prd");
+  expect(runLabel(prdRun("in_progress"))).toBe("refine-prd · prd");
+  expect(runLabel(prdRun("in_progress", ["r-p001"]))).toBe("create-prd · prd");
+  expect(runLabel(prdRun("in_progress", ["r-p003", "r-p001", "r-p002"]))).toBe("create-trd · prd"); // the highest index, whatever the order
+  // The snapshot's own phase_id decides, not the shape of the id: ids that do not end in -pNNN still resolve.
+  const odd = { status: "in_progress", phase_ids: ["x-a", "x-b"], workflow_snapshot: { workflow_name: "prd", phases: [{ name: "one", index: 1, phase_id: "x-a" }, { name: "two", index: 2, phase_id: "x-b" }] } };
+  expect(runLabel(odd)).toBe("two · prd");
+});
+
+test("a run with no phase to name, or one that is not active, is labelled by its workflow", () => {
+  expect(runLabel(prdRun("in_progress", []))).toBe("prd"); // no phase started yet
+  expect(runLabel(prdRun("in_progress", ["r-p009"]))).toBe("prd"); // the snapshot does not name it
+  expect(runLabel({ status: "in_progress", workflow_name: "fix" })).toBe("fix"); // a list without phases or snapshot
+  expect(runLabel(prdRun("failed"))).toBe("prd"); // finished: the workflow alone
+  expect(runLabel({ status: "in_progress", phase_ids: ["r-p001"], workflow_snapshot: { workflow_name: "fix", phases: [{ name: "fix", index: 1 }] } })).toBe("fix"); // same name, said once
+});
 test("beadId takes the bead id off a beads task id", () => {
   expect(beadId({ task_id: "beads:foreman:foreman-jzycy" })).toBe("foreman-jzycy");
   expect(beadId({ task_id: "beads:ensemble:br-bhj9" })).toBe("br-bhj9");
