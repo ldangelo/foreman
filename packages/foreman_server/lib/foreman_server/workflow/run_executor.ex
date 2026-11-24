@@ -1252,9 +1252,9 @@ defmodule ForemanServer.Workflow.RunExecutor do
     JidoHarness.request_provider(%{context: %{"provider" => Map.get(phase_spec, :provider)}})
   end
 
-  # Foreman owns the model of each phase (`ModelResolution`), so every pi worker it
-  # launches is marked as a child session. Machine-wide pi extensions honour
-  # `PI_SUBAGENT_CHILD=1` by standing down: `pi-advisor-flow` skips its
+  # Foreman owns the model of each phase (`ModelResolution`), so every pi phase
+  # worker it launches is marked as a child session. Machine-wide pi extensions
+  # honour `PI_SUBAGENT_CHILD=1` by standing down: `pi-advisor-flow` skips its
   # `setExecutorModel`/`setThinkingLevel` override and model-select sync, and
   # `pi-subagents` registers nothing at all. Deliberate trade-off: the marker
   # suppresses only that extension's model/effort override — its advisor gates

@@ -308,10 +308,10 @@ When a variable "is exported but has no effect", read that function FIRST. An
 export in `foreman_env/3` proves only that Foreman computed the value; it is not
 evidence that any agent received it.
 
-**Every pi worker Foreman launches carries `PI_SUBAGENT_CHILD=1`.** Injected in
-`RunExecutor.prepare_agent_launch/5`, the same function that builds
-`foreman_env/4` (and so `FOREMAN_MODEL`), which is why it hangs off
-`prepare_agent_launch/5` and not `foreman_env/4`: the marker must be present
+**Every pi phase worker Foreman launches carries `PI_SUBAGENT_CHILD=1`.** Injected
+in `RunExecutor.build_agent_launch/10`, the same function that builds
+`foreman_env/4` (and so `FOREMAN_MODEL`), which is why it hangs off the launch
+env and not `foreman_env/4`: the marker must be present
 wherever Foreman resolved a model, even if pipeline dispatch moves. Machine-wide
 pi extensions honour it, but each only as far as it chooses: `pi-advisor-flow`
 skips its `setExecutorModel`/`setThinkingLevel` override and model-select sync,

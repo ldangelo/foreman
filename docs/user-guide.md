@@ -2079,8 +2079,8 @@ After editing bundled workflows run `foreman init --force` to refresh the
 installed copies.
 
 Every phase agent Foreman launches is a supervised worker, not an interactive
-session, so `RunExecutor.prepare_agent_launch/5` sets **`PI_SUBAGENT_CHILD=1`**
-in the environment of every **pi** worker it starts (non-pi providers are
+session, so `RunExecutor.build_agent_launch/10` sets **`PI_SUBAGENT_CHILD=1`**
+in the environment of every **pi** phase worker it starts (non-pi providers are
 unaffected). pi extensions installed machine-wide in `~/.pi/agent/settings.json`
 that follow the `pi-subagents` convention scale back in a marked session.
 `pi-advisor-flow` skips the parts that would take the model away from Foreman:
