@@ -93,10 +93,10 @@ export default class ForemanRuns extends View {
     try { this.collapsed = new Set(JSON.parse(localStorage.getItem("collapsed") ?? "[]")); } catch { this.collapsed = new Set(); }
     // Runs cleared from the panel (run id -> the status it had when cleared): view state only, kept across restarts.
     try { this.cleared = parseCleared(localStorage.getItem("cleared")); } catch { this.cleared = {}; }
-    // The run-detail tab opened for each run (run id -> tab id), so a second click focuses it (see open()). `pendingTab`
-    // is a tab.new the app has not shown yet: {run_id, name, before: ids of the tabs then, at}.
+    // The run-detail tab opened for each run (run id -> tab id), so a second click focuses it (see open()). `pendingTabs`
+    // holds the tab.new calls the app has not shown yet, by run id: {name, before: ids of the tabs then, at}.
     try { this.runTabs = parseRunTabs(localStorage.getItem("runTabs")); } catch { this.runTabs = {}; }
-    this.pendingTab = null;
+    this.pendingTabs = new Map();
     this.allRuns = []; // the listing as the server gave it, cleared runs included (this.runs is it without them)
     this.completions = null; // trackCompletions' state: null until the first poll that worked (see announceCompletions)
     this.pendingReset = null; // {run_id, at}: the run Herdr's confirm dialog is asking about
@@ -499,25 +499,28 @@ export default class ForemanRuns extends View {
     const short = beadId(r) ?? String(r.task_id ?? r.run_id).slice(0, 24);
     const name = `${workflowName(r)} ${short}`;
     // Not yet adopted, not yet shown: a click now would open a second tab for the same run.
-    if (this.pendingTab?.run_id === r.run_id) return;
-    this.pendingTab = { run_id: r.run_id, name, before: tabIds(all), at: Date.now() };
+    if (this.pendingTabs.has(r.run_id)) return;
+    // Its own snapshot of the tabs: a run opened after it already has this one's tab in its snapshot, so each diff is exact.
+    this.pendingTabs.set(r.run_id, { name, before: tabIds(all), at: Date.now() });
     run("tab.new", { name, mod: "foreman-run", props: tab ? { run_id: r.run_id, tab } : { run_id: r.run_id } });
     this.adoptNewTab();
   }
 
-  // Learns the id of the tab a tab.new made: the one new tab with the name it was given. The app may apply the
+  // Learns the id of the tab each tab.new made: the one new tab with the name it was given. The app may apply the
   // command a moment after run() returns, so this is tried again on the next open() and every poll; a tab that never
   // shows up (the command failed) is given up on after a minute rather than adopting a stranger.
   adoptNewTab() {
-    const p = this.pendingTab;
-    if (!p) return;
-    const id = newTabId(p.before, spaces(), p.name);
-    if (id !== null) {
-      this.runTabs = rememberRunTab(this.runTabs, p.run_id, id);
-      this.saveRunTabs();
-      this.pendingTab = null;
-    } else if (Date.now() - p.at > 60000) {
-      this.pendingTab = null;
+    if (this.pendingTabs.size === 0) return;
+    const all = spaces();
+    for (const [runId, p] of this.pendingTabs) {
+      const id = newTabId(p.before, all, p.name);
+      if (id !== null) {
+        this.runTabs = rememberRunTab(this.runTabs, runId, id);
+        this.saveRunTabs();
+        this.pendingTabs.delete(runId);
+      } else if (Date.now() - p.at > 60000) {
+        this.pendingTabs.delete(runId);
+      }
     }
   }
 

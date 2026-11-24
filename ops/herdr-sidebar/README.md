@@ -126,7 +126,7 @@ not shown; `GET /api/projects/<id>/usage` reports it as `limits.deferred_tasks`.
 
 | Action | Mouse | Shortcut |
 |---|---|---|
-| Open a run in its detail tab (a run whose tab is open gets that tab, even in another space) | click the row | `⏎` while navigating |
+| Open a run in its detail tab (a tab the panel opened for that run is shown again, even in another space, instead of a new one) | click the row | `⏎` while navigating |
 | Collapse / expand a project or status group | click its header | |
 | Collapse / expand every project | | `⇧⌘E` |
 | Collapse / expand every status group | | `⇧⌘S` |
@@ -206,7 +206,8 @@ unchanged.
 
 **Completion notifications.** When a run goes from running, queued or paused to `completed`, the panel
 raises a Herdr notification, `fix foreman-vbfmo.12 completed` (the workflow, then the bead id, else the
-task id, else the title). Clicking it opens that run's detail tab on **Activity**.
+task id, else the title). Clicking it opens that run's detail tab on **Activity**, or, when the panel already opened
+a tab for that run, shows that tab on whatever view it is on (a tab already open cannot be given a view).
 
 - The first poll after the panel starts only records what is there: runs that were already completed, or
   that completed while Herdr was closed, are not announced.
@@ -219,8 +220,9 @@ task id, else the title). Clicking it opens that run's detail tab on **Activity*
   loaded (the `foreman` layout is showing), with the sidebar folded or not.
 - `herdr-app do 'foreman-runs.open-run-activity:<run-id>'` does what the click does. Herdr delivers only the
   *name* of a mod command to the mod and drops its `args`, so the run id travels in the name after a colon
-  (a notification's `action: {name, args}` is that same command). Each click opens a new tab: Herdr does not
-  tell a mod which run a tab shows, so an open tab for the run cannot be found and focused.
+  (a notification's `action: {name, args}` is that same command). Herdr does not tell a mod which run a tab shows,
+  so the panel remembers the tab it opened for each run (see Use) and shows that one; a run whose tab it did not
+  open (before the panel remembered it, or by hand) gets one more tab, which is then reused.
 
 ## The run-detail tab
 
@@ -248,7 +250,7 @@ every read that failed.
 one that is going on Activity; the tab you click stays. `⌃⌥→` / `⌃⌥←` (`ctrl-alt-right` /
 `ctrl-alt-left`, bound to `foreman-run.next-tab` / `prev-tab` in the `layout:foreman` section of
 `keys.json`) step to the next / previous tab and wrap around. The `tab` prop (see the end of this
-section) picks the tab it opens on; a completion notification opens `activity`.
+section) picks the tab it opens on; a completion notification asks for `activity`, which applies only to a tab that is opened, not to one that is shown again.
 
 - **Overview.** *Outcome*: how it ended (or, for a run that is going, what it is doing now with its
   newest output), the failure reason in full (six lines, `show more`, `copy`; a cancelled run has none
