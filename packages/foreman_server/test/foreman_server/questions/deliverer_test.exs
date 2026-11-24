@@ -109,6 +109,19 @@ defmodule ForemanServer.Questions.DelivererTest do
     def dispatch_system(command), do: ForemanServer.CommandGateway.dispatch_system(command)
   end
 
+  # The real gateway, except that the FIRST `run.steer` is refused: the retry that follows
+  # must go through.
+  defmodule FlakySteerGateway do
+    @moduledoc false
+    def dispatch_system(%{type: "run.steer"} = command) do
+      if Agent.get_and_update(:questions_deliverer_test_flaky, &{&1, true}),
+        do: ForemanServer.CommandGateway.dispatch_system(command),
+        else: {:error, :steer_refused}
+    end
+
+    def dispatch_system(command), do: ForemanServer.CommandGateway.dispatch_system(command)
+  end
+
   setup_all do
     {:ok, _} = Application.ensure_all_started(:jido_signal)
     :ok
@@ -565,6 +578,57 @@ defmodule ForemanServer.Questions.DelivererTest do
     end
   end
 
+  describe "a delivery that fails while the server is up" do
+    test "a transient steer failure is retried without a restart" do
+      {project_id, run_id} = start_run!()
+      pause!(run_id)
+      question_id = open_question!(run_id, project_id)
+
+      start_supervised!(%{
+        id: :questions_deliverer_test_flaky,
+        start: {Agent, :start_link, [fn -> false end, [name: :questions_deliverer_test_flaky]]}
+      })
+
+      start_deliverer!(gateway: FlakySteerGateway, retry_delays_ms: [10])
+
+      capture_log(fn ->
+        answer!(run_id, question_id, "use postgres")
+
+        steer = await("RunSteerQueued", run_id)
+        assert field(steer, :message_id) == "question:" <> question_id
+
+        await("RunResumed", run_id, &(field(&1, :reason) == "question_answered"))
+      end)
+
+      assert [_once] = run_events(run_id, "RunSteerQueued")
+    end
+
+    test "the retries are bounded and the last one says so" do
+      {project_id, run_id} = start_run!()
+      pause!(run_id)
+      question_id = open_question!(run_id, project_id)
+
+      start_deliverer!(gateway: SteerRefusingGateway, retry_delays_ms: [5, 5])
+
+      log =
+        capture_log(fn ->
+          answer!(run_id, question_id, "use postgres")
+
+          Eventually.await(
+            fn -> length(dispatched_steers()) == 3 end,
+            message: "the steer was not attempted once and retried twice"
+          )
+
+          Process.sleep(50)
+        end)
+
+      assert log =~ "questions: answer delivery still failing after 2 retries"
+
+      Process.sleep(50)
+      assert length(dispatched_steers()) == 3
+    end
+  end
+
   describe "the projection subscription" do
     test "only QuestionAnswered is delivered; a malformed one is dropped and logged" do
       run_id = projected_run(:running)
@@ -968,6 +1032,12 @@ defmodule ForemanServer.Questions.DelivererTest do
   defp run_events(run_id, type) do
     {:ok, events} = Store.read_stream_forward("run:" <> run_id, 0, 1_000)
     for %{event_type: ^type, data: data} <- events, do: data
+  end
+
+  # The `run.steer` commands the gateway double was asked to send.
+  defp dispatched_steers do
+    {:messages, messages} = Process.info(self(), :messages)
+    for {:dispatched, %{type: "run.steer"} = command} <- messages, do: command
   end
 
   defp field(data, key) do

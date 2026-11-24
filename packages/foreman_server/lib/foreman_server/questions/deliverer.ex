@@ -26,6 +26,14 @@ defmodule ForemanServer.Questions.Deliverer do
   (`question.answer.undeliver`: `QuestionAnswerUndelivered`, listed as `undelivered_reason` and
   notified), once. Startup recovery then skips it. The answer text stays in the
   `QuestionAnswered` event; the operator steers the run with a shorter message.
+
+  A delivery that fails on a transient error (a refused `run.steer` or `run.resume`) is retried
+  while the server is up: the deliverer re-runs its recovery pass on a bounded backoff
+  (`@retry_delays_ms`, overridable with the `:retry_delays_ms` option). A pass is idempotent —
+  the command ids are deterministic and `paused?`/`steer_pending?` gate the resume — so a pass
+  that still fails only repeats the failure. After the last delay the failure is logged once and
+  left to the next start. A failed bus reply (a question of no run) is not replayed by a recovery
+  pass, so it is not retried either.
   """
 
   use GenServer
@@ -37,7 +45,11 @@ defmodule ForemanServer.Questions.Deliverer do
   alias ForemanServer.Approvals.Dispatch
   alias ForemanServer.ProjectionStore
 
-  @doc "Start the deliverer. Options: `:name`, `:gateway`, `:bus` (signal bus, default the supervised one)."
+  # The delays before each retry of the recovery pass, oldest first: a transient refusal must not
+  # wait for the next boot, and an endless retry must not spin either.
+  @retry_delays_ms [1_000, 5_000, 30_000, 120_000]
+
+  @doc "Start the deliverer. Options: `:name`, `:gateway`, `:bus` (signal bus, default the supervised one), `:retry_delays_ms` (the delays before each delivery retry, default `#{inspect(@retry_delays_ms)}`)."
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: Keyword.get(opts, :name, __MODULE__))
@@ -46,15 +58,14 @@ defmodule ForemanServer.Questions.Deliverer do
   @impl true
   def init(opts) do
     case ProjectionStore.subscribe(replay_existing: false) do
-      :ok -> {:ok, %{opts: opts}, {:continue, :recover}}
+      :ok -> {:ok, %{opts: opts, retry_ref: nil, retry_attempt: 0}, {:continue, :recover}}
       {:error, reason} -> {:stop, {:projection_subscribe_failed, reason}}
     end
   end
 
   @impl true
   def handle_continue(:recover, state) do
-    recover(state.opts)
-    {:noreply, state}
+    {:noreply, arm_retry(state, recover_outcomes(state.opts))}
   end
 
   @impl true
@@ -62,12 +73,27 @@ defmodule ForemanServer.Questions.Deliverer do
     if event_type(event) == "QuestionAnswered" do
       case data(event) do
         %{run_id: run_id, question_id: id, text: text} when is_binary(text) ->
-          _ = deliver(run_id, id, text, answered_by(event), state.opts)
+          outcome = deliver(run_id, id, text, answered_by(event), state.opts)
+          {:noreply, arm_retry(state, [outcome])}
 
         _malformed ->
           Logger.error("questions: malformed QuestionAnswered event dropped")
+          {:noreply, state}
       end
+    else
+      {:noreply, state}
     end
+  end
+
+  # The recovery pass is due: deliver again, and keep the backoff only while it still fails.
+  def handle_info({:questions_retry, attempt}, state) do
+    state = %{state | retry_ref: nil, retry_attempt: attempt}
+    outcomes = recover_outcomes(state.opts)
+
+    state =
+      if Enum.any?(outcomes, &match?({:failed, _}, &1)),
+        do: schedule_retry(state),
+        else: %{state | retry_attempt: 0}
 
     {:noreply, state}
   end
@@ -84,9 +110,15 @@ defmodule ForemanServer.Questions.Deliverer do
   republished (the bus reply has no durable delivery marker, so a replay would re-publish
   history to agents that already got their answer). An answer already marked undelivered is
   skipped; one found too long now is marked (see `deliver/4`). Returns the number attempted.
+  The deliverer's own pass (at start, and on every `QuestionAnswered` event) arms a bounded
+  backoff while a delivery keeps failing (see the module doc).
   """
   @spec recover(keyword()) :: non_neg_integer()
-  def recover(opts \\ []) do
+  def recover(opts \\ []), do: length(recover_outcomes(opts))
+
+  # The answers of the runs that have not ended, delivered once each; the outcomes of the
+  # pass.
+  defp recover_outcomes(opts) do
     pending =
       for %{run_id: run_id, question_id: id, undelivered_reason: nil} <-
             ProjectionStore.answered_questions(),
@@ -96,7 +128,6 @@ defmodule ForemanServer.Questions.Deliverer do
           do: {run_id, id, text}
 
     for {run_id, id, text} <- pending, do: deliver(run_id, id, text, opts)
-    length(pending)
   end
 
   defp answer_text(run_id, question_id) do
@@ -302,4 +333,30 @@ defmodule ForemanServer.Questions.Deliverer do
     data = if is_struct(data), do: Map.from_struct(data), else: data
     Map.get(data, :answered_by) || Map.get(data, "answered_by")
   end
+
+  # Arm the retry only when a delivery failed and no retry is already due.
+  defp arm_retry(%{retry_ref: ref} = state, _outcomes) when is_reference(ref), do: state
+
+  defp arm_retry(state, outcomes) do
+    if Enum.any?(outcomes, &match?({:failed, _}, &1)), do: schedule_retry(state), else: state
+  end
+
+  # The backoff is bounded: after the last delay the failure is logged once and left to the
+  # next start.
+  defp schedule_retry(%{retry_attempt: attempt} = state) do
+    case Enum.at(retry_delays(state.opts), attempt) do
+      nil ->
+        Logger.error(
+          "questions: answer delivery still failing after #{attempt} retries; it is retried again at the next start"
+        )
+
+        %{state | retry_ref: nil, retry_attempt: 0}
+
+      delay ->
+        ref = Process.send_after(self(), {:questions_retry, attempt + 1}, delay)
+        %{state | retry_ref: ref, retry_attempt: attempt + 1}
+    end
+  end
+
+  defp retry_delays(opts), do: Keyword.get(opts, :retry_delays_ms, @retry_delays_ms)
 end

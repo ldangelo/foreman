@@ -148,7 +148,7 @@ Four defects found by the PR 3 review that already existed and are not fixed in 
 
 (xi) `foreman-87h5g`: the `ProjectionStore` silently starts empty when its boot read of the event log fails (`rebuild_from_event_log/1` in `lib/foreman_server/projection_store.ex:2184`), so the boot sweep would expire nothing.
 
-(xii) `foreman-t2627`: `Questions.Deliverer` never retries a failed steer or resume while the server is up, and `recover/1` runs only at boot.
+(xii) `foreman-t2627`: `Questions.Deliverer` never retries a failed steer or resume while the server is up, and `recover/1` runs only at boot. (Closed by the retry in `packages/foreman_server/lib/foreman_server/questions/deliverer.ex`: a failed delivery re-runs the recovery pass on a bounded backoff while the server is up.)
 
 (xiii) `foreman-p7asb`: in `OperatorQuestionDispatcher` a failed or deduplicated `question.open` is never recorded.
 
