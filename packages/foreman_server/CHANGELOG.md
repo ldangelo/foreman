@@ -4,6 +4,15 @@
 
 ### Fixed
 
+- **A description-only task reaches the worker.** The bundled `discover.md`, `fix-plan.md`,
+  `fix.md`, `implement.md` and `verify.md` prompts now render the dispatched task's title and
+  description as their own `Task Title` / `Task Description` sections, and `fix-plan.md` stops
+  with `Blocked: no issue description supplied` only when neither a Task Prompt nor a Task
+  Description section is present — a task carrying only a description used to block. The new
+  `{{task.title}}` / `{{task.description}}` template keys are the empty string when the run
+  carries no task. Installed copies under `~/.foreman/workflows` stay stale until the operator
+  refreshes them (`foreman init --force`, or `foreman workflow install`).
+
 - **The review section of a PR body is never only the missing-evidence note.** An absent,
   malformed or unreadable review block still said "not a clean review" and nothing else, so a
   reviewer had nowhere to go. `ReviewFindings.pr_section/2` now takes a

@@ -4377,7 +4377,8 @@ defmodule ForemanServer.Workflow.RunExecutorTest do
       assert assigns["task.title"] == "Validate task prompt"
       assert assigns["task.description"] == "A dispatched task description."
 
-      no_task = RunExecutor.prompt_template_assigns(make_state(snapshot), phase_spec(), 1, %{}, nil)
+      no_task =
+        RunExecutor.prompt_template_assigns(make_state(snapshot), phase_spec(), 1, %{}, nil)
 
       assert no_task["task.title"] == ""
       assert no_task["task.description"] == ""

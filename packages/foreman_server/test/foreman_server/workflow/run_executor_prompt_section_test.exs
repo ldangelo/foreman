@@ -207,7 +207,10 @@ defmodule ForemanServer.Workflow.RunExecutorPromptSectionTest do
       # The bundled fix-plan.md must no longer STOP when only a description was dispatched.
       plan = File.read!(Path.join(@prompts_dir, "fix-plan.md"))
       plan_result = render_for_test(plan, assigns)
-      assert plan_result =~ "## Task Description\n\nThe anchor is not re-registered after a retry.\n"
+
+      assert plan_result =~
+               "## Task Description\n\nThe anchor is not re-registered after a retry.\n"
+
       refute plan_result =~ "If there is no Task Prompt section, STOP"
       refute result =~ "## Task Prompt"
       assert result =~ "Blocked: no plan found"
