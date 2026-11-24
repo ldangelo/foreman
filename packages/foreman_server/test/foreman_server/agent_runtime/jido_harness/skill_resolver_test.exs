@@ -143,9 +143,7 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.SkillResolverTest do
     # input. `System.user_home/0` reads `:init.get_argument(:home)` captured at VM
     # boot, so the default branch is not reachable in-process; an explicit `home:`
     # exercises the same guard.
-    test "a home the VM does not know is unverifiable" do
-      ctx = base_ctx()
-
+    test "a home the VM does not know is unverifiable", ctx do
       assert resolve("fix-issue", Keyword.put(ctx.opts, :home, nil)) == :unverifiable
       assert resolve("absent", Keyword.put(ctx.opts, :home, nil)) == :unverifiable
     end
