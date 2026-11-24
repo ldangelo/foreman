@@ -79,7 +79,9 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.SkillResolver do
 
   All of them exist so tests never touch the real home directory.
 
-    * `:home` - the home directory (default `System.user_home!/0`).
+    * `:home` - the home directory (default `System.user_home/0`). A `nil` or
+      non-absolute value - including the `nil` a VM without a home reports -
+      makes the answer `:unverifiable`; it is never an error.
     * `:agent_dir` - pi's agent directory (default: `PI_CODING_AGENT_DIR` from
       the environment, else `<home>/.pi/agent`). The environment is read in
       `default_agent_dir/1` only. A value that is neither absolute nor
@@ -120,12 +122,15 @@ defmodule ForemanServer.AgentRuntime.JidoHarness.SkillResolver do
   # ---------------------------------------------------------------------------
 
   defp resolve_pi(skill, opts) do
-    home = Keyword.get_lazy(opts, :home, &System.user_home!/0)
     project_root = Keyword.get(opts, :project_root)
 
-    # `~/.agents/skills` and every `~` expansion need an absolute home: a
+    # A VM without a home is an expected input, not a bug: `System.user_home/0`
+    # answers `nil` there, and an absent, `nil` or relative home gets the same
+    # answer as any other unknown input - `:unverifiable`. Never raises.
+    # `~/.agents/skills` and every `~` expansion still need an absolute home: a
     # relative one would resolve against the server's cwd, not pi's.
-    with :absolute <- Path.type(home),
+    with home when is_binary(home) <- Keyword.get_lazy(opts, :home, &System.user_home/0),
+         :absolute <- Path.type(home),
          {:ok, agent_dir} <- agent_dir(opts, home),
          ctx = %{home: home, agent_dir: agent_dir, project_root: project_root},
          {:ok, acc} <- collect_sources(ctx) do
