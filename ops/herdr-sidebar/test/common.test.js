@@ -4,7 +4,7 @@
 import { test, expect, mock } from "bun:test";
 
 mock.module("herdr", () => ({ exec: async () => ({ code: 0, stdout: "", stderr: "" }), home: () => "/h", window: () => ({ platform: "macos" }) }));
-const { beadId } = await import("../common.js");
+const { beadId, clearRuns, countCleared, hideCleared, isClearable, isResettable, parseCleared, pruneCleared, resetPrompt } = await import("../common.js");
 
 test("beadId takes the bead id off a beads task id", () => {
   expect(beadId({ task_id: "beads:foreman:foreman-jzycy" })).toBe("foreman-jzycy");
@@ -31,4 +31,64 @@ test("beadId is null for anything that is not a bead", () => {
 
 test("beadId does not take a bead out of the middle of another id", () => {
   expect(beadId({ task_id: "x-beads:foreman:foreman-jzycy" })).toBeNull();
+});
+
+const run = (run_id, status) => ({ run_id, status });
+
+test("only failed, stuck and cancelled runs are clearable", () => {
+  for (const s of ["failed", "stuck", "cancelled"]) expect(isClearable(run("r", s))).toBe(true);
+  for (const s of ["completed", "in_progress", "awaiting_worker", "paused", undefined]) expect(isClearable(run("r", s))).toBe(false);
+  expect(isClearable(null)).toBe(false);
+});
+
+test("clearRuns records the status of the clearable runs only and leaves its input alone", () => {
+  const before = { old: "failed" };
+  const after = clearRuns(before, [run("a", "failed"), run("b", "completed"), run("c", "stuck"), run("d", "in_progress")]);
+  expect(after).toEqual({ old: "failed", a: "failed", c: "stuck" });
+  expect(before).toEqual({ old: "failed" });
+});
+
+test("a cleared run is hidden, counted, and everything else stays", () => {
+  const runs = [run("a", "failed"), run("b", "failed"), run("c", "completed")];
+  const cleared = clearRuns({}, [runs[0]]);
+  expect(hideCleared(runs, cleared).map((r) => r.run_id)).toEqual(["b", "c"]);
+  expect(countCleared(runs, cleared)).toBe(1);
+  expect(hideCleared(runs, {})).toEqual(runs);
+});
+
+test("a cleared run shows again once its status changes (retried, resumed, stuck -> failed)", () => {
+  const cleared = { a: "failed", b: "stuck" };
+  const runs = [run("a", "in_progress"), run("b", "failed"), run("c", "failed")];
+  expect(hideCleared(runs, cleared).map((r) => r.run_id)).toEqual(["a", "b", "c"]);
+  expect(countCleared(runs, cleared)).toBe(0);
+});
+
+test("pruneCleared drops runs that are no longer listed, and drops nothing for an empty listing", () => {
+  const cleared = { a: "failed", gone: "failed" };
+  expect(pruneCleared(cleared, [run("a", "failed"), run("b", "failed")])).toEqual({ a: "failed" });
+  expect(pruneCleared(cleared, [])).toBe(cleared);
+});
+
+test("parseCleared keeps only a JSON object's string entries and shrugs off anything else", () => {
+  expect(parseCleared('{"a":"failed","b":3,"c":null}')).toEqual({ a: "failed" });
+  for (const bad of [null, undefined, "", "not json", "[]", '["a"]', "3", "null"]) expect(parseCleared(bad)).toEqual({});
+});
+
+test("only a failed run is offered a reset", () => {
+  expect(isResettable({ status: "failed" })).toBe(true);
+  for (const status of ["stuck", "blocked", "paused", "cancelled", "completed", "in_progress", undefined]) expect(isResettable({ status })).toBe(false);
+  expect(isResettable(null)).toBe(false);
+});
+
+test("the reset confirmation names the run and says what a reset does not do", () => {
+  const { title, detail } = resetPrompt({ run_id: "run-abc", workflow_name: "fix", task_id: "beads:foreman:foreman-jzycy", status: "failed" });
+  expect(title).toBe("Reset this run?");
+  expect(detail).toContain("fix foreman-jzycy (run-abc)");
+  expect(detail).toContain("does not restart the work");
+  expect(detail).toContain("event history stays");
+});
+
+test("the reset confirmation falls back to the task id for a run that is not a bead, and to the workflow snapshot's name", () => {
+  const { detail } = resetPrompt({ run_id: "run-x", workflow_snapshot: { workflow_name: "plan" }, task_id: "adhoc-1c2d3e", status: "failed" });
+  expect(detail).toContain("plan adhoc-1c2d3e (run-x)");
 });

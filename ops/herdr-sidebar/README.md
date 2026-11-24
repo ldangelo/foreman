@@ -130,6 +130,10 @@ not shown; `GET /api/projects/<id>/usage` reports it as `limits.deferred_tasks`.
 | Copy the selected run's id | | `⇧⌘Y` |
 | Copy the selected run's bead id (`foreman-jzycy` of `beads:foreman:foreman-jzycy`) | click the bead id under a run or a queued item | `⇧⌘I` |
 | Copy the selected run's PR URL | | `⇧⌘U` |
+| Clear a failed, stuck or cancelled run from the panel | click the `✕` on its row | `⇧⌘X` (or `⌫` / `Del` while navigating); the selection moves to the next run |
+| Clear every failed, stuck and cancelled run the panel shows | click `clear` on a status header (that group), or `✕ clear N` under the list (all) | `⇧⌘K` |
+| Bring cleared runs back | click `↺ N cleared` under the list | `⇧⌘T` |
+| Reset a failed run (asks first) | click `reset` on its row | `⇧⌘H` on the selected run |
 | Switch the sidebar between the full panel and a compact rail | | `⇧⌘B` |
 
 On macOS the shortcuts are `cmd-shift-<letter>`; the footer under the list shows
@@ -137,6 +141,33 @@ whichever chords are actually bound in your `keys.json`. Collapsed groups are
 remembered across restarts. While the panel holds the keyboard (after `⇧⌘J` or
 turning the filter on) typing goes to the panel, not your terminal; `Esc`
 hands it back to the pane that had it.
+
+**Clearing runs.** Clearing a failed, stuck or cancelled run only hides it from this
+panel. Nothing is deleted or changed: the run, its events, its files and its pull
+request are exactly as before, `foreman run get` and the run-detail tab still show
+them, and the counts in the header and the `failed` filter simply stop counting it.
+`↺ N cleared` under the list shows how many are hidden and brings all of them back.
+A cleared run comes back by itself when its status changes (it is retried or
+resumed, or a stuck run turns failed), since that is news again. The cleared list is
+kept across restarts in the panel's own local storage (the same place as collapsed
+groups), per machine. Every 10 s the panel reads the 40 newest runs overall; once a
+minute (or on `↻`) it also reads up to the 500 newest runs of each project, the older
+history the overall list never reaches (a busy project would otherwise crowd a quiet
+one out, and `N failed` would count a window, not the failed runs). An entry for a run
+that has left those lists is dropped so the stored list cannot grow forever: a cleared
+run that falls out of the window and later returns to it shows again. A completed run
+cannot be cleared. If a project's run list cannot be read, a note under the header says
+that some runs may be missing and why. A run that was reset or changed since the last
+history read can show its old state for up to a minute; `↻` re-reads it at once.
+
+**Resetting a run.** Unlike clearing, a reset changes the server. `reset` on a failed row
+(or `⇧⌘H` on the selected failed run) opens Herdr's confirmation dialog; confirming
+runs `foreman run reset --id <run-id>`. The server then drops that run's record from
+Foreman's run list (its event history stays) and does **not** restart the work: to try
+again, submit the work as a new run. Foreman has no command to bring a reset run back.
+Only failed runs are offered it here (the server also accepts stuck, blocked and paused
+runs; use `foreman run reset` for those). A confirmation that is answered more than a
+minute after it was asked is ignored.
 
 **The rail.** When the sidebar is narrower than 160 px (the shipped chrome's fold
 button, or `⇧⌘B`) the panel draws a compact rail: a failed / active summary and

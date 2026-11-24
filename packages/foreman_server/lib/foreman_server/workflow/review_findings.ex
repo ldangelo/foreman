@@ -365,8 +365,9 @@ defmodule ForemanServer.Workflow.ReviewFindings do
           do: "[#{location}](#{location})",
           else: code_span(location)
 
+      # Never the host path: an unknown location reduces to its basename.
       {:unknown, _path} ->
-        code_span(path)
+        code_span(ForemanServer.Workflow.PrBodyPath.display_path(path))
     end
   end
 
@@ -430,7 +431,7 @@ defmodule ForemanServer.Workflow.ReviewFindings do
   end
 
   defp finding_line(%Finding{} = f) do
-    path = flatten(f.path, @listed_path)
+    path = f.path |> ForemanServer.Workflow.PrBodyPath.display_path() |> flatten(@listed_path)
     location = if f.line, do: "#{path}:#{f.line}", else: path
     declined = if f.disposition == :declined, do: " (declined by the agent)", else: ""
 

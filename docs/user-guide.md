@@ -2963,6 +2963,13 @@ continues. Push/create failures and closed matching PRs fail the responsible
 phase with typed details. A created or reused phase PR record suppresses the
 final AutoPR; no-op records do not.
 
+**A phase PR's title is the run's task title.** A task-backed run's phase PR
+is titled with the task's title; a run without one falls back to the first
+conventional-commit subject among the run's own commits (`fix(...)`,
+`feat(...)`, and so on); a run with neither keeps the legacy `feat(phase):
+<phase>` title. A task title that is present but unusable (blank) is a typed
+error, and the phase PR is not opened.
+
 **PR bodies carry the review agent's report only when Foreman generates the body.**
 Phase PRs, and final AutoPRs for ad-hoc no-task runs, append a `## Review findings
 (the review agent's report)` section to the generated body, read from the
@@ -2987,8 +2994,10 @@ an absent block, a malformed block (an unterminated block, more than one block, 
 old bullet format, invalid JSON or schema, an invalid field, a block over 32768 bytes
 or a file over 4 MiB, more than 100 findings) and an unreadable artifact are each
 named as **not a clean review**, and a warning is logged. Each of those states also
-links the review report and names the run (and the phase for a phase PR), so there is
-always something to open. The old bullet format is
+names the run (and the phase for a phase PR) and points at the review report, so there
+is always something to open: the report is a link when it resolves to a repository-relative
+path, and otherwise its file name only (`…/REPORT.md`), never an absolute host path. The
+old bullet format is
 now malformed, not parsed. Task-backed final AutoPR bodies are exact task
 descriptions and do not append artifact or review-finding sections. The PR body is
 the agent's own report, written for a human to read, and refuses nothing. The

@@ -4,6 +4,14 @@
 
 ### Fixed
 
+- **The review section of a PR body is never only the missing-evidence note.** An absent,
+  malformed or unreadable review block still said "not a clean review" and nothing else, so a
+  reviewer had nowhere to go. `ReviewFindings.pr_section/2` now takes a
+  `ReviewFindings.Context` (`artifact_path`, `run_id`, `phase_name`, `repo_root`) and each of
+  those states names the run (and the phase for a phase PR) and the review report: a Markdown
+  link when the report is repository-relative (inside `repo_root` or under `docs/reports/`),
+  otherwise an inert code span of its basename, never the absolute host path.
+
 - **A slow aggregate actor no longer kills the process that sent it a command.**
   `CommandRouter.dispatch/2` let the `GenServer.call` timeout exit escape, so the Overwatch
   `Tracker` (and every live worker with it), the `BeadsWatcher` and a `RunExecutor` that had
@@ -29,6 +37,18 @@
   stops. Every other rejection keeps the fast-then-slow retry, and `{:run_terminal, _}` still
   stops at once. No terminal event is written, so the run still reads non-terminal in the
   projection; why its aggregate was missing is not addressed here (foreman-j9sf8).
+
+- **The idle-tail poll test no longer fails at random.** `jido_harness_worker_live_output_test.exs`
+  ("an idle tail asks the run one cheap question per poll period") counted every `Run.info/1`
+  the traced harness run received, but `Jido.Harness.Retention` calls `Run.info/1` on every run
+  once a minute (its first sweep is 60 s after boot: the hosted-CI failures fell at +60 s and
+  +120 s into a run), so a sweep inside the test's second read as an early poll (`idle_2 - idle_1`
+  of 33 ms against 200 ms). The trace was also switched on while the tail's first round could be
+  under way, so its `info` was sometimes missed and the expected call list was one call short.
+  The test now counts only the tail's own calls (by sender) and measures the poll period from
+  the tail's `replay` of the output; it makes one foreign `Run.info/1` on purpose, so the filter
+  is exercised on every run. The tail itself waits the full 250 ms poll period after every
+  round: there is no production change.
 
 ### Added
 
@@ -74,6 +94,10 @@
   the run's own commits (`base_ref..HEAD`, newest first); no sha is sent when the run
   made no commit.
 - `foreman doctor task_provider` resolves its Kata runner at call time, like the adapter.
+- A phase PR is titled with the run's task title when it has one, then the first
+  conventional-commit subject among the run's commits (`fix:`, `feat:`, …), then the legacy
+  `feat(phase): <phase>`; `Workflow.PhasePR.Request` gains an optional `task_title`, and a
+  `git log` that fails only costs the subject fallback (warned, the PR still opens).
 
 ### Fixed
 

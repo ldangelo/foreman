@@ -3026,6 +3026,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
                head_branch: head_branch,
                cwd: cwd,
                artifact_path: artifact_path,
+               task_title: phase_pr_task_title(state),
                existing_records: phase_pr_records(state.run_id)
              }) do
         record_phase_pr(record)
@@ -3047,6 +3048,15 @@ defmodule ForemanServer.Workflow.RunExecutor do
     case get_in(state, [:last_worktree, :branch]) do
       branch when is_binary(branch) and branch != "" -> {:ok, branch}
       _ -> {:error, :phase_pr_head_branch_unresolved}
+    end
+  end
+
+  # The phase PR's title source, read through the same plumbing the final AutoPR uses
+  # (`task_backed?/1` + `task_field/2`): no new channel. A run with no task, or a task with no
+  # title, leaves the field nil and `PhasePR` falls back itself.
+  defp phase_pr_task_title(state) do
+    if task_backed?(state) do
+      task_field(Map.get(state, :task) || %{}, :title)
     end
   end
 
@@ -3124,6 +3134,9 @@ defmodule ForemanServer.Workflow.RunExecutor do
       run_id: state.run_id,
       base_branch: base_branch,
       artifact_path: completion_artifact_path(state),
+      # The repository root the artifact path is made relative to in the PR body:
+      # the artifact sits in the run worktree, while `cwd` is the project root.
+      artifact_root: get_in(state, [:last_worktree, :worktree_path]),
       head_branch: get_in(state, [:last_worktree, :branch]),
       cwd: vcs_working_directory(state)
     }

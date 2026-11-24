@@ -3,12 +3,15 @@
 // click a project, status or queue header to collapse it.
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, ScrollHandle } from "gpui-base";
-import { theme, checking, run, focused, nextCommand, notify, keys, layout, shared, setShared, exec, window } from "herdr";
-import { info, isActive, ago, clock, foreman, api, beadId, workflowName, prUrl, openUrlArgv } from "./common.js";
+import { theme, checking, run, focused, nextCommand, notify, keys, layout, shared, setShared, exec, window, openOverlay } from "herdr";
+import { info, isActive, ago, clock, foreman, api, beadId, workflowName, prUrl, openUrlArgv, isClearable, hideCleared, countCleared, clearRuns, pruneCleared, parseCleared, isResettable, resetPrompt } from "./common.js";
 
 const POLL_MS = 10000;
+const RESET_CONFIRM_MS = 60000; // a confirmation answered later than this is ignored: the reset it was for is long forgotten
 const LIMIT = 40;
 const PROJECT_RETRY_MS = 60000;
+const HISTORY_LIMIT = 500; // each project's runs read for the history (the newest ones; the poll reads LIMIT overall)
+const HISTORY_EVERY_MS = 60000; // the history changes slowly and costs far more than the poll: ~7 KB a run
 const QUEUE_EVERY_MS = 30000; // the queue changes slowly and its lookups are heavier than the run list
 const TERMINAL_RUN = new Set(["completed", "failed", "cancelled"]);
 
@@ -55,6 +58,10 @@ const HINTS = [
   ["copy-id", "copy id"],
   ["copy-bead", "copy bead"],
   ["copy-pr", "copy PR"],
+  ["clear-run", "clear"],
+  ["clear-all", "clear all"],
+  ["reset-run", "reset"],
+  ["restore-cleared", "restore"],
   ["toggle-failed", "failed only"],
   ["refresh", "reload"],
   ["toggle-all", "fold projects"],
@@ -82,6 +89,11 @@ export default class ForemanRuns extends View {
     // Collapsed headers, kept across restarts (localStorage is a file; per mod copy). Keys are
     // project ids and "<project>::<status>" for a status group inside a project.
     try { this.collapsed = new Set(JSON.parse(localStorage.getItem("collapsed") ?? "[]")); } catch { this.collapsed = new Set(); }
+    // Runs cleared from the panel (run id -> the status it had when cleared): view state only, kept across restarts.
+    try { this.cleared = parseCleared(localStorage.getItem("cleared")); } catch { this.cleared = {}; }
+    this.allRuns = []; // the listing as the server gave it, cleared runs included (this.runs is it without them)
+    this.pendingReset = null; // {run_id, at}: the run Herdr's confirm dialog is asking about
+    this.resetBusy = false;
     this.error = null;
     this.loaded = false;
     this.busy = false;
@@ -95,6 +107,13 @@ export default class ForemanRuns extends View {
     this.queue = { capacity: null, running: 0, entries: [] }; // see buildQueue()
     this.queueAt = 0; // ms of the last queue read (the poll reads it every QUEUE_EVERY_MS)
     this.queueError = null; // the last queue read failed: the runs still show, the queue says why it is missing
+    this.projectIdList = []; // registered project ids (see projectIds())
+    this.projectIdsAt = 0;
+    this.projectIdsError = null;
+    this.runsNote = null; // some run list could not be read: the panel may be missing runs, and says why
+    this.history = new Map(); // project id -> its runs as last read (see loadRuns())
+    this.historyAt = new Map(); // project id -> ms of the last attempt to read its history, whether it worked or not
+    this.historyProblems = new Map(); // project id -> why its history could not be read
     cx.timer.every(POLL_MS, (cx) => this.refresh(cx));
     this.refresh(cx);
     // Key commands from keys.json ("<mod>.<command>"): "foreman-runs.toggle-failed" flips the
@@ -112,6 +131,11 @@ export default class ForemanRuns extends View {
           else if (command === "open-pr") this.openPr();
           else if (command === "copy-id") this.copyRunId(cx);
           else if (command === "copy-bead") this.copyBead(cx);
+          else if (command === "clear-run") this.clearSelected(cx);
+          else if (command === "clear-all") this.clearAll(cx);
+          else if (command === "restore-cleared") this.restoreCleared(cx);
+          else if (command === "reset-run") this.askResetSelected();
+          else if (command === "reset-confirmed") this.confirmReset(cx);
           else if (command === "copy-pr") this.copyPrUrl(cx);
           else if (command === "toggle-sidebar") this.toggleSidebar();
           // A bare "focus" is the app's own message (e.g. a popup closed over this copy): keep
@@ -188,6 +212,54 @@ export default class ForemanRuns extends View {
     }
   }
 
+  // The runs to show. Every poll reads the LIMIT newest overall: whatever just happened (a run that fails, is retried or
+  // finishes gets a new last event, so it is among them). A project's history, up to HISTORY_LIMIT of its runs
+  // (`--project-id`), is read when it is a minute old or on a manual refresh: the older runs the overall list never
+  // reaches. A busy project crowds a quiet one out of the overall list (ensemble showed 3 of its 50 runs), and a window
+  // would undercount `N failed`. Each project is timed on its own, a failed read included, so one project that keeps
+  // failing cannot make the others (about 1 MB) be read on every poll. For a run in both, the recent read wins. A list
+  // that cannot be read is named in `runsNote`, so a partial panel is never presented as the whole picture; that
+  // project keeps its previous history until a read works.
+  async loadRuns(force) {
+    const overall = await foreman(["run", "list", "-limit", String(LIMIT)]);
+    if (!Array.isArray(overall?.runs)) throw new Error("unexpected output from foreman run list");
+    const ids = await this.projectIds();
+    const now = Date.now();
+    await Promise.all(ids.filter((id) => force || now - (this.historyAt.get(id) ?? 0) >= HISTORY_EVERY_MS).map(async (id) => {
+      this.historyAt.set(id, now);
+      try {
+        const body = await foreman(["run", "list", "--project-id", id, "-limit", String(HISTORY_LIMIT)]);
+        if (!Array.isArray(body?.runs)) throw new Error("unexpected output from foreman run list");
+        this.history.set(id, body.runs);
+        this.historyProblems.delete(id);
+      } catch (e) {
+        this.historyProblems.set(id, `${id}: ${String(e?.message ?? e).split("\n")[0]}`);
+      }
+    }));
+    const byId = new Map();
+    for (const id of ids) for (const r of this.history.get(id) ?? []) byId.set(r.run_id, r);
+    for (const r of overall.runs) byId.set(r.run_id, r);
+    this.runsNote = [...this.historyProblems.values()][0] ?? (this.projectIdsError ? `project list: ${this.projectIdsError}` : null);
+    return [...byId.values()];
+  }
+
+  // The registered projects' ids (it also fills the names), asked at most once a minute while it works; the last good
+  // list stands when the ask fails, and the failure is kept for loadRuns to report.
+  async projectIds() {
+    if (this.projectIdList.length > 0 && Date.now() - this.projectIdsAt < PROJECT_RETRY_MS) return this.projectIdList;
+    this.projectIdsAt = Date.now();
+    try {
+      const body = await foreman(["project", "list", "--format=json"]);
+      const projects = (Array.isArray(body) ? body : (body?.projects ?? [])).map((p) => ({ id: p.project_id ?? p.id, name: p.name })).filter((p) => p.id);
+      for (const p of projects) if (p.name) this.projectNames.set(p.id, p.name);
+      this.projectIdList = projects.map((p) => p.id);
+      this.projectIdsError = null;
+    } catch (e) {
+      this.projectIdsError = String(e?.message ?? e).split("\n")[0];
+    }
+    return this.projectIdList;
+  }
+
   refresh(cx, manual = false) {
     if (this.busy || checking()) return;
     this.busy = true;
@@ -197,9 +269,7 @@ export default class ForemanRuns extends View {
     }
     cx.spawn(async (cx) => {
       try {
-        const body = await foreman(["run", "list", "-limit", String(LIMIT)]);
-        if (!Array.isArray(body?.runs)) throw new Error("unexpected output from foreman run list");
-        this.runs = body.runs;
+        this.setRuns(await this.loadRuns(manual));
         this.error = null;
         this.updatedAt = Date.now();
         await this.loadProjects();
@@ -221,6 +291,100 @@ export default class ForemanRuns extends View {
       // The write goes to a background thread; flush so a quit right after a toggle keeps it.
       localStorage.flush().catch(() => {});
     } catch { /* in-memory state still toggles */ }
+  }
+
+  saveCleared() {
+    try {
+      localStorage.setItem("cleared", JSON.stringify(this.cleared));
+      localStorage.flush().catch(() => {});
+    } catch { /* the clearing still applies until the panel restarts */ }
+  }
+
+  // The runs the panel works on: the listing without the cleared ones. Counts, groups, the failed filter and the
+  // keyboard cursor all read this.runs, so a cleared run is simply not there.
+  setRuns(all) {
+    this.allRuns = all;
+    const kept = pruneCleared(this.cleared, all);
+    if (Object.keys(kept).length !== Object.keys(this.cleared).length) {
+      this.cleared = kept;
+      this.saveCleared();
+    }
+    this.runs = hideCleared(all, this.cleared);
+  }
+
+  // Hides these runs (the failed, stuck or cancelled ones among them) from the panel. Nothing is deleted or changed
+  // on the server; "↺ N cleared" under the list brings them back.
+  clear(rs, cx) {
+    const n = rs.filter(isClearable).length;
+    if (n === 0) return notify({ title: "Foreman", body: "Only failed, stuck or cancelled runs can be cleared.", level: "info" });
+    this.cleared = clearRuns(this.cleared, rs);
+    this.saveCleared();
+    this.runs = hideCleared(this.allRuns, this.cleared);
+    if (this.cursor && !this.runs.some((r) => r.run_id === this.cursor)) this.cursor = null;
+    notify({ title: "Foreman", body: `Cleared ${n} run${n === 1 ? "" : "s"} from the panel (nothing was deleted); ↺ under the list restores them.`, level: "success", timeout: 3000 });
+    cx.notify();
+  }
+
+  // Clears the selected run and moves the selection to its neighbour, so the keyboard can clear a list in a row.
+  clearSelected(cx) {
+    const shown = this.visibleRuns();
+    const at = shown.findIndex((x) => x.run_id === this.cursor);
+    if (at < 0) return notify({ title: "Foreman", body: "Select a run first (focus the panel, then ↑/↓).", level: "info" });
+    if (!isClearable(shown[at])) return this.clear([shown[at]], cx);
+    this.clear([shown[at]], cx);
+    const rest = this.visibleRuns();
+    this.cursor = rest.length === 0 ? null : rest[Math.min(at, rest.length - 1)].run_id;
+    cx.notify();
+  }
+
+  // Clears every failed, stuck or cancelled run the panel shows (with the failed filter on, the failed ones).
+  clearAll(cx) {
+    this.clear(this.shownRuns().filter(isClearable), cx);
+  }
+
+  restoreCleared(cx) {
+    const n = countCleared(this.allRuns, this.cleared);
+    if (n === 0) return notify({ title: "Foreman", body: "No cleared runs to restore.", level: "info" });
+    this.cleared = {};
+    this.saveCleared();
+    this.runs = hideCleared(this.allRuns, this.cleared);
+    notify({ title: "Foreman", body: `Restored ${n} cleared run${n === 1 ? "" : "s"}.`, level: "success", timeout: 2000 });
+    cx.notify();
+  }
+
+  // Resetting changes the server (`foreman run reset`), so it asks first: Herdr's own confirm dialog (Enter confirms,
+  // Esc cancels). Confirming sends "foreman-runs.reset-confirmed" back to this panel, which resets the run asked about.
+  askReset(r) {
+    if (!isResettable(r)) return notify({ title: "Foreman", body: `Only a failed run can be reset here; ${workflowName(r)} ${r.task_id ?? r.run_id} is ${r.status}.`, level: "info" });
+    this.pendingReset = { run_id: r.run_id, at: Date.now() };
+    const { title, detail } = resetPrompt(r);
+    openOverlay({ mod: "confirm", kind: "dialog", modal: true, width: 460, height: 230, props: { title, detail, command: { name: "foreman-runs.reset-confirmed", args: {} } } });
+  }
+
+  askResetSelected() {
+    const r = this.runs.find((x) => x.run_id === this.cursor);
+    if (!r) return notify({ title: "Foreman", body: "Select a run first (focus the panel, then ↑/↓).", level: "info" });
+    this.askReset(r);
+  }
+
+  async confirmReset(cx) {
+    const p = this.pendingReset;
+    this.pendingReset = null;
+    if (!p || Date.now() - p.at > RESET_CONFIRM_MS) return notify({ title: "Foreman", body: "No reset is waiting for a confirmation.", level: "info" });
+    const r = this.allRuns.find((x) => x.run_id === p.run_id);
+    if (!r || !isResettable(r)) return notify({ title: "Foreman", body: `${p.run_id} is no longer a failed run: nothing was reset.`, level: "info" });
+    if (this.resetBusy) return;
+    this.resetBusy = true;
+    const label = `${workflowName(r)} ${r.task_id ?? r.run_id}`;
+    try {
+      await foreman(["run", "reset", "--id", p.run_id]);
+      notify({ title: "Foreman", body: `Reset ${label}: removed from the run list; the work was not restarted.`, level: "success", timeout: 5000 });
+    } catch (e) {
+      notify({ title: "Foreman", body: `Could not reset ${label}: ${String(e?.message ?? e).split("\n")[0]}`, level: "error" });
+    } finally {
+      this.resetBusy = false;
+    }
+    this.refresh(cx, true);
   }
 
   toggle(id, cx) {
@@ -381,6 +545,7 @@ export default class ForemanRuns extends View {
     else if (e.key === "down") this.moveCursor(1, cx);
     else if (e.key === "up") this.moveCursor(-1, cx);
     else if (e.key === "enter") this.openCursor(cx);
+    else if (e.key === "backspace" || e.key === "delete") this.clearSelected(cx);
     else return;
     cx.stop_propagation();
   }
@@ -515,13 +680,32 @@ export default class ForemanRuns extends View {
         .when(rest, (el) => el.child(div().truncate().text_size(11).text_color(t.dim).child(rest)));
     };
 
+    // A small button that clears runs. The click is stopped here so it does not also open (or fold) what it sits in.
+    const clearButton = (id, label, runs) => div().id(id).px(4).rounded(3).text_size(11).text_color(t.dim).cursor_pointer().hover((s) => s.bg(t.hover))
+      .on_click((_e, cx) => { cx.stop_propagation(); this.clear(runs, cx); }).child(label);
+    // The reset button of a failed row: asks first (see askReset), and its click is stopped like the clear button's.
+    const resetButton = (r) => div().id(`reset-${r.run_id}`).px(4).rounded(3).text_size(10.5).text_color(t.dim).cursor_pointer().hover((s) => s.bg(t.hover))
+      .on_click((_e, cx) => { cx.stop_propagation(); this.askReset(r); }).child("reset");
+
+    // Under the list: clear what is shown (failed, stuck, cancelled) and bring back what was cleared.
+    const clearable = this.shownRuns().filter(isClearable);
+    const clearedN = countCleared(this.allRuns, this.cleared);
+    const bar = this.error || (clearable.length === 0 && clearedN === 0) ? null
+      : h_flex().px(12).py(3).gap(10).flex_wrap().items_center().border_t(1).border_color(t.border)
+        .when(clearable.length > 0, (el) => el.child(div().id("foreman-clear-all").px(4).rounded(3).cursor_pointer().text_size(10.5).text_color(t.dim)
+          .hover((s) => s.bg(t.hover)).on_click((_e, cx) => this.clearAll(cx)).child(`✕ clear ${clearable.length}`)))
+        .when(clearedN > 0, (el) => el.child(div().id("foreman-restore").px(4).rounded(3).cursor_pointer().text_size(10.5).text_color(t.dim)
+          .hover((s) => s.bg(t.hover)).on_click((_e, cx) => this.restoreCleared(cx)).child(`↺ ${clearedN} cleared`)));
+
     const row = (r) => {
       return v_flex().id(`run-${r.run_id}`).pl(38).pr(12).py(4).gap(1).cursor_pointer().hover((s) => s.bg(t.hover))
         .when(r.run_id === this.cursor, (el) => el.bg(t.selected))
         .on_click(() => this.open(r))
         .child(h_flex().gap(8).items_center()
           .child(div().flex_1().truncate().text_size(12.5).text_color(t.foreground).child(workflowName(r)))
-          .child(div().text_size(11).text_color(t.dim).child(ago(r.last_event_at_ms))))
+          .child(div().text_size(11).text_color(t.dim).child(ago(r.last_event_at_ms)))
+          .when(isResettable(r), (el) => el.child(resetButton(r)))
+          .when(isClearable(r), (el) => el.child(clearButton(`clear-${r.run_id}`, "✕", [r]))))
         .child(idLine(r, r.run_id, r.task_id ?? r.run_id, ""));
     };
 
@@ -535,6 +719,7 @@ export default class ForemanRuns extends View {
         .child(div().w(10).text_size(10).text_color(t.dim).child(closed ? "▸" : "▾"))
         .child(div().size(7).rounded(4).bg(t[st.color] ?? t.dim))
         .child(div().flex_1().truncate().text_size(11.5).text_color(t[st.color] ?? t.dim).child(st.label))
+        .when(isClearable({ status }), (el) => el.child(clearButton(`clear-${key}`, "clear", rs)))
         .child(div().text_size(11).text_color(t.dim).child(`${rs.length}`));
     };
 
@@ -623,8 +808,10 @@ export default class ForemanRuns extends View {
           .on_click((_e, cx) => this.refresh(cx, true))
           .child("↻")))
       .when(!this.error && this.queueError, (el) => el.child(note(`Queue unavailable: ${this.queueError}`, t.dim)))
+      .when(!this.error && this.runsNote, (el) => el.child(note(`Some runs may be missing: ${this.runsNote}`, t.dim)))
       .child(v_flex().id("foreman-runs-scroll").flex_1().min_h(0).overflow_y_scrollbar().track_scroll(this.scroll)
         .children(elements))
+      .when(bar, (el) => el.child(bar))
       .when(!narrow(), (el) => el.child(footer));
   }
 }

@@ -300,7 +300,9 @@ defmodule ForemanServer.Workflow.AutoPRTest do
       generated_body_at(artifact)
     end
 
-    defp generated_body_at(artifact) do
+    # `cwd` is the repository root the artifact path is made relative to; it
+    # defaults to the artifact's own directory, so the artifact is inside it.
+    defp generated_body_at(artifact, cwd \\ nil) do
       parent = self()
 
       runner = fn
@@ -329,7 +331,7 @@ defmodule ForemanServer.Workflow.AutoPRTest do
                  run_id: "run-12",
                  base_branch: "main",
                  head_branch: "foreman/run-12/implement",
-                 cwd: "/work/tree",
+                 cwd: cwd || Path.dirname(artifact),
                  artifact_path: artifact,
                  command_runner: runner
                })
@@ -337,7 +339,7 @@ defmodule ForemanServer.Workflow.AutoPRTest do
       assert_receive {:gh_args, args}
       body = Enum.at(args, Enum.find_index(args, &(&1 == "--body")) + 1)
       assert body =~ "Foreman run `run-12` complete."
-      assert body =~ "Artifact: #{artifact}"
+      if is_nil(cwd), do: assert(body =~ "Artifact: #{Path.basename(artifact)}")
       body
     end
 
@@ -399,19 +401,22 @@ defmodule ForemanServer.Workflow.AutoPRTest do
       refute body =~ "phase `"
     end
 
-    test "a report outside the repository tree is named as inert text, not as a link" do
+    test "a report outside the repository tree is named by basename as inert text, never its host path" do
       artifact =
         Path.join(System.tmp_dir!(), "autopr-outside-#{System.unique_integer([:positive])}.md")
 
       File.write!(artifact, "report with no block\n")
       on_exit(fn -> File.rm_rf(artifact) end)
-      body = generated_body_at(artifact)
+      body = generated_body_at(artifact, "/work/tree")
 
       assert body =~ "review evidence is missing"
       assert body =~ "not a clean review"
       assert body =~ "run `run-12`"
+      refute body =~ "Artifact:"
       refute body =~ "Review report: ["
-      assert body =~ "`#{artifact}`"
+      assert body =~ "`…/#{Path.basename(artifact)}`"
+      refute body =~ artifact
+      refute body =~ System.tmp_dir!()
     end
 
     test "an unreadable artifact logs a warning, still creates the PR and says so in the body" do

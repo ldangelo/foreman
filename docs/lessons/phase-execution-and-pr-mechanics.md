@@ -183,7 +183,10 @@ rather than failing. For no-task runs AutoPR preserves the legacy generated
 title/body;
 only that generated-body path appends `ForemanServer.Workflow.ReviewFindings`
 content under `## Unresolved review findings` when the artifact contains the
-bundled review markers. Phase PRs keep their separate title/body behavior.
+bundled review markers. Phase PRs keep their separate body behavior; their title starts from the same
+source as the final AutoPR title — the run's task title — but falls back
+differently: the first conventional-commit subject among the run's own commits,
+else the legacy `feat(phase): <phase>` form.
 Foreman commits with a fixed message, its own author
 identity, and `--no-verify`; only WHETHER a phase commits and whether it asks
 for a phase PR record are declarable.

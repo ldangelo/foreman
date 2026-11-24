@@ -39,6 +39,11 @@ defmodule ForemanServer.Workflow.PhasePRBodyTest do
       "gh", ["pr", "create" | _rest] = args, _opts ->
         send(test_pid, {:gh_pr_create_args, args})
         {"https://github.com/example/repo/pull/1", 0}
+
+      # The title fallback reads the run's subjects; no subject here, so the request's own
+      # `task_title` (or the legacy phase title) is what `gh pr create` is asked for.
+      "git", ["log" | _rest], _opts ->
+        {"", 0}
     end
   end
 
@@ -286,6 +291,21 @@ defmodule ForemanServer.Workflow.PhasePRBodyTest do
 
     assert body =~ ~r{\[#{Regex.escape(location)}\]\(#{Regex.escape(location)}\)}
     assert body =~ "run `run-1`, phase `repo-rules-review`"
+  end
+
+  test "an absent block with a report outside the repository names its basename, never the host path" do
+    artifact = temp_artifact!("# Report\n\nNothing to report.\n")
+
+    request = %{request(artifact) | cwd: Path.join(System.tmp_dir!(), "elsewhere-repo")}
+    assert {:ok, %PhasePR.Record{status: "created"}} = PhasePR.maybe_create(request)
+    assert_receive {:gh_pr_create_args, args}
+    body = body_arg(args)
+
+    assert body =~ "review evidence is missing"
+    assert body =~ "Review report: `…/REPORT.md`"
+    refute body =~ "Review report: ["
+    refute body =~ artifact
+    refute body =~ "Artifact:"
   end
 
   test "a nil artifact path is missing evidence too" do

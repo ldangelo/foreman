@@ -89,6 +89,54 @@ export const beadId = (x) => {
   return m ? m[1] : null;
 };
 
+// Clearing a run hides it from the runs panel and nothing else: the run, its events and its files are untouched
+// (the plugin only reads). The panel keeps `cleared`, a plain object of run id -> the status the run had when it was
+// cleared. Only finished runs that did not succeed can be cleared.
+export const CLEARABLE = new Set(["failed", "stuck", "cancelled"]);
+export const isClearable = (r) => CLEARABLE.has(r?.status);
+// A cleared run stays hidden only while it still has the status it was cleared with: one that is retried, resumed
+// or moves on (stuck -> failed) is news again and shows.
+const isCleared = (cleared, r) => cleared[r.run_id] === r.status;
+export const hideCleared = (runs, cleared) => runs.filter((r) => !isCleared(cleared, r));
+export const countCleared = (runs, cleared) => runs.filter((r) => isCleared(cleared, r)).length;
+// `cleared` plus these runs (the clearable ones among them); the input is not changed.
+export const clearRuns = (cleared, runs) => {
+  const next = { ...cleared };
+  for (const r of runs) if (isClearable(r)) next[r.run_id] = r.status;
+  return next;
+};
+// Entries for runs that are no longer listed are dropped, so the stored map cannot grow forever. An empty listing
+// (a failed or racing read) drops nothing.
+export const pruneCleared = (cleared, runs) => {
+  if (runs.length === 0) return cleared;
+  const listed = new Set(runs.map((r) => r.run_id));
+  return Object.fromEntries(Object.entries(cleared).filter(([id]) => listed.has(id)));
+};
+// What localStorage held: only string-to-string entries of a JSON object count; anything else is no clearing.
+export const parseCleared = (text) => {
+  try {
+    const o = JSON.parse(text ?? "{}");
+    if (o === null || typeof o !== "object" || Array.isArray(o)) return {};
+    return Object.fromEntries(Object.entries(o).filter(([, v]) => typeof v === "string"));
+  } catch {
+    return {};
+  }
+};
+
+// Unlike clearing, a reset changes the server: `foreman run reset` (run.reset) drops the run's record from the run
+// list; its event history stays and the work is not restarted (docs/user-guide.md, `run reset`). The server accepts
+// a failed, stuck, blocked or paused run; the panel offers it on failed runs only.
+export const isResettable = (r) => r?.status === "failed";
+// The confirmation's wording: which run, and what a reset does and does not do.
+export const resetPrompt = (r) => {
+  const which = [workflowName(r), beadId(r) ?? r.task_id].filter(Boolean).join(" ");
+  return {
+    title: "Reset this run?",
+    detail: `${which} (${r.run_id}). This removes the run's record from Foreman's run list; its event history stays. ` +
+      "It does not restart the work: to try again, submit the work as a new run. Foreman has no command to bring a reset run back.",
+  };
+};
+
 // The command that opens a URL in the default browser on this platform.
 export const openUrlArgv = (url) => {
   const platform = window()?.platform;
