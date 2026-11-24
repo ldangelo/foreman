@@ -621,6 +621,7 @@ Workflow PR/merge behavior is not driven by `create-pr`, `pr-wait`, or `merge` p
 `default_timeout_ms` and then the built-in `:infinity` default (no wall-clock deadline
 unless one is configured; a BEAM that still applies a fixed ceiling after #510 is a
 stale runtime or unshipped override, not this code path — see `docs/lessons/phase-execution-and-pr-mechanics.md`). Created/reused phase PR records suppress final AutoPR; no-op phase PR records do not. A phase PR is titled with the run's task title when the run has one, else with the first conventional-commit subject among the run's commits, else with the legacy `feat(phase): <phase>` title. When reusing an open phase PR, Foreman pushes the run branch before recording reuse so the provider diff cannot remain stuck on an older head. `foreman run get <id>` JSON includes `run.phase_prs` when phase records exist. See "PR creation and merge reconciliation" in the User Guide.
+A project that sets `pr_body_headings` gets a templated pull-request body (the headings, filled from the task, the run's commits and the phase artifact) instead of the exact task description; see "Project settings" in the User Guide.
 
 Run `foreman init --force` after editing bundled workflow YAML or prompts. `foreman run`, `foreman run --watch`, and direct worker startup fail fast if installed runtime prompts/workflows are stale, so scheduler-launched agents cannot run with outdated instructions.
 
@@ -1654,7 +1655,7 @@ no env values). Project reads over HTTP and MCP replace `config.env` /
 (arguments: `project_id`, `goal`, `instructions`, `thread_model`, `thread_effort`,
 `coordinator_provider`, `coordinator_model`, `coordinator_effort`,
 `max_concurrent_runs`, `daily_thread_cap`, `coordinator_propose_before_start`,
-`coordinator_max_active_threads`, `coordinator_reuse_threads`, `library_collect_produced`, `notification_preference`, `clear`, `idempotency_key`; nothing
+`coordinator_max_active_threads`, `coordinator_reuse_threads`, `library_collect_produced`, `notification_preference`, `pr_body_headings`, `clear`, `idempotency_key`; nothing
 else), `foreman_project_pause` and `foreman_project_resume` dispatch the same
 operator commands as the CLI, are refused unless `allow_workflow_writes: true`, and
 report the server's error code (`instructions_too_long`, `project_paused`, ...).

@@ -172,10 +172,12 @@ workflow `merge:` or `pr:` fields."
 `auto_pr/1` is still final-run behavior from `finalize_run/1`; it is skipped
 when durable phase PR records already represent the run. `AutoPR.maybe_create_pr/1`
 takes a fixed context (`run_id`, `base_branch`, `head_branch`, `artifact_path`,
-`cwd`, and optional task metadata) and derives title and body itself; there is
+`cwd`, optional task metadata and optional `pr_body_headings`) and derives title and body itself; there is
 no declarable title, body, draft, reviewer, or label. For task-backed final
 AutoPRs, `RunExecutor` passes the task title and description, and AutoPR uses
-those exact strings as the GitHub PR title and body. A task title/description
+those exact strings as the GitHub PR title and body, unless the project sets
+`pr_body_headings`: the title is still the task title and `Workflow.PrBody` builds the
+body from those headings (the task, the run's commits and the phase artifact). A task title/description
 that is present but blank or non-string is a typed metadata error before the
 branch is published; a field the task never set is omitted from the context, so
 a title-only task (no description) falls back to the generated title/body
