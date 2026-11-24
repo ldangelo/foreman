@@ -155,6 +155,32 @@ func TestRenderAgentSupportStates(t *testing.T) {
 	}
 }
 
+func TestCommandsInstallPiDefaultWritesProjectSkillsDir(t *testing.T) {
+	// The install default must be a directory pi actually reads. pi's
+	// project-scoped loader reads `<cwd>/.pi/skills`; `.pi/agent/skills` is the
+	// global layout and is invisible under a project.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("FOREMAN_API_TOKEN", "")
+	project := t.TempDir()
+	t.Chdir(project)
+
+	if err := commandsInstall([]string{"--agent", "pi"}); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+
+	matches, err := filepath.Glob(filepath.Join(project, ".pi", "skills", "*", "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) == 0 {
+		t.Fatalf("pi install wrote no skills under %s", filepath.Join(project, ".pi", "skills"))
+	}
+	if _, err := os.Stat(filepath.Join(project, ".pi", "agent")); !os.IsNotExist(err) {
+		t.Fatalf("pi install must not create %s (pi never reads it), stat err = %v", filepath.Join(project, ".pi", "agent"), err)
+	}
+}
+
 func TestCommandsInstallRefusesExistingWithoutForce(t *testing.T) {
 	dir := t.TempDir()
 	existingDir := filepath.Join(dir, "foreman-run-list")
