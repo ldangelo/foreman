@@ -100,6 +100,22 @@ export const apiPost = (path, body) => callApi(POST_SCRIPT, path, [JSON.stringif
 
 // The projection's top-level workflow_name can be null; the snapshot taken at run start has it.
 export const workflowName = (r) => r.workflow_name ?? r.workflow_snapshot?.workflow_name ?? "run";
+// The phase a run is in: the newest one it has started (phase_ids lists them as p001, p002, …), named by the snapshot of
+// the workflow taken at run start. Null when the run has not started a phase or the snapshot does not name it. The run
+// list carries both, so this costs no request.
+export const currentPhase = (r) => {
+  const nums = (Array.isArray(r?.phase_ids) ? r.phase_ids : []).map((id) => /-p(\d+)$/.exec(String(id))?.[1]).filter(Boolean).map(Number);
+  if (nums.length === 0) return null;
+  const name = r.workflow_snapshot?.phases?.find((p) => p.index === Math.max(...nums))?.name;
+  return typeof name === "string" && name !== "" ? name : null;
+};
+// What a panel row calls a run: while it is active, the phase it is in then the workflow ("refine-prd · prd"; just the
+// workflow when the two are the same, or when the phase is unknown). A finished run is named by its workflow alone.
+export const runLabel = (r) => {
+  const wf = workflowName(r);
+  const phase = isActive(r) ? currentPhase(r) : null;
+  return phase === null || phase === wf ? wf : `${phase} · ${wf}`;
+};
 // The run's pull request URL when it has a usable (http/https) one, else null.
 export const prUrl = (r) => (typeof r.pr_url === "string" && /^https?:\/\//.test(r.pr_url) ? r.pr_url : null);
 // The bead a run (or queued item) works on, for copying into `br show <id>`. A beads task's id is

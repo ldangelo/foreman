@@ -4,7 +4,7 @@
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, ScrollHandle } from "gpui-base";
 import { theme, checking, run, focused, nextCommand, notify, keys, layout, shared, setShared, exec, window, openOverlay } from "herdr";
-import { info, isActive, ago, clock, foreman, api, beadId, workflowName, prUrl, openUrlArgv, isClearable, hideCleared, countCleared, clearRuns, pruneCleared, parseCleared, isResettable, resetPrompt, isApprovable, findApprovable, approveTask, approvePrompt, trackCompletions, completionToast, parseActivityCommand } from "./common.js";
+import { info, isActive, ago, clock, foreman, api, beadId, workflowName, runLabel, prUrl, openUrlArgv, isClearable, hideCleared, countCleared, clearRuns, pruneCleared, parseCleared, isResettable, resetPrompt, isApprovable, findApprovable, approveTask, approvePrompt, trackCompletions, completionToast, parseActivityCommand } from "./common.js";
 
 const POLL_MS = 10000;
 const RESET_CONFIRM_MS = 60000; // a confirmation answered later than this is ignored: the reset it was for is long forgotten
@@ -772,7 +772,7 @@ export default class ForemanRuns extends View {
         .when(r.run_id === this.cursor, (el) => el.bg(t.selected))
         .on_click(() => this.open(r))
         .child(h_flex().gap(8).items_center()
-          .child(div().flex_1().truncate().text_size(12.5).text_color(t.foreground).child(workflowName(r)))
+          .child(div().flex_1().truncate().text_size(12.5).text_color(t.foreground).child(runLabel(r)))
           .child(div().text_size(11).text_color(t.dim).child(ago(r.last_event_at_ms)))
           .when(isResettable(r), (el) => el.child(resetButton(r)))
           .when(isClearable(r), (el) => el.child(clearButton(`clear-${r.run_id}`, "✕", [r]))))
