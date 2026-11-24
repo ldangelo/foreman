@@ -346,7 +346,7 @@ and adapter overview.
 
 ## Agent command assets
 
-The Go CLI includes `foreman commands` for generating Foreman shortcuts for AI-agent tools. It emits Claude Code project-local slash-command Markdown and Pi/OMP skills (in ~/.pi/agent/skills/). Codex and OpenCode remain generate-only copyable assets.
+The Go CLI includes `foreman commands` for generating Foreman shortcuts for AI-agent tools. It emits Claude Code project-local slash-command Markdown and Pi skills (project installs go to `.pi/skills/`; global ones to `~/.pi/agent/skills/`) and OMP skills (`.pi/agent/skills/`). Codex and OpenCode remain generate-only copyable assets.
 
 ```bash
 cd packages/foreman_cli

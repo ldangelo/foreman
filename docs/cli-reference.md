@@ -548,14 +548,14 @@ foreman commands generate --agent all --output ./foreman-agent-commands
 
 ### `foreman commands install --agent <agent>`
 
-Install native command files only when Foreman has a verified native path/format. Claude Code project-local Markdown slash commands are verified and install to `.claude/commands/foreman` by default. Existing files are refused unless `--force` is supplied. For Pi and OMP agents, `--scope global` uses the recommended global skill directory when no `--target` is specified. For other agents (Codex, OpenCode), `--scope global` requires an explicit `--target` directory that the operator has verified.
+Install native command files only when Foreman has a verified native path/format. Claude Code project-local Markdown slash commands are verified and install to `.claude/commands/foreman` by default. Existing files are refused unless `--force` is supplied. `--scope global` requires an explicit `--target` directory that the operator has verified (the command errors without one); `--scope global` alone does not select a global directory. Codex and OpenCode have no native install.
 
 ```bash
 foreman commands install --agent claude --scope project
 foreman commands install --agent claude --target .claude/commands/foreman --force
 ```
 
-Pi/OMP install to ~/.pi/agent/skills/<id>/SKILL.md. Codex and OpenCode remain generate-only.
+Pi project installs (default `--scope project`) write `<project>/.pi/skills/<id>/SKILL.md`, the directory pi reads under a project; OMP project installs write `.pi/agent/skills/<id>/SKILL.md`. For a global Pi/OMP install pass `--scope global --target ~/.pi/agent/skills`. Codex and OpenCode remain generate-only.
 
 ### `foreman commands validate`
 
