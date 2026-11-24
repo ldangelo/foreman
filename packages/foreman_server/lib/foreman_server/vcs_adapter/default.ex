@@ -210,6 +210,13 @@ defmodule ForemanServer.VcsAdapter.Default do
   # checkout. Ask git which admin dir the path belongs to and require it to be
   # the one recorded in that checkout, so a stale registration is reported
   # rather than reused.
+  #
+  # A checkout interrupted part-way (the process died inside `git worktree
+  # add`) is registered, points at its admin dir and is on the right branch,
+  # but git writes the admin dir's `index` only when the checkout finishes: with
+  # none, the files that were never written read as deleted, and the phase
+  # commit (`git add -A`) would record those deletions. Such a path is refused
+  # rather than handed to an agent.
   defp usable_checkout?(worktree_path) do
     case System.cmd(
            "git",
@@ -217,16 +224,17 @@ defmodule ForemanServer.VcsAdapter.Default do
            stderr_to_stdout: true
          ) do
       {output, 0} ->
-        case recorded_admin_dir(worktree_path) do
-          nil ->
+        admin_dir = canonicalize(String.trim(output))
+
+        cond do
+          recorded_admin_dir(worktree_path) != admin_dir ->
             {:unusable, :worktree_checkout_broken}
 
-          expected ->
-            if canonicalize(String.trim(output)) == expected do
-              :usable
-            else
-              {:unusable, :worktree_checkout_broken}
-            end
+          not File.exists?(Path.join(admin_dir, "index")) ->
+            {:unusable, :worktree_checkout_incomplete}
+
+          true ->
+            :usable
         end
 
       {_output, _code} ->

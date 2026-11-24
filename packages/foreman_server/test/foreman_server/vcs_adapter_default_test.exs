@@ -464,6 +464,39 @@ defmodule ForemanServer.VcsAdapter.DefaultTest do
       assert path == worktree_path
     end
 
+    test "refuses a registered worktree whose checkout never finished", %{repo: repo} do
+      base_sha = init_repo!(repo)
+      worktree_path = Path.join(repo, ".worktrees/wt-half")
+      File.rm_rf!(worktree_path)
+
+      opts = [
+        operation_id: "wt-half-#{System.unique_integer([:positive])}",
+        base: base_sha,
+        branch: "feat/half",
+        project_id: "p",
+        run_id: "r",
+        phase_id: "ph"
+      ]
+
+      assert {:ok, _} = Default.create_worktree(repo, worktree_path, opts)
+
+      # Git writes the worktree's index only when the checkout finishes. A
+      # `git worktree add` killed part-way leaves it registered, on the right
+      # branch and pointing at its admin dir, with only some files written and
+      # no index: reusing it would read every unwritten file as deleted, and
+      # the next `git add -A` commit would record the deletions.
+      admin_dir =
+        run_git!(["-C", worktree_path, "rev-parse", "--absolute-git-dir"]) |> String.trim()
+
+      File.rm!(Path.join(admin_dir, "index"))
+
+      assert {:error, {:worktree_path_unusable, path, :worktree_checkout_incomplete}} =
+               Default.create_worktree(repo, worktree_path, opts)
+
+      assert path == worktree_path
+      assert File.read!(Path.join(worktree_path, "README.md")) == "x"
+    end
+
     test "reuses a worktree whose gitdir pointer is relative to the checkout", %{repo: repo} do
       base_sha = init_repo!(repo)
       worktree_path = Path.join(repo, ".worktrees/wt-relative")
@@ -793,9 +826,8 @@ defmodule ForemanServer.VcsAdapter.DefaultTest do
     end
   end
 
-  # Run a git command and return combined stdout/stderr. Raises on
-  # non-zero exit so test failures surface immediately with the git
-  # output that caused them.
+  # A scratch repository with one commit that tracks `.beads/issues.jsonl`.
+  # Returns that commit's SHA.
   defp init_repo!(repo) do
     run_git!(["-C", repo, "init", "--initial-branch=main"])
     run_git!(["-C", repo, "config", "user.email", "t@x"])
@@ -808,6 +840,9 @@ defmodule ForemanServer.VcsAdapter.DefaultTest do
     run_git!(["-C", repo, "rev-parse", "HEAD"]) |> String.trim()
   end
 
+  # Run a git command and return combined stdout/stderr. Raises on
+  # non-zero exit so test failures surface immediately with the git
+  # output that caused them.
   defp run_git!(args) do
     {output, 0} = System.cmd("git", args, stderr_to_stdout: true)
     output

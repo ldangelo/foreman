@@ -42,7 +42,8 @@ defmodule ForemanServer.VcsAdapter do
   on `:branch` fails with
   `{:error, {:worktree_path_unusable, path, reason}}`, where `reason` is
   `{:branch_mismatch, branch}`, `:not_a_git_worktree`,
-  `:worktree_checkout_broken` or `{:worktree_list_failed, reason}`.
+  `:worktree_checkout_broken`, `:worktree_checkout_incomplete` (a checkout
+  interrupted before git wrote its index) or `{:worktree_list_failed, reason}`.
   """
   @callback create_worktree(
               repo_path :: String.t(),
