@@ -74,7 +74,7 @@ defmodule ForemanServer.Questions.Deliverer do
       case data(event) do
         %{run_id: run_id, question_id: id, text: text} when is_binary(text) ->
           outcome = deliver(run_id, id, text, answered_by(event), state.opts)
-          {:noreply, arm_retry(state, [outcome])}
+          {:noreply, arm_retry(state, retryable(run_id, outcome))}
 
         _malformed ->
           Logger.error("questions: malformed QuestionAnswered event dropped")
@@ -333,6 +333,10 @@ defmodule ForemanServer.Questions.Deliverer do
     data = if is_struct(data), do: Map.from_struct(data), else: data
     Map.get(data, :answered_by) || Map.get(data, "answered_by")
   end
+
+  # Only a delivery to a run is retried: the recovery pass skips questions of no run, so a
+  # failed bus reply would only arm a backoff that does nothing.
+  defp retryable(run_id, outcome), do: if(ProjectionStore.run(run_id), do: [outcome], else: [])
 
   # Arm the retry only when a delivery failed and no retry is already due.
   defp arm_retry(%{retry_ref: ref} = state, _outcomes) when is_reference(ref), do: state

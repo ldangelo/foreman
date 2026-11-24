@@ -608,7 +608,7 @@ defmodule ForemanServer.Questions.DelivererTest do
       pause!(run_id)
       question_id = open_question!(run_id, project_id)
 
-      start_deliverer!(gateway: SteerRefusingGateway, retry_delays_ms: [5, 5])
+      deliverer = start_deliverer!(gateway: SteerRefusingGateway, retry_delays_ms: [5, 5])
 
       log =
         capture_log(fn ->
@@ -619,13 +619,30 @@ defmodule ForemanServer.Questions.DelivererTest do
             message: "the steer was not attempted once and retried twice"
           )
 
-          Process.sleep(50)
+          # The exhaustion is logged by the same callback that made the last attempt, so a
+          # call into the deliverer returns only after the log line is written.
+          assert %{retry_ref: nil, retry_attempt: 0} = :sys.get_state(deliverer)
         end)
 
       assert log =~ "questions: answer delivery still failing after 2 retries"
-
-      Process.sleep(50)
       assert length(dispatched_steers()) == 3
+    end
+
+    test "a failed bus reply (a question of no run) arms no retry" do
+      deliverer = start_deliverer!(bus: :no_such_signal_bus, retry_delays_ms: [60_000])
+
+      capture_log(fn ->
+        send(
+          deliverer,
+          {:projection_event,
+           %{
+             event_type: "QuestionAnswered",
+             data: %{run_id: "global", question_id: "q-bus", text: "x"}
+           }}
+        )
+
+        assert %{retry_ref: nil} = :sys.get_state(deliverer)
+      end)
     end
   end
 
