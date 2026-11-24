@@ -14,10 +14,12 @@ defmodule ForemanServer.Workflow.RunExecutorMultiRepoTest do
   import ExUnit.CaptureLog
 
   alias ForemanServer.{MultiRepoRuns, ProjectionStore}
-  alias ForemanServer.TestSupport.ProjectionStoreReset
-  alias ForemanServer.Workflow.RunExecutor
+  alias ForemanServer.TestSupport.{MeckScope, ProjectionStoreReset}
+  alias ForemanServer.Workflow.{OrphanReaper, RunExecutor}
 
   setup_all do
+    MeckScope.new_once!(OrphanReaper)
+
     template =
       Path.join(System.tmp_dir!(), "multi-repo-tpl-#{System.unique_integer([:positive])}")
 
@@ -288,6 +290,18 @@ defmodule ForemanServer.Workflow.RunExecutorMultiRepoTest do
   end
 
   describe "a relaunch over worktrees the interrupted launch left on disk (foreman-1lo2p)" do
+    # The reaper scans every process on the machine; here it only reports which worktree it
+    # was asked to clear.
+    setup do
+      MeckScope.restore_on_exit!(OrphanReaper)
+      parent = self()
+
+      :meck.expect(OrphanReaper, :reap, fn path ->
+        send(parent, {:reaped, path})
+        {:ok, []}
+      end)
+    end
+
     test "provision/1 says whether the worktree was reused; create/1 still answers the path",
          ctx do
       path = Path.join(ctx.root, "wt-provision")
@@ -316,13 +330,15 @@ defmodule ForemanServer.Workflow.RunExecutorMultiRepoTest do
       assert File.read!(Path.join(path, "pending.txt")) == "uncommitted"
     end
 
-    test "the project setup script ran once, on the worktree the first launch created", ctx do
+    test "a worktree the relaunch reuses is cleared of orphaned agents, and set up only once",
+         ctx do
       runs_log = Path.join(ctx.root, "setup-runs.log")
       set_setup_script!(ctx.project_id, ~s(echo "$FOREMAN_RUN_ID" >> '#{runs_log}'))
       state = state(ctx)
 
       assert {:ok, record} = RunExecutor.__create_run_worktree_for_test__(state, 1)
       assert setup_runs(runs_log) == [ctx.run_id]
+      refute_received {:reaped, _}
       File.write!(Path.join(record.worktree_path, "pending.txt"), "uncommitted")
 
       # The relaunch: a state that has not seen the worktree, the same one on disk.
@@ -335,8 +351,25 @@ defmodule ForemanServer.Workflow.RunExecutorMultiRepoTest do
         end)
 
       assert log =~ "reused it as it stands"
+      assert_received {:reaped, reaped}
+      assert reaped == record.worktree_path
       assert File.read!(Path.join(record.worktree_path, "pending.txt")) == "uncommitted"
       assert setup_runs(runs_log) == [ctx.run_id]
+    end
+
+    test "an agent that survives the reap fails the relaunch and leaves the worktree alone",
+         ctx do
+      state = state(ctx)
+      assert {:ok, record} = RunExecutor.__create_run_worktree_for_test__(state, 1)
+      File.write!(Path.join(record.worktree_path, "pending.txt"), "uncommitted")
+
+      survivor = %{pid: 4242, pgid: 4242, command: "pi --print"}
+      :meck.expect(OrphanReaper, :reap, fn _path -> {:error, {:orphan_survived, [survivor]}} end)
+
+      assert {:error, {:orphan_survived, [^survivor]}} =
+               RunExecutor.__create_run_worktree_for_test__(state, 1)
+
+      assert File.read!(Path.join(record.worktree_path, "pending.txt")) == "uncommitted"
     end
 
     test "a failure at a secondary rolls back nothing the relaunch only reused", ctx do

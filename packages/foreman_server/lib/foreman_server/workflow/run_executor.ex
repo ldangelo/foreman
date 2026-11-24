@@ -4211,7 +4211,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
             cleanup: cleanup
           }
 
-          with {:ok, record} <- setup_fresh_worktree(state, record, reused) do
+          with {:ok, record} <- ready_worktree(state, record, reused) do
             create_repo_worktrees(state, phase_index, record, reused)
           end
 
@@ -4249,21 +4249,27 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
   end
 
-  # A worktree already on disk when the run provisions it (a relaunch, with the
-  # worktree the interrupted launch left) is reused as it stands - nothing
-  # reset, nothing cleaned - and was set up by the launch that made it, so the
-  # script does not run again: it runs only on a worktree this call created.
-  defp setup_fresh_worktree(state, record, false), do: run_project_setup(state, record)
+  # What a provisioned worktree needs before the run uses it. A fresh one runs
+  # the project's setup script. One already on disk when the run provisions it (a
+  # relaunch, with the worktree the interrupted launch left) is reused as it
+  # stands - nothing reset, nothing cleaned - and was set up by the launch that
+  # made it, so the script does not run again. As on a resume
+  # (`rehydrate_worktree_entry/2`), an agent the dead server left running in it is
+  # reaped first, or it would race the new one; one that survives is a hard
+  # failure, because reusing the worktree would be unsafe.
+  defp ready_worktree(state, record, false), do: run_project_setup(state, record)
 
-  defp setup_fresh_worktree(state, record, true) do
-    Logger.info(
-      "RunExecutor #{state.run_id} found its worktree already on disk and reused it as it stands; it was neither reset nor set up again",
-      run_id: state.run_id,
-      task_id: task_id(state),
-      operation: "run_executor.worktree_reused"
-    )
+  defp ready_worktree(state, record, true) do
+    with :ok <- reap_orphaned_agents(state, record.worktree_path) do
+      Logger.info(
+        "RunExecutor #{state.run_id} found its worktree already on disk and reused it as it stands; it was neither reset nor set up again",
+        run_id: state.run_id,
+        task_id: task_id(state),
+        operation: "run_executor.worktree_reused"
+      )
 
-    {:ok, record}
+      {:ok, record}
+    end
   end
 
   # Eager provisioning of the run's secondary repositories, primary first
