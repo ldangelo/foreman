@@ -1,6 +1,6 @@
 # Agent runtime conventions (§1–§10)
 
-> Moved verbatim from `CLAUDE.md`. Section numbers are unchanged; `CLAUDE.md §N` references resolve here.
+> Moved verbatim from `CLAUDE.md`. Section numbers are unchanged; `CLAUDE.md` names the file holding each `§N`, so a reference to a section that is not in this file resolves there.
 
 ## 1. The agent runtime façade is the only public mutation surface
 

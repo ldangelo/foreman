@@ -1,6 +1,6 @@
 # Beads sync invariants and per-DB lease (§14–§15)
 
-> Moved verbatim from `CLAUDE.md`. Section numbers are unchanged; `CLAUDE.md §N` references resolve here.
+> Moved verbatim from `CLAUDE.md`. Section numbers are unchanged; `CLAUDE.md` names the file holding each `§N`, so a reference to a section that is not in this file resolves there.
 
 ## 14. Beads sync invariants (Go/Elixir CQRS slice)
 

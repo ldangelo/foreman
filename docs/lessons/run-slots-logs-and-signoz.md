@@ -1,6 +1,6 @@
 # Run slots, run logs, stall detection, SigNoz (§18–§20)
 
-> Moved verbatim from `CLAUDE.md`. Section numbers are unchanged; `CLAUDE.md §N` references resolve here.
+> Moved verbatim from `CLAUDE.md`. Section numbers are unchanged; `CLAUDE.md` names the file holding each `§N`, so a reference to a section that is not in this file resolves there.
 
 ## 18. Per-project run slots (per-project dispatch queues)
 

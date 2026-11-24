@@ -1,6 +1,6 @@
 # Task providers, run dashboard, durable execution (§13)
 
-> Moved verbatim from `CLAUDE.md`. Section numbers are unchanged; `CLAUDE.md §N` references resolve here.
+> Moved verbatim from `CLAUDE.md`. Section numbers are unchanged; `CLAUDE.md` names the file holding each `§N`, so a reference to a section that is not in this file resolves there.
 
 ## 13. Task-provider boundary reminder (Go/Elixir CQRS slice)
 

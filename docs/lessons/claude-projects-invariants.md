@@ -1,6 +1,6 @@
 # Claude-Projects parity invariants (§20.1–§27)
 
-> Moved verbatim from `CLAUDE.md`. Section numbers are unchanged; `CLAUDE.md §N` references resolve here.
+> Moved verbatim from `CLAUDE.md`. Section numbers are unchanged; `CLAUDE.md` names the file holding each `§N`, so a reference to a section that is not in this file resolves there.
 
 ## 20.1 Threads (Claude-Projects parity, E6)
 

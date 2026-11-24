@@ -11,204 +11,204 @@ authorised it to update).
 
 ## 1. The agent runtime façade is the only public mutation surface
 
-Callers interact with the runtime **only** through `ForemanServer.AgentRuntime.execute/3` and `register/1` / `register_adapter/2`. No other module is allowed to:
+Callers reach the runtime only through `AgentRuntime.execute/3` and `register/1` / `register_adapter/2`; nothing else starts invocations, calls `AdapterCatalog` directly, or reads the runtime's app config outside the supervisor, façade, `FailurePolicy` and per-adapter accessors.
 
 Full text: `docs/lessons/agent-runtime-conventions.md`.
 
 ## 2. Process layering (agent runtime)
 
-``` ForemanServer.Application └── ForemanServer.AgentRuntime.Supervisor         (permanent, :one_for_one) ├── ForemanServer.AgentRuntime.AdapterCatalog  (GenServer + Registry) └── ForemanServer.AgentRuntime.InvocationSupervisor (DynamicSupervisor) └── Invocation                       (temporary — one per execute/3…
+Supervision of the agent runtime (`AdapterCatalog` and `InvocationSupervisor` permanent, `Invocation` temporary) and of Overwatch's worker tree, where `LaunchWorker` is `:transient`, never `:permanent`, and its exit reason is the relaunch decision.
 
 Full text: `docs/lessons/agent-runtime-conventions.md`.
 
 ## 3. Errors flow one way
 
-Public `:execute/3` always returns one of:
+`execute/3` returns `{:ok, text}` or one of a closed set of `{:error, ...}` shapes; the success branch never names a backend and adapter-private metadata never reaches the public result.
 
 Full text: `docs/lessons/agent-runtime-conventions.md`.
 
 ## 4. The `BackendAdapter` behaviour
 
-```elixir @callback name() :: atom() @callback capabilities() :: %{required(:type) => atom(), required(:strengths) => [...], required(:weaknesses) => [...], required(:supported_contexts) => [...], optional(:cost_per_call) => number(), optional(:typical_latency_ms) => non_neg_integer()} @callback available?() ::…
+The four callbacks (`name/0`, `capabilities/0`, `available?/0`, `execute/2`): capabilities are validated at registration, `available?/0` is checked on every call, and `execute/2` runs inside the `Invocation` process.
 
 Full text: `docs/lessons/agent-runtime-conventions.md`.
 
 ## 5. `execute/3` strategies
 
-```elixir ForemanServer.AgentRuntime.execute(prompt, context, strategy: :manual,        # | :automatic | :policy backend: :my_backend,      # required when strategy is :manual task_type: :code_review,   # required when strategy is :automatic or :policy policy_module: SomeMod,    # only for :policy timeout_ms:…
+`:manual` (needs `backend`, never substitutes another), `:automatic` (context, availability, then cost, latency and registration order; never random) and `:policy` (`policy_module.route/2`), with per-call overrides.
 
 Full text: `docs/lessons/agent-runtime-conventions.md`.
 
 ## 5.1 Jido Harness provider and model selection
 
-`ForemanServer.AgentRuntime.JidoHarness` is the supported-provider source of truth for the Jido Harness adapter. It currently accepts `:pi` and `:claude` (`@supported_providers`); string provider keys from decoded workflow context are normalized at this boundary. A LiteLLM proxy is a model dispatcher reached…
+`AgentRuntime.JidoHarness` is the provider source of truth (`:pi`, `:claude`; a LiteLLM proxy is reached through them, `:litellm` is not a provider). Phase `models.default` becomes `context.model`; `Workflow.ModelResolution` names the rule that chose it.
 
 Full text: `docs/lessons/agent-runtime-conventions.md`.
 
 ## 6. `FailurePolicy.resolve/2` precedence
 
-Resolved keys: `:fail_fast`, `:fallback`, `:max_attempts`, `:timeout_ms`.
+Resolution order for `:fail_fast`, `:fallback`, `:max_attempts` and `:timeout_ms`: per-call opts, per-task config, app default, built-in defaults (no default deadline). `fail_fast` is always `true`.
 
 Full text: `docs/lessons/agent-runtime-conventions.md`.
 
 ## 7. Telemetry contract
 
-A **single** completion event is emitted per `execute/3` call, on `[:foreman, :agent_runtime, :invocation, :complete]`. The façade owns this emission (early-exit branches call `emit_early_exit_completion/3`; the invocation's terminal branch emits the normal-completion event). Duplicate emissions are a contract…
+One `[:foreman, :agent_runtime, :invocation, :complete]` event per `execute/3`, owned by the façade, with a whitelisted shape that never carries prompt text; also the span policy for coordinator-turn and workflow-phase spans.
 
 Full text: `docs/lessons/agent-runtime-conventions.md`.
 
 ## 8. Configuration keys (operator-visible)
 
-App config read by the runtime:
+The `:foreman_server, :agent_runtime` keys the runtime reads (`:enabled`, `:adapters`, `:failure_policies`, `:default_timeout_ms`) and their defaults; an undocumented key is a feature request, not a bug.
 
 Full text: `docs/lessons/agent-runtime-conventions.md`.
 
 ## 9. Adapter extension checklist (developer workflow)
 
-1. `defmodule MyApp.MyAdapter do` with `use ForemanServer.AgentRuntime.BackendAdapter` (or implement the four callbacks by hand). 2. Implement `name/0`, `capabilities/0`, `available?/0`, `execute/2`. 3. Register via config (`adapters: [...]`) or at boot: `ForemanServer.AgentRuntime.register(MyAdapter)`. 4.…
+Adding an adapter: implement the behaviour, register it through config or `AgentRuntime.register/1`, fix any registration error, and cover the happy path, canonical failure, `available?/0` and the no-backend-identifier rule.
 
 Full text: `docs/lessons/agent-runtime-conventions.md`.
 
 ## 10. Things that are deliberately not in this slice
 
-- No streaming. Each `execute/3` is one round-trip; partial progress is not surfaced. - No retry of the entire execution across crashes. The invocation process owns attempt history; the OS process backing a crashed adapter may leak a temp file. - No queueing for unavailable adapters. An empty / unavailable catalog…
+Not in the agent-runtime slice: streaming, whole-execution retry across crashes, queueing for unavailable adapters and remote backends; code that adds them inline without a TRD is out of scope.
 
 Full text: `docs/lessons/agent-runtime-conventions.md`.
 
 ## 11. Workflow catalog is the only manifest source (Go/Elixir CQRS slice)
 
-`ForemanServer.Workflow.Catalog` is the supervised GenServer that owns every parsed workflow manifest and prompt body in memory and keeps them in sync with the on-disk root (`~/.foreman/workflows` by default, overridable via `config :foreman_server, :workflow_root` — `AssetCatalog.default/0` reads that key before…
+`Workflow.Catalog` is the single owner of every parsed manifest and prompt body (root `~/.foreman/workflows`, or `:workflow_root`): synchronous load, hot reload by polling, gated auto-install of the bundled templates, and `commit:`, `stack_pr:`, `timeout_minutes:` as phase fields.
 
 Full text: `docs/lessons/workflow-catalog-and-worktree-contract.md`.
 
 ## 12. Foreman-managed worktree contract for implement-trd workflows (Go/Elixir CQRS slice)
 
-Foreman bundles two workflow manifests at `packages/foreman_server/priv/defaults/workflows/`: `implement-trd.yaml` and `implement-trd-beads.yaml`. Both declare the worktree schema, register with `ForemanServer.WorkflowTemplate.Installer` (`@template_names`), and are deployed by `foreman init --force`. The CLI…
+The bundled `implement-trd` and `implement-trd-beads` manifests and the worktree contract they declare: worktree ownership, single-flight per TRD, Beads scope and bead id, clean-vs-dirty cleanup, and `implement-trd-beads` judged on the Beads graph.
 
 Full text: `docs/lessons/workflow-catalog-and-worktree-contract.md`.
 
 ## 13. Task-provider boundary reminder (Go/Elixir CQRS slice)
 
-RunExecutor drives claim/complete/fail, each as a keyed `task_provider` effect (§13.2). Workflow.BootReconciliation drives orphan-reopen. `set_priority` and `add_dependency` stay at the adapter boundary until a separate operator surface TRD introduces them.
+`RunExecutor` drives claim/complete/fail as keyed `task_provider` effects (§13.2) and `Workflow.BootReconciliation` drives orphan-reopen; `set_priority` and `add_dependency` stay at the adapter boundary.
 
 Full text: `docs/lessons/durable-execution-and-dashboard.md`.
 
 ## 13.1 Operator run dashboard boundary
 
-The run-management dashboard is `GET /dashboard/runs`, guarded by the existing browser `:require_authenticated` token plug. Keep `/dashboard` as the separate Jido live dashboard. The run dashboard reads only `ProjectionStore` projections (runs, phases, tasks, logs, worktrees, PR associations) through…
+`GET /dashboard/runs` (browser token plug; `/dashboard` stays the Jido live dashboard) reads only `ProjectionStore` projections, and its run-control buttons dispatch public operator envelopes through `CommandGateway.dispatch_operator/1`.
 
 Full text: `docs/lessons/durable-execution-and-dashboard.md`.
 
 ## 13.2 Durable execution: recovery, effect keys, preflight (Phase 0)
 
-Source of truth: `docs/TRD/TRD-2026-a804d1c7-phase-0-durable-execution.md`.
+Phase 0 durable execution (`docs/TRD/TRD-2026-a804d1c7-phase-0-durable-execution.md`): keyed effects, reconcilers, the boot sweep, the restart budget, kickoff preflight order, execution profile, cancellation and test hermeticity.
 
 Full text: `docs/lessons/durable-execution-and-dashboard.md`.
 
 ## 13.3 Kata task provider (`ForemanServer.TaskProviders.KataAdapter`)
 
-- **Binding is provider-conditional, keyed on the capability `storage_scheme`.** `:sqlite` (Beads) binds by `task_provider.config.database_path`; `:cli_process` (Kata, provider id `kata`, contract `kata.capabilities.v1`) binds by an absolute `config.cwd`. `ForemanServer.TaskProvider.StorageBinding` is the one place…
+Provider binding is keyed on the capability `storage_scheme` (`:sqlite` Beads by `database_path`, `:cli_process` Kata by an absolute `config.cwd`) through `TaskProvider.StorageBinding`; also the Kata CLI, claim authority and doctor.
 
 Full text: `docs/lessons/durable-execution-and-dashboard.md`.
 
 ## 14. Beads sync invariants (Go/Elixir CQRS slice)
 
-Atomic `task.create` and bidirectional Beads sync are governed by these invariants. Drift without a tracked TRD is a regression.
+Atomic `task.create` (the provider mints the Bead before the append), the `external_id` contract, opt-in inbound Beads sync and orphan janitor, the adapter boundary and an honest doctor; drift without a tracked TRD is a regression.
 
 Full text: `docs/lessons/beads-sync-and-lease.md`.
 
 ## 15. Per-DB Beads lease (Go/Elixir CQRS slice)
 
-SQLite's single-writer protocol cannot tolerate concurrent `br`/`bv` writers or writers running alongside `bv --robot-plan`. The `ForemanServer.Aggregates.BeadsDbLease` aggregate is an event-sourced lock keyed by the configured absolute Beads DB path passed at acquire time, giving process-local serialization…
+`Aggregates.BeadsDbLease` is an event-sourced lock per absolute Beads DB path so `br`/`bv` writers never overlap: acquire-or-enqueue, release-with-promotion, process-bound holds, dead callers, fail-closed gating, compensation.
 
 Full text: `docs/lessons/beads-sync-and-lease.md`.
 
 ## 18. Per-project run slots (per-project dispatch queues)
 
-Run concurrency is enforced per project; there is no global run-slot queue and no machine-wide ceiling. Total concurrency is the sum of per-project limits (TRD-2026-b9e27ab5).
+Run concurrency is enforced per project (stream `run_slots:<project_id>`): there is no global run-slot queue or machine-wide ceiling, and total concurrency is the sum of per-project limits (TRD-2026-b9e27ab5). Also capacity, promotion and legacy-stream migration.
 
 Full text: `docs/lessons/run-slots-logs-and-signoz.md`.
 
 ## 19. Durable worker run logs and MCP run status
 
-`foreman_run_status` is a bounded DTO built from `ProjectionStore.run/1` and `ProjectionStore.phases_for_run/1`; do not rebuild it from logs or raw event streams, and keep `foreman_run_get`'s full projection shape distinct. A run id with no run projection yet falls back to `ProjectionStore.pending_run/1`: a run…
+`foreman_run_status` is a bounded DTO over `ProjectionStore.run/1` and `phases_for_run/1`; `foreman_run_get_logs` reads `ProjectionStore`, fed only by `WorkerProtocol.emit` worker events, with bounded retention and `omitted_*` accounting.
 
 Full text: `docs/lessons/run-slots-logs-and-signoz.md`.
 
 ## Phase stall detection
 
-`stall_detection` is explicit phase metadata, never inferred from phase names. Normalize it through `ForemanServer.Workflow.StallPolicy`; valid scopes are agent/no-output and messaging/no-progress. `RunExecutor` copies normalized policy onto `phase.start`/`PhaseStarted`, `ProjectionStore.stall_candidates/1` is the…
+`stall_detection` is explicit phase metadata normalized by `Workflow.StallPolicy`; `StallDetector` persists stalls only through `run.report_stall`, and worker heartbeats do not count as output activity.
 
 Full text: `docs/lessons/run-slots-logs-and-signoz.md`.
 
 ## 20. SigNoz operational-log bridge
 
-`ForemanServer.Observability.OtelLogBridge` installs an additional Erlang `:logger` handler (never replaces the default console handler) that exports redacted operational logs to SigNoz over OTLP/HTTP. It is deliberately separate from the Langfuse LLM-trace path (`jido_otel`/`opentelemetry_exporter`, §7 above) —…
+`Observability.OtelLogBridge` adds a `:logger` handler that exports redacted operational logs to SigNoz over OTLP/HTTP; it is separate from the Langfuse trace path (§7) and switched by four `FOREMAN_SIGNOZ_*` env vars.
 
 Full text: `docs/lessons/run-slots-logs-and-signoz.md`.
 
 ## 20.1 Threads (Claude-Projects parity, E6)
 
-`ForemanServer.Threads` is a pure read model over existing projections (task, run, worktree, PR association, review, and legacy jobsite history); no event backs a thread except the disposition flag. Rules:
+`ForemanServer.Threads` is a pure read model over existing projections (no event backs a thread except the disposition flag). Rules cover `thread.resolve`/`thread.reopen`, live steering and its fallback, routes, `Threads.Finder` and bounded transcripts.
 
 Full text: `docs/lessons/claude-projects-invariants.md`.
 
 ## 20.2 Overview (Claude-Projects parity, E7)
 
-`ForemanServer.Overview` is the operator's glance at a project: a pure read model over `Threads`, the PR / merge-gate state folded into `ProjectionStore`, review verdicts and approval / question counts (`Overview.Signals`). Rules:
+`ForemanServer.Overview` is a pure read model over `Threads`, PR and merge-gate state, review verdicts and approval/question counts. Rules cover grouping, PR state folding, tabs, signals, approvals and questions (E8) and the operator-only merge gate.
 
 Full text: `docs/lessons/claude-projects-invariants.md`.
 
 ## 20.3 Scheduled tasks (E11)
 
-- `Aggregates.Schedule` (`schedule:<project_id>:<schedule_id>`): operator commands `schedule.create|update|pause|resume|delete` (allowlisted in `CommandGateway` and `CommandController`; the controller/gateway derive the composite id, `schedule.create` without an id generates `sch-<hex>`), system commands…
+`Aggregates.Schedule` with its operator and system-only commands, the typed `Schedule.Spec` (5-field cron or interval, UTC), the pure `Schedule.Planner`, the supervised `Schedule.Ticker`, read surfaces, MCP write tools and the Scheduled tab.
 
 Full text: `docs/lessons/claude-projects-invariants.md`.
 
 ## 20.4 Project coordinator (Claude-Projects parity, E15)
 
-- One event-sourced conversation per project, stream `coordinator:<project_id>` (`Aggregates.Coordinator`). Operator-allowed commands: `coordinator.message`, `coordinator.restart` (the one allowlist in `CommandGateway`, which `CommandController` reads; add the type to the controller's…
+One event-sourced conversation per project (`Aggregates.Coordinator`, stream `coordinator:<project_id>`): operator versus system-only commands, the runner and agent, `Coordinator.Dispatch` as the single choke point for effects, authority, workflow selection and usage.
 
 Full text: `docs/lessons/claude-projects-invariants.md`.
 
 ## 21. Outbound messaging delivery
 
-`ForemanServer.Notifier` (supervised, started by default; `config :foreman_server, :start_notifier?, false` stops it) is the production producer of `Messaging.notify/2`. It subscribes to projection events (no replay) and maps them through the table in `ForemanServer.Notifier.Mapping`: run (and legacy jobsite)…
+`ForemanServer.Notifier` (supervised, on by default) maps projection events to `failure`, `stall`, `action_needed` and `run_update` notifications for `Messaging.notify/2`; provider HTTP stays behind `Messaging.Providers.*`, and `Messaging.Dispatcher` redelivers at boot.
 
 Full text: `docs/lessons/claude-projects-invariants.md`.
 
 ## 22. Project memory
 
-A project keeps agent- and operator-written memory under `<project path>/.foreman/memory/` (`MEMORY.md` index plus one `<topic>.md` per topic). Content lives on disk, never in events: `ProjectMemoryWritten` / `ProjectMemoryForgotten` (stream `project_memory:<project_id>`, `Aggregates.ProjectMemory`) carry metadata…
+Project memory lives under `<project path>/.foreman/memory/`: content on disk, never in events (events carry metadata only). Always go through `ForemanServer.ProjectMemory`, which locks per project and redacts before writing.
 
 Full text: `docs/lessons/claude-projects-invariants.md`.
 
 ## 23. Standing context injection
 
-`ForemanServer.ProjectContext.build/2` is the ONLY producer of standing project context (instructions, repositories, provider sections such as `ProjectContext.Memory`); never assemble it elsewhere. Config `:foreman_server, :project_context` (`max_chars`, `section_caps`, `section_providers`); every cap and the total…
+`ForemanServer.ProjectContext.build/2` is the only producer of standing project context (instructions, repositories, provider sections such as memory); caps count characters, truncation is visible in the text, and the Repositories section is orientation only.
 
 Full text: `docs/lessons/claude-projects-invariants.md`.
 
 ## 24. PR watching and bounded auto-fix (E9)
 
-`ForemanServer.PrWatcher` (config `:pr_watcher`, `enabled: false` or `FOREMAN_PR_WATCHER_ENABLED=false` stops it) folds observed PR state into the run's `pr_watch` projection through typed events `PrChecksChanged`, `PrReviewChanged`, `PrFixRequested`, `PrFixStarted`, `PrFixFinished`, `PrFixExhausted`, `PrCreated`,…
+`PrWatcher` folds observed PR state into the run's `pr_watch` projection (polling is the opt-in `PrMonitor`); fixes are follow-up runs under loop guards and merging stays operator-only. Also the Phase 1 entries: review findings, risk rubric, PR report, `required_checks` gate, evidence and waivers.
 
 Full text: `docs/lessons/claude-projects-invariants.md`.
 
 ## 25. Project library
 
-A project's library is a read-only file store every agent of the project can use (Claude "Project knowledge" parity), at `<project primary repo>/.foreman/library/<entry_id>/{entry.json,files/...}`. ONLY `library/` is gitignored (`ForemanDir.ensure_ignored(path, "library/")`); `.foreman/Dockerfile`, `bead.exs` and…
+A project's library is a read-only file store every agent of the project can use, under `<primary repo>/.foreman/library/<entry_id>/`: only `library/` is gitignored, bytes live on disk (events carry metadata only), and access goes through `ForemanServer.Library`.
 
 Full text: `docs/lessons/claude-projects-invariants.md`.
 
 ## 26. Claude-Projects invariants (cross-cutting contracts)
 
-Rules that hold across every project-workspace capability (E0-E11, E13-E16). Each names its enforcing code and the test that pins it; a change that weakens one needs the operator's explicit word.
+Rules that hold across every project-workspace capability (E0-E11, E13-E16), each naming its enforcing code and test: typed boundaries, operator-only merge gate, system-only commands off the operator allowlists, registered aggregate prefixes, strict `EventCodec`, no secrets or content in events.
 
 Full text: `docs/lessons/claude-projects-invariants.md`.
 
 ## 27. Follow-up runs and the retired jobsite door
 
-The separate "jobsite" dispatch path (`/api/jobsites`, `foreman jobsite`, `Jobsite.Executor`) is retired (plan and decisions: `docs/plans/retire-jobsites.md`). Its worthwhile capabilities live in runs:
+The separate jobsite dispatch path (`/api/jobsites`, `foreman jobsite`, `Jobsite.Executor`) is retired (`docs/plans/retire-jobsites.md`); its worthwhile capabilities live in runs: follow-up runs (`run.followup.request`, system-only), session resume and sandbox.
 
 Full text: `docs/lessons/claude-projects-invariants.md`.

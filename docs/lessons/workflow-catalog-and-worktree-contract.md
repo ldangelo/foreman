@@ -1,6 +1,6 @@
 # Workflow catalog and worktree contract (§11–§12)
 
-> Moved verbatim from `CLAUDE.md`. Section numbers are unchanged; `CLAUDE.md §N` references resolve here.
+> Moved verbatim from `CLAUDE.md`. Section numbers are unchanged; `CLAUDE.md` names the file holding each `§N`, so a reference to a section that is not in this file resolves there.
 
 ## 11. Workflow catalog is the only manifest source (Go/Elixir CQRS slice)
 
