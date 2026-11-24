@@ -4,6 +4,23 @@
 
 ### Fixed
 
+- **A report that merely mentions `FOREMAN_BRANCH=` no longer retargets the PR.**
+  `AutoPR.branch_override/1` took the first `FOREMAN_BRANCH=(\S+)` match anywhere in the final
+  artifact as the PR's head branch. Since the artifact is the agent's whole report (the entry
+  below), a finding, an environment-variable contract or a quoted diff that mentioned the text
+  pushed the PR from, and opened it for, a branch the agent never chose (`PrReady` and the merge
+  gate resolved it the same way). The override now has one exact form: a whole line at column 0
+  (trailing whitespace and a CR ignored), outside any code fence (`ReviewFindings.unfenced_lines/1`,
+  the rule the findings marker lines follow), naming a valid git branch (`git check-ref-format
+  --branch`, plus a refusal of a leading `+`, which `git push` reads as a forced refspec, and of
+  text that is not UTF-8). The same text anywhere else declares nothing. A declaration that cannot
+  be honoured is an error and never a fallback to the run's branch: `branch_override/1` now
+  returns `{:ok, branch} | :none | {:error, {:invalid_branch_override, name, reason} |
+  {:ambiguous_branch_override, first, second}}` (two different names are ambiguous; neither is
+  picked), and `resolve_head_branch/1` passes the error to its callers, so `maybe_create_pr/1`
+  opens no PR and `signal_pr_ready/2` signals no `run.pr.ready`, each logging the reason at
+  `error`. No ensemble skill emits the marker today, so no skill's output changes meaning.
+
 - **The review report the agent wrote is no longer overwritten by its chat message.** After
   every agent step `JobsiteObserver` called `ArtifactTemplate.write/4`, which replaced the
   phase's artifact file with the agent's final message. The review phases tell the agent to

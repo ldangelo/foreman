@@ -3029,6 +3029,31 @@ body instead (see **Pull-request body template**). A task field
 that was never set (for example, a title-only task) does not fail: AutoPR falls
 back to the generated title/body. Ad-hoc no-task runs keep the legacy generated
 run/artifact title and body either way.
+
+**An artifact can name the PR's head branch, in one exact form.** A skill that manages its
+own branch, rather than leaving it to the run's worktree, declares it in the final phase
+artifact with a line that is nothing but `FOREMAN_BRANCH=` and the branch name:
+
+```
+FOREMAN_BRANCH=feature/my-trd-slug
+```
+
+The line must start at column 0 (trailing whitespace and a CR are ignored), lie outside every
+code fence (the rule the findings marker lines below follow) and name a valid git branch: the
+rules of `git check-ref-format --branch`, and in addition the name may not start with `+`
+(which `git push` reads as a forced refspec) and must be UTF-8 text. The artifact is the
+agent's whole report, so the same text anywhere else declares nothing and the PR keeps the
+run's own branch: in a sentence, in an inline code span, in a list item or a quote, on an
+indented line, in a quoted diff, or inside a ``` or `~~~` fence. Declaring the same name
+twice is one declaration.
+A declaration that cannot be honoured is an error, never a fallback to the run's own branch:
+`{:invalid_branch_override, name, reason}` for a name that is not a valid branch name (`reason`
+is the rule it breaks) and `{:ambiguous_branch_override, first, second}` for two different
+names, neither of which is picked. The final PR is then not opened and the server log says why
+at error level, `run.pr.ready` is not signalled from that artifact either, and the operator's
+Create PR, which reads no artifact, still opens the run's own branch. No ensemble skill emits
+this line today. Read from the source, not observed.
+
 Workflows may opt into phase boundary PR records with `stack_pr:
 true` on an individual phase. Top-level `pr:`, `merge:`, `stacked:`, and
 `checkpointPr` settings remain unsupported.

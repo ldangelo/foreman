@@ -178,11 +178,8 @@ defmodule ForemanServer.Workflow.ReviewFindings do
   Scans `contents` for one counted marker pair and returns the text between.
 
   A line counts as a marker only when, trailing whitespace trimmed, it equals
-  the marker exactly and lies outside a fenced code block. A fence opens on a
-  line starting (after at most three spaces) with three or more backticks or
-  tildes, closes on a later line starting (after at most three spaces) with at
-  least as many of the same character and nothing else, and runs to the end of
-  the file when never closed.
+  the marker exactly and lies outside a fenced code block (`unfenced_lines/1`
+  defines the fence).
 
   Returns `{:ok, block}`, `:absent` (no counted marker), or
   `{:error, :multiple_blocks}` (a second counted start or end) /
@@ -212,6 +209,22 @@ defmodule ForemanServer.Workflow.ReviewFindings do
         {:error, :unterminated_block}
     end
   end
+
+  @doc """
+  The lines of `contents` that lie outside a fenced code block, in file order, each as
+  `{index, line}`: `index` is the line's 0-based position among all the lines of `contents`
+  and `line` has a trailing `\\r` (a CRLF line ending) removed.
+
+  This is the fence rule `extract_block/3` counts markers with, and the one to use for any
+  other marker line read from an agent's report (AGENTS.md 5.7: one implementation). A fence
+  opens on a line starting (after at most three spaces) with three or more backticks or
+  tildes, closes on a later line starting (after at most three spaces) with at least as many
+  of the same character and nothing else, and runs to the end of the file when never closed.
+  The line that opens a fence, the lines it holds and the line that closes it are not returned.
+  """
+  @spec unfenced_lines(String.t()) :: [{non_neg_integer(), String.t()}]
+  def unfenced_lines(contents) when is_binary(contents),
+    do: contents |> String.split("\n") |> unfenced()
 
   @doc """
   Maps a malformed result or the read error of `read/1` to the closed event
@@ -475,29 +488,42 @@ defmodule ForemanServer.Workflow.ReviewFindings do
   # --- marker scan ---
 
   defp counted_markers(lines, start_marker, end_marker) do
-    {_fence, starts, ends} =
+    {starts, ends} =
+      lines
+      |> unfenced()
+      |> Enum.reduce({[], []}, fn {idx, line}, {starts, ends} ->
+        case String.trim_trailing(line) do
+          ^start_marker -> {[idx | starts], ends}
+          ^end_marker -> {starts, [idx | ends]}
+          _ -> {starts, ends}
+        end
+      end)
+
+    {Enum.reverse(starts), Enum.reverse(ends)}
+  end
+
+  # The one fence state machine: `{index, line}` of every line outside a fenced code block.
+  defp unfenced(lines) do
+    {_fence, kept} =
       lines
       |> Enum.with_index()
-      |> Enum.reduce({nil, [], []}, fn {raw, idx}, {fence, starts, ends} ->
+      |> Enum.reduce({nil, []}, fn {raw, idx}, {fence, kept} ->
         # A CRLF artifact: the line ending is not part of the line.
         line = String.trim_trailing(raw, "\r")
 
         case fence do
           nil ->
-            trimmed = String.trim_trailing(line)
-
-            cond do
-              trimmed == start_marker -> {nil, [idx | starts], ends}
-              trimmed == end_marker -> {nil, starts, [idx | ends]}
-              true -> {fence_open(line), starts, ends}
+            case fence_open(line) do
+              nil -> {nil, [{idx, line} | kept]}
+              opened -> {opened, kept}
             end
 
           open ->
-            if fence_closes?(line, open), do: {nil, starts, ends}, else: {open, starts, ends}
+            if fence_closes?(line, open), do: {nil, kept}, else: {open, kept}
         end
       end)
 
-    {Enum.reverse(starts), Enum.reverse(ends)}
+    Enum.reverse(kept)
   end
 
   # A fence opens on up to three spaces then three or more backticks or tildes.

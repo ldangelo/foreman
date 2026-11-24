@@ -66,13 +66,379 @@ defmodule ForemanServer.Workflow.AutoPRTest do
 
     test "an artifact FOREMAN_BRANCH marker overrides run state" do
       assert AutoPR.branch_override("noise\nFOREMAN_BRANCH=skill/own-branch\nmore") ==
-               "skill/own-branch"
+               {:ok, "skill/own-branch"}
     end
 
-    test "branch_override/1 is nil when the artifact declares no branch" do
-      refute AutoPR.branch_override("FOREMAN_COMPLETE=true\nno branch here")
+    test "branch_override/1 is :none when the artifact declares no branch" do
+      assert AutoPR.branch_override("FOREMAN_COMPLETE=true\nno branch here") == :none
     end
   end
+
+  # The artifact is the agent's whole report since #977, not a line a skill printed. The old
+  # `~r/FOREMAN_BRANCH=(\S+)/` took the first match anywhere in it as the PR's head branch, so a
+  # report that merely MENTIONED the text opened the PR from a branch the agent never chose.
+  # Each entry is a way a report mentions the marker without declaring it.
+  @mentions [
+    {"in a sentence", "The skill prints FOREMAN_BRANCH=skill/own-branch at the end.\n"},
+    {"in an inline code span", "Set `FOREMAN_BRANCH=skill/own-branch` first.\n"},
+    {"glued to other text", "xFOREMAN_BRANCH=skill/own-branch\n"},
+    {"as an export", "export FOREMAN_BRANCH=skill/own-branch\n"},
+    {"in a list item", "- FOREMAN_BRANCH=skill/own-branch\n"},
+    {"in a quote", "> FOREMAN_BRANCH=skill/own-branch\n"},
+    {"in an HTML comment", "<!-- FOREMAN_BRANCH=skill/own-branch -->\n"},
+    {"indented by spaces", "  FOREMAN_BRANCH=skill/own-branch\n"},
+    {"indented by a tab", "\tFOREMAN_BRANCH=skill/own-branch\n"},
+    {"in a backtick fence", "```\nFOREMAN_BRANCH=skill/own-branch\n```\n"},
+    {"in a tilde fence", "~~~\nFOREMAN_BRANCH=skill/own-branch\n~~~\n"},
+    {"in a fence with an info string", "```text\nFOREMAN_BRANCH=skill/own-branch\n```\n"},
+    {"in an indented fence", "   ```\nFOREMAN_BRANCH=skill/own-branch\n   ```\n"},
+    {"in a fence that is never closed", "```\nFOREMAN_BRANCH=skill/own-branch\n"},
+    {"in a quoted diff",
+     "```diff\n-FOREMAN_BRANCH=old/branch\n+FOREMAN_BRANCH=skill/own-branch\n" <>
+       " FOREMAN_BRANCH=skill/own-branch\n```\n"},
+    {"as unfenced diff lines",
+     "-FOREMAN_BRANCH=old/branch\n+FOREMAN_BRANCH=skill/own-branch\n" <>
+       " FOREMAN_BRANCH=skill/own-branch\n"}
+  ]
+
+  @own_branch "foreman/run-1/implement"
+
+  # A report that documents the handoff contract every way a report can and declares nothing.
+  @report """
+  # Review report
+
+  ## Findings
+
+  - **major** `auto_pr.ex`: the skill prints `FOREMAN_BRANCH=skill/own-branch` when it manages
+    its own branch, and AutoPR reads FOREMAN_BRANCH=skill/own-branch back from this file.
+
+  ## Handoff contract
+
+  ```
+  FOREMAN_BRANCH=skill/own-branch
+  FOREMAN_SHA=0123456789abcdef
+  FOREMAN_COMPLETE=true
+  ```
+
+  ## The change under review
+
+  ```diff
+  -  @branch_regex ~r/FOREMAN_BRANCH=(\\S+)/
+  +  @branch_marker "FOREMAN_BRANCH="
+   FOREMAN_BRANCH=skill/own-branch
+  ```
+  """
+
+  describe "branch_override/1: one exact form" do
+    test "a whole line at column 0 declares the branch" do
+      missed =
+        for {label, report} <- [
+              {"between other lines", "noise\nFOREMAN_BRANCH=skill/own-branch\nmore"},
+              {"alone and unterminated", "FOREMAN_BRANCH=skill/own-branch"},
+              {"as the last line", "done\nFOREMAN_BRANCH=skill/own-branch\n"},
+              {"with CRLF line endings", "done\r\nFOREMAN_BRANCH=skill/own-branch\r\nmore\r\n"},
+              {"with trailing whitespace", "FOREMAN_BRANCH=skill/own-branch \t \n"},
+              {"beside the other handoff lines",
+               "FOREMAN_BRANCH=skill/own-branch\nFOREMAN_SHA=0123\nFOREMAN_COMPLETE=true\n"},
+              {"stated twice, the same",
+               "FOREMAN_BRANCH=skill/own-branch\ntext\nFOREMAN_BRANCH=skill/own-branch\n"},
+              {"after a fence that quotes another",
+               "```\nFOREMAN_BRANCH=quoted/branch\n```\nFOREMAN_BRANCH=skill/own-branch\n"},
+              {"before a fence that quotes another",
+               "FOREMAN_BRANCH=skill/own-branch\n```\nFOREMAN_BRANCH=quoted/branch\n```\n"},
+              {"beside a mention",
+               "It prints FOREMAN_BRANCH=other/branch.\nFOREMAN_BRANCH=skill/own-branch\n"}
+            ],
+            AutoPR.branch_override(report) != {:ok, "skill/own-branch"},
+            do: label
+
+      assert missed == []
+    end
+
+    test "a mention of the marker declares nothing" do
+      leaked =
+        for {label, report} <- [
+              {"a whole report that documents the contract", @report} | @mentions
+            ],
+            AutoPR.branch_override(report) != :none,
+            do: label
+
+      assert leaked == []
+    end
+
+    test "two different declarations are ambiguous: neither is picked" do
+      assert AutoPR.branch_override("FOREMAN_BRANCH=a/one\nFOREMAN_BRANCH=b/two\n") ==
+               {:error, {:ambiguous_branch_override, "a/one", "b/two"}}
+
+      # In file order, and whether or not either name would be valid alone.
+      assert AutoPR.branch_override("FOREMAN_BRANCH=b/two\nFOREMAN_BRANCH=a/one\n") ==
+               {:error, {:ambiguous_branch_override, "b/two", "a/one"}}
+
+      assert AutoPR.branch_override("FOREMAN_BRANCH=a/one\nFOREMAN_BRANCH=not valid\n") ==
+               {:error, {:ambiguous_branch_override, "a/one", "not valid"}}
+
+      assert AutoPR.branch_override("FOREMAN_BRANCH=a/one\nFOREMAN_BRANCH=\nFOREMAN_BRANCH=c\n") ==
+               {:error, {:ambiguous_branch_override, "a/one", ""}}
+    end
+
+    # The names git accepts are valid unless a rule below says otherwise; what git itself
+    # refuses is held to git (see "agrees with `git check-ref-format`").
+    test "a declared name that is not a valid branch name is refused, with the rule it breaks" do
+      table = [
+        {"", :empty},
+        {"has space", :space},
+        {"tab\there", :control_character},
+        {"del\x7f", :control_character},
+        {"nul\x00", :control_character},
+        {"-flag", :leading_dash},
+        {"-", :leading_dash},
+        {"+main", :leading_plus},
+        {"HEAD", :reserved_name},
+        {"a:b", :forbidden_character},
+        {"a~b", :forbidden_character},
+        {"a^b", :forbidden_character},
+        {"a?b", :forbidden_character},
+        {"a*b", :forbidden_character},
+        {"a[b", :forbidden_character},
+        {"a\\b", :forbidden_character},
+        {"a..b", :double_dot},
+        {"..", :double_dot},
+        {"a@{b", :at_brace},
+        {"a.", :trailing_dot},
+        {"/a", :empty_component},
+        {"a/", :empty_component},
+        {"a//b", :empty_component},
+        {".a", :dot_component},
+        {"a/.b", :dot_component},
+        {"a.lock", :lock_component},
+        {"a/b.lock/c", :lock_component},
+        {<<"bad", 0xFF>>, :not_utf8}
+      ]
+
+      actual =
+        for {name, _rule} <- table,
+            do: {name, AutoPR.branch_override("FOREMAN_BRANCH=" <> name <> "\n")}
+
+      expected =
+        for {name, rule} <- table,
+            do: {name, {:error, {:invalid_branch_override, name, rule}}}
+
+      assert actual == expected
+    end
+
+    test "a refused name is reported by a bounded excerpt, not in full" do
+      long = String.duplicate("é", 500) <> " tail"
+
+      assert {:error, {:invalid_branch_override, excerpt, :space}} =
+               AutoPR.branch_override("FOREMAN_BRANCH=" <> long <> "\n")
+
+      assert excerpt == String.duplicate("é", 120) <> "…"
+
+      assert {:error, {:ambiguous_branch_override, first, second}} =
+               AutoPR.branch_override(
+                 "FOREMAN_BRANCH=" <> long <> "\nFOREMAN_BRANCH=" <> long <> "x\n"
+               )
+
+      assert first == excerpt and second == excerpt
+    end
+
+    # The rules git-check-ref-format(1) states for `refs/heads/<name>`, a name either side of
+    # each. The validator is pure; git is the oracle. (A leading `-` or `+`, `HEAD` and text
+    # that is not UTF-8 are Foreman's refusals, held by the table above.)
+    @git_ref_names [
+      # git accepts
+      "main",
+      "foreman/task-1/run-abc",
+      "feature/x-1",
+      "release/1.2.3",
+      "a.b",
+      "a/b/c",
+      "x.lock.y",
+      "a./b",
+      "foo-",
+      "foo@",
+      "@foo",
+      "a/@",
+      "@",
+      "UPPER/Case",
+      "0",
+      "_x",
+      "#x",
+      "!x",
+      "a;b",
+      "a$b",
+      "a`b",
+      "a|b",
+      "a&b",
+      "a'b",
+      "a\"b",
+      "<x>",
+      "日本語/x",
+      "ünï",
+      "refs/heads/x",
+      "a/-b",
+      # git refuses
+      "",
+      "a b",
+      "a..b",
+      "a~b",
+      "a^b",
+      "a:b",
+      "a?b",
+      "a*b",
+      "a[b",
+      "a\\b",
+      "a@{b",
+      "/a",
+      "a/",
+      "a//b",
+      ".a",
+      "a/.b",
+      "a.",
+      "foo.lock",
+      "a/foo.lock",
+      "a.lock/b",
+      "..",
+      ".",
+      "a\tb",
+      "a\x7fb",
+      "a\x01b",
+      "a\rb"
+    ]
+
+    test "agrees with `git check-ref-format` on every rule git states" do
+      disagreements =
+        for name <- @git_ref_names, git_accepts_ref?(name) != override_accepts?(name), do: name
+
+      assert disagreements == []
+    end
+  end
+
+  describe "the PR is proposed from the branch the artifact declares, and from no other" do
+    @describetag :tmp_dir
+
+    test "a report that only mentions the marker leaves the run's own branch", %{tmp_dir: tmp_dir} do
+      retargeted =
+        for {label, report} <- [
+              {"a whole report that documents the contract", @report} | @mentions
+            ],
+            AutoPR.resolve_head_branch(report_context(tmp_dir, report)) != {:ok, @own_branch},
+            do: label
+
+      assert retargeted == []
+    end
+
+    test "a declaration beats the run's own branch, whatever else the report quotes", %{
+      tmp_dir: tmp_dir
+    } do
+      context = report_context(tmp_dir, @report <> "\nFOREMAN_BRANCH=skill/own-branch\n")
+
+      assert AutoPR.resolve_head_branch(context) == {:ok, "skill/own-branch"}
+    end
+
+    test "a declaration is honoured when the run has no branch of its own", %{tmp_dir: tmp_dir} do
+      context =
+        tmp_dir
+        |> report_context("FOREMAN_BRANCH=skill/own-branch\n")
+        |> Map.delete(:head_branch)
+
+      assert AutoPR.resolve_head_branch(context) == {:ok, "skill/own-branch"}
+    end
+
+    test "a declaration that cannot be honoured is an error, never the run's own branch", %{
+      tmp_dir: tmp_dir
+    } do
+      cases = [
+        {"FOREMAN_BRANCH=a/one\nFOREMAN_BRANCH=b/two\n",
+         {:ambiguous_branch_override, "a/one", "b/two"}},
+        {"FOREMAN_BRANCH=not valid\n", {:invalid_branch_override, "not valid", :space}},
+        {"FOREMAN_BRANCH=\n", {:invalid_branch_override, "", :empty}}
+      ]
+
+      actual =
+        for {report, _error} <- cases,
+            do: AutoPR.resolve_head_branch(report_context(tmp_dir, report))
+
+      assert actual == for({_report, error} <- cases, do: {:error, error})
+    end
+
+    test "an absent artifact, or none at all, declares nothing", %{tmp_dir: tmp_dir} do
+      context = report_context(tmp_dir, "irrelevant")
+
+      assert AutoPR.resolve_head_branch(%{context | artifact_path: Path.join(tmp_dir, "nope.md")}) ==
+               {:ok, @own_branch}
+
+      assert AutoPR.resolve_head_branch(%{context | artifact_path: nil}) == {:ok, @own_branch}
+
+      assert AutoPR.resolve_head_branch(Map.delete(context, :artifact_path)) ==
+               {:ok, @own_branch}
+
+      assert AutoPR.resolve_head_branch(%{context | artifact_path: nil, head_branch: nil}) ==
+               {:error, :no_head_branch}
+    end
+
+    test "maybe_create_pr/1 probes the run's own branch for a report that only mentions the marker",
+         %{tmp_dir: tmp_dir} do
+      context = report_context(tmp_dir, @report, %{command_runner: recording_runner(self())})
+
+      assert AutoPR.maybe_create_pr(context) == :noop
+
+      assert_received {:cmd, "git", ["rev-list", "--count", "main..foreman/run-1/implement"]}
+      refute_received {:cmd, _executable, _args}
+    end
+
+    test "maybe_create_pr/1 probes the branch the report declares", %{tmp_dir: tmp_dir} do
+      report = @report <> "\nFOREMAN_BRANCH=skill/own-branch\n"
+      context = report_context(tmp_dir, report, %{command_runner: recording_runner(self())})
+
+      assert AutoPR.maybe_create_pr(context) == :noop
+
+      assert_received {:cmd, "git", ["rev-list", "--count", "main..skill/own-branch"]}
+      refute_received {:cmd, _executable, _args}
+    end
+
+    test "maybe_create_pr/1 runs no command when the declaration is refused", %{tmp_dir: tmp_dir} do
+      for {report, error} <- [
+            {"FOREMAN_BRANCH=a/one\nFOREMAN_BRANCH=b/two\n",
+             {:ambiguous_branch_override, "a/one", "b/two"}},
+            {"FOREMAN_BRANCH=+main\n", {:invalid_branch_override, "+main", :leading_plus}}
+          ] do
+        context = report_context(tmp_dir, report, %{command_runner: recording_runner(self())})
+
+        assert AutoPR.maybe_create_pr(context) == {:error, error}
+        refute_received {:cmd, _executable, _args}
+      end
+    end
+  end
+
+  defp report_context(tmp_dir, report, extra \\ %{}) do
+    artifact = Path.join(tmp_dir, "report.md")
+    File.write!(artifact, report)
+
+    Map.merge(
+      %{run_id: "run-1", base_branch: "main", head_branch: @own_branch, artifact_path: artifact},
+      extra
+    )
+  end
+
+  # Answers every command with "no commits ahead", so a context that gets past the head branch
+  # ends in `:noop` after exactly the one `git rev-list` that names the branch it resolved.
+  defp recording_runner(parent) do
+    fn executable, args, _opts ->
+      send(parent, {:cmd, executable, args})
+      {"0\n", 0}
+    end
+  end
+
+  defp git_accepts_ref?(name) do
+    {_output, status} =
+      System.cmd("git", ["check-ref-format", "refs/heads/" <> name], stderr_to_stdout: true)
+
+    status == 0
+  end
+
+  defp override_accepts?(name),
+    do: match?({:ok, ^name}, AutoPR.branch_override("FOREMAN_BRANCH=" <> name <> "\n"))
 
   describe "PR decision is driven by commits, not a marker" do
     test "noop when the head branch has no commits beyond base", %{repo: repo, git: git} do
