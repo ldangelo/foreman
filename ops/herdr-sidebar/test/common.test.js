@@ -9,7 +9,8 @@ mock.module("herdr", () => ({ exec: (...a) => execImpl(...a), home: () => "/h", 
 const {
   approveBody, approveMergeArgs, approvePrompt, approveTask, beadId, canMerge, clearRuns, completionToast, countCleared, currentPhase, findApprovable, findRunTab, foreman,
   foremanArgv, foremanDo, hideCleared, isApprovable, isClearable, isFullSha, isResettable, mergeArgs, mergeErrorText, mergePrompt, mergeVerbsCheck, newTabId,
-  parseActivityCommand, parseCleared, parseGhLogin, parseRunTabs, pruneCleared, rememberRunTab, resetPrompt, runLabel, shortSha, tabIds, trackCompletions,
+  parseActivityCommand, parseCleared, parseGhLogin, parseRunTabs, pruneCleared, rememberRunTab, rememberStopped, resetPrompt, runLabel, shortSha, stoppedKey, stoppedPhase,
+  tabIds, trackCompletions,
 } = await import("../common.js");
 
 // What the run list carries for a run in the middle of a workflow (sunstoneos-m1zz: create-prd done, refine-prd running).
@@ -564,4 +565,45 @@ test("remembered run tabs: the newest entry wins and the oldest beyond 100 fall 
   expect(m["run-104"]).toBe("t104");
   expect(parseRunTabs('{"run-1":"t1","run-2":7}')).toEqual({ "run-1": "t1" });
   expect(parseRunTabs("not json")).toEqual({});
+});
+
+// The phase rows of GET /api/runs/:id/phases, as the failed and stuck runs on a live server had them.
+const rows = (...statuses) => statuses.map((status, i) => ({ index: i + 1, name: ["plan", "fix", "coderabbit-review", "repo-rules-review"][i], status }));
+
+test("a run stopped in the phase that failed, or for a stuck run the one still in progress", () => {
+  expect(stoppedPhase(rows("completed", "failed"))).toBe("fix");
+  expect(stoppedPhase(rows("failed"))).toBe("plan");
+  expect(stoppedPhase(rows("completed", "completed", "failed"))).toBe("coderabbit-review");
+  expect(stoppedPhase(rows("completed", "in_progress"))).toBe("fix"); // stuck
+  expect(stoppedPhase(rows("completed", "in_progress", "failed"))).toBe("coderabbit-review"); // a failure wins
+});
+
+test("no phase is named for a run that never started one or failed after every phase completed", () => {
+  expect(stoppedPhase([])).toBeNull();
+  expect(stoppedPhase(rows("completed", "completed", "completed", "completed"))).toBeNull(); // not its last phase's fault
+  expect(stoppedPhase(undefined)).toBeNull();
+  expect(stoppedPhase([{ index: 1, status: "failed" }])).toBeNull(); // a row with no name
+});
+
+test("a failed or stuck row leads with the phase it stopped in, and only once that is known", () => {
+  const failed = { run_id: "r1", status: "failed", phase_ids: ["r1-p001", "r1-p002"], workflow_name: "fix" };
+  expect(runLabel(failed)).toBe("fix"); // not read yet
+  const stopped = rememberStopped({}, failed, "fix");
+  expect(runLabel(failed, stopped)).toBe("fix"); // the same name as the workflow: said once
+  expect(runLabel(failed, rememberStopped({}, failed, "coderabbit-review"))).toBe("coderabbit-review · fix");
+  expect(runLabel(failed, rememberStopped({}, failed, null))).toBe("fix"); // read, nothing to name
+  const stuck = { ...failed, status: "stuck" };
+  expect(runLabel(stuck, rememberStopped({}, failed, "coderabbit-review"))).toBe("fix"); // an answer for the failed state is not the stuck run's
+  expect(runLabel({ ...failed, status: "completed" }, rememberStopped({}, { ...failed, status: "completed" }, "plan"))).toBe("fix"); // completed: workflow alone
+});
+
+test("a run's answer is keyed by its status and phases started, so a run that moves on is read again", () => {
+  const r = { run_id: "r1", status: "stuck", phase_ids: ["r1-p001"] };
+  expect(stoppedKey(r)).toBe("r1:stuck:1");
+  expect(stoppedKey({ ...r, phase_ids: ["r1-p001", "r1-p002"] })).toBe("r1:stuck:2");
+  expect(stoppedKey({ ...r, status: "failed" })).toBe("r1:failed:1");
+  expect(stoppedKey({ run_id: "r2", status: "failed" })).toBe("r2:failed:0");
+  let m = {};
+  for (let i = 0; i < 605; i++) m = rememberStopped(m, { run_id: `r${i}`, status: "failed" }, "fix");
+  expect(Object.keys(m)).toHaveLength(600);
 });
