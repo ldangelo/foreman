@@ -11,6 +11,8 @@ defmodule ForemanServer.Workflow.RunExecutorMultiRepoTest do
   """
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
   alias ForemanServer.{MultiRepoRuns, ProjectionStore}
   alias ForemanServer.TestSupport.ProjectionStoreReset
   alias ForemanServer.Workflow.RunExecutor
@@ -282,6 +284,96 @@ defmodule ForemanServer.Workflow.RunExecutorMultiRepoTest do
 
       refute "foreman/task-1/#{ctx.run_id}" in branches(ctx.repos["a"])
       assert [%{status: "cleaned"}] = ProjectionStore.worktrees_for_run(ctx.run_id)
+    end
+  end
+
+  describe "a relaunch over worktrees the interrupted launch left on disk (foreman-1lo2p)" do
+    test "provision/1 says whether the worktree was reused; create/1 still answers the path",
+         ctx do
+      path = Path.join(ctx.root, "wt-provision")
+
+      args = %{
+        operation_id: "wt-" <> ctx.run_id,
+        project_id: ctx.project_id,
+        run_id: ctx.run_id,
+        phase_id: ForemanServer.Identity.phase_id(ctx.run_id, 1),
+        repo_path: ctx.repos["a"],
+        worktree_path: path,
+        base_ref: git!(ctx.repos["a"], ["rev-parse", "HEAD"]),
+        branch: "foreman/provision-#{ctx.run_id}"
+      }
+
+      assert {:ok, %{path: ^path, reused: false}} =
+               ForemanServer.Workflow.Worktree.provision(args)
+
+      File.write!(Path.join(path, "pending.txt"), "uncommitted")
+
+      # The same operation id, as a relaunch has: its command ids repeat and are replayed.
+      assert {:ok, %{path: ^path, reused: true}} =
+               ForemanServer.Workflow.Worktree.provision(args)
+
+      assert {:ok, ^path} = ForemanServer.Workflow.Worktree.create(args)
+      assert File.read!(Path.join(path, "pending.txt")) == "uncommitted"
+    end
+
+    test "the project setup script ran once, on the worktree the first launch created", ctx do
+      runs_log = Path.join(ctx.root, "setup-runs.log")
+      set_setup_script!(ctx.project_id, ~s(echo "$FOREMAN_RUN_ID" >> '#{runs_log}'))
+      state = state(ctx)
+
+      assert {:ok, record} = RunExecutor.__create_run_worktree_for_test__(state, 1)
+      assert setup_runs(runs_log) == [ctx.run_id]
+      File.write!(Path.join(record.worktree_path, "pending.txt"), "uncommitted")
+
+      # The relaunch: a state that has not seen the worktree, the same one on disk.
+      log =
+        capture_log(fn ->
+          assert {:ok, %{worktree_path: path}} =
+                   RunExecutor.__create_run_worktree_for_test__(state, 1)
+
+          assert path == record.worktree_path
+        end)
+
+      assert log =~ "reused it as it stands"
+      assert File.read!(Path.join(record.worktree_path, "pending.txt")) == "uncommitted"
+      assert setup_runs(runs_log) == [ctx.run_id]
+    end
+
+    test "a failure at a secondary rolls back nothing the relaunch only reused", ctx do
+      state = resolved!(ctx, %{repo_ids: ["b", "c"]})
+      assert {:ok, primary} = RunExecutor.__create_run_worktree_for_test__(state, 1)
+      branch = primary.branch
+
+      run_dir =
+        ForemanServer.Workflow.RunWorktreeLayout.run_root(ctx.project_id, "task-1", ctx.run_id)
+
+      # The interrupted launch committed work on the run's branch and left the tree clean:
+      # nothing but that branch holds the commit.
+      File.write!(Path.join(primary.worktree_path, "committed.txt"), "kept")
+      git!(primary.worktree_path, ["add", "committed.txt"])
+      git!(primary.worktree_path, ["commit", "--no-gpg-sign", "-q", "-m", "phase work"])
+      committed = git!(ctx.repos["a"], ["rev-parse", branch])
+
+      # The relaunch reuses the primary's and b's worktrees, then cannot cut c: the default
+      # branch c is registered with is gone.
+      remove_repo!(ctx.project_id, "c")
+      add_repo!(ctx.project_id, "c", ctx.repos["c"], %{default_branch: "gone"})
+      relaunch = resolved!(ctx, %{repo_ids: ["b", "c"]})
+
+      assert {:error,
+              {:multi_repo_worktree_failed, "c", {:worktree_base_unresolvable, "gone", _}}} =
+               RunExecutor.__create_run_worktree_for_test__(relaunch, 1)
+
+      assert File.read!(Path.join(primary.worktree_path, "committed.txt")) == "kept"
+      assert File.dir?(Path.join([run_dir, "repos", "b"]))
+      assert branch in branches(ctx.repos["a"])
+      assert branch in branches(ctx.repos["b"])
+      assert git!(ctx.repos["a"], ["rev-parse", branch]) == committed
+
+      assert ctx.run_id
+             |> ProjectionStore.worktrees_for_run()
+             |> Enum.map(& &1.status)
+             |> Enum.uniq() == ["created"]
     end
   end
 
@@ -566,6 +658,36 @@ defmodule ForemanServer.Workflow.RunExecutorMultiRepoTest do
           }
         }
       ])
+  end
+
+  # The environment record `project.environment.set` writes, applied to the projection the
+  # executor reads it from.
+  defp set_setup_script!(project_id, script) do
+    :ok =
+      ProjectionStore.apply_events([
+        %{
+          event_type: "ProjectUpdated",
+          payload: %{
+            project_id: project_id,
+            task_provider: nil,
+            config: %{
+              "environment" => %{
+                "vars" => %{},
+                "setup_script" => script,
+                "network" => %{"mode" => "default", "hosts" => []}
+              }
+            }
+          }
+        }
+      ])
+  end
+
+  # One line per run of the setup script (it appends to `path`).
+  defp setup_runs(path) do
+    case File.read(path) do
+      {:ok, text} -> String.split(text, "\n", trim: true)
+      {:error, :enoent} -> []
+    end
   end
 
   # `run.record_base_branch` requires the Run aggregate to exist in the event
