@@ -3063,6 +3063,22 @@ malformed record refuses the approval (`findings_*`, see "Approval evidence" und
 PR watching and auto-fix), and so does a recorded `HIGH` risk level (`risk_high`, waivable with a
 recorded reason); unresolved critical or major findings refuse only through that level. Read from the source, not observed.
 
+**A generated PR body carries no absolute host path.** A generated body (every phase PR,
+and a final AutoPR for an ad-hoc no-task run) names the PR-creating phase's artifact on an
+`Artifact:` line, and that path is always relative to the repository: the relative form keeps
+the operator's home layout (`/Users/<user>/.foreman/worktrees/…`) out of the PR, and the file
+it names is on the run branch only once the artifact is committed. A phase that defers its
+commit (`commit: false`) can open its PR before that commit, so its `Artifact:` line names a
+file the pushed branch does not carry yet — the path resolves once a later commit on the run
+branch adds the file, and never if no later commit does. An artifact that cannot be expressed
+relative to the repository root gets **no** `Artifact:` line at all, rather than an absolute
+one — and neither does a phase that recorded no artifact path, so a missing line means one of
+those two, not that the phase produced nothing. The same rule covers the review report
+linked from the `## Review findings (the review agent's report)` section above. A task-backed
+final AutoPR uses the task description verbatim as its body and adds no `Artifact:` line of
+its own — a description that carries one brings its own — while a task with a title but no
+description falls back to a generated body, which does carry the line.
+
 **Marker lines.** Each block (the `FOREMAN_REVIEW_FINDINGS` block and the
 `FOREMAN_RISK_JUDGEMENT` block) is delimited by two marker lines, each the whole
 HTML comment, alone on its line and starting at column 0, outside any code fence. A
