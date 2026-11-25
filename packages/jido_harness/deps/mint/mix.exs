@@ -1,7 +1,7 @@
 defmodule Mint.MixProject do
   use Mix.Project
 
-  @version "1.9.3"
+  @version "1.11.0"
   @repo_url "https://github.com/elixir-mint/mint"
 
   def project do
@@ -24,10 +24,9 @@ defmodule Mint.MixProject do
 
       # Dialyxir
       dialyzer: [
-        plt_add_apps: [:castore],
+        plt_add_apps: [:castore, :ex_unit],
         plt_local_path: "plts",
-        plt_core_path: "plts",
-        ignore_warnings: ".dialyzer_ignore"
+        plt_core_path: "plts"
       ],
 
       # Code coverage
@@ -77,7 +76,7 @@ defmodule Mint.MixProject do
   defp deps do
     [
       {:castore, "~> 0.1.0 or ~> 1.0", optional: true},
-      {:hpax, "~> 0.1.1 or ~> 0.2.0 or ~> 1.0"},
+      {:hpax, "~> 1.1"},
 
       # Dev/test dependencies
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},

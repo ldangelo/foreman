@@ -19,20 +19,27 @@ defmodule Decimal.Context do
 
     * `precision` - maximum number of decimal digits in the coefficient. If an
       operation result has more digits it will be rounded to `precision`
-      digits with the rounding algorithm in `rounding`.
+      digits with the rounding algorithm in `rounding`. Must be a positive
+      integer.
     * `rounding` - the rounding algorithm used when the coefficient's number of
       exceeds `precision`. Strategies explained below.
     * `emax` - maximum adjusted exponent. If the adjusted exponent of a result
       is larger than `emax`, overflow is signalled. `:infinity` disables this
-      limit.
-    * `emin` - minimum adjusted exponent. If the adjusted exponent of a result
-      is smaller than `emin`, underflow is signalled. `:infinity` disables this
-      limit.
+      limit. Must not be smaller than `emin`.
+    * `emin` - minimum adjusted exponent of a normal result. A result whose
+      adjusted exponent is smaller is subnormal: it is rounded at the exponent
+      `emin - precision + 1` with the rounding algorithm in `rounding`.
+      Subnormal is signalled for it, and underflow too if that rounding is
+      inexact. `:infinity` disables this limit.
     * `flags` - a list of signals that for which the flag is sent. When an
       exceptional condition is signalled its flag is set. The flags are sticky
       and will be set until explicitly cleared.
     * `traps` - a list of set trap enablers for signals. When a signal's trap
       enabler is set the condition causes `Decimal.Error` to be raised.
+
+  A zero result has no digits to round, so `emax` and `emin` bound its exponent
+  instead: an exponent above `emax` is lowered to `emax`, one below
+  `emin - precision + 1` is raised to it, and clamped is signalled.
 
   ## Rounding algorithms
 
@@ -95,18 +102,26 @@ defmodule Decimal.Context do
 
   @context_key :"$decimal_context"
 
+  @roundings [:down, :half_up, :half_even, :ceiling, :floor, :half_down, :up]
+
   @doc """
   Runs function with given context.
+
+  Raises `ArgumentError` if a field of the context is invalid, see the
+  module documentation.
   """
   doc_since("1.9.0")
   @spec with(t(), (-> x)) :: x when x: var
   def with(%Context{} = context, fun) when is_function(fun, 0) do
+    validate!(context)
     old = Process.put(@context_key, context)
 
+    # The previous context was validated when it was set, so it is restored
+    # as is.
     try do
       fun.()
     after
-      set(old || %Context{})
+      Process.put(@context_key, old || %Context{})
     end
   end
 
@@ -121,10 +136,14 @@ defmodule Decimal.Context do
 
   @doc """
   Set the process' context.
+
+  Raises `ArgumentError` if a field of the context is invalid, see the
+  module documentation.
   """
   doc_since("1.9.0")
   @spec set(t()) :: :ok
   def set(%Context{} = context) do
+    validate!(context)
     Process.put(@context_key, context)
     :ok
   end
@@ -136,5 +155,38 @@ defmodule Decimal.Context do
   @spec update((t() -> t())) :: :ok
   def update(fun) when is_function(fun, 1) do
     get() |> fun.() |> set()
+  end
+
+  # Every context passes through here on `with/2` and `set/1`, so a valid one is
+  # matched by a single clause.
+  defp validate!(%Context{precision: precision, rounding: rounding, emax: emax, emin: emin})
+       when is_integer(precision) and precision > 0 and rounding in @roundings and
+              (is_integer(emax) or emax == :infinity) and (is_integer(emin) or emin == :infinity) and
+              (emax == :infinity or emin == :infinity or emin <= emax),
+       do: :ok
+
+  defp validate!(%Context{precision: precision, rounding: rounding, emax: emax, emin: emin}) do
+    cond do
+      not (is_integer(precision) and precision > 0) ->
+        invalid!(:precision, "a positive integer", precision)
+
+      rounding not in @roundings ->
+        invalid!(:rounding, "one of #{inspect(@roundings)}", rounding)
+
+      not (is_integer(emax) or emax == :infinity) ->
+        invalid!(:emax, "an integer or :infinity", emax)
+
+      not (is_integer(emin) or emin == :infinity) ->
+        invalid!(:emin, "an integer or :infinity", emin)
+
+      true ->
+        raise ArgumentError,
+              "invalid :emin and :emax, emin must not be greater than emax, " <>
+                "got: emin #{emin} and emax #{emax}"
+    end
+  end
+
+  defp invalid!(field, expected, value) do
+    raise ArgumentError, "invalid #{inspect(field)}, expected #{expected}, got: #{inspect(value)}"
   end
 end
