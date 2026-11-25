@@ -237,9 +237,14 @@ default.** `RunExecutor.remember_run_base_branch/1` records it once, when the
 run's FIRST phase starts, as `git symbolic-ref --quiet --short HEAD` of
 `vcs_working_directory/1` — the same checkout AutoPR later runs `git rev-list`,
 `git push`, and `gh pr create` in, read at the same moment
-`resolve_run_base/2` reads that same checkout's `HEAD` to give the run worktree
-its `base_ref` (the worktree is PINNED to that commit; it does not supply it),
-so branch name and base commit describe one repository state. It
+`resolve_run_base/2` fetches that recorded branch from `origin` and gives the
+run worktree its `base_ref` (the worktree is PINNED to that commit; it does
+not supply it), so the branch name and the base commit normally describe one
+repository state — the recorded branch, at the tip `origin` serves for it. A
+checkout with no `origin`, or one whose remote cannot be read (offline, auth,
+timeout), degrades to the checkout's `HEAD` and logs a warning; an `origin`
+that answers but does not carry the recorded branch fails the run with
+`{:origin_base_missing, remote, branch}` instead of guessing a base. It
 is latched on key presence, so an operator switching branches mid-run cannot
 retarget the PR, and it does not hang off `remember_worktree/2` — a workflow
 declaring `worktree: enabled: false` provisions no worktree yet can still land
@@ -319,7 +324,7 @@ mechanism and is unchanged.
 
 **There is no `default_branch` project setting.** It was stored on
 `Aggregates.Project` and projected (defaulting to a fabricated `"main"`) but
-nothing read it; the base branch is the registered checkout's HEAD latched per
+nothing read it; the base branch is the registered checkout's current branch, latched per
 run (above). It is removed: `project.register`/`project.update` carrying it fail
 with `{:setting_removed, :default_branch}`, and historical `ProjectRegistered`/
 `ProjectUpdated` events that still carry the key replay unchanged because the
@@ -502,7 +507,9 @@ values it freezes: with one, `project_root`/`source_revision` come from plan
 context, a declared `base` must resolve to that same revision
 (`assert_base_matches/3`, TRD Decisions 3/5), and
 `implementation_key`/`trd_scope` ride on the record; without one, the root is the
-project's registered path and the base is that checkout's `HEAD`. A
+project's registered path and the base is the recorded base branch's fetched
+`origin` tip (the checkout's `HEAD` only when no `origin` can be read, with a
+logged warning). A
 partially-populated plan context is a hard error, never a silent fall back to
 `HEAD`.
 

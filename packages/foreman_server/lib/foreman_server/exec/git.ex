@@ -603,6 +603,108 @@ defmodule ForemanServer.Exec.Git do
     end
   end
 
+  @doc """
+  Whether `repo` has a remote named `remote` configured.
+
+  A checkout without a remote is a supported shape (an offline operator
+  workspace), so this is a fact to read, not a failure.
+  """
+  @spec remote_exists?(String.t(), String.t()) :: boolean()
+  def remote_exists?(repo, remote) do
+    case check_ref(:remote, remote) do
+      :ok ->
+        match?(
+          {_output, 0},
+          System.cmd("git", ["-C", repo, "remote", "get-url", remote], stderr_to_stdout: true)
+        )
+
+      {:error, _} ->
+        false
+    end
+  end
+
+  @doc """
+  Whether `remote` carries `branch`.
+
+  `:present` — the remote answered and has the branch.
+  `:absent` — the remote answered and does not have the branch.
+  `:unreachable` — the remote could not be read at all (offline, auth, unknown host).
+
+  The verdict comes from git's exit code, never from the text of its message:
+  the same wording means different things on different git versions and locales.
+  """
+  @spec remote_branch_exists?(String.t(), String.t(), String.t()) ::
+          :present | :absent | :unreachable
+  def remote_branch_exists?(repo, remote, branch) do
+    with :ok <- check_ref(:remote, remote),
+         :ok <- check_ref(:branch, branch) do
+      case cmd_with_deadline(
+             ["-C", repo, "ls-remote", "--exit-code", "--heads", remote, "refs/heads/" <> branch],
+             30_000,
+             "ls-remote"
+           ) do
+        {_output, 0} -> :present
+        {_output, 2} -> :absent
+        {_output, _code} -> :unreachable
+      end
+    else
+      {:error, _} -> :unreachable
+    end
+  end
+
+  @doc """
+  Fetch `branch` from `remote` and answer the commit it points at.
+
+  Only the remote-tracking ref `refs/remotes/<remote>/<branch>` moves; the
+  checkout's own `HEAD` and working tree are left alone.
+
+  `{:error, :no_remote}` — `repo` has no such remote.
+  `{:error, {:remote_branch_missing, remote, branch}}` — the remote answered and does
+  not carry the branch.
+  `{:error, {:remote_unreadable, remote, branch}}` — the remote could not be read at
+  all (offline, auth, timeout).
+  `{:error, {:fetch_failed, remote, branch, %Error{}}}` — the remote answered and does
+  carry the branch, but the fetch itself failed.
+  `{:error, %Error{}}` — the fetch worked but the fetched tip could not be read
+  locally.
+  """
+  @spec fetch_remote_tip(String.t(), String.t(), String.t()) ::
+          {:ok, String.t()}
+          | {:error,
+             :no_remote
+             | {:remote_branch_missing, String.t(), String.t()}
+             | {:remote_unreadable, String.t(), String.t()}
+             | {:fetch_failed, String.t(), String.t(), Error.t()}
+             | Error.t()}
+  def fetch_remote_tip(repo, remote, branch) do
+    with :ok <- check_ref(:remote, remote),
+         :ok <- check_ref(:branch, branch) do
+      if remote_exists?(repo, remote) do
+        fetch_and_read_tip(repo, remote, branch)
+      else
+        {:error, :no_remote}
+      end
+    end
+  end
+
+  defp fetch_and_read_tip(repo, remote, branch) do
+    case fetch_branch(repo, remote, branch) do
+      :ok -> ref_sha(repo, "refs/remotes/#{remote}/#{branch}")
+      {:error, %Error{} = error} -> classify_fetch_failure(repo, remote, branch, error)
+    end
+  end
+
+  # A fetch that failed can still say WHY: a remote that answers but does not carry
+  # the branch is a different fact from a remote that cannot be read at all, and the
+  # two deserve different answers from the caller.
+  defp classify_fetch_failure(repo, remote, branch, %Error{} = error) do
+    case remote_branch_exists?(repo, remote, branch) do
+      :absent -> {:error, {:remote_branch_missing, remote, branch}}
+      :present -> {:error, {:fetch_failed, remote, branch, error}}
+      :unreachable -> {:error, {:remote_unreadable, remote, branch}}
+    end
+  end
+
   @doc "Whether commit `ancestor` is an ancestor of (or equal to) `descendant` in `repo`."
   @spec ancestor?(String.t(), String.t(), String.t()) :: boolean()
   def ancestor?(repo, ancestor, descendant) do

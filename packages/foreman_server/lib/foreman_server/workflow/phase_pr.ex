@@ -75,6 +75,7 @@ defmodule ForemanServer.Workflow.PhasePR do
       :phase_index,
       :phase_name,
       :base_branch,
+      :base_ref,
       :head_branch,
       :cwd,
       :artifact_path,
@@ -204,11 +205,22 @@ defmodule ForemanServer.Workflow.PhasePR do
     end
   end
 
+  # The range the phase's own commits live in. A run cut from the fetched
+  # `origin/<branch>` tip leaves the local base branch behind that commit, so a range
+  # that starts at the branch NAME would count the origin commits as this phase's
+  # work. When the run recorded the commit it was cut from, the range starts there.
+  defp base_range(request) do
+    case request.base_ref do
+      sha when is_binary(sha) and sha != "" -> sha
+      _ -> request.base_branch
+    end
+  end
+
   defp commits_ahead(request) do
     case run(request, "git", [
            "rev-list",
            "--count",
-           request.base_branch <> ".." <> request.head_branch
+           base_range(request) <> ".." <> request.head_branch
          ]) do
       {output, 0} ->
         case Integer.parse(String.trim(output)) do
@@ -375,7 +387,7 @@ defmodule ForemanServer.Workflow.PhasePR do
            "log",
            "--reverse",
            "--format=%s",
-           request.base_branch <> ".." <> request.head_branch
+           base_range(request) <> ".." <> request.head_branch
          ]) do
       {output, 0} ->
         output

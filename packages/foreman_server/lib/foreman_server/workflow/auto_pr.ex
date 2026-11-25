@@ -153,6 +153,12 @@ defmodule ForemanServer.Workflow.AutoPR do
   @type context :: %{
           required(:run_id) => String.t(),
           required(:base_branch) => String.t(),
+          # The commit the run's work was cut from, when the run knows it. A run cut
+          # from the fetched `origin/<branch>` tip leaves the local base branch behind
+          # that commit: the commit range then starts there instead of at the branch
+          # NAME, so the origin commits are not counted as the run's own work. Absent
+          # means the range starts at the base branch name.
+          optional(:base_ref) => String.t(),
           optional(:artifact_path) => String.t() | nil,
           # The repository root the artifact path is made relative to in the PR body.
           optional(:artifact_root) => String.t() | nil,
@@ -384,8 +390,19 @@ defmodule ForemanServer.Workflow.AutoPR do
     end
   end
 
+  # The range the run's own commits live in. A run cut from the fetched
+  # `origin/<branch>` tip leaves the local base branch behind that commit: a range
+  # that starts at the branch NAME would count the origin commits as the run's work.
+  # When the run recorded the commit it was cut from, the range starts there.
+  defp base_range(context, base_branch) do
+    case Map.get(context, :base_ref) do
+      sha when is_binary(sha) and sha != "" -> sha
+      _ -> base_branch
+    end
+  end
+
   defp commits_ahead(context, base_branch, head_branch, cwd) do
-    args = ["rev-list", "--count", base_branch <> ".." <> head_branch]
+    args = ["rev-list", "--count", base_range(context, base_branch) <> ".." <> head_branch]
     opts = [stderr_to_stdout: true]
     opts = if cwd, do: Keyword.put(opts, :cd, cwd), else: opts
 
@@ -908,7 +925,9 @@ defmodule ForemanServer.Workflow.AutoPR do
         _ -> [stderr_to_stdout: true]
       end
 
-    case run(context, "git", ["log", "--format=%H%x09%s", "#{base_branch}..#{head_branch}"], opts) do
+    range = "#{base_range(context, base_branch)}..#{head_branch}"
+
+    case run(context, "git", ["log", "--format=%H%x09%s", range], opts) do
       {output, 0} ->
         {:ok, parse_commits(output)}
 

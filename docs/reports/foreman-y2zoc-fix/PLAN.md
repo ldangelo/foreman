@@ -59,21 +59,25 @@ returns `{:ok, project_root, base_ref, _, _}`.
 
 1. `"the base is the fetched origin tip, not the stale checkout HEAD"` — `spec = %{}`; assert
    `{:ok, ^repo, ^origin_tip, nil, nil}` and `origin_tip != stale_head`.
-2. `"the fetch leaves the checkout untouched"` — after case 1: `rev-parse HEAD == stale_head`,
-   `symbolic-ref --short HEAD == "main"`, `status --porcelain == ""`,
-   `rev-parse refs/remotes/origin/main == origin_tip`.
-3. `"a remote that does not carry the branch is a typed error"` —
+2. `"the fetch leaves the checkout untouched"` — case 2 is its own test with its own checkout, so
+   the resolver runs HERE (`__resolve_provisioned_base_for_test__/2`) before the assertions:
+   `rev-parse HEAD == stale_head`, `symbolic-ref --short HEAD == "main"`,
+   `status --porcelain == ""`, `rev-parse refs/remotes/origin/main == origin_tip`.
+3. `"the run's recorded base branch wins over the checkout's current branch"` — the run recorded
+   `run_base_branch: {:ok, "main"}`; the shared checkout is switched to `feat/local-only` before
+   provisioning; the base is `origin_tip` of `origin/main`, NOT of `feat/local-only`.
+4. `"a remote that does not carry the recorded branch is a typed error"` —
    `git!(repo, ["checkout", "-q", "-b", "feat/local-only"])` + a commit; assert
    `{:error, {:origin_base_missing, "origin", "feat/local-only"}}`.
-4. `"no origin remote falls back to HEAD"` — `git!(repo, ["remote", "remove", "origin"])`;
-   base == `rev-parse HEAD` of `repo`.
-5. `"an unreachable origin falls back to HEAD"` —
+5. `"a checkout without an origin remote falls back to HEAD"` —
+   `git!(repo, ["remote", "remove", "origin"])`; base == `rev-parse HEAD` of `repo`.
+6. `"an unreachable origin falls back to HEAD"` —
    `git!(repo, ["remote", "set-url", "origin", Path.join(tmp, "gone.git")])`; base ==
    `rev-parse HEAD` of `repo`.
-6. `"a declared base is resolved locally and never fetched"` — `spec = %{base: "main"}`; base
+7. `"a declared base is resolved locally and never fetched"` — `spec = %{base: "main"}`; base
    == local `rev-parse main^{commit}` (`== stale_head`), not `origin_tip`.
-7. `"a task source_branch is still cut from the local branch"` —
-   `state(repo, %{source_branch: "feat/local-only"})` on case 3's branch, `spec = %{}`; base
+8. `"a task source_branch is still cut from the local branch"` —
+   `state(repo, %{source_branch: "feat/local-only"})` on case 4's branch, `spec = %{}`; base
    == that local branch tip, no error.
 
 Add to `packages/foreman_server/test/foreman_server/exec/git_test.exs`: `fetch_remote_tip/3`
@@ -81,7 +85,8 @@ returns `{:ok, tip}` on a pushed branch, `{:error, :no_remote}` with no remote,
 `{:error, {:remote_branch_missing, "origin", "nope"}}` for an absent branch,
 `{:error, %ForemanServer.Exec.Error{}}` for an unreachable remote URL.
 
-Red before the fix: case 1 returns `stale_head`; case 3 returns `{:ok, ...}`.
+Red before the fix: 4 of the 8 cases fail — cases 1-3 return `stale_head` instead of
+`origin_tip`, and case 4 returns `{:ok, ...}` instead of the typed error.
 
 ```
 devbox run -- bash -c 'cd packages/foreman_server && MIX_ENV=test mix test \
@@ -178,24 +183,47 @@ stderr text (#942's substring match on `"couldn't find remote ref"`).
 only its `_ ->` clause body `resolve_revision(project_root, "HEAD")` with
 `resolve_origin_base(state, project_root)`. The declared-base clause is unchanged.
 
-(c) Add directly below it (`JobsiteGit` is the existing alias for `Exec.Git`, `:74`):
+(c) Add directly below it (`JobsiteGit` is the existing alias for `Exec.Git`, `:74`, and
+`JobsiteError` the alias for `Exec.Error`, `:75`):
 
 ```elixir
-  # A run with no declared base is cut from the FETCHED tip of its checkout's branch on
-  # `origin`, not the checkout's own `HEAD`: a shared checkout nobody has pulled is
-  # arbitrarily behind, and a run cut from it opens a PR against stale code. The fetch only
-  # advances `refs/remotes/origin/<branch>`. A task naming a `source_branch` is cut from that
-  # LOCAL branch by `apply_source_branch/4`, which replaces whatever this returns, so nothing
-  # is fetched for it; a detached checkout has no branch to fetch, and
-  # `remember_run_base_branch/1` already refuses its PR.
+  # A run with no declared base is cut from the FETCHED tip of its base branch on `origin`,
+  # not the checkout's own `HEAD`: a shared checkout nobody has pulled is arbitrarily behind,
+  # and a run cut from it opens a PR against stale code. The fetch only advances
+  # `refs/remotes/origin/<branch>`. A task naming a `source_branch` is cut from that LOCAL
+  # branch by `apply_source_branch/4`, which replaces whatever this returns, so nothing is
+  # fetched for it.
+  #
+  # The fetched branch is the run's RECORDED base branch — the branch its PR targets — never a
+  # fresh read of the checkout: a checkout switched between recording and provisioning would
+  # otherwise cut the run from `origin/<new branch>` while the PR still names the old one, and
+  # the PR would then target commits the run was not cut from.
   defp resolve_origin_base(state, project_root) do
-    if is_binary(source_branch(state)) do
-      resolve_revision(project_root, "HEAD")
-    else
-      case checkout_branch(project_root) do
-        {:ok, branch} -> origin_base(state, project_root, "origin", branch)
-        {:error, _detached_head} -> resolve_revision(project_root, "HEAD")
-      end
+    case source_branch(state) do
+      branch when is_binary(branch) ->
+        resolve_revision(project_root, "HEAD")
+
+      _ ->
+        case recorded_base_branch(state, project_root) do
+          {:ok, branch} -> origin_base(state, project_root, "origin", branch)
+          {:error, _reason} -> resolve_revision(project_root, "HEAD")
+        end
+    end
+  end
+
+  # The branch the run's PR targets: what the run recorded when it started, then the persisted
+  # projection (a resumed executor reads the branch the first attempt resolved), and only then
+  # the checkout's current branch.
+  defp recorded_base_branch(state, project_root) do
+    case run_base_branch(state) do
+      {:ok, branch} ->
+        {:ok, branch}
+
+      {:error, _reason} ->
+        case persisted_run_base_branch(state.run_id) do
+          {:ok, branch} -> {:ok, branch}
+          :error -> checkout_branch(project_root)
+        end
     end
   end
 
@@ -214,17 +242,24 @@ only its `_ ->` clause body `resolve_revision(project_root, "HEAD")` with
       {:error, {:remote_branch_missing, ^remote, ^branch}} ->
         {:error, {:origin_base_missing, remote, branch}}
 
-      {:error, reason} ->
-        Logger.warning(
-          "RunExecutor #{state.run_id} could not read #{remote}/#{branch} in #{project_root}; " <>
-            "cutting the run from the checkout's HEAD instead: #{inspect(reason)}",
-          run_id: state.run_id,
-          operation: "run_executor.origin_base",
-          outcome: "degraded"
-        )
+      {:error, :no_remote} ->
+        degrade_to_checkout_head(state, project_root, remote, branch, :no_remote)
 
-        resolve_revision(project_root, "HEAD")
+      {:error, %JobsiteError{} = reason} ->
+        degrade_to_checkout_head(state, project_root, remote, branch, reason)
     end
+  end
+
+  defp degrade_to_checkout_head(state, project_root, remote, branch, reason) do
+    Logger.warning(
+      "RunExecutor #{state.run_id} could not read #{remote}/#{branch} in #{project_root}; cutting the run from the checkout's HEAD instead: #{inspect(reason)}",
+      run_id: state.run_id,
+      operation: "run_executor.origin_base",
+      outcome: "degraded",
+      reason: inspect(reason)
+    )
+
+    resolve_revision(project_root, "HEAD")
   end
 ```
 

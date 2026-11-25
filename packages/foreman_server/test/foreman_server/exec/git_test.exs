@@ -233,4 +233,109 @@ defmodule ForemanServer.Exec.GitTest do
       assert {:ok, [%{subject: "second commit"}]} = Git.commits_between(path, base, "HEAD")
     end
   end
+
+  describe "fetch_remote_tip/3" do
+    setup do
+      origin =
+        Path.join(System.tmp_dir!(), "jobsite-git-origin-#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(origin)
+      {_output, 0} = System.cmd("git", ["-C", origin, "init", "-q", "--bare"])
+
+      repo =
+        Path.join(System.tmp_dir!(), "jobsite-git-clone-#{System.unique_integer([:positive])}")
+
+      {_output, 0} = System.cmd("git", ["clone", "-q", origin, repo])
+      {_output, 0} = System.cmd("git", ["-C", repo, "config", "user.email", "test@example.com"])
+      {_output, 0} = System.cmd("git", ["-C", repo, "config", "user.name", "Test"])
+      {_output, 0} = System.cmd("git", ["-C", repo, "checkout", "-q", "-B", "main"])
+
+      File.write!(Path.join(repo, "README.md"), "hello\n")
+      {_output, 0} = System.cmd("git", ["-C", repo, "add", "-A"])
+      {_output, 0} = System.cmd("git", ["-C", repo, "commit", "-q", "-m", "init"])
+
+      {_output, 0} =
+        System.cmd("git", ["-C", repo, "push", "-q", "origin", "HEAD:refs/heads/main"])
+
+      on_exit(fn ->
+        File.rm_rf(origin)
+        File.rm_rf(repo)
+      end)
+
+      %{repo: repo, origin: origin}
+    end
+
+    test "answers the remote's tip and leaves the checkout's HEAD alone", %{repo: repo} do
+      {:ok, stale} = Git.head_sha(repo)
+
+      {_output, 0} =
+        System.cmd("git", ["-C", repo, "commit", "-q", "--allow-empty", "-m", "ahead"])
+
+      {_output, 0} =
+        System.cmd("git", ["-C", repo, "push", "-q", "origin", "HEAD:refs/heads/main"])
+
+      {:ok, ahead} = Git.head_sha(repo)
+      {_output, 0} = System.cmd("git", ["-C", repo, "reset", "-q", "--hard", "HEAD~1"])
+
+      # The push above already moved the remote-tracking ref forward; point it
+      # back at the stale commit so the fetch has to move it forward again.
+      {_output, 0} =
+        System.cmd("git", ["-C", repo, "update-ref", "refs/remotes/origin/main", stale])
+
+      assert Git.ref_sha(repo, "refs/remotes/origin/main") == {:ok, stale}
+
+      assert Git.fetch_remote_tip(repo, "origin", "main") == {:ok, ahead}
+      assert Git.head_sha(repo) == {:ok, stale}
+      assert Git.ref_sha(repo, "refs/remotes/origin/main") == {:ok, ahead}
+    end
+
+    test "a remote that does not carry the branch is reported as missing", %{repo: repo} do
+      assert Git.fetch_remote_tip(repo, "origin", "feat/absent") ==
+               {:error, {:remote_branch_missing, "origin", "feat/absent"}}
+    end
+
+    test "a checkout without the remote reports no remote", %{repo: repo} do
+      assert Git.fetch_remote_tip(repo, "upstream", "main") == {:error, :no_remote}
+    end
+
+    test "an unreadable remote fails with a git error", %{repo: repo} do
+      gone =
+        Path.join(System.tmp_dir!(), "jobsite-git-gone-#{System.unique_integer([:positive])}")
+
+      {_output, 0} = System.cmd("git", ["-C", repo, "remote", "set-url", "origin", gone])
+
+      assert {:error, {:remote_unreadable, "origin", "main"}} =
+               Git.fetch_remote_tip(repo, "origin", "main")
+    end
+
+    test "a fetch that fails against a readable remote is reported as a fetch failure", %{
+      repo: repo,
+      origin: origin
+    } do
+      peer =
+        Path.join(System.tmp_dir!(), "jobsite-git-peer-#{System.unique_integer([:positive])}")
+
+      on_exit(fn -> File.rm_rf(peer) end)
+
+      {_output, 0} = System.cmd("git", ["clone", "-q", "--branch", "main", origin, peer])
+      {_output, 0} = System.cmd("git", ["-C", peer, "config", "user.email", "test@example.com"])
+      {_output, 0} = System.cmd("git", ["-C", peer, "config", "user.name", "Test"])
+      File.write!(Path.join(peer, "ahead.txt"), "ahead\n")
+      {_output, 0} = System.cmd("git", ["-C", peer, "add", "-A"])
+      {_output, 0} = System.cmd("git", ["-C", peer, "commit", "-q", "-m", "ahead"])
+      {_output, 0} =
+        System.cmd("git", ["-C", peer, "push", "-q", "origin", "HEAD:refs/heads/main"])
+
+      # The remote still advertises the branch, but it cannot serve the objects
+      # the branch needs: the branch is readable, the fetch is not.
+      {tree, 0} = System.cmd("git", ["-C", peer, "rev-parse", "HEAD^{tree}"])
+      tree = String.trim(tree)
+      object = Path.join(origin, "objects/#{String.slice(tree, 0, 2)}/#{String.slice(tree, 2..-1//1)}")
+      assert File.exists?(object)
+      File.rm!(object)
+
+      assert {:error, {:fetch_failed, "origin", "main", %Error{code: :git_failed}}} =
+               Git.fetch_remote_tip(repo, "origin", "main")
+    end
+  end
 end
