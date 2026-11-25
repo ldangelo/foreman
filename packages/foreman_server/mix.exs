@@ -113,6 +113,13 @@ defmodule ForemanServer.MixProject do
        git: "https://github.com/Sunstone-Partners/jido_mcp.git",
        ref: "8986c4cbf4f5e89d9f9a7a4c096d45e45a514863",
        override: true},
+      # jido_mcp (above, pinned to its fork HEAD) requires `ex_mcp` as exactly "1.0.0-rc.8", which
+      # Hex retired for GHSA-22m7-hr37-pxg3. Every release from 1.5.0 to 1.7.2 is retired too
+      # (1.6.2, the version that retirement names, for GHSA-2q9v-qvwf-3m8w and GHSA-jrw4-h7gq-x4cj;
+      # 1.7.2 for GHSA-5vm6-rrjx-3496), so the first usable release is 1.7.3. Overridden here
+      # because the fork has no newer commit; drop this entry when jido_mcp's ref moves to a
+      # release whose mix.exs accepts a current ex_mcp.
+      {:ex_mcp, "~> 1.8", override: true},
 
       # Dev/Test quality tools
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},

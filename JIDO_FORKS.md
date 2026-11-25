@@ -85,6 +85,7 @@ The full `JRM-T003` upgrade protocol is described in
 - Ref: 8986c4cbf4f5e89d9f9a7a4c096d45e45a514863
 - Ref accessible: yes
 - Last verified by: trd-2026-4212be7e-jido-migration/MCP-T001
+- `ex_mcp`: this ref requires exactly `1.0.0-rc.8` (retired on Hex), so `packages/foreman_server/mix.exs` overrides it with `{:ex_mcp, "~> 1.8", override: true}`. Drop the override when the ref moves to a release whose `mix.exs` accepts a current `ex_mcp`.
 
 ## CI: jido-upstream-upgrade (JRM-T003)
 - Workflow: .github/workflows/jido-upstream-upgrade.yml
