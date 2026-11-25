@@ -1138,7 +1138,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   defp rehydrate_worktree_entry(state, entry) do
     with :ok <- reap_orphaned_agents(state, entry.worktree_path),
          {:ok, _project_root, _base_ref, implementation_key, trd_scope} <-
-           resolve_run_base(state, state.worktree_spec || %{}) do
+           resolve_run_base(state, state.worktree_spec || %{}, :local_only) do
       run_worktree = %{
         operation_id: entry.operation_id,
         worktree_path: entry.worktree_path,
@@ -3086,6 +3086,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
                phase_index: phase_index,
                phase_name: phase_spec_name(phase_spec),
                base_branch: base_branch,
+               base_ref: run_base_commit(state),
                head_branch: head_branch,
                cwd: cwd,
                artifact_path: artifact_path,
@@ -3204,6 +3205,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
       cwd: vcs_working_directory(state)
     }
     |> maybe_put_auto_pr_task_metadata(state)
+    |> maybe_put_base_ref(run_base_commit(state))
     |> PrBodyContext.put_headings(Map.get(state, :project_settings))
   end
 
@@ -3226,6 +3228,12 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # context value. AGENTS.md §5.3.
   defp maybe_put_task_field(context, _key, nil), do: context
   defp maybe_put_task_field(context, key, value), do: Map.put(context, key, value)
+
+  # The commit the run was cut from: the base a PR must be cut on top of. It is the
+  # commit the worktree was created with, so it is the same base whether the base is
+  # named by branch or resolved to a sha.
+  defp maybe_put_base_ref(context, nil), do: context
+  defp maybe_put_base_ref(context, base_ref), do: Map.put(context, :base_ref, base_ref)
 
   defp task_backed?(state) do
     task = Map.get(state, :task) || %{}
@@ -3265,6 +3273,13 @@ defmodule ForemanServer.Workflow.RunExecutor do
       {:error, _reason} = err -> err
       nil -> {:error, {:run_base_branch_unrecorded, state.run_id}}
     end
+  end
+
+  # The commit the run's worktree was cut from: `state.run_worktree.base_ref` is
+  # latched when the worktree is created and never moves, so every phase compares
+  # against the same base the first phase was cut on.
+  defp run_base_commit(state) do
+    get_in(state, [:run_worktree, :base_ref])
   end
 
   defp build_request(state, phase_spec, index, worktree_record, context_bundle) do
@@ -4119,7 +4134,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
          :ok <- assert_safe_path_identifier(project_id),
          :ok <- assert_safe_path_identifier(state.run_id),
          {:ok, project_root, _base_ref, implementation_key, trd_scope} <-
-           resolve_run_base(state, spec),
+           resolve_run_base(state, spec, :local_only),
          {:ok, repo_root} <- followup_repo_root(project_id, project_root, followup),
          {:ok, cleanup} <- worktree_cleanup(spec),
          default_path = run_worktree_path(project_id, state, spec),
@@ -4516,12 +4531,12 @@ defmodule ForemanServer.Workflow.RunExecutor do
   end
 
   # The base a run's worktree is cut from, exactly as provisioning computes it: the resolved base
-  # (`resolve_run_base/2`), replaced by the tip of the task's `source_branch` when it has one
+  # (`resolve_run_base/3`), replaced by the tip of the task's `source_branch` when it has one
   # (`apply_source_branch/4`). Provisioning and the resume pre-check both use this one function,
   # so a base the pre-check accepts is a base provisioning can use.
   defp resolve_provisioned_base(state, spec) do
     with {:ok, project_root, base_ref, implementation_key, trd_scope} <-
-           resolve_run_base(state, spec),
+           resolve_run_base(state, spec, :origin_tip),
          {:ok, base_ref} <- apply_source_branch(state, project_root, base_ref, implementation_key) do
       {:ok, project_root, base_ref, implementation_key, trd_scope}
     end
@@ -4533,7 +4548,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
   # rather than a silent fall back to the project checkout, because pinning an
   # implementation run to `HEAD` instead of its frozen revision is exactly the
   # plausible-looking wrong answer AGENTS.md 5.2 forbids.
-  defp resolve_run_base(state, spec) do
+  defp resolve_run_base(state, spec, mode) do
     plan_context = state.plan_context || %{}
 
     case fetch_string(plan_context, "source_revision") do
@@ -4550,13 +4565,13 @@ defmodule ForemanServer.Workflow.RunExecutor do
         with {:ok, project_id} <- fetch_project_id(state),
              {:ok, project_root} <- default_project_root(project_id, state),
              :ok <- assert_git_repo(project_root),
-             {:ok, base_ref} <- resolve_declared_base(spec, project_root) do
+             {:ok, base_ref} <- resolve_declared_base(state, spec, project_root, mode) do
           {:ok, project_root, base_ref, nil, nil}
         end
     end
   end
 
-  defp resolve_declared_base(spec, project_root) do
+  defp resolve_declared_base(state, spec, project_root, mode) do
     case Map.get(spec, :base) do
       declared when is_binary(declared) and declared != "" ->
         case resolve_revision(project_root, declared) do
@@ -4565,9 +4580,175 @@ defmodule ForemanServer.Workflow.RunExecutor do
         end
 
       _ ->
-        resolve_revision(project_root, "HEAD")
+        resolve_origin_base(state, project_root, mode)
     end
   end
+
+  # A run with no declared base is cut from the REMOTE tip of its base branch: the
+  # shared checkout's HEAD can be arbitrarily behind `origin/<branch>`, and a PR cut
+  # from a stale base is a stale PR (bead foreman-y2zoc).
+  #
+  # The branch that is fetched is the run's RECORDED base branch — the branch its PR
+  # targets — not a fresh read of the checkout: a checkout switched between recording
+  # and provisioning must not move the run onto a branch its PR does not name.
+  defp resolve_origin_base(state, project_root, mode) do
+    case source_branch(state) do
+      branch when is_binary(branch) ->
+        # The run names the branch to cut from. It is a local branch and is never
+        # fetched; `apply_source_branch/4` replaces the base with its local tip.
+        resolve_revision(project_root, "HEAD")
+
+      _ ->
+        case mode do
+          # The caller throws the base away: a remote round trip would buy it nothing.
+          :local_only ->
+            resolve_revision(project_root, "HEAD")
+
+          :origin_tip ->
+            case recorded_base_branch(state, project_root) do
+              {:ok, branch} -> origin_base(state, project_root, "origin", branch)
+              {:error, reason} -> {:error, {:run_base_branch_unresolvable, reason}}
+            end
+        end
+    end
+  end
+
+  # The branch the run's PR targets: what the run recorded when it started, then the
+  # persisted projection (a resumed executor reads the branch the first attempt
+  # resolved), and only then the checkout's current branch.
+  defp recorded_base_branch(state, project_root) do
+    case run_base_branch(state) do
+      {:ok, branch} ->
+        {:ok, branch}
+
+      {:error, _reason} ->
+        case persisted_run_base_branch(state.run_id) do
+          {:ok, branch} -> {:ok, branch}
+          :error -> checkout_branch(project_root)
+        end
+    end
+  end
+
+  # The remote's tip is the base when the remote can be read. A remote that answers
+  # but does not carry the branch is a typed refusal: the PR would name a base the run
+  # was not cut from. When there is no remote tip to cut from (no `origin` at all, a
+  # remote that cannot be read, a fetch that fails against a readable remote) the run is
+  # cut from the LOCAL tip of the branch its PR names (`cut_from_local_base/5`): a run
+  # must not die because the network is down.
+  defp origin_base(state, project_root, remote, branch) do
+    case JobsiteGit.fetch_remote_tip(project_root, remote, branch) do
+      {:ok, sha} ->
+        {:ok, sha}
+
+      {:error, {:remote_branch_missing, ^remote, ^branch}} ->
+        {:error, {:origin_base_missing, remote, branch}}
+
+      {:error, :no_remote} ->
+        cut_from_local_base(state, project_root, remote, branch, :no_remote)
+
+      {:error, {:fetch_failed, ^remote, ^branch, %JobsiteError{} = reason}} ->
+        cut_from_local_base(state, project_root, remote, branch, {:fetch_failed, reason})
+
+      {:error, {:remote_unreadable, ^remote, ^branch}} ->
+        cut_from_local_base(state, project_root, remote, branch, :remote_unreadable)
+
+      {:error, %JobsiteError{} = reason} ->
+        cut_from_local_base(state, project_root, remote, branch, {:git_error, reason})
+    end
+  end
+
+  # The base a run is cut from when `origin` gives none: the LOCAL tip of the base
+  # branch the run's PR names, which may be behind `origin`. The checkout's HEAD is
+  # not a fallback: it can be another branch than the one the PR targets. A recorded
+  # branch the checkout does not have is a typed failure, never HEAD.
+  defp cut_from_local_base(state, project_root, remote, branch, reason) do
+    case resolve_revision(project_root, "refs/heads/" <> branch) do
+      {:ok, sha} ->
+        report_local_base(state, project_root, remote, branch, sha, reason)
+        {:ok, sha}
+
+      {:error, local_reason} ->
+        {:error, {:local_base_branch_unresolvable, branch, project_root, local_reason}}
+    end
+  end
+
+  # No `origin` configured is a supported shape (an operator workspace that was never
+  # pushed; `git.no_remote` recommends a remote) and nothing there can be stale, so it
+  # is a fact: logged, not a warning, and nothing is recorded on the run.
+  defp report_local_base(state, project_root, remote, branch, sha, :no_remote) do
+    Logger.info(
+      "RunExecutor #{state.run_id} has no #{remote} remote in #{project_root}; cutting the run from the local #{branch} (#{sha})",
+      run_id: state.run_id,
+      operation: "run_executor.origin_base",
+      outcome: "local_only"
+    )
+  end
+
+  # A remote that exists but could not give its tip is a degradation: the base may be
+  # behind `origin/<branch>` and a stale PR looks like any other. It is logged AND
+  # recorded on the run (bead foreman-k9g4n), so the operator who reads the run sees it.
+  defp report_local_base(state, project_root, remote, branch, sha, reason) do
+    Logger.warning(
+      "RunExecutor #{state.run_id} could not fetch #{remote}/#{branch} in #{project_root} (#{inspect(reason)}); cutting the run from the local #{branch} (#{sha}) instead",
+      run_id: state.run_id,
+      operation: "run_executor.origin_base",
+      outcome: "degraded",
+      reason: inspect(reason)
+    )
+
+    record_local_base(state, remote, branch, sha, reason)
+  end
+
+  # The run's inbox is the operator-facing run channel (`foreman_inbox_get`). The
+  # command id is the run's, so the resume pre-check and the provisioning that follows
+  # it record one note between them. A failed record is logged and does not fail the
+  # run: the warning above already carries the same facts.
+  defp record_local_base(state, remote, branch, sha, reason) do
+    body =
+      "Foreman could not fetch #{remote}/#{branch} for this run (#{origin_base_cause(reason)}), " <>
+        "so the run was cut from the local #{branch} at #{String.slice(sha, 0, 12)}, which may be " <>
+        "behind #{remote}/#{branch}. A pull request from this run may be based on a stale tree."
+
+    result =
+      CommandGateway.dispatch_system(%{
+        type: "inbox.send",
+        command_id: "run_executor:origin-base:" <> state.run_id,
+        aggregate_id: "inbox:" <> state.run_id,
+        payload: %{
+          run_id: state.run_id,
+          message_id: "origin-base-" <> state.run_id,
+          body: body,
+          metadata: %{source: "run_executor", operation: "origin_base", outcome: "degraded"}
+        }
+      })
+
+    case result do
+      {:ok, _} ->
+        :ok
+
+      {:error, failure} ->
+        log_local_base_not_recorded(state, failure)
+
+      {:error, failure, _detail} ->
+        log_local_base_not_recorded(state, failure)
+    end
+  end
+
+  defp log_local_base_not_recorded(state, failure) do
+    Logger.warning(
+      "RunExecutor #{state.run_id} could not record on the run that it was cut from the local base branch: #{inspect(failure)}",
+      run_id: state.run_id,
+      operation: "run_executor.origin_base",
+      outcome: "error",
+      reason: inspect(failure)
+    )
+  end
+
+  defp origin_base_cause(:remote_unreadable),
+    do: "the remote could not be read: offline, authentication or timeout"
+
+  defp origin_base_cause({:fetch_failed, %JobsiteError{}}), do: "the fetch failed"
+  defp origin_base_cause({:git_error, %JobsiteError{}}), do: "the fetched tip could not be read"
 
   # `adopt --continue --from-source-branch`: the run is cut from the tip of its task's `source_branch`, a
   # LOCAL branch of the repository the worktree is cut in, in place of that checkout's `HEAD` (or of a
@@ -6023,6 +6204,10 @@ defmodule ForemanServer.Workflow.RunExecutor do
   @doc false
   def __create_run_worktree_for_test__(state, phase_index),
     do: create_run_worktree(state, phase_index)
+
+  @doc false
+  def __resolve_provisioned_base_for_test__(state, spec),
+    do: resolve_provisioned_base(state, spec)
 
   @doc false
   def __rehydrate_resume_context_for_test__(state), do: rehydrate_resume_context(state)

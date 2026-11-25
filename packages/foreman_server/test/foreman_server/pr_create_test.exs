@@ -166,7 +166,7 @@ defmodule ForemanServer.PrCreateTest do
                 repo_path: repo,
                 worktree_path: "/gone/#{token}",
                 branch: branch,
-                base_ref: @base,
+                base_ref: Keyword.get(opts, :base_ref, @base),
                 cleanup: "remove"
               }
             }
@@ -263,6 +263,23 @@ defmodule ForemanServer.PrCreateTest do
       assert Enum.chunk_every(gh_args, 2, 1, :discard) |> Enum.member?(["--head", t.branch])
       assert Enum.chunk_every(gh_args, 2, 1, :discard) |> Enum.member?(["--base", @base])
       assert Enum.chunk_every(gh_args, 2, 1, :discard) |> Enum.member?(["--title", "Add widgets"])
+    end
+
+    test "the commits ahead are counted from the commit the worktree was cut from" do
+      # The run was cut from the fetched origin tip, which can be ahead of the
+      # checkout's local `main`: a range that starts at the branch name would
+      # count the origin's commits as the run's own work.
+      cut = "89abcdef0123456789abcdef0123456789abcdef"
+      t = thread!(base_ref: cut)
+
+      assert {:ok, _payload} = PrCreate.execute(t.run_id)
+
+      ranges =
+        for {["rev-list", "--count", range], _opts} <-
+              ran("git", &match?(["rev-list", "--count" | _], &1)),
+            do: range
+
+      assert ranges == [cut <> ".." <> t.branch]
     end
 
     test "a project that requires PR body headings gets a body that carries them", %{

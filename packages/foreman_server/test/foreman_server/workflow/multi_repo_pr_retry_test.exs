@@ -344,6 +344,7 @@ defmodule ForemanServer.Workflow.MultiRepoPrRetryTest do
     git!(repo, ["add", "."])
     git!(repo, ["commit", "--no-gpg-sign", "-m", "seed", "--quiet"])
     git!(repo, ["remote", "add", "origin", origin])
+    git!(repo, ["push", "--quiet", "origin", "main"])
     repo
   end
 
