@@ -198,6 +198,14 @@
   `jose`). `packages/jido_harness` takes the same `mint`, `decimal` and `hpax` in its own lock
   and vendored `deps/`, which clears its 7. `erlexec` stays at 2.3.4: retired upstream, patched
   in-repo on purpose (`packages/jido_harness/UPSTREAM_PIN.md`). No operator-visible change.
+- `ex_mcp` 1.0.0-rc.8 → 1.8.1. Hex retired rc.8 for GHSA-22m7-hr37-pxg3 and names 1.6.2 as the
+  fix, but 1.6.2 is itself retired (GHSA-2q9v-qvwf-3m8w, GHSA-jrw4-h7gq-x4cj; 1.7.2:
+  GHSA-5vm6-rrjx-3496), so the target is the newest release. `jido_mcp` (the Sunstone fork,
+  already at its HEAD) requires exactly `1.0.0-rc.8`, hence a new `{:ex_mcp, "~> 1.8", override:
+  true}` in `mix.exs`. ExMCP's own requirements also move `cowlib` 2.18.0 → 2.22.0 in
+  `mix.lock` (the `mint`, `decimal` and `jose` floors it sets are met by the previous bump).
+  Nothing in `lib/` calls ExMCP or `Jido.MCP` (`ForemanServer.MCP` is built on Anubis);
+  `ex_mcp` runs only as a dependency application of `jido_mcp`. No operator-visible change.
 
 ### Fixed
 
