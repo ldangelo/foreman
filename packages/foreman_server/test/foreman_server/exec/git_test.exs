@@ -341,5 +341,45 @@ defmodule ForemanServer.Exec.GitTest do
       assert {:error, {:fetch_failed, "origin", "main", %Error{code: :git_failed}}} =
                Git.fetch_remote_tip(repo, "origin", "main")
     end
+
+    test "concurrent fetches into one checkout all end at the fetched tip", %{
+      repo: repo,
+      origin: origin
+    } do
+      # Git takes a lock per ref it moves: two `git fetch` runs that both move
+      # `refs/remotes/origin/main` at once make the loser fail with "cannot lock
+      # ref". Runs of one project start together against one checkout, so the
+      # fetch is serialized per checkout and every caller ends at the tip.
+      peer =
+        Path.join(System.tmp_dir!(), "jobsite-git-peer-#{System.unique_integer([:positive])}")
+
+      on_exit(fn -> File.rm_rf(peer) end)
+
+      {_output, 0} = System.cmd("git", ["clone", "-q", "--branch", "main", origin, peer])
+      {_output, 0} = System.cmd("git", ["-C", peer, "config", "user.email", "test@example.com"])
+      {_output, 0} = System.cmd("git", ["-C", peer, "config", "user.name", "Test"])
+
+      for round <- 1..4 do
+        {_output, 0} =
+          System.cmd("git", ["-C", peer, "commit", "-q", "--allow-empty", "-m", "ahead #{round}"])
+
+        {_output, 0} =
+          System.cmd("git", ["-C", peer, "push", "-q", "origin", "HEAD:refs/heads/main"])
+
+        {tip, 0} = System.cmd("git", ["-C", peer, "rev-parse", "HEAD"])
+        tip = String.trim(tip)
+
+        results =
+          1..12
+          |> Task.async_stream(fn _ -> Git.fetch_remote_tip(repo, "origin", "main") end,
+            max_concurrency: 12,
+            ordered: false,
+            timeout: 120_000
+          )
+          |> Enum.map(fn {:ok, result} -> result end)
+
+        assert results == List.duplicate({:ok, tip}, 12)
+      end
+    end
   end
 end

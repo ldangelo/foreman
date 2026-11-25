@@ -38,6 +38,31 @@ defmodule ForemanServer.Workflow.PhasePRTest do
     assert record.pr_url == nil
   end
 
+  test "the commits ahead are counted from the recorded base_ref, else from the base branch name" do
+    cut = "89abcdef0123456789abcdef0123456789abcdef"
+
+    # A run cut from the fetched origin tip starts counting at that commit: a
+    # range from the local branch name would count the origin's commits as the
+    # phase's own work when the checkout is behind.
+    assert rev_list_range(%{base_ref: cut}) == cut <> "..foreman/run-1"
+    assert rev_list_range(%{}) == "main..foreman/run-1"
+  end
+
+  defp rev_list_range(overrides) do
+    test_pid = self()
+
+    runner = fn "git", ["rev-list", "--count", range], _opts ->
+      send(test_pid, {:rev_list_range, range})
+      {"0\n", 0}
+    end
+
+    assert {:ok, %{status: "noop"}} =
+             PhasePR.maybe_create(request(Map.put(overrides, :command_runner, runner)))
+
+    assert_receive {:rev_list_range, range}
+    range
+  end
+
   test "created path pushes and opens a GitHub PR" do
     assert {:ok, record} = PhasePR.maybe_create(request())
     assert record.status == "created"

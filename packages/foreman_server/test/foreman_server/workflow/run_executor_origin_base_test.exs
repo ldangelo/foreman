@@ -1,15 +1,19 @@
 defmodule ForemanServer.Workflow.RunExecutorOriginBaseTest do
   use ExUnit.Case, async: true
 
+  alias ForemanServer.ProjectionStore
+  alias ForemanServer.TestSupport.UniqueIds
   alias ForemanServer.Workflow.RunExecutor
 
   # A run is cut from the REMOTE tip of its base branch, not from whatever the
   # shared checkout happens to hold: a stale checkout yields stale PRs
-  # (bead foreman-y2zoc / foreman-ch78x). A remote that answers but cannot be
-  # fetched from degrades to the LOCAL tip of the recorded base branch (with a
-  # warning), not a failed run; a remote that does not carry the branch, a
-  # checkout without the remote, and a recorded branch the checkout does not
-  # have are typed failures — never a silent cut from `HEAD`.
+  # (bead foreman-y2zoc / foreman-ch78x). A checkout without an `origin` remote
+  # is cut from the LOCAL tip of the recorded base branch (nothing there can be
+  # stale); a remote that cannot be read or fetched from degrades the same way,
+  # with a warning and a note on the run, not a failed run. A remote that
+  # answers but does not carry the branch, a recorded branch the checkout does
+  # not have, and a checkout on no branch with no recorded base are typed
+  # failures — never a silent cut from `HEAD`.
   setup do
     tmp =
       Path.join(System.tmp_dir!(), "foreman-origin-base-#{System.unique_integer([:positive])}")
@@ -93,20 +97,34 @@ defmodule ForemanServer.Workflow.RunExecutorOriginBaseTest do
     stale_head: stale_head
   } do
     git!(repo, ["remote", "remove", "origin"])
+    run_id = UniqueIds.unique_run_id("origin-base-none")
 
-    assert {:ok, ^repo, ^stale_head, nil, nil} = resolve_base(state(repo))
+    assert {:ok, ^repo, ^stale_head, nil, nil} = resolve_base(state(repo, run_id: run_id))
+
+    # A remote-less checkout is a supported shape with nothing to degrade from:
+    # it is logged at info and nothing is recorded on the run.
+    assert ProjectionStore.inbox_thread(run_id) == nil
   end
 
-  test "an unreadable origin degrades to the local base branch", %{
+  test "an unreadable origin degrades to the local base branch and records it on the run", %{
     repo: repo,
     tmp: tmp,
     stale_head: stale_head
   } do
     git!(repo, ["remote", "set-url", "origin", Path.join(tmp, "gone.git")])
+    run_id = UniqueIds.unique_run_id("origin-base-unreadable")
 
     # The remote cannot be read at all: the run still starts, cut from the
     # LOCAL tip of the branch its PR targets.
-    assert {:ok, ^repo, ^stale_head, nil, nil} = resolve_base(state(repo))
+    assert {:ok, ^repo, ^stale_head, nil, nil} = resolve_base(state(repo, run_id: run_id))
+
+    # The base may be behind origin/main, so the degradation is on the run's
+    # inbox for the operator, not only in the log.
+    assert_degradation_note(
+      run_id,
+      stale_head,
+      "the remote could not be read: offline, authentication or timeout"
+    )
   end
 
   test "a fetch that fails against a readable remote degrades to the local base branch", %{
@@ -125,7 +143,10 @@ defmodule ForemanServer.Workflow.RunExecutorOriginBaseTest do
     assert File.exists?(object)
     File.rm!(object)
 
-    assert {:ok, ^repo, ^stale_head, nil, nil} = resolve_base(state(repo))
+    run_id = UniqueIds.unique_run_id("origin-base-fetch-failed")
+
+    assert {:ok, ^repo, ^stale_head, nil, nil} = resolve_base(state(repo, run_id: run_id))
+    assert_degradation_note(run_id, stale_head, "the fetch failed")
   end
 
   test "a recorded base branch the checkout does not have is a typed failure", %{
@@ -138,6 +159,19 @@ defmodule ForemanServer.Workflow.RunExecutorOriginBaseTest do
 
     assert {:error, {:local_base_branch_unresolvable, "main", ^repo, _reason}} =
              resolve_base(state(repo))
+  end
+
+  test "a detached checkout with no recorded base branch is a typed failure, never HEAD", %{
+    repo: repo
+  } do
+    git!(repo, ["checkout", "--quiet", "--detach"])
+    unrecorded = Map.delete(state(repo), :run_base_branch)
+
+    # Neither the run nor its projection names a base branch and the checkout is
+    # on none: the PR has no branch to target, and `HEAD` is a commit, not one.
+    assert {:error,
+            {:run_base_branch_unresolvable,
+             {:checkout_branch_unresolvable, ^repo, :detached_head}}} = resolve_base(unrecorded)
   end
 
   test "a declared base is resolved locally and is never fetched", %{
@@ -172,7 +206,7 @@ defmodule ForemanServer.Workflow.RunExecutorOriginBaseTest do
           },
           opts[:task] || %{}
         ),
-      run_id: "run-" <> String.duplicate("0", 32),
+      run_id: opts[:run_id] || UniqueIds.unique_run_id("origin-base"),
       run_base_branch: {:ok, opts[:base_branch] || "main"},
       plan_context: nil,
       worktree_spec: %{}
@@ -181,6 +215,13 @@ defmodule ForemanServer.Workflow.RunExecutorOriginBaseTest do
 
   defp resolve_base(state, spec \\ %{}) do
     RunExecutor.__resolve_provisioned_base_for_test__(state, spec)
+  end
+
+  defp assert_degradation_note(run_id, sha, cause) do
+    assert %{messages: [note]} = ProjectionStore.inbox_thread(run_id)
+    assert note.message_id == "origin-base-" <> run_id
+    assert note.body =~ "could not fetch origin/main for this run (#{cause})"
+    assert note.body =~ "cut from the local main at #{String.slice(sha, 0, 12)}"
   end
 
   defp git!(dir, args) do

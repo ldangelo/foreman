@@ -473,6 +473,28 @@ defmodule ForemanServer.Workflow.AutoPRTest do
       assert {:intent_not_recorded, {:remote_head_unreadable, _}} = reason
     end
 
+    test "the range starts at the commit the run was cut from, not at the base branch name",
+         ctx do
+      commit_on_branch(ctx, "foreman/run-cut/implement")
+      {cut, 0} = ctx.git.(["rev-parse", "foreman/run-cut/implement"])
+
+      context = %{
+        run_id: "run-cut",
+        base_branch: "main",
+        head_branch: "foreman/run-cut/implement",
+        cwd: ctx.repo
+      }
+
+      # The run was cut from the fetched origin tip, which the checkout's local
+      # `main` has not reached: counted from the branch NAME, the commit the
+      # worktree started at looks like the run's own work and a PR is attempted
+      # for a run that wrote nothing.
+      refute AutoPR.maybe_create_pr(context) == :noop
+
+      # Counted from the commit it was cut from, the run has no work of its own.
+      assert AutoPR.maybe_create_pr(Map.put(context, :base_ref, String.trim(cut))) == :noop
+    end
+
     test "a missing artifact does not prevent a PR", ctx do
       commit_on_branch(ctx, "foreman/run-4/implement")
 
