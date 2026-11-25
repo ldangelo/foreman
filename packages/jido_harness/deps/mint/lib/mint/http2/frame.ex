@@ -37,7 +37,7 @@ defmodule Mint.HTTP2.Frame do
 
   @spec inspect(tuple()) :: String.t()
 
-  for {type, _code} <- @types do
+  for {type, _code} <- Enum.sort(@types) do
     def inspect(frame) when is_record(frame, unquote(type)) do
       unquote(String.upcase(Atom.to_string(type))) <> Kernel.inspect(unquote(type)(frame))
     end
@@ -63,7 +63,7 @@ defmodule Mint.HTTP2.Frame do
   @spec flag_set?(byte(), atom(), atom()) :: boolean()
   def flag_set?(flags, frame, flag_name)
 
-  for {frame, flags} <- @flags,
+  for {frame, flags} <- Enum.sort(@flags),
       {flag_name, flag_value} <- flags do
     defp set_flag(flags, unquote(frame), unquote(flag_name)), do: bor(flags, unquote(flag_value))
 
@@ -89,12 +89,15 @@ defmodule Mint.HTTP2.Frame do
                {:frame_size_error, atom()}
                | {:protocol_error, binary()}
                | :payload_too_big
-  def decode_next(bin, max_frame_size \\ 16_384) when is_binary(bin) do
-    case decode_next_raw(bin) do
-      {:ok, {_type, _flags, _stream_id, payload}, _rest}
-      when byte_size(payload) > max_frame_size ->
-        {:error, :payload_too_big}
+  def decode_next(bin, max_frame_size \\ 16_384)
 
+  def decode_next(<<length::24, _header::binary-size(6), _rest::binary>>, max_frame_size)
+      when length > max_frame_size do
+    {:error, :payload_too_big}
+  end
+
+  def decode_next(bin, _max_frame_size) when is_binary(bin) do
+    case decode_next_raw(bin) do
       {:ok, {type, flags, stream_id, payload}, rest} ->
         {:ok, decode_contents(type, flags, stream_id, payload), rest}
 
@@ -121,7 +124,7 @@ defmodule Mint.HTTP2.Frame do
     :more
   end
 
-  for {frame, type} <- @types do
+  for {frame, type} <- Enum.sort(@types) do
     function = :"decode_#{frame}"
 
     defp decode_contents(unquote(type), flags, stream_id, payload) do
@@ -200,6 +203,12 @@ defmodule Mint.HTTP2.Frame do
   end
 
   # http://httpwg.org/specs/rfc7540.html#rfc.section.6.5
+  # RFC 9113 6.5: a SETTINGS frame with the ACK flag set must have an empty payload.
+  defp decode_settings(flags, _stream_id, payload)
+       when is_flag_set(flags, unquote(@flags[:settings][:ack])) and byte_size(payload) > 0 do
+    throw({:mint, {:frame_size_error, :settings}})
+  end
+
   defp decode_settings(_flags, _stream_id, payload) when rem(byte_size(payload), 6) != 0 do
     throw({:mint, {:frame_size_error, :settings}})
   end
@@ -275,6 +284,12 @@ defmodule Mint.HTTP2.Frame do
     continuation(stream_id: stream_id, flags: flags, hbf: payload)
   end
 
+  # RFC 9113 6.1: a frame with the PADDED flag set always carries a Pad Length field.
+  defp decode_padding(frame, flags, <<>>)
+       when is_flag_set(flags, unquote(@flags[:data][:padded])) do
+    throw({:mint, {:frame_size_error, frame}})
+  end
+
   defp decode_padding(frame, flags, <<pad_length, rest::binary>> = payload)
        when is_flag_set(flags, unquote(@flags[:data][:padded])) do
     if pad_length >= byte_size(payload) do
@@ -308,14 +323,33 @@ defmodule Mint.HTTP2.Frame do
     # ignore that setting.
     acc =
       case identifier do
-        0x01 -> [{:header_table_size, value} | acc]
-        0x02 -> [{:enable_push, value == 1} | acc]
-        0x03 -> [{:max_concurrent_streams, value} | acc]
-        0x04 -> [{:initial_window_size, value} | acc]
-        0x05 -> [{:max_frame_size, value} | acc]
-        0x06 -> [{:max_header_list_size, value} | acc]
-        0x08 -> [{:enable_connect_protocol, value == 1} | acc]
-        _other -> acc
+        0x01 ->
+          [{:header_table_size, value} | acc]
+
+        # RFC 9113 6.5.2: SETTINGS_ENABLE_PUSH is only allowed to be 0 or 1.
+        0x02 when value in [0, 1] ->
+          [{:enable_push, value == 1} | acc]
+
+        0x02 ->
+          throw({:mint, {:protocol_error, "SETTINGS_ENABLE_PUSH value #{value} is not 0 or 1"}})
+
+        0x03 ->
+          [{:max_concurrent_streams, value} | acc]
+
+        0x04 ->
+          [{:initial_window_size, value} | acc]
+
+        0x05 ->
+          [{:max_frame_size, value} | acc]
+
+        0x06 ->
+          [{:max_header_list_size, value} | acc]
+
+        0x08 ->
+          [{:enable_connect_protocol, value == 1} | acc]
+
+        _other ->
+          acc
       end
 
     decode_settings_params(rest, acc)
@@ -482,7 +516,7 @@ defmodule Mint.HTTP2.Frame do
     0x0D => :http_1_1_required
   }
 
-  for {code, human_code} <- error_codes do
+  for {code, human_code} <- Enum.sort(error_codes) do
     defp humanize_error_code(unquote(code)), do: unquote(human_code)
     defp dehumanize_error_code(unquote(human_code)), do: unquote(code)
   end

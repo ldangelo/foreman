@@ -190,6 +190,14 @@
   conventional-commit subject among the run's commits (`fix:`, `feat:`, …), then the legacy
   `feat(phase): <phase>`; `Workflow.PhasePR.Request` gains an optional `task_title`, and a
   `git log` that fails only costs the subject fallback (warned, the PR still opens).
+- Dependency versions with published security advisories are bumped, in `mix.lock` only (no
+  `mix.exs` requirement changed): `plug_crypto` 2.2.0 → 2.2.1, `db_connection` 2.10.2 → 2.10.3,
+  `jose` 1.11.12 → 1.11.13, `jsv` 0.22.0 → 0.28.1, `mint` 1.9.3 → 1.11.0, `decimal` 3.1.1 →
+  3.2.0 and `hpax` 1.0.4 → 1.1.0 (required by `mint`). `mix hex.audit` reports 18 fewer
+  advisories for `foreman_server` (four HIGH: two in `mint`, one each in `db_connection` and
+  `jose`). `packages/jido_harness` takes the same `mint`, `decimal` and `hpax` in its own lock
+  and vendored `deps/`, which clears its 7. `erlexec` stays at 2.3.4: retired upstream, patched
+  in-repo on purpose (`packages/jido_harness/UPSTREAM_PIN.md`). No operator-visible change.
 
 ### Fixed
 

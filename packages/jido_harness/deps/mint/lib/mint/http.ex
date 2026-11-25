@@ -227,11 +227,9 @@ defmodule Mint.HTTP do
       *Available since v1.5.0*.
 
     * `:max_header_list_size` - (positive integer or `:infinity`) the maximum size, in
-      **bytes**, of an HTTP/1 response header section or chunked trailer section. Defaults to
-      256 KiB. This option is only used for HTTP/1 connections. *Available since 1.9.2*.
-
-  The following options are HTTP/1-specific and will force the connection
-  to be an HTTP/1 connection.
+      **bytes**, of an HTTP/1 response line, header section, or chunked trailer section.
+      Defaults to 256 KiB. This option is only used for HTTP/1 connections.
+      *Available since 1.9.2*.
 
     * `:proxy` - a `{scheme, address, port, opts}` tuple that identifies a proxy to
       connect to. See the "Proxying" section below for more information.
@@ -278,15 +276,62 @@ defmodule Mint.HTTP do
   You can set up proxying through the `:proxy` option, which is a tuple
   `{scheme, address, port, opts}` that identifies the proxy to connect to.
   Once a proxied connection is returned, the proxy is transparent to you and you
-  can use the connection like a normal HTTP/1 connection.
+  can use the connection like a normal connection.
 
-  If the `scheme` is `:http`, we will connect to the host in the most compatible
-  way, supporting older proxy servers. Data will be sent in clear text.
+  If the connection scheme is `:http`, requests are forwarded through the proxy
+  in the most compatible way, supporting older proxy servers. Data will be sent
+  in clear text.
 
-  If the connection scheme is `:https`, we will connect to the host with a tunnel
-  through the proxy. Using `:https` for both the proxy and the connection scheme
-  is not supported, it is recommended to use `:https` for the end host connection
-  instead of the proxy.
+  If the connection scheme is `:https`, a tunnel through the proxy is established
+  with the `CONNECT` method. If the proxy `scheme` is `:http`, the `CONNECT`
+  request is sent in clear text; if it is `:https`, the connection to the proxy
+  uses TLS and the TLS session to the host is nested inside it. *HTTPS proxies
+  for HTTPS connections are available since v1.10.0*.
+
+  The `opts` in the `:proxy` tuple are the options of the connection to the proxy
+  itself and support the same options as `connect/4`. Tunnel proxies additionally
+  support:
+
+    * `:tunnel_timeout` - the maximum time (in milliseconds) to wait for the proxy
+      to reply to the `CONNECT` request. If the tunnel is not established within
+      this time, `connect/4` returns a `Mint.HTTPError` with reason
+      `{:proxy, :tunnel_timeout}`. Defaults to `30_000` (30 seconds).
+
+  ### Proxying over HTTP/2
+
+  The `:proxy` option always speaks HTTP/1 to the proxy. The connection tunneled
+  *through* the proxy can still be HTTP/2 (negotiated via ALPN), but the `CONNECT`
+  exchange with the proxy itself is HTTP/1. Mint doesn't drive an HTTP/2 connection
+  to the proxy from `connect/4` on purpose: the benefit of HTTP/2 `CONNECT` is
+  multiplexing many tunnels over a single proxy connection, which means sharing that
+  connection across Mint connections. That is the job of a connection pool built on
+  top of Mint, not of a single connection.
+
+  To tunnel through a proxy over HTTP/2, connect to the proxy with `Mint.HTTP2` and
+  open one `CONNECT` stream per tunnel (see the "CONNECT requests" section in
+  `Mint.HTTP2.request/5`):
+
+      {:ok, conn} = Mint.HTTP2.connect(:https, proxy_host, proxy_port)
+      {:ok, conn, ref} = Mint.HTTP2.request(conn, "CONNECT", "example.com:443", [], :stream)
+
+  Once the proxy replies with a `{:status, ref, 200}` response, the stream is a byte
+  tunnel: send bytes to the target with `Mint.HTTP2.stream_request_body/3` and receive
+  bytes from the target as `{:data, ref, data}` responses.
+
+  To run TLS (or a whole Mint connection) *inside* such a tunnel, you need a relay:
+  `:ssl` can't run over an arbitrary byte stream, so a process has to own the proxy
+  connection and relay bytes between the `CONNECT` stream and a local TCP socket. The
+  inner connection then dials the relay while keeping the identity of the real host
+  through the `:hostname` option:
+
+      Mint.HTTP.connect(:https, relay_address, relay_port, hostname: "example.com")
+
+  so that SNI and certificate verification target the real host. Note that the default
+  request `Host` header (HTTP/1) and `:authority` pseudo-header (HTTP/2) contain the
+  port of the connection, which is the relay's port: either make the relay listen on
+  the target's port, or (on HTTP/1) pass an explicit `host` header with each request.
+  This is the natural shape for pooling libraries, which can multiplex many tunnels
+  over one proxy connection.
 
   ## Transport options
 
@@ -415,6 +460,11 @@ defmodule Mint.HTTP do
       proxy = {:http, "myproxy.example.com", 80, []}
       {:ok, conn} = Mint.HTTP.connect(:https, "httpbin.org", 443, proxy: proxy)
 
+  Using an HTTPS proxy:
+
+      proxy = {:https, "myproxy.example.com", 443, []}
+      {:ok, conn} = Mint.HTTP.connect(:https, "httpbin.org", 443, proxy: proxy)
+
   Forcing the connection to be an HTTP/2 connection:
 
       {:ok, conn} = Mint.HTTP.connect(:https, "httpbin.org", 443, protocols: [:http2])
@@ -432,10 +482,9 @@ defmodule Mint.HTTP do
       {:ok, {proxy_scheme, proxy_address, proxy_port, proxy_opts}} ->
         case Util.scheme_to_transport(scheme) do
           Transport.TCP ->
-            proxy = {proxy_scheme, proxy_address, proxy_port}
-            host = {scheme, address, port}
-            opts = Keyword.merge(opts, proxy_opts)
-            UnsafeProxy.connect(proxy, host, opts)
+            proxy = {proxy_scheme, proxy_address, proxy_port, proxy_opts}
+            host = {scheme, address, port, opts}
+            UnsafeProxy.connect(proxy, host)
 
           Transport.SSL ->
             proxy = {proxy_scheme, proxy_address, proxy_port, proxy_opts}
@@ -599,6 +648,12 @@ defmodule Mint.HTTP do
   `content-length` header yourself. If you're using HTTP/1, Mint will do chunked
   transfer-encoding when a content-length is not provided (see `Mint.HTTP1.request/5`).
 
+  ## CONNECT requests
+
+  For requests with the `CONNECT` method, `path` is the target of the tunnel in
+  *authority form* (`"host:port"`), not a path. See `Mint.HTTP2.request/5` for HTTP/2
+  tunnel semantics and for the extended CONNECT protocol, where `path` doesn't apply.
+
   ## Examples
 
       Mint.HTTP.request(conn, "GET", "/", _headers = [], _body = nil)
@@ -730,7 +785,9 @@ defmodule Mint.HTTP do
   the updated connection and `responses` is a list of responses. See the "Responses"
   section below. If there's an error, `{:error, conn, reason, responses}` is returned,
   where `conn` is the updated connection, `reason` is the error reason, and `responses`
-  is a list of responses that were correctly parsed before the error.
+  is a list of responses that were correctly parsed before the error. An error
+  **does not** necessarily mean that the connection is closed. Use `open?/1` to verify
+  that the connection is open.
 
   > #### Graceful Close {: .tip}
   >
@@ -790,8 +847,11 @@ defmodule Mint.HTTP do
     * `{:headers, request_ref, headers}` - returned when the server replied
       with a list of headers. Headers are in the form `{header_name, header_value}`
       with `header_name` and `header_value` being strings. A single `:headers` response
-      will come after the `:status` response. A single `:headers` response may come
-      after all the `:data` responses if **trailer headers** are present.
+      will come after the `:status` response and a single `:headers` response may come
+      after all the `:data` responses if **trailer headers** are present unless
+      `:stream_headers` is enabled (only available for HTTP/1.1 connections), in which
+      case any number of `:headers` responses (including none) may come after the
+      `:status` response and/or after all the `:data` responses.
 
     * `{:data, request_ref, binary}` - returned when the server replied with
       a chunk of response body (as a binary). The request shouldn't be considered done
@@ -891,12 +951,18 @@ defmodule Mint.HTTP do
 
   `timeout` is the maximum time to wait before returning an error.
 
+  If no data arrives within `timeout`, this function returns
+  `{:error, conn, %Mint.TransportError{reason: :timeout}, []}` and the connection
+  **stays open**, so you can call `recv/3` again to keep waiting for the response.
+  Other errors can close the connection. Use `open?/1` to check whether the
+  connection is still open after an error.
+
   This function will raise an error if the socket is in active mode.
 
   > #### Hanging Waiting for Bytes {: .warning}
   >
   > If `byte_count` is greater than `0` and the socket doesn't receive
-  > *at least* `byte_count` bytes withing the `timeout`, then the function
+  > *at least* `byte_count` bytes within the `timeout`, then the function
   > will block for the duration of `timeout` and then return a timeout error.
   > This behavior is the same as the `recv` function in [`:gen_tcp`](`:gen_tcp`)
   > and [`:ssl`](`:ssl`).
@@ -1085,6 +1151,7 @@ defmodule Mint.HTTP do
   # Made public since the struct is opaque.
   @doc false
   @impl true
+  @spec put_proxy_headers(t(), Mint.Types.headers()) :: t()
   def put_proxy_headers(conn, headers), do: conn_apply(conn, :put_proxy_headers, [conn, headers])
 
   @doc """
