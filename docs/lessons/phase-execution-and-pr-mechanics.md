@@ -200,7 +200,8 @@ comes from `state.last_worktree.branch` (retained by
 `RunExecutor.remember_worktree/2`), which since the move to one worktree per run
 is the run's single branch `foreman/<run_id>` rather than the last of N
 per-phase branches. The decision is gated on
-`git rev-list --count base..head > 0`, the branch is published with
+`git rev-list --count <start>..<head> > 0` (`<start>` is the `base_ref` the run's
+worktree was cut from, else the base branch name), the branch is published with
 `git push -u origin <head>`, and only then does it shell out to `gh pr create`.
 A `FOREMAN_BRANCH=<branch>` line in the final artifact is still honoured as an
 override for a skill that manages its own branch, in exactly one form
@@ -236,15 +237,34 @@ is strictly more robust than depending on an agent to print exact lines.
 default.** `RunExecutor.remember_run_base_branch/1` records it once, when the
 run's FIRST phase starts, as `git symbolic-ref --quiet --short HEAD` of
 `vcs_working_directory/1` — the same checkout AutoPR later runs `git rev-list`,
-`git push`, and `gh pr create` in, read at the same moment
-`resolve_run_base/2` fetches that recorded branch from `origin` and gives the
-run worktree its `base_ref` (the worktree is PINNED to that commit; it does
-not supply it), so the branch name and the base commit normally describe one
-repository state — the recorded branch, at the tip `origin` serves for it. A
-checkout with no `origin`, or one whose remote cannot be read (offline, auth,
-timeout), degrades to the checkout's `HEAD` and logs a warning; an `origin`
-that answers but does not carry the recorded branch fails the run with
-`{:origin_base_missing, remote, branch}` instead of guessing a base. It
+`git push`, and `gh pr create` in. `resolve_run_base/3` later fetches that
+RECORDED branch from `origin` (`Exec.Git.fetch_remote_tip/3`: one branch, a
+120 s fetch deadline, a 30 s `ls-remote` probe after a failed fetch) and gives
+the run worktree its `base_ref` (the worktree is PINNED to that commit; it does
+not supply it), so the branch name and the base commit describe one repository
+state — the recorded branch, at the tip `origin` serves for it. Fetches into one
+checkout are serialized (`:global.trans` keyed by the checkout's path): two
+concurrent `git fetch` runs into one checkout fail on the remote-tracking ref's
+lock, and a failed fetch is exactly what degrades a run to a stale base. When
+`origin` gives no tip the run is cut from the LOCAL tip of the same branch,
+never from `HEAD` (which can be another branch than the PR targets). A checkout
+with no `origin` remote, a supported shape with nothing to go stale, logs at
+info (`run_executor.origin_base`, outcome `local_only`) and records nothing; an
+unreadable remote or a failed fetch logs a warning and records an inbox note on
+the run (`origin-base-<run_id>`, read with `foreman_inbox_get`). That a
+remote-less checkout does not fail the run is a deliberate departure from the
+bead's "remote absent → typed error" (foreman-y2zoc), an operator decision:
+flipping it is one clause in `origin_base/4`. Three failures stay typed and are
+never guessed past: `{:origin_base_missing, remote, branch}` (`origin` answers
+and lacks the branch), `{:local_base_branch_unresolvable, branch, repo_path,
+reason}` (cut locally, but the checkout has no such local branch) and
+`{:run_base_branch_unresolvable, reason}` (no recorded base branch and the
+checkout is on none; `reason` is the `{:checkout_branch_unresolvable, ...}`
+described below). AutoPR, PhasePR and `run.pr.create` count the run's commits
+from the worktree's recorded `base_ref` (the commit it was cut from) and from
+the base branch NAME only when none was recorded: a range from the name of a
+`main` that is behind the fetched tip would count the origin's commits as the
+run's own work. The recorded base branch
 is latched on key presence, so an operator switching branches mid-run cannot
 retarget the PR, and it does not hang off `remember_worktree/2` — a workflow
 declaring `worktree: enabled: false` provisions no worktree yet can still land
@@ -502,14 +522,14 @@ output as ordinary files. `remember_run_worktree/2` latches the record on key
 presence, so the first phase provisions and the rest reuse.
 
 Whether the base is pinned is a property of the RUN, not of the declaration.
-`resolve_run_base/2` detects an ImplementationContext by the presence of the
+`resolve_run_base/3` detects an ImplementationContext by the presence of the
 values it freezes: with one, `project_root`/`source_revision` come from plan
 context, a declared `base` must resolve to that same revision
 (`assert_base_matches/3`, TRD Decisions 3/5), and
 `implementation_key`/`trd_scope` ride on the record; without one, the root is the
 project's registered path and the base is the recorded base branch's fetched
-`origin` tip (the checkout's `HEAD` only when no `origin` can be read, with a
-logged warning). A
+`origin` tip (its LOCAL tip when `origin` gives none; never the checkout's
+`HEAD`). A
 partially-populated plan context is a hard error, never a silent fall back to
 `HEAD`.
 

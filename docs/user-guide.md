@@ -117,13 +117,31 @@ files so you can judge.
 `base` may pin the checkout to a specific ref. For `implement-trd` and
 `implement-trd-beads` it must resolve to the ImplementationContext's frozen
 `source_revision`, and Foreman fails the run if it does not; a declared `base`
-is resolved locally and is never fetched. For every other workflow the run is
-cut from the fetched `origin/<branch>` tip of its recorded base branch — the
-branch the run's PR targets — so a shared checkout nobody has pulled cannot
-produce a stale PR. A checkout with no `origin`, or one whose remote cannot be
-read (offline, auth, timeout), falls back to the checkout's `HEAD` and logs a
-warning; an `origin` that answers but does not carry the branch fails the run
-with `origin_base_missing`.
+and a task's `source_branch` are resolved locally and are never fetched. For
+every other workflow the run is cut from the fetched `origin/<branch>` tip of
+its recorded base branch — the branch the run's PR targets — so a shared
+checkout nobody has pulled cannot produce a stale PR. Only that one branch is
+fetched (120 s deadline), and fetches into one checkout run one at a time, so
+runs started together do not fail each other on git's ref locks. Rehydrating a
+run's existing worktree on resume and attaching a follow-up to it throw the base
+away, so they skip the fetch. When
+`origin` gives no tip, the run is cut from the LOCAL tip of the same branch —
+never from the checkout's `HEAD`, which can be another branch than the PR
+targets:
+
+- A checkout with no `origin` remote (a supported shape) is cut from its local
+  branch; this is logged at info and nothing is recorded.
+- A remote that cannot be read (offline, authentication, timeout) or a fetch
+  that fails is cut from the local branch too; it logs a warning and leaves a
+  note in the run's inbox (`foreman_inbox_get`), because the base may be behind
+  `origin/<branch>`. After a failed fetch a 30 s `git ls-remote` probe tells a
+  remote that lacks the branch from one that cannot be read.
+
+Three failures are typed and fail the run instead of guessing a base:
+`origin_base_missing` (`origin` answers but does not carry the branch),
+`local_base_branch_unresolvable` (the run had to be cut locally and the checkout
+has no such local branch) and `run_base_branch_unresolvable` (the run recorded
+no base branch and the checkout is on none, e.g. a detached `HEAD`).
 
 Manifests are read by a small YAML-subset parser (not a full YAML library). A
 mapping may be written in **block** style (indented `key: value` lines) or in
@@ -570,10 +588,11 @@ a real secret store is a separate, later feature.
 
 **Base branch.** A run's base branch is the registered checkout's current branch at the
 moment the run's first phase starts, latched for the run; the base COMMIT is
-that branch's fetched `origin/<branch>` tip (see the `base` description in
-"Task and run lifecycle, at a glance"). There
-is no per-project `default_branch` setting: `project update`/`register` payloads that
-carry one are rejected with `setting_removed: default_branch`.
+that branch's fetched `origin/<branch>` tip, or its local tip when `origin`
+gives none (see the `base` description in "Task and run lifecycle, at a
+glance"). There is no per-project `default_branch` setting: `project
+update`/`register` payloads that carry one are rejected with
+`setting_removed: default_branch`.
 
 ### Create a project
 
@@ -3008,8 +3027,9 @@ PR creation is **not** a workflow phase — bundled workflows declare no
 `create-pr`/`pr-wait`/`merge` phases and there is no `checkpointPr`
 option. `ForemanServer.Workflow.AutoPR.maybe_create_pr/1`, called from
 `RunExecutor.finalize_run/1`, derives the PR from run state instead: it
-checks `git rev-list --count base..head > 0` against the branch
-recorded when the run's first phase started, publishes with `git push
+checks `git rev-list --count <start>..<head> > 0` against the branch
+recorded when the run's first phase started (`<start>` is the commit the run's
+worktree was cut from, else the base branch name), publishes with `git push
 -u origin <head>`, and calls `gh pr create`. When that final PR is created the
 run signals `run.pr.ready`, which puts the PR into the merge gate (the head it records is the one GitHub shows when the signal is sent, read with one `gh pr view`, not the local branch tip; when GitHub cannot be read the PR is not put in the gate, the failure is logged and recorded on the PR's watch record until a later signal clears it): Foreman will
 not merge it until an operator runs `foreman run approve-merge ... --head-sha <sha>`
