@@ -323,6 +323,7 @@ defmodule ForemanServer.Exec.GitTest do
       File.write!(Path.join(peer, "ahead.txt"), "ahead\n")
       {_output, 0} = System.cmd("git", ["-C", peer, "add", "-A"])
       {_output, 0} = System.cmd("git", ["-C", peer, "commit", "-q", "-m", "ahead"])
+
       {_output, 0} =
         System.cmd("git", ["-C", peer, "push", "-q", "origin", "HEAD:refs/heads/main"])
 
@@ -330,7 +331,10 @@ defmodule ForemanServer.Exec.GitTest do
       # the branch needs: the branch is readable, the fetch is not.
       {tree, 0} = System.cmd("git", ["-C", peer, "rev-parse", "HEAD^{tree}"])
       tree = String.trim(tree)
-      object = Path.join(origin, "objects/#{String.slice(tree, 0, 2)}/#{String.slice(tree, 2..-1//1)}")
+
+      object =
+        Path.join(origin, "objects/#{String.slice(tree, 0, 2)}/#{String.slice(tree, 2..-1//1)}")
+
       assert File.exists?(object)
       File.rm!(object)
 

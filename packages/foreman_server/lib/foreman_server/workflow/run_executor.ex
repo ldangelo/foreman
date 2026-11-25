@@ -4600,10 +4600,10 @@ defmodule ForemanServer.Workflow.RunExecutor do
 
   # The remote's tip is the base when the remote can be read. A remote that answers
   # but does not carry the branch is a typed refusal: the PR would name a base the run
-  # was not cut from. A remote that is not configured at all is a typed refusal too.
-  # A remote that cannot be read (offline, auth, timeout), or a fetch that fails
-  # against a readable remote, degrades to the LOCAL tip of the base branch the run's
-  # PR names, with a warning: a run must not die because the network is down.
+  # was not cut from. When there is no remote tip to cut from (no `origin` at all, a
+  # remote that cannot be read, a fetch that fails against a readable remote) the run is
+  # cut from the LOCAL tip of the branch its PR names (`cut_from_local_base/5`): a run
+  # must not die because the network is down.
   defp origin_base(state, project_root, remote, branch) do
     case JobsiteGit.fetch_remote_tip(project_root, remote, branch) do
       {:ok, sha} ->
@@ -4612,40 +4612,112 @@ defmodule ForemanServer.Workflow.RunExecutor do
       {:error, {:remote_branch_missing, ^remote, ^branch}} ->
         {:error, {:origin_base_missing, remote, branch}}
 
+      {:error, :no_remote} ->
+        cut_from_local_base(state, project_root, remote, branch, :no_remote)
+
       {:error, {:fetch_failed, ^remote, ^branch, %JobsiteError{} = reason}} ->
-        degrade_to_local_base(state, project_root, remote, branch, {:fetch_failed, reason})
+        cut_from_local_base(state, project_root, remote, branch, {:fetch_failed, reason})
 
       {:error, {:remote_unreadable, ^remote, ^branch}} ->
-        degrade_to_local_base(state, project_root, remote, branch, :remote_unreadable)
-
-      {:error, :no_remote} ->
-        {:error, {:origin_remote_missing, remote}}
+        cut_from_local_base(state, project_root, remote, branch, :remote_unreadable)
 
       {:error, %JobsiteError{} = reason} ->
-        degrade_to_local_base(state, project_root, remote, branch, {:git_error, reason})
+        cut_from_local_base(state, project_root, remote, branch, {:git_error, reason})
     end
   end
 
-  # The degradation is the LOCAL tip of the base branch the run's PR names: the same
-  # branch, possibly behind `origin`. The checkout's HEAD is not a fallback: it is
-  # another branch than the one the PR targets.
-  defp degrade_to_local_base(state, project_root, remote, branch, reason) do
+  # The base a run is cut from when `origin` gives none: the LOCAL tip of the base
+  # branch the run's PR names, which may be behind `origin`. The checkout's HEAD is
+  # not a fallback: it can be another branch than the one the PR targets. A recorded
+  # branch the checkout does not have is a typed failure, never HEAD.
+  defp cut_from_local_base(state, project_root, remote, branch, reason) do
     case resolve_revision(project_root, "refs/heads/" <> branch) do
       {:ok, sha} ->
-        Logger.warning(
-          "RunExecutor #{state.run_id} could not fetch #{remote}/#{branch} in #{project_root} (#{inspect(reason)}); cutting the run from the local #{branch} (#{sha}) instead",
-          run_id: state.run_id,
-          operation: "run_executor.origin_base",
-          outcome: "degraded",
-          reason: inspect(reason)
-        )
-
+        report_local_base(state, project_root, remote, branch, sha, reason)
         {:ok, sha}
 
       {:error, local_reason} ->
         {:error, {:local_base_branch_unresolvable, branch, project_root, local_reason}}
     end
   end
+
+  # No `origin` configured is a supported shape (an operator workspace that was never
+  # pushed; `git.no_remote` recommends a remote) and nothing there can be stale, so it
+  # is a fact: logged, not a warning, and nothing is recorded on the run.
+  defp report_local_base(state, project_root, remote, branch, sha, :no_remote) do
+    Logger.info(
+      "RunExecutor #{state.run_id} has no #{remote} remote in #{project_root}; cutting the run from the local #{branch} (#{sha})",
+      run_id: state.run_id,
+      operation: "run_executor.origin_base",
+      outcome: "local_only"
+    )
+  end
+
+  # A remote that exists but could not give its tip is a degradation: the base may be
+  # behind `origin/<branch>` and a stale PR looks like any other. It is logged AND
+  # recorded on the run (bead foreman-k9g4n), so the operator who reads the run sees it.
+  defp report_local_base(state, project_root, remote, branch, sha, reason) do
+    Logger.warning(
+      "RunExecutor #{state.run_id} could not fetch #{remote}/#{branch} in #{project_root} (#{inspect(reason)}); cutting the run from the local #{branch} (#{sha}) instead",
+      run_id: state.run_id,
+      operation: "run_executor.origin_base",
+      outcome: "degraded",
+      reason: inspect(reason)
+    )
+
+    record_local_base(state, remote, branch, sha, reason)
+  end
+
+  # The run's inbox is the operator-facing run channel (`foreman_inbox_get`). The
+  # command id is the run's, so the resume pre-check and the provisioning that follows
+  # it record one note between them. A failed record is logged and does not fail the
+  # run: the warning above already carries the same facts.
+  defp record_local_base(state, remote, branch, sha, reason) do
+    body =
+      "Foreman could not fetch #{remote}/#{branch} for this run (#{origin_base_cause(reason)}), " <>
+        "so the run was cut from the local #{branch} at #{String.slice(sha, 0, 12)}, which may be " <>
+        "behind #{remote}/#{branch}. A pull request from this run may be based on a stale tree."
+
+    result =
+      CommandGateway.dispatch_system(%{
+        type: "inbox.send",
+        command_id: "run_executor:origin-base:" <> state.run_id,
+        aggregate_id: "inbox:" <> state.run_id,
+        payload: %{
+          run_id: state.run_id,
+          message_id: "origin-base-" <> state.run_id,
+          body: body,
+          metadata: %{source: "run_executor", operation: "origin_base", outcome: "degraded"}
+        }
+      })
+
+    case result do
+      {:ok, _} ->
+        :ok
+
+      {:error, failure} ->
+        log_local_base_not_recorded(state, failure)
+
+      {:error, failure, _detail} ->
+        log_local_base_not_recorded(state, failure)
+    end
+  end
+
+  defp log_local_base_not_recorded(state, failure) do
+    Logger.warning(
+      "RunExecutor #{state.run_id} could not record on the run that it was cut from the local base branch: #{inspect(failure)}",
+      run_id: state.run_id,
+      operation: "run_executor.origin_base",
+      outcome: "error",
+      reason: inspect(failure)
+    )
+  end
+
+  defp origin_base_cause(:remote_unreadable),
+    do: "the remote could not be read: offline, authentication or timeout"
+
+  defp origin_base_cause({:fetch_failed, %JobsiteError{}}), do: "the fetch failed"
+  defp origin_base_cause({:git_error, %JobsiteError{}}), do: "the fetched tip could not be read"
 
   # `adopt --continue --from-source-branch`: the run is cut from the tip of its task's `source_branch`, a
   # LOCAL branch of the repository the worktree is cut in, in place of that checkout's `HEAD` (or of a

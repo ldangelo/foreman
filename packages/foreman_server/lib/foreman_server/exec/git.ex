@@ -658,6 +658,13 @@ defmodule ForemanServer.Exec.Git do
   Only the remote-tracking ref `refs/remotes/<remote>/<branch>` moves; the
   checkout's own `HEAD` and working tree are left alone.
 
+  Fetches into one checkout run one at a time (`:global.trans/3`, keyed by the
+  expanded path). Two `git fetch` runs into one checkout race on the remote-tracking
+  ref: both read the old tip, one moves it, and the other fails with `cannot lock ref
+  ... is at <new> but expected <old>` although the remote answered. Runs of one
+  project start together, so without the lock a burst of them would see all but one
+  fetch fail, and a failed fetch is what degrades a run to a stale local base.
+
   `{:error, :no_remote}` — `repo` has no such remote.
   `{:error, {:remote_branch_missing, remote, branch}}` — the remote answered and does
   not carry the branch.
@@ -680,7 +687,11 @@ defmodule ForemanServer.Exec.Git do
     with :ok <- check_ref(:remote, remote),
          :ok <- check_ref(:branch, branch) do
       if remote_exists?(repo, remote) do
-        fetch_and_read_tip(repo, remote, branch)
+        :global.trans(
+          {{__MODULE__, :fetch_remote_tip, Path.expand(repo)}, self()},
+          fn -> fetch_and_read_tip(repo, remote, branch) end,
+          [node()]
+        )
       else
         {:error, :no_remote}
       end

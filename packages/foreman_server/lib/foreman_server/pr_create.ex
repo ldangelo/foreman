@@ -174,6 +174,17 @@ defmodule ForemanServer.PrCreate do
     end
   end
 
+  # The commit the run's worktree was cut from. The run's own commits start THERE, not at
+  # the local base branch name: a run cut from the fetched `origin/<branch>` tip leaves the
+  # local branch behind it, and `<branch>..<head>` would count the origin commits as the
+  # run's work. A worktree record without one leaves the range at the branch name.
+  defp base_commit(run_id) do
+    case run_id |> ProjectionStore.worktrees_for_run() |> List.last() do
+      %{base_ref: sha} when is_binary(sha) and sha != "" -> sha
+      _ -> nil
+    end
+  end
+
   defp base_branch(%{base_branch: base}) when is_binary(base) and base != "", do: {:ok, base}
   defp base_branch(_run), do: {:error, :no_base_branch}
 
@@ -187,6 +198,7 @@ defmodule ForemanServer.PrCreate do
   defp open(run, repo_path, head, base) do
     context =
       %{run_id: run.run_id, base_branch: base, head_branch: head, cwd: repo_path}
+      |> put_present(:base_ref, base_commit(run.run_id))
       |> put_task_fields(run.task_id)
       |> PrBodyContext.put_project_headings(run.project_id)
       |> put_runner()

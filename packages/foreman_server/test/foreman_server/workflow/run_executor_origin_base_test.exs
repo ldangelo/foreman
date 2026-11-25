@@ -88,10 +88,13 @@ defmodule ForemanServer.Workflow.RunExecutorOriginBaseTest do
              resolve_base(state(repo, base_branch: "feat/local-only"))
   end
 
-  test "a checkout without an origin remote is a typed failure", %{repo: repo} do
+  test "a checkout without an origin remote is cut from the local base branch", %{
+    repo: repo,
+    stale_head: stale_head
+  } do
     git!(repo, ["remote", "remove", "origin"])
 
-    assert {:error, {:origin_remote_missing, "origin"}} = resolve_base(state(repo))
+    assert {:ok, ^repo, ^stale_head, nil, nil} = resolve_base(state(repo))
   end
 
   test "an unreadable origin degrades to the local base branch", %{
@@ -115,7 +118,10 @@ defmodule ForemanServer.Workflow.RunExecutorOriginBaseTest do
     # The remote advertises the branch (so it is not missing) but cannot serve
     # the objects: the fetch fails while the branch is still readable.
     tree = git!(peer, ["rev-parse", "HEAD^{tree}"])
-    object = Path.join(origin, "objects/#{String.slice(tree, 0, 2)}/#{String.slice(tree, 2..-1//1)}")
+
+    object =
+      Path.join(origin, "objects/#{String.slice(tree, 0, 2)}/#{String.slice(tree, 2..-1//1)}")
+
     assert File.exists?(object)
     File.rm!(object)
 
