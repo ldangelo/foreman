@@ -67,9 +67,13 @@ defmodule ForemanServer.Workflow.Worktree do
   def operation_id(run_id, repo_id) when is_binary(run_id) and is_binary(repo_id),
     do: "wt-" <> run_id <> "-" <> repo_id
 
+  @typedoc "What `provision/1` reports: where the worktree is, and whether it was already there."
+  @type provisioned :: %{path: String.t(), reused: boolean()}
+
   @doc """
   Provision a worktree through the adapter and append `WorktreeCreated`.
   Returns `{:ok, worktree_path}` on success and an error tuple on failure.
+  It is `provision/1` without the report of whether the worktree was reused.
 
   Failure semantics:
     * `git worktree add` failure -> emit `:create_failed`, return git error.
@@ -80,7 +84,22 @@ defmodule ForemanServer.Workflow.Worktree do
     * `WorktreeCreated` is NEVER fabricated.
   """
   @spec create(map()) :: {:ok, String.t()} | {:error, term()}
-  def create(
+  def create(args) do
+    with {:ok, %{path: worktree_path}} <- provision(args), do: {:ok, worktree_path}
+  end
+
+  @doc """
+  `create/1` that also says whether the worktree was **reused**: already on
+  disk and registered on `branch`, so `VcsAdapter.Default` took it as it
+  stands (never reset, checked out or cleaned, so its uncommitted work
+  survives), or `reuse_existing: true`. Failure semantics are `create/1`'s.
+
+  A reused worktree was not created by this call and is not this call's to
+  undo. A caller that rolls back what it provisioned, or that runs one-time
+  setup on a fresh worktree, must leave a `reused: true` one out of both.
+  """
+  @spec provision(map()) :: {:ok, provisioned()} | {:error, term()}
+  def provision(
         %{
           operation_id: op_id,
           project_id: project_id,
@@ -115,7 +134,7 @@ defmodule ForemanServer.Workflow.Worktree do
       end
 
     case git_result do
-      {:ok, _git_result} ->
+      {:ok, %{reused: reused}} when is_boolean(reused) ->
         case dispatch_worktree_created(
                op_id,
                project_id,
@@ -140,7 +159,7 @@ defmodule ForemanServer.Workflow.Worktree do
               started_ms
             )
 
-            {:ok, worktree_path}
+            {:ok, %{path: worktree_path, reused: reused}}
 
           {:error, append_error} ->
             handle_append_failure(

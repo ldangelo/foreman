@@ -97,13 +97,225 @@ defmodule ForemanServer.VcsAdapter.Default do
 
     emit_started(operation_id, "worktree_create", target, metadata)
 
+    case reuse_existing_worktree(repo_path, worktree_path, branch) do
+      {:ok, _matched_branch} ->
+        result = %{
+          path: worktree_path,
+          base: base,
+          branch: branch,
+          output: "",
+          reused: true
+        }
+
+        emit_completed(operation_id, "worktree_create", target, result, metadata)
+        {:ok, result}
+
+      {:error, reason} ->
+        emit_failed(operation_id, "worktree_create", target, reason, 0, metadata)
+        {:error, reason}
+
+      :create ->
+        create_fresh_worktree(
+          repo_path,
+          worktree_path,
+          branch,
+          base,
+          operation_id,
+          target,
+          metadata
+        )
+    end
+  end
+
+  # `git worktree add` on a path that is already a registered worktree fails
+  # with exit 128 ("already exists"), which used to fail a relaunched run even
+  # though the worktree it wanted is sitting right there — with any
+  # uncommitted phase work in it. So probe the path first and only reach for
+  # `git worktree add` when there is genuinely nothing usable there.
+  #
+  #   * nothing at the path, or an existing EMPTY directory -> `:create`. An
+  #     empty directory is what a half-finished create leaves behind and
+  #     `git worktree add` accepts one, so it must stay creatable.
+  #   * registered worktree already on the requested branch (a `nil` request
+  #     matches a detached worktree) -> `{:ok, branch}`; the caller returns it
+  #     as reused WITHOUT resetting, checking out, cleaning or re-running the
+  #     `.beads/` sparse-checkout exclusion, so local work survives. A
+  #     registration whose directory is no longer a working checkout (its
+  #     `gitdir` pointer was removed, which git flags `prunable`) is refused.
+  #   * anything else at that path -> a typed `{:worktree_path_unusable, path,
+  #     reason}`. The branch check stays strict: a worktree on an unrelated
+  #     branch is NOT reused.
+  defp reuse_existing_worktree(repo_path, worktree_path, branch) do
+    cond do
+      not File.exists?(worktree_path) ->
+        :create
+
+      empty_dir?(worktree_path) ->
+        :create
+
+      true ->
+        classify_registered_worktree(repo_path, worktree_path, branch)
+    end
+  end
+
+  # Only a directory we could hand to `git worktree add` counts as empty; a
+  # file, or a path we cannot read, is classified by git instead.
+  defp empty_dir?(path) do
+    case File.ls(path) do
+      {:ok, []} -> true
+      {:ok, _entries} -> false
+      {:error, _reason} -> false
+    end
+  end
+
+  defp classify_registered_worktree(repo_path, worktree_path, branch) do
+    case Git.worktree_list(repo_path) do
+      {:ok, worktrees} ->
+        case find_registered(worktrees, worktree_path) do
+          nil ->
+            {:error, {:worktree_path_unusable, worktree_path, :not_a_git_worktree}}
+
+          %{branch: registered_branch} ->
+            if registered_branch == branch do
+              case usable_checkout?(worktree_path) do
+                {:unusable, reason} ->
+                  {:error, {:worktree_path_unusable, worktree_path, reason}}
+
+                :usable ->
+                  case checkout_branch(worktree_path) do
+                    ^branch ->
+                      {:ok, registered_branch}
+
+                    checkout_branch ->
+                      {:error,
+                       {:worktree_path_unusable, worktree_path,
+                        {:branch_mismatch, checkout_branch}}}
+                  end
+              end
+            else
+              {:error,
+               {:worktree_path_unusable, worktree_path, {:branch_mismatch, registered_branch}}}
+            end
+        end
+
+      {:error, reason} ->
+        {:error, {:worktree_path_unusable, worktree_path, {:worktree_list_failed, reason}}}
+    end
+  end
+
+  # A worktree stays registered with git after its `gitdir` pointer is deleted:
+  # `worktree list` still reports it (flagged `prunable`, a line
+  # `Git.worktree_list/1` does not surface) while the directory is an ordinary
+  # directory again — and inside the repo it silently reads as the parent
+  # checkout. Ask git which admin dir the path belongs to and require it to be
+  # the one recorded in that checkout, so a stale registration is reported
+  # rather than reused.
+  #
+  # A checkout interrupted part-way (the process died inside `git worktree
+  # add`) is registered, points at its admin dir and is on the right branch,
+  # but git writes the admin dir's `index` only when the checkout finishes: with
+  # none, the files that were never written read as deleted, and the phase
+  # commit (`git add -A`) would record those deletions. Such a path is refused
+  # rather than handed to an agent.
+  defp usable_checkout?(worktree_path) do
+    case System.cmd(
+           "git",
+           ["-C", worktree_path, "rev-parse", "--absolute-git-dir"],
+           stderr_to_stdout: true
+         ) do
+      {output, 0} ->
+        admin_dir = canonicalize(String.trim(output))
+
+        cond do
+          recorded_admin_dir(worktree_path) != admin_dir ->
+            {:unusable, :worktree_checkout_broken}
+
+          not File.exists?(Path.join(admin_dir, "index")) ->
+            {:unusable, :worktree_checkout_incomplete}
+
+          true ->
+            :usable
+        end
+
+      {_output, _code} ->
+        {:unusable, :not_a_git_worktree}
+    end
+  end
+
+  # Read the `gitdir:` pointer the checkout itself carries. `nil` when there is
+  # nothing to read, which means the directory is not a working checkout.
+  defp recorded_admin_dir(worktree_path) do
+    with {:ok, contents} <- File.read(Path.join(worktree_path, ".git")),
+         ["gitdir: " <> target] <- String.split(contents, "\n", parts: 2, trim: true) do
+      canonicalize(expand_gitdir(target, worktree_path))
+    else
+      _ -> nil
+    end
+  end
+
+  # Git resolves a relative `gitdir:` pointer against the directory that holds
+  # the `.git` file, not against the process cwd — Git 2.48 and later write
+  # relative pointers when `worktree.useRelativePaths` is set.
+  defp expand_gitdir(target, worktree_path) do
+    target = String.trim(target)
+
+    if Path.type(target) == :absolute do
+      target
+    else
+      # Git resolves a relative pointer against the directory holding the
+      # `.git` file; `Path.expand/2` also collapses the `..` segments such a
+      # pointer carries, so the result stays comparable to git's own answer.
+      Path.expand(target, worktree_path)
+    end
+  end
+
+  # The branch the checkout itself is on, read from its own HEAD. `nil` when
+  # the checkout is detached. The registry entry can be stale — a checkout
+  # whose `gitdir` pointer was repointed keeps the registration it had — so
+  # the checkout is the authority on what a command run in that directory
+  # would actually see.
+  defp checkout_branch(worktree_path) do
+    case System.cmd(
+           "git",
+           ["-C", worktree_path, "symbolic-ref", "-q", "--short", "HEAD"],
+           stderr_to_stdout: true
+         ) do
+      {output, 0} -> String.trim(output)
+      {_output, _code} -> nil
+    end
+  end
+
+  # Git reports worktree paths resolved through symlinks (e.g. `/private/var/…`
+  # for a `/var/…` request on macOS), so compare canonical forms; an
+  # unresolvable path simply never matches.
+  defp find_registered(worktrees, worktree_path) do
+    target = canonicalize(worktree_path)
+    Enum.find(worktrees, &(canonicalize(&1.path) == target))
+  end
+
+  defp create_fresh_worktree(
+         repo_path,
+         worktree_path,
+         branch,
+         base,
+         operation_id,
+         target,
+         metadata
+       ) do
     args = Git.worktree_add_args(repo_path, worktree_path, branch, base)
 
     case System.cmd("git", args, stderr_to_stdout: true) do
       {output, 0} ->
         case exclude_dotbeads(worktree_path) do
           :ok ->
-            result = %{path: worktree_path, base: base, branch: branch, output: output}
+            result = %{
+              path: worktree_path,
+              base: base,
+              branch: branch,
+              output: output,
+              reused: false
+            }
+
             emit_completed(operation_id, "worktree_create", target, result, metadata)
             {:ok, result}
 

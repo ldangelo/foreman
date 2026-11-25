@@ -186,6 +186,14 @@ Source of truth: `docs/TRD/TRD-2026-a804d1c7-phase-0-durable-execution.md`.
   A worktree that no longer exists at resume is recorded as
   `prior_worktree_discarded` (`Workflow.WorktreeDiscard`); a failing
   `git worktree prune` there fails the run `{:resume_worktree_prune_failed, …}`.
+  A worktree that IS on disk when the run provisions it (a relaunch, or a resume
+  that found no `WorktreeCreated` entry) is reused, not discarded:
+  `Workflow.Worktree.provision/1` reports `reused`, `VcsAdapter.Default` takes it
+  as it stands (typed refusals `{:worktree_path_unusable, path, reason}`), and
+  `RunExecutor` reaps orphaned agents in it first, skips the setup script and
+  never rolls it back (`ready_worktree/3`, `provision_secondaries/5`). A resume
+  that found no entry has already recorded `prior_worktree_discarded` by then,
+  so that record overstates the loss there.
 - **Kickoff preflight order** (`RunExecutor.kickoff_preflight/1`, fresh and resumed
   runs): network isolation (`NetworkPolicy.check_backend/2`; refuses
   `{:isolation_unsupported, :network, :host_workflow}` because the host cannot

@@ -4187,7 +4187,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
          :ok <- assert_worktree_path_contained(project_id, state, worktree_path),
          branch = RunWorktreeLayout.branch(spec, worktree_task_id(state), state.run_id),
          :ok <- ensure_worktree_parent_dir(worktree_path) do
-      Worktree.create(%{
+      Worktree.provision(%{
         operation_id: operation_id,
         project_id: project_id,
         run_id: state.run_id,
@@ -4198,7 +4198,7 @@ defmodule ForemanServer.Workflow.RunExecutor do
         branch: branch
       })
       |> case do
-        {:ok, ^worktree_path} ->
+        {:ok, %{path: ^worktree_path, reused: reused}} ->
           record = %{
             operation_id: operation_id,
             worktree_path: worktree_path,
@@ -4211,12 +4211,12 @@ defmodule ForemanServer.Workflow.RunExecutor do
             cleanup: cleanup
           }
 
-          with {:ok, record} <- run_project_setup(state, record) do
-            create_repo_worktrees(state, phase_index, record)
+          with {:ok, record} <- ready_worktree(state, record, reused) do
+            create_repo_worktrees(state, phase_index, record, reused)
           end
 
-        {:ok, other_path} ->
-          # Worktree.create guarantees the returned path matches the requested
+        {:ok, %{path: other_path}} ->
+          # Worktree.provision guarantees the returned path matches the requested
           # path; treat drift as a hard failure rather than passing a mismatched
           # path downstream.
           {:error, {:worktree_path_drift, worktree_path, other_path}}
@@ -4249,31 +4249,62 @@ defmodule ForemanServer.Workflow.RunExecutor do
     end
   end
 
+  # What a provisioned worktree needs before the run uses it. A fresh one runs
+  # the project's setup script. One already on disk when the run provisions it (a
+  # relaunch, with the worktree the interrupted launch left) is reused as it
+  # stands - nothing reset, nothing cleaned - and was set up by the launch that
+  # made it, so the script does not run again. As on a resume
+  # (`rehydrate_worktree_entry/2`), an agent the dead server left running in it is
+  # reaped first, or it would race the new one; one that survives is a hard
+  # failure, because reusing the worktree would be unsafe.
+  defp ready_worktree(state, record, false), do: run_project_setup(state, record)
+
+  defp ready_worktree(state, record, true) do
+    with :ok <- reap_orphaned_agents(state, record.worktree_path) do
+      Logger.info(
+        "RunExecutor #{state.run_id} found its worktree already on disk and reused it as it stands; it was neither reset nor set up again",
+        run_id: state.run_id,
+        task_id: task_id(state),
+        operation: "run_executor.worktree_reused"
+      )
+
+      {:ok, record}
+    end
+  end
+
   # Eager provisioning of the run's secondary repositories, primary first
-  # (S3 §5). Sequential: on a failure at repository N, repositories 1..N-1
-  # (the primary included) are compensated - worktree removed, branch deleted -
-  # so a failed start leaves no half-provisioned run, and the phase fails with
-  # `{:multi_repo_worktree_failed, repo_id, reason}`. A single-repository run
-  # (no `:run_repos` extras) returns the primary record untouched.
-  defp create_repo_worktrees(state, phase_index, primary_record) do
+  # (S3 §5). Sequential: on a failure at repository N, the worktrees THIS CALL
+  # created for repositories 1..N-1 (the primary included) are compensated -
+  # worktree removed, branch deleted - so a failed start leaves no
+  # half-provisioned run, and the phase fails with
+  # `{:multi_repo_worktree_failed, repo_id, reason}`. A worktree that was
+  # already on disk (`reused`) was not created here and may hold the run's
+  # committed work on that branch, so it is never part of the rollback. A
+  # single-repository run (no `:run_repos` extras) returns the primary record
+  # untouched.
+  defp create_repo_worktrees(state, phase_index, primary_record, primary_reused) do
     case Map.get(state, :run_repos) do
       %{extras: [_ | _] = extras} ->
-        provision_secondaries(state, phase_index, primary_record, extras)
+        provision_secondaries(state, phase_index, primary_record, primary_reused, extras)
 
       _ ->
         {:ok, primary_record}
     end
   end
 
-  defp provision_secondaries(state, phase_index, primary_record, extras) do
-    Enum.reduce_while(extras, {:ok, []}, fn repo, {:ok, created} ->
+  defp provision_secondaries(state, phase_index, primary_record, primary_reused, extras) do
+    created_here = if primary_reused, do: [], else: [primary_record]
+
+    Enum.reduce_while(extras, {:ok, created_here}, fn repo, {:ok, created} ->
       case create_repo_worktree(state, phase_index, primary_record, repo) do
-        {:ok, record} ->
+        {:ok, _record, true} ->
+          {:cont, {:ok, created}}
+
+        {:ok, record, false} ->
           {:cont, {:ok, [record | created]}}
 
         {:error, reason} ->
-          _ =
-            compensate_run_worktrees(state, phase_index, [primary_record | Enum.reverse(created)])
+          _ = compensate_run_worktrees(state, phase_index, Enum.reverse(created))
 
           {:halt, {:error, {:multi_repo_worktree_failed, repo.id, reason}}}
       end
@@ -4296,8 +4327,8 @@ defmodule ForemanServer.Workflow.RunExecutor do
          :ok <- assert_git_repo(repo.path),
          {:ok, base_branch, base_ref} <- repo_base(repo),
          :ok <- ensure_worktree_parent_dir(worktree_path),
-         {:ok, ^worktree_path} <-
-           Worktree.create(%{
+         {:ok, %{path: ^worktree_path, reused: reused}} <-
+           Worktree.provision(%{
              operation_id: operation_id,
              project_id: project_id,
              run_id: state.run_id,
@@ -4323,9 +4354,9 @@ defmodule ForemanServer.Workflow.RunExecutor do
          trd_scope: nil,
          cleanup: primary_record.cleanup,
          repo_id: repo.id
-       }}
+       }, reused}
     else
-      {:ok, other_path} -> {:error, {:worktree_path_drift, worktree_path, other_path}}
+      {:ok, %{path: other_path}} -> {:error, {:worktree_path_drift, worktree_path, other_path}}
       {:error, _} = error -> error
     end
   end
