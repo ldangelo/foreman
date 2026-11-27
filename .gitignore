@@ -1,5 +1,6 @@
 # Backend (Elixir/Phoenix) — scoped to packages/foreman_server
 /packages/foreman_server/_build
+/packages/foreman_client/_build
 /packages/foreman_server/deps
 /packages/foreman_server/.fetch
 /packages/foreman_server/tmp
