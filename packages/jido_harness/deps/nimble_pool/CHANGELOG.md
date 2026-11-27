@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.2.0 (2026-11-16)
+
+* Wake queued callers after cancelling a pool holder
+* Add `handle_pool_cast` and `handle_pool_call` callbacks
+
 ## v1.1.0 (2024-03-25)
 
 * Add `handle_cancelled/2` pool callback

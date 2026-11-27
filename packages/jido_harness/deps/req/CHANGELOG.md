@@ -1,6 +1,30 @@
 # CHANGELOG
 
-## v0.7.2
+## v0.7.5 (2026-10-06)
+
+  * [`put_aws_sigv4`]: Fix SigV4 signing on retries.
+  * [`redirect`]: Change method to GET (except HEAD) on HTTP 303.
+
+## v0.7.4 (2026-08-26)
+
+  * [`put_params`]: Allow explicit duplicates.
+
+    in v0.7.0 we made this change:
+
+    > Overwrite existing query params instead of appending.
+
+    This was a regression for legitimate use cases where some servers require duplicate params.
+    Now we allow explicit duplicates but otherwise overwrite any previously set:
+
+        Req.get!("?id=1&foo=bar", params: [id: 2, id: 3]) # ?id=2&id=3&foo=bar
+
+  * [`put_path_params`]: Do not overwrite redirect target.
+
+## v0.7.3 (2026-08-19)
+
+  * [`encode_body`]: Revert "Automatically change GET to POST when request body is set."
+
+## v0.7.2 (2026-07-31)
 
   * [`encode_body`]: Bring back `form_multipart: [{string_name, value}]`.
   * [`put_aws_sigv4`]: Fix AWS SigV4 compatibility with Supabase Storage S3.
