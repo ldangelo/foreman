@@ -2,7 +2,7 @@
 
 This document records the Jido package forks under `Sunstone-Partners/*` that
 back the Jido ecosystem migration described in
-`docs/TRD/TRD-2026-4212be7e-jido-migration.md`. Every package is sourced from
+`docs/TRD/completed/TRD-2026-4212be7e-jido-migration.md`. Every package is sourced from
 a Sunstone-Partners fork pinned to a specific commit revision.
 
 This manifest implements **JRM-T001** (fork creation) and **JRM-T002** (fork
@@ -70,7 +70,7 @@ gives us:
 ## Re-syncing with upstream
 
 The full `JRM-T003` upgrade protocol is described in
-`docs/TRD/TRD-2026-4212be7e-jido-migration.md` Story 5.1. Summary:
+`docs/TRD/completed/TRD-2026-4212be7e-jido-migration.md` Story 5.1. Summary:
 
 1. Upstream release detected (webhook or scheduled poll).
 2. `gh api repos/agentjido/<repo>/commits/main` fetches new HEAD SHA.

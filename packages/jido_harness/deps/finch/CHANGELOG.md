@@ -1,5 +1,54 @@
 # Changelog
 
+## v0.25.0 (2026-11-18)
+
+### Added
+
+- Add a `:phase` field to `Finch.TransportError`, set to `:connect` when an HTTP/1 connection fails to open (DNS, TCP or TLS), so callers can tell requests that never reached the server apart from ones that may have #407
+- Support `:request_timeout` on HTTP/2 as a wall-clock limit for the whole response #369
+
+### Changed
+
+- On HTTP/2, `:receive_timeout` is now an idle timeout that resets whenever part of the response arrives, matching HTTP/1. Previously it limited the whole response, so slow streaming responses were cut off. Use `:request_timeout` to cap the total time #369
+- HTTP/1 pools with `:pool_max_idle_time` now also terminate when they have no connections #406, fixes #311
+- Require NimblePool 1.2 #406
+
+### Fixed
+
+- Stop copying connection options into every pool process, connection and caller. Pools configured with large options such as `cacerts: :public_key.cacerts_get()` used several megabytes per destination and were much slower since v0.22.0 #400, fixes #385
+- Fix HTTP/2 pools getting stuck in the read-only state after a GOAWAY once their last request went away, which made every request to the host fail with `:pool_not_available`. Synchronous callers are now monitored while they have requests in flight #403
+- Fix an HTTP/2 pool crash, and a synchronous caller blocking forever, when the server sends its complete response before the request body has finished uploading #409
+- Stop sending empty HTTP/2 DATA frames while flow control blocks a request body, which made servers close the connection with `ENHANCE_YOUR_CALM` #402
+- Treat negative HTTP/2 stream windows as no available capacity #402
+- Return errors to callers and stop telemetry events when an HTTP/2 connection fails while a request body is being sent, and clear request bookkeeping on disconnect #402
+
+### Other
+
+- Add a throughput benchmark comparing Finch versions and memory tests for the pool supervision tree #400
+
+## v0.24.0 (2026-09-29)
+
+### Added
+
+- Support the HTTP `QUERY` method via the `:query` atom in `Finch.build/5` #396
+- Add `t:Finch.pool_opt/0` and `t:Finch.pool_opts/0` types and a typespec for `Finch.start_link/1` #382
+
+### Fixed
+
+- Close HTTP/1 connections after request or response errors before returning them to the pool, preventing stale response references from reaching subsequent requests after receive timeouts with Mint 1.11 #397
+- Close discarded HTTP/1 connections asynchronously so slow TLS shutdowns do not block pool checkouts #392
+- Wait for dynamically started HTTP/2 pools to become ready within `:pool_timeout`, avoiding `:pool_not_available` errors on initial requests #388
+- Return `:ok` when cancelling an async request while its HTTP/2 pool is disconnected, avoiding a `MatchError` #387
+- Unregister HTTP/1 and HTTP/2 pool workers before shutdown completes so resizing pools does not leave stale registry entries #391
+- Treat empty or whitespace-only `SSLKEYLOGFILE` and `:ssl_key_log_file` values as unset #381
+
+### Other
+
+- Update locked dependencies to Mint 1.11 and HPAX 1.1 #397
+- CI: update to Elixir 1.20.4 and Erlang/OTP 29.0.6 #389
+- Fix documentation warnings from references to the removed six-argument `Finch.request` function #389
+- Remove timing races from HTTP/1 pool idle-timeout tests #391
+
 ## v0.23.0 (2026-06-17)
 
 ### Fixed

@@ -1,14 +1,14 @@
 defmodule NimbleOptions.MixProject do
   use Mix.Project
 
-  @version "1.1.1"
+  @version "1.2.0"
   @repo_url "https://github.com/dashbitco/nimble_options"
 
   def project do
     [
       app: :nimble_options,
       version: @version,
-      elixir: "~> 1.9",
+      elixir: "~> 1.15",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
 

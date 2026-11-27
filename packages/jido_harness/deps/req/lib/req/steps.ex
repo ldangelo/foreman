@@ -436,9 +436,6 @@ defmodule Req.Steps do
     * `:json` - if set, encodes the request body as JSON (using `Jason.encode_to_iodata!/1`), sets
       the `accept` header to `application/json`, and the `content-type` header to `application/json`.
 
-  When the request has the default HTTP method, GET, and the request body is set, this step
-  automatically changes HTTP method to POST.
-
   ## Examples
 
   Encoding form (`application/x-www-form-urlencoded`):
@@ -474,11 +471,6 @@ defmodule Req.Steps do
 
       iex> Req.post!("https://httpbin.org/post", json: %{a: 1}).body["json"]
       %{"a" => 1}
-
-  Automatically change GET to POST when body is set:
-
-      iex> Req.request!("https://httpbin.org/post", json: %{a: 1}).body["json"]
-      %{"a" => 1}
   """
   @doc step: :request
   def encode_body(request) do
@@ -502,15 +494,6 @@ defmodule Req.Steps do
       true ->
         request
     end
-    |> get_to_post()
-  end
-
-  defp get_to_post(%Req.Request{method: :get, body: body} = req) when body != nil do
-    %{req | method: :post}
-  end
-
-  defp get_to_post(req) do
-    req
   end
 
   defp maybe_put_content_length(req, nil), do: req
@@ -615,14 +598,21 @@ defmodule Req.Steps do
 
   defp put_params(request, new_params) do
     update_in(request.url.query, fn query ->
-      old_params = Enum.to_list(URI.query_decoder(query || ""))
+      new_params = Enum.map(new_params, fn {name, value} -> {to_string(name), value} end)
+      names = Enum.map(new_params, &elem(&1, 0))
 
-      new_params
-      |> Enum.reduce(old_params, fn {name, value}, acc ->
-        name = to_string(name)
-        List.keystore(acc, name, 0, {name, value})
-      end)
-      |> URI.encode_query()
+      old_params = URI.query_decoder(query || "")
+
+      {params, rest} =
+        Enum.flat_map_reduce(old_params, new_params, fn {name, value}, pending ->
+          if name in names do
+            Enum.split_with(pending, fn {new_name, _value} -> new_name == name end)
+          else
+            {[{name, value}], pending}
+          end
+        end)
+
+      URI.encode_query(params ++ rest)
     end)
   end
 
@@ -852,6 +842,13 @@ defmodule Req.Steps do
     "upgrade"
   ]
 
+  @aws_sigv4_generated_headers [
+    "authorization",
+    "x-amz-content-sha256",
+    "x-amz-date",
+    "x-amz-security-token"
+  ]
+
   @doc """
   Signs request with AWS Signature Version 4.
 
@@ -933,6 +930,11 @@ defmodule Req.Steps do
       end
 
       aws_options = ensure_aws_service(aws_options, request.url)
+
+      request =
+        Enum.reduce(@aws_sigv4_generated_headers, request, fn header, request ->
+          Req.Request.delete_header(request, header)
+        end)
 
       {body, options} =
         case request.body do
@@ -1415,12 +1417,13 @@ defmodule Req.Steps do
   @doc """
   Follows redirects.
 
-  The original request method may be changed to GET depending on the status code:
+  The original request method may be changed to GET:
 
-  | Code          | Method handling    |
-  | ------------- | ------------------ |
-  | 301, 302, 303 | Changed to GET     |
-  | 307, 308      | Method not changed |
+  | Code     | Method handling             |
+  | -------- | --------------------------- |
+  | 301, 302 | Change POST to GET          |
+  | 303      | Change to GET (except HEAD) |
+  | 307, 308 | Method not changed          |
 
   ## Request Options
 
@@ -1521,8 +1524,9 @@ defmodule Req.Steps do
     request
     # assume put_params step already run so remove :params option so it's not applied again
     |> Req.Request.delete_option(:params)
+    |> Req.Request.delete_option(:path_params)
     |> remove_credentials_if_untrusted(redirect_trusted, location_url)
-    |> change_post_to_get(response.status)
+    |> change_method(response.status)
     |> Map.replace!(:url, location_url)
   end
 
@@ -1554,18 +1558,25 @@ defmodule Req.Steps do
   # > Note: For historical reasons, a user agent MAY change the request method from
   # > POST to GET for the subsequent request.
   #
-  # And my understanding is essentially same applies for 303.
   # Also see https://everything.curl.dev/http/redirects
-  defp change_post_to_get(%{method: :post} = request, status) when status in 301..303 do
+  defp change_method(%{method: :post} = request, status) when status in [301, 302] do
+    change_to_get(request)
+  end
+
+  defp change_method(%{method: method} = request, 303) when method not in [:get, :head] do
+    change_to_get(request)
+  end
+
+  defp change_method(request, _status) do
+    request
+  end
+
+  defp change_to_get(request) do
     request
     |> Map.merge(%{method: :get, body: nil})
     |> Req.Request.drop_options([:json, :form, :form_multipart])
     |> Req.Request.delete_header("content-type")
     |> Req.Request.delete_header("content-length")
-  end
-
-  defp change_post_to_get(request, _status) do
-    request
   end
 
   defp remove_credentials_if_untrusted(request, true, _), do: request

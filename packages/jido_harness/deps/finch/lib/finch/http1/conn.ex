@@ -57,7 +57,12 @@ defmodule Finch.HTTP1.Conn do
         {:ok, %{conn | mint: mint}}
 
       {:error, error} ->
-        wrapped_error = Error.wrap(error)
+        wrapped_error =
+          case Error.wrap(error) do
+            %Finch.TransportError{} = transport -> %{transport | phase: :connect}
+            other -> other
+          end
+
         meta = Map.put(meta, :error, wrapped_error)
         Telemetry.stop(:connect, start_time, meta)
         {:error, conn, wrapped_error}
@@ -179,7 +184,7 @@ defmodule Finch.HTTP1.Conn do
     wrapped_error = Error.wrap(error)
     metadata = Map.put(metadata, :error, wrapped_error)
     Telemetry.stop(:send, start_time, metadata, extra_measurements)
-    {:error, %{conn | mint: mint}, wrapped_error, acc}
+    {:error, close(%{conn | mint: mint}), wrapped_error, acc}
   end
 
   defp maybe_stream_request_body(mint, ref, {:stream, stream}, acc) do
@@ -257,7 +262,7 @@ defmodule Finch.HTTP1.Conn do
         wrapped_error = Error.wrap(error)
         metadata = Map.merge(metadata, Map.put(resp_metadata, :error, wrapped_error))
         Telemetry.stop(:recv, start_time, metadata, extra_measurements)
-        {:error, %{conn | mint: mint}, wrapped_error, acc}
+        {:error, close(%{conn | mint: mint}), wrapped_error, acc}
     end
   end
 

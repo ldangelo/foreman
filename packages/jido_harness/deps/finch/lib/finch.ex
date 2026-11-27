@@ -18,6 +18,7 @@ defmodule Finch do
   @pool_config_schema [
     protocols: [
       type: {:list, {:in, [:http1, :http2]}},
+      type_spec: quote(do: [:http1 | :http2]),
       doc: """
       The type of connections to support.
 
@@ -81,9 +82,8 @@ defmodule Finch do
       type: :timeout,
       doc: """
       The maximum number of milliseconds that a pool can be idle before being terminated, used only by HTTP1 pools. \
-      This options is forwarded to NimblePool and it starts and idle verification cycle that may impact \
-      performance if misused. For instance setting a very low timeout may lead to pool restarts. \
-      For more information see NimblePool's `handle_ping/2` documentation.
+      A pool is idle when none of its connections is in use, counted from its last checkout, \
+      and it stops even if it has no connections. Setting a very low timeout may lead to pool restarts.
       """,
       default: :infinity
     ],
@@ -156,6 +156,8 @@ defmodule Finch do
     ]
   ]
 
+  @pool_schema NimbleOptions.new!(@pool_config_schema)
+
   @typedoc """
   The `:name` provided to Finch in `start_link/1`.
   """
@@ -214,6 +216,13 @@ defmodule Finch do
   Options used by request functions.
   """
   @type request_opts() :: [request_opt()]
+
+  @type pool_opt() :: unquote(NimbleOptions.option_typespec(@pool_schema))
+
+  @typedoc """
+  Options used to configure a pool in `start_link/1`.
+  """
+  @type pool_opts() :: [pool_opt()]
 
   @typedoc """
   Errors returned by Finch request functions.
@@ -368,6 +377,9 @@ defmodule Finch do
 
   #{NimbleOptions.docs(@pool_config_schema)}
   """
+  @spec start_link(opts) :: Supervisor.on_start()
+        when opts: [{:name, atom()} | {:pools, pools}],
+             pools: %{(pool_identifier() | :default) => pool_opts()}
   def start_link(opts) do
     name = finch_name!(opts)
     pools = Keyword.get(opts, :pools, []) |> pool_options!()
@@ -376,6 +388,7 @@ defmodule Finch do
     config = %{
       registry_name: name,
       registry_listeners: Keyword.get(opts, :registry_listeners, []),
+      manager_name: Pool.Manager.manager_name(name),
       supervisor_name: Pool.Manager.supervisor_name(name),
       supervisor_registry_name: Pool.Manager.supervisor_registry_name(name),
       default_pool_config: default_pool_config,
@@ -459,12 +472,17 @@ defmodule Finch do
   def init(config) do
     Finch.PoolMetrics.new(config.registry_name)
 
+    # The pool configurations are kept by the pool manager. Reading them from the
+    # registry would give every reader its own copy of terms that processes
+    # otherwise share, such as the certificates of :public_key.cacerts_get/0.
+    registry_config = Map.drop(config, [:default_pool_config, :pools])
+
     children = [
       {Registry,
        keys: :duplicate,
        name: config.registry_name,
        listeners: config.registry_listeners,
-       meta: [config: config]},
+       meta: [config: registry_config]},
       {Registry, keys: :unique, name: config.supervisor_registry_name},
       {DynamicSupervisor, name: config.supervisor_name, strategy: :one_for_one},
       {Pool.Manager, config}
@@ -548,7 +566,8 @@ defmodule Finch do
       |> Keyword.put(:enable_push, false)
 
     ssl_key_log_file =
-      Keyword.get(conn_opts, :ssl_key_log_file) || System.get_env("SSLKEYLOGFILE")
+      (Keyword.get(conn_opts, :ssl_key_log_file) || System.get_env("SSLKEYLOGFILE"))
+      |> normalize_ssl_key_log_file()
 
     ssl_key_log_file_device = ssl_key_log_file && File.open!(ssl_key_log_file, [:append])
 
@@ -580,6 +599,16 @@ defmodule Finch do
       max_connection_age_jitter: valid[:http2][:max_connection_age_jitter]
     }
   end
+
+  defp normalize_ssl_key_log_file(value) when is_binary(value) do
+    if String.trim(value) == "" do
+      nil
+    else
+      value
+    end
+  end
+
+  defp normalize_ssl_key_log_file(value), do: value
 
   defp to_native(:infinity), do: :infinity
   defp to_native(time), do: System.convert_time_unit(time, :millisecond, :native)
@@ -855,16 +884,16 @@ defmodule Finch do
 
   ## Options
 
-    * `:pool_timeout` - This timeout is applied when we check out a connection from the pool.
-      Default value is `5_000`.
+    * `:pool_timeout` - The maximum time to wait for a dynamically started pool to become
+      available and, for HTTP/1, to check out a connection from the pool. Default value is `5_000`.
+      Setting it to `:infinity` may block forever if no pool or connection becomes available.
 
     * `:receive_timeout` - The maximum time to wait for each chunk to be received before returning an error.
       Default value is `15_000`.
 
-    * `:request_timeout` - The amount of time to wait for a complete response before returning an error.
-      This timeout only applies to HTTP/1, and its current implementation is a best effort timeout,
-      it does not guarantee the call will return precisely when the time has elapsed.
-      Default value is `:infinity`.
+    * `:request_timeout` - The total wall-clock time to wait for a complete response before returning
+      an error. On HTTP/1 this is a best effort timeout: it is only checked between reads from the
+      socket, so the call may return up to `:receive_timeout` later. Default value is `:infinity`.
 
     * `:pool_strategy` - When the pool has multiple shards (`count: N`), selects which shards handles
       the request. Default is random selection. See `t:pool_strategy/0` for details.
@@ -1160,7 +1189,7 @@ defmodule Finch do
       :not_found ->
         {:error, :not_found}
 
-      {pid, pool_name, _pool_mod, _pool_count, _pool_config} ->
+      {pid, pool_name, _pool_mod, _pool_count} ->
         result = Supervisor.stop(pid)
         Finch.PoolMetrics.delete_pool(finch_name, pool_name)
         result
@@ -1182,7 +1211,7 @@ defmodule Finch do
 
     case Pool.Manager.get_pool_supervisor(finch_name, pool) do
       :not_found -> {:error, :not_found}
-      {_pid, _pool_name, _pool_mod, pool_count, _pool_config} -> {:ok, pool_count}
+      {_pid, _pool_name, _pool_mod, pool_count} -> {:ok, pool_count}
     end
   end
 

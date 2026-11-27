@@ -206,6 +206,16 @@
   `mix.lock` (the `mint`, `decimal` and `jose` floors it sets are met by the previous bump).
   Nothing in `lib/` calls ExMCP or `Jido.MCP` (`ForemanServer.MCP` is built on Anubis);
   `ex_mcp` runs only as a dependency application of `jido_mcp`. No operator-visible change.
+- Second round of advisory bumps, `mix.lock` only (no `mix.exs` change; `ex_mcp` stays 1.8.1):
+  `cowboy` 2.17.0 → 2.21.0 (with `ranch` 2.4.0), `ecto` 3.14.2 → 3.14.3, `ex_aws` 2.7.0 → 2.8.2,
+  `ex_aws_s3` 2.5.9 → 2.6.1, `idna` 7.1.0 → 8.0.0, `lazy_html` 0.1.12 → 0.1.16, `phoenix` 1.8.9 →
+  1.8.17, `phoenix_html` 4.3.0 → 4.4.0, `phoenix_live_view` 1.2.8 → 1.2.15, `plug` 1.20.3 → 1.20.4,
+  `postgrex` 0.22.3 → 0.23.0 and `ssl_verify_fun` 1.1.7 → 1.1.9, plus the transitive `castore`,
+  `elixir_make`, `finch`, `fine`, `nimble_options`, `nimble_pool`, `phoenix_pubsub`,
+  `phoenix_template`, `req`, `telemetry` and `websock_adapter`. `mix hex.audit` now reports only
+  the retired `erlexec`. `packages/jido_harness` takes the same `finch`, `req`, `telemetry`,
+  `nimble_options` and `nimble_pool` in its lock and vendored `deps/`; `erlexec` stays at 2.3.4
+  (patched in-repo). No operator-visible change.
 
 ### Fixed
 
