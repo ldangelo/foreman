@@ -88,4 +88,100 @@ defmodule ForemanServer.AgentRuntime.AdapterCatalogBootTest do
     assert_receive {:probe_started, probe_pid}, 2_000
     send(probe_pid, :release_probe)
   end
+
+  alias ForemanServer.AgentRuntime.AvailabilityCache
+
+  defp scripted_probe(replies) do
+    script = start_supervised!(Supervisor.child_spec({Agent, fn -> replies end}, id: make_ref()))
+    tester = self()
+
+    fn ->
+      send(tester, :probed)
+
+      case Agent.get_and_update(script, fn
+             [] -> {:crash, []}
+             [h | t] -> {h, t}
+           end) do
+        :hang -> Process.sleep(:infinity)
+        :crash -> raise "scripted probe crash"
+        value -> value
+      end
+    end
+  end
+
+  defp key, do: {:probe, System.unique_integer([:positive])}
+
+  test "a read within the TTL does not probe again (TTL :infinity)" do
+    probe = scripted_probe([true, false])
+    k = key()
+
+    assert AvailabilityCache.fetch(k, probe, ttl_ms: :infinity)
+    assert_received :probed
+    assert AvailabilityCache.fetch(k, probe, ttl_ms: :infinity)
+    refute_received :probed
+  end
+
+  test "TTL 0 probes on every read and tracks the live value" do
+    probe = scripted_probe([true, false])
+    k = key()
+
+    assert AvailabilityCache.fetch(k, probe, ttl_ms: 0)
+    refute AvailabilityCache.fetch(k, probe, ttl_ms: 0)
+    assert_received :probed
+    assert_received :probed
+  end
+
+  test "a probe slower than the timeout returns the last known value, not false" do
+    probe = scripted_probe([false, :hang])
+    k = key()
+    opts = [ttl_ms: 0, timeout_ms: 50]
+
+    refute AvailabilityCache.fetch(k, probe, opts)
+    # hung probe: last known (false) is returned, proving it is not a blanket default
+    refute AvailabilityCache.fetch(k, probe, opts)
+
+    probe = scripted_probe([true, :hang])
+    k = key()
+    assert AvailabilityCache.fetch(k, probe, opts)
+    assert AvailabilityCache.fetch(k, probe, opts)
+  end
+
+  test "a crashing probe falls back to the last known value" do
+    probe = scripted_probe([true])
+    k = key()
+    opts = [ttl_ms: 0]
+
+    assert AvailabilityCache.fetch(k, probe, opts)
+    # script exhausted: the probe crashes
+    assert AvailabilityCache.fetch(k, probe, opts)
+  end
+
+  test "a first read with a hung probe answers true (optimistic) and is not cached" do
+    probe = scripted_probe([:hang, false])
+    k = key()
+    opts = [ttl_ms: :infinity, timeout_ms: 50]
+
+    assert AvailabilityCache.fetch(k, probe, opts)
+    # the optimistic answer was not cached, so the next read probes again and sees the truth
+    refute AvailabilityCache.fetch(k, probe, opts)
+  end
+
+  test "with adapters: [JidoHarnessAdapter] the supervisor's init registration is the only path and leaves the catalog populated" do
+    u = System.unique_integer([:positive])
+    catalog = :"boot_catalog_#{u}"
+
+    start_supervised!(
+      {ForemanServer.AgentRuntime.Supervisor,
+       name: :"boot_sup_#{u}",
+       adapter_catalog_name: catalog,
+       invocation_supervisor_name: :"boot_inv_#{u}",
+       jido_supervisor_name: :"boot_jido_#{u}",
+       adapters: [ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter]}
+    )
+
+    refute AdapterCatalog.empty?(catalog)
+
+    assert {:ok, ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter} =
+             AdapterCatalog.lookup(:jido_harness, catalog)
+  end
 end

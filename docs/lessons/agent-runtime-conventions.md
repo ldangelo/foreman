@@ -112,7 +112,11 @@ the public text.
   registration time. The catalog never runs the probe inside its own process
   (it can spawn a provider CLI): `AdapterCatalog.available?/2` and
   `routing_snapshot/1` evaluate it in the calling process, so a slow probe
-  cannot block registration or application boot (foreman-duhcq). An unavailable adapter is silently skipped in
+  cannot block registration or application boot (foreman-duhcq). `JidoHarnessAdapter.available?/0`
+  goes through `AgentRuntime.AvailabilityCache`: TTL-cached (default 5 s, config
+  `:foreman_server, :availability_cache, ttl_ms:/timeout_ms:`), the whole probe bounded by a
+  timeout, falling back to the last known value (optimistic `true` on a first read) rather than
+  `false`. `execute/2` still re-checks the requested provider fresh. An unavailable adapter is silently skipped in
   automatic/policy modes but produces `{:error, :backend_unavailable}`
   in manual mode.
 - `execute/2` runs inside the `Invocation` process. Adapters are

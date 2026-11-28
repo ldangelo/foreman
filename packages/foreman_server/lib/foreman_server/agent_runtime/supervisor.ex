@@ -40,6 +40,7 @@ defmodule ForemanServer.AgentRuntime.Supervisor do
       )
 
     children = [
+      ForemanServer.AgentRuntime.AvailabilityCache,
       {AdapterCatalog, [name: catalog_name, adapters: adapters]},
       {InvocationSupervisor, [name: invocation_name]}
     ]

@@ -32,12 +32,11 @@ defmodule ForemanServer.AgentRuntime.AdapterCatalog do
 
   @spec available?(module(), GenServer.server()) :: boolean()
   def available?(module, server \\ __MODULE__) do
-    if GenServer.call(server, {:registered?, module}), do: probe(module), else: false
+    if GenServer.call(server, {:registered?, module}),
+      do: probe(module),
+      else: false
   end
 
-  # Availability probes may spawn provider CLIs; they run in the caller, never
-  # inside the catalog process (foreman-duhcq).
-  defp probe(module), do: apply(module, :available?, []) == true
 
   @spec lookup(backend_name :: atom(), GenServer.server()) ::
           {:ok, module()} | {:error, :not_found}
@@ -74,6 +73,10 @@ defmodule ForemanServer.AgentRuntime.AdapterCatalog do
     |> GenServer.call(:routing_snapshot)
     |> Enum.map(fn entry -> Map.put(entry, :available, probe(entry.adapter)) end)
   end
+
+  # Availability probes may spawn provider CLIs: they run in the caller, never inside the
+  # catalog process (foreman-duhcq). Adapters that shell out cache inside `available?/0`.
+  defp probe(module), do: apply(module, :available?, []) == true
 
   @impl true
   def init(opts) do
