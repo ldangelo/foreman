@@ -37,7 +37,6 @@ defmodule ForemanServer.AgentRuntime.AdapterCatalog do
       else: false
   end
 
-
   @spec lookup(backend_name :: atom(), GenServer.server()) ::
           {:ok, module()} | {:error, :not_found}
   def lookup(backend_name, server \\ __MODULE__),
