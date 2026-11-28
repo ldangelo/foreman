@@ -8,6 +8,7 @@ defmodule ForemanServer.AgentRuntime.AdapterCatalogBootTest do
   use ExUnit.Case, async: false
 
   alias ForemanServer.AgentRuntime.AdapterCatalog
+  alias ForemanServer.AgentRuntime.AvailabilityCache
 
   defmodule GatedAdapter do
     @behaviour ForemanServer.AgentRuntime.BackendAdapter
@@ -44,7 +45,17 @@ defmodule ForemanServer.AgentRuntime.AdapterCatalogBootTest do
     task =
       Task.async(fn -> AdapterCatalog.start_link(name: name, adapters: [GatedAdapter]) end)
 
-    assert {:ok, {:ok, pid}} = Task.yield(task, 2_000) || Task.shutdown(task, :brutal_kill)
+    pid =
+      case Task.yield(task, 2_000) do
+        {:ok, {:ok, pid}} ->
+          pid
+
+        nil ->
+          # Killing the task also kills the catalog it linked, and with it any parked probe.
+          Task.shutdown(task, :brutal_kill)
+          flunk("catalog start blocked on the availability probe")
+      end
+
     Process.unlink(pid)
     on_exit(fn -> if Process.alive?(pid), do: GenServer.stop(pid) end)
 
@@ -88,8 +99,6 @@ defmodule ForemanServer.AgentRuntime.AdapterCatalogBootTest do
     assert_receive {:probe_started, probe_pid}, 2_000
     send(probe_pid, :release_probe)
   end
-
-  alias ForemanServer.AgentRuntime.AvailabilityCache
 
   defp scripted_probe(replies) do
     script = start_supervised!(Supervisor.child_spec({Agent, fn -> replies end}, id: make_ref()))
