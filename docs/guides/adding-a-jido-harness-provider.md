@@ -15,7 +15,7 @@ covering it with one integration test. No new adapter module is needed.
 AgentRuntime.execute/3  (facade: strategy + backend selection)
         │
         ▼
-Router.manual(:jido_harness)  →  AdapterCatalog (availability cached at registration)
+Router.manual(:jido_harness)  →  AdapterCatalog (availability probed on demand by the caller (TTL-cached), never inside the catalog)
         │
         ▼
 JidoHarnessAdapter.execute/2  (single facade for every provider)

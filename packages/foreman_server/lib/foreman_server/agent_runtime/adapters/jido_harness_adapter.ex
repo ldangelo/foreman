@@ -9,6 +9,7 @@ defmodule ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter do
 
   @behaviour ForemanServer.AgentRuntime.BackendAdapter
 
+  alias ForemanServer.AgentRuntime.AvailabilityCache
   alias ForemanServer.AgentRuntime.BackendAdapter
   alias ForemanServer.AgentRuntime.JidoHarness
   alias ForemanServer.AgentRuntime.JidoHarness.{Driver, ErrorCodes, ReadinessCheck, RunResult}
@@ -48,7 +49,13 @@ defmodule ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter do
 
   @impl true
   def available? do
-    ReadinessCheck.installed?(:pi) or ReadinessCheck.installed?(:claude)
+    # TTL-cached and timeout-bounded (foreman-duhcq): the probe spawns provider CLIs and the
+    # router reads availability on every dispatch. execute/2 below still re-checks fresh.
+    AvailabilityCache.fetch(
+      __MODULE__,
+      fn -> ReadinessCheck.installed?(:pi) or ReadinessCheck.installed?(:claude) end,
+      Application.get_env(:foreman_server, :availability_cache, [])
+    )
   end
 
   @impl true

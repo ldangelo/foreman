@@ -120,7 +120,7 @@ What the assertions establish (claude run; the pi run passes the same ones):
 4. Observed, harmless: Anubis 1.14.0 answers claude 2.1.308's first probe (`MCP-Protocol-Version: 2026-07-28`) with a logged
    `unsupported_protocol_version` 400, and claude then initializes at `2025-11-25`; once per claude session, nothing fails.
 5. Host load (load average 40 to 70 from other work) made one pi server boot fail with a 5 s `GenServer.call` timeout registering the
-   `AdapterCatalog` adapter; the same run passed on retry. Not touched.
+   `AdapterCatalog` adapter; the same run passed on retry. Root cause: the catalog probed `available?/0` (a provider CLI spawn) inside its own process during registration; fixed in foreman-duhcq by probing lazily in the caller.
 
 ## UNVERIFIED / not exercised
 

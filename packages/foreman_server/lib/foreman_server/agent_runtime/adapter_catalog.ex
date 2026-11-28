@@ -31,7 +31,11 @@ defmodule ForemanServer.AgentRuntime.AdapterCatalog do
   def empty?(server \\ __MODULE__), do: GenServer.call(server, :empty)
 
   @spec available?(module(), GenServer.server()) :: boolean()
-  def available?(module, server \\ __MODULE__), do: GenServer.call(server, {:available, module})
+  def available?(module, server \\ __MODULE__) do
+    if GenServer.call(server, {:registered?, module}),
+      do: probe(module),
+      else: false
+  end
 
   @spec lookup(backend_name :: atom(), GenServer.server()) ::
           {:ok, module()} | {:error, :not_found}
@@ -42,7 +46,8 @@ defmodule ForemanServer.AgentRuntime.AdapterCatalog do
   A single point-in-time entry in the catalog's routing snapshot: the
   registered backend's `name`, the `adapter` module that implements it,
   the validated `capabilities` map, and whether the backend was
-  `available` at registration time.
+  `available` when the snapshot was taken (probed by the caller, never by
+  the catalog process, so a slow probe cannot block registration or boot).
   """
   @type routing_entry :: %{
           name: atom(),
@@ -54,14 +59,23 @@ defmodule ForemanServer.AgentRuntime.AdapterCatalog do
   @doc """
   Returns a point-in-time list of every registered backend in registration
   order. Each entry contains the backend name, the adapter module, the
-  validated capabilities, and the availability recorded at registration.
+  validated capabilities, and the adapter's `available?/0` result evaluated
+  lazily in the calling process at snapshot time.
 
   This is the single atomic call the policy router relies on to avoid
   drift between multiple sequential GenServer calls (`snapshot` +
   `lookup` + `available?` would race against concurrent registration).
   """
   @spec routing_snapshot(GenServer.server()) :: [routing_entry()]
-  def routing_snapshot(server \\ __MODULE__), do: GenServer.call(server, :routing_snapshot)
+  def routing_snapshot(server \\ __MODULE__) do
+    server
+    |> GenServer.call(:routing_snapshot)
+    |> Enum.map(fn entry -> Map.put(entry, :available, probe(entry.adapter)) end)
+  end
+
+  # Availability probes may spawn provider CLIs: they run in the caller, never inside the
+  # catalog process (foreman-duhcq). Adapters that shell out cache inside `available?/0`.
+  defp probe(module), do: apply(module, :available?, []) == true
 
   @impl true
   def init(opts) do
@@ -84,7 +98,6 @@ defmodule ForemanServer.AgentRuntime.AdapterCatalog do
     case BackendAdapter.validate_capabilities(module) do
       {:ok, validated_caps} ->
         name = module.name()
-        available = apply(module, :available?, [])
         already_registered? = module in state.adapters
 
         new_adapters =
@@ -93,8 +106,7 @@ defmodule ForemanServer.AgentRuntime.AdapterCatalog do
         new_snapshots =
           Map.put(state.snapshots, module, %{
             name: name,
-            capabilities: validated_caps,
-            available: available
+            capabilities: validated_caps
           })
 
         new_state = %{
@@ -169,21 +181,15 @@ defmodule ForemanServer.AgentRuntime.AdapterCatalog do
   end
 
   @impl true
-  def handle_call({:available, module}, _from, state) do
-    result =
-      case Map.fetch(state.snapshots, module) do
-        {:ok, snapshot} -> snapshot.available
-        :error -> false
-      end
-
-    {:reply, result, state}
+  def handle_call({:registered?, module}, _from, state) do
+    {:reply, Map.has_key?(state.snapshots, module), state}
   end
 
   defp build_routing_snapshot(state) do
     Enum.flat_map(state.adapters, fn adapter ->
       case Map.fetch(state.snapshots, adapter) do
-        {:ok, %{name: name, capabilities: capabilities, available: available}} ->
-          [%{name: name, adapter: adapter, capabilities: capabilities, available: available}]
+        {:ok, %{name: name, capabilities: capabilities}} ->
+          [%{name: name, adapter: adapter, capabilities: capabilities}]
 
         :error ->
           []

@@ -259,10 +259,6 @@ defmodule ForemanServer.Application do
     # the idempotency store is not durable: effect keys then do not survive a restart.
     _ = ForemanServer.Idempotency.KeyStore.report_boot_durability()
 
-    # TRD-004: register the Jido.Harness backend adapter with the
-    # AgentRuntime.AdapterCatalog after the supervisor tree is alive.
-    _ = register_jido_harness_adapter()
-
     # Seed MCP allowlist with read-only tools after supervisor starts.
     _ = seed_mcp_allowlist()
 
@@ -321,29 +317,6 @@ defmodule ForemanServer.Application do
     end
 
     state
-  end
-
-  @doc """
-  TRD-004 — Registers `ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter`
-  with the supervised `ForemanServer.AgentRuntime.AdapterCatalog`.
-  """
-  @spec register_jido_harness_adapter() ::
-          {:ok, ForemanServer.AgentRuntime.capability_map()} | nil
-  def register_jido_harness_adapter do
-    if ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter in Application.get_env(
-         :foreman_server,
-         :agent_runtime,
-         []
-       )[:adapters] do
-      case ForemanServer.AgentRuntime.register(
-             ForemanServer.AgentRuntime.Adapters.JidoHarnessAdapter
-           ) do
-        {:ok, _} = ok -> ok
-        {:error, _} -> nil
-      end
-    else
-      nil
-    end
   end
 
   defp maybe_messaging_dispatcher_child do

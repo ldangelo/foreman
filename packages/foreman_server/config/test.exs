@@ -46,6 +46,10 @@ config :foreman_server, :agent_runtime,
   enabled: true,
   adapters: []
 
+# TTL 0: tests flip provider readiness between assertions and expect it to show at once.
+# A top-level key, because tests replace the whole :agent_runtime env.
+config :foreman_server, :availability_cache, ttl_ms: 0
+
 config :foreman_server, :stuck_run_check_interval_seconds, 3_600
 # Off in tests: its refresher reads every project's secret store from a background process,
 # which races tests that count `SecretStore` calls (PrFixRedactionTest). The filter's own tests
